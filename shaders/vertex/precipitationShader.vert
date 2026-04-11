@@ -270,7 +270,9 @@ void main()
 
       newPos.x = mod(newPos.x + 1., 2.) - 1.; // wrap horizontal position around map edges
 
-      feedback[MASS] = totalMass;
+      float sizeFactor = pow(totalMass, 1.0 / 3.0);
+      float massScore = totalMass * sizeFactor; // weight mass by droplet size
+      feedback[MASS] = massScore;
 
     }               // update
 

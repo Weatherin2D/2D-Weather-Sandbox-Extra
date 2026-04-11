@@ -28,7 +28,8 @@ void main()
   */
 
   float totalMass = mass_out[WATER] + mass_out[ICE];
-  float opacity = totalMass * 0.10;
+  float sizeFactor = pow(totalMass, 1.0 / 3.0);
+  float opacity = totalMass * 0.10 * mix(0.75, 1.5, clamp(sizeFactor * 0.8, 0.0, 1.0));
 
   if (mass_out[ICE] > 0.) {                           // has ice
     if (mass_out[WATER] == 0.) {                      // has no liquid water, pure ice
@@ -44,7 +45,7 @@ void main()
   }
 
   float glowThreshold = 3.0;
-  float glowFactor = clamp((totalMass - glowThreshold) / 2.0, 0.0, 1.0);
+  float glowFactor = clamp((totalMass * sizeFactor - glowThreshold) / 2.0, 0.0, 1.0);
   if (glowFactor > 0.0) {
     vec2 coord = gl_PointCoord - vec2(0.5);
     float dist = length(coord) * 2.0;

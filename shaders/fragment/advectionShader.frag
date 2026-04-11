@@ -111,19 +111,12 @@ void main()
     realTemp = potentialToRealT(base[TEMPERATURE]);
 
 
-    //  float excessWater = max(water[TOTAL] - maxWater(realTemp), 0.0); // calculate the amount of extra water beyond 100% rel hum, including both vapor and cloud water
-    float excessWater = water[TOTAL] - maxWater(realTemp);
+    float relHum = water[TOTAL] / maxWater(realTemp);
+    float excessAbove96 = max(water[TOTAL] - 0.96 * maxWater(realTemp), 0.0);
+    float cloudTarget = smoothstep(0.96, 1.10, relHum) * excessAbove96; // start forming clouds at 96% and reach full condensation at 110%
 
-    float overSaturation = excessWater - water[CLOUD]; // amount of water vapor that should condence, but hasn't yet
-
-    float condensation;
-
-    if (overSaturation < 0.) {                          // evaporation
-      condensation = overSaturation * 0.20;             // evaporation is rapid
-    } else {                                            // condensation
-      condensation = overSaturation * condensationRate; // 0.002 0.25 amount of the oversaturated water vapor that slowly condences
-    }
-    condensation = max(condensation, -water[CLOUD]);    // Prevent cloudwater from going negative
+    float condensation = (cloudTarget - water[CLOUD]) * condensationRate;
+    condensation = clamp(condensation, -water[CLOUD], max(water[TOTAL] - water[CLOUD], 0.0));
 
     float dT = condensation * evapHeat * 1.0;           // how much that water phase change would change the temperature
     base[TEMPERATURE] += dT;
@@ -319,6 +312,12 @@ void main()
             wall[TYPE] = WALLTYPE_URBAN;
           }
           break;
+        case 17:                                               // set suburban
+          if (wall[DISTANCE] == 0 && (wall[TYPE] == WALLTYPE_LAND || wall[TYPE] == WALLTYPE_RUNWAY || wall[TYPE] == WALLTYPE_INDUSTRIAL) &&
+              texture(wallTex, texCoordX0Yp)[DISTANCE] != 0) {
+            wall[TYPE] = WALLTYPE_SUBURBAN;
+          }
+          break;
         case 15:                                               // set runway
           if (wall[DISTANCE] == 0 && (wall[TYPE] == WALLTYPE_LAND || wall[TYPE] == WALLTYPE_URBAN || wall[TYPE] == WALLTYPE_INDUSTRIAL) &&
               texture(wallTex, texCoordX0Yp)[DISTANCE] != 0) { // if land wall and no wall above
@@ -371,6 +370,9 @@ void main()
               wall[TYPE] = WALLTYPE_LAND;
           } else if (userInputType == 14) {
             if (wall[TYPE] == WALLTYPE_URBAN) // remove buildings
+              wall[TYPE] = WALLTYPE_LAND;
+          } else if (userInputType == 17) {
+            if (wall[TYPE] == WALLTYPE_SUBURBAN) // remove suburban buildings
               wall[TYPE] = WALLTYPE_LAND;
           } else if (userInputType == 15) {
             if (wall[TYPE] == WALLTYPE_RUNWAY) // remove runway

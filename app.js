@@ -411,6 +411,7 @@ const guiControls_default = {
   lengthUnit : 'LENGTH_UNIT_METRIC',
   tempUnit : 'TEMP_UNIT_C',
   windUnit : 'SPEED_UNIT_KMH',
+  temperatureChangeIterations : 5,
 };
 
 var horizontalDisplayMult = 3.0; // 3.0 to cover srceen while zoomed out
@@ -3567,6 +3568,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         'Land' : 'TOOL_WALL_LAND',
         'Lake / Sea' : 'TOOL_WALL_SEA',
         'Urban' : 'TOOL_WALL_URBAN',
+        'Suburban' : 'TOOL_WALL_SUBURBAN',
         'Runway' : 'TOOL_WALL_RUNWAY',
         'Industrial' : 'TOOL_WALL_INDUSTRIAL',
         'Fire' : 'TOOL_WALL_FIRE',
@@ -3783,6 +3785,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         '6 IR Heating / Cooling' : 'DISP_IRHEATING',
         '7 IR Down -60°C to 26°C' : 'DISP_IRDOWNTEMP',
         '8 IR Up -26°C to 30°C' : 'DISP_IRUPTEMP',
+        'J Temperature Change' : 'DISP_TEMPERATURE_CHANGE',
         '9 Precipitation Mass' : 'DISP_PRECIPFEEDBACK_MASS',
         'Precipitation Heating/Cooling' : 'DISP_PRECIPFEEDBACK_HEAT',
         'Precipitation Condensation/Evaporation' : 'DISP_PRECIPFEEDBACK_VAPOR',
@@ -3793,6 +3796,10 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         'Air Quality' : 'DISP_AIRQUALITY'
       })
       .name('Display Mode')
+      .listen();
+
+    display_folder.add(guiControls, 'temperatureChangeIterations', 1, 5, 1)
+      .name('Iterations per temperature update')
       .listen();
     display_folder.add(guiControls, 'camSpeed', 0.001, 0.050, 0.001).name('Camera Pan Speed');
 
@@ -4022,6 +4029,92 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       const graphBottem = this.graphCanvas.height - 40; // in pixels
 
       var c = this.ctx;
+
+      function integrateSegment(B0, B1, dz) {
+        if (B0 >= 0 && B1 >= 0)
+          return {pos: (B0 + B1) * 0.5 * dz, neg: 0};
+        if (B0 <= 0 && B1 <= 0)
+          return {pos: 0, neg: (B0 + B1) * 0.5 * dz};
+        const factor = Math.abs(B0) / (Math.abs(B0) + Math.abs(B1));
+        const zcross = factor * dz;
+        if (B0 < 0) {
+          return {pos: B1 * (dz - zcross) * 0.5, neg: B0 * zcross * 0.5};
+        } else {
+          return {pos: B0 * zcross * 0.5, neg: B1 * (dz - zcross) * 0.5};
+        }
+      }
+
+      function computeParcelProfile(surfaceTempC, surfaceTdC, startIndex) {
+        const parcelTemps = new Float32Array(sim_res_y);
+        const mixingWater = maxWater(CtoK(surfaceTdC));
+        let prevTemp = surfaceTempC;
+        let prevCloudWater = 0.0;
+        const dz = guiControls.simHeight / sim_res_y;
+        parcelTemps.fill(NaN);
+        parcelTemps[startIndex] = surfaceTempC;
+
+        for (let y = startIndex + 1; y < sim_res_y; y++) {
+          const dT = -9.8 * dz / 1000.0;
+          const nextDry = prevTemp + dT;
+          const cloudWater = Math.max(mixingWater - maxWater(CtoK(nextDry)), 0.0);
+          const dWt = (cloudWater - prevCloudWater) * guiControls.evapHeat;
+          const deltaT = dT_saturated(dT, dWt);
+          const T = prevTemp + deltaT;
+          parcelTemps[y] = T;
+          prevTemp = T;
+          prevCloudWater = Math.max(mixingWater - maxWater(CtoK(T)), 0.0);
+        }
+
+        return parcelTemps;
+      }
+
+      function computeCAPE(envTempsC, envDewC, parcelTemps, startIndex) {
+        const dz = guiControls.simHeight / sim_res_y;
+        let lclIndex = -1;
+        let lfcIndex = -1;
+        let elIndex = -1;
+        let cape = 0.0;
+        let cinh = 0.0;
+
+        const buoy = new Float32Array(sim_res_y);
+        for (let y = startIndex; y < sim_res_y; y++) {
+          const envTk = CtoK(envTempsC[y]);
+          const parcelTk = CtoK(parcelTemps[y]);
+          buoy[y] = 9.81 * (parcelTk - envTk) / envTk;
+        }
+
+        for (let y = startIndex + 1; y < sim_res_y; y++) {
+          const seg = integrateSegment(buoy[y - 1], buoy[y], dz);
+          cape += Math.max(0, seg.pos);
+          cinh += Math.min(0, seg.neg);
+
+          if (lclIndex === -1 && parcelTemps[y] <= envDewC[y]) {
+            lclIndex = y;
+          }
+          if (lclIndex !== -1 && lfcIndex === -1 && buoy[y] > 0) {
+            lfcIndex = y;
+          }
+          if (lfcIndex !== -1 && elIndex === -1 && buoy[y] <= 0) {
+            elIndex = y;
+          }
+        }
+
+        return {cape, cinh, lclIndex, lfcIndex, elIndex};
+      }
+
+      function meanLayerParcel(envTempsC, envDewC, startIndex) {
+        const dz = guiControls.simHeight / sim_res_y;
+        const maxLevels = Math.max(1, Math.min(sim_res_y - startIndex, Math.round(1000 / dz)));
+        let sumT = 0.0;
+        let sumTd = 0.0;
+        for (let y = startIndex; y < startIndex + maxLevels; y++) {
+          sumT += envTempsC[y];
+          sumTd += envDewC[y];
+        }
+        const meanT = sumT / maxLevels;
+        const meanTd = sumTd / maxLevels;
+        return computeParcelProfile(meanT, meanTd, startIndex);
+      }
 
       c.clearRect(0, 0, graphCanvas.width, graphCanvas.height);
       c.fillStyle = '#00000055';
@@ -4578,6 +4671,8 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       // lastBpressTime = new Date().getTime();
     } else if (event.code == 'KeyF') {
       airplane.toggleCamFollow();
+    } else if (event.code == 'KeyJ') {
+      guiControls.displayMode = 'DISP_TEMPERATURE_CHANGE';
     } else if (event.code == 'KeyV') {
       // V: reset view to full simulation area
       cam.center();
@@ -4798,6 +4893,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   const setupShader = await loadShader('setupShader.frag');
 
   const temperatureDisplayShader = await loadShader('temperatureDisplayShader.frag');
+  const temperatureChangeDisplayShader = await loadShader('temperatureChangeDisplayShader.frag');
   const airQualityDisplayShader = await loadShader('airQualityDisplayShader.frag');
   const precipDisplayShader = await loadShader('precipDisplayShader.frag');
   const universalDisplayShader = await loadShader('universalDisplayShader.frag');
@@ -4825,6 +4921,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   const setupProgram = createProgram(simVertexShader, setupShader);
 
   const temperatureDisplayProgram = createProgram(dispVertexShader, temperatureDisplayShader);
+  const temperatureChangeDisplayProgram = createProgram(dispVertexShader, temperatureChangeDisplayShader);
   const airQualityDisplayProgram = createProgram(dispVertexShader, airQualityDisplayShader);
   const precipDisplayProgram = createProgram(precipDisplayVertexShader, precipDisplayShader);
   const universalDisplayProgram = createProgram(dispVertexShader, universalDisplayShader);
@@ -5250,6 +5347,16 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   const surfaceTextureMap = gl.createTexture();
   const colorScalesTexture = gl.createTexture();
 
+  const temperatureChangeHistoryTextures = [
+    gl.createTexture(),
+    gl.createTexture(),
+    gl.createTexture(),
+    gl.createTexture(),
+    gl.createTexture(),
+    gl.createTexture(),
+  ];
+  let temperatureChangeHistoryIndex = 0;
+
   const lightningTextures = [];
   const numLightningTextures = 10;
 
@@ -5309,6 +5416,12 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
     // gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
 
+    for (let i = 0; i < temperatureChangeHistoryTextures.length; i++) {
+      gl.bindTexture(gl.TEXTURE_2D, temperatureChangeHistoryTextures[i]);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, sim_res_x, sim_res_y, 0, gl.RGBA, gl.FLOAT, initialBaseTex);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    }
 
     lastSaveTime = new Date();
   }
@@ -5473,6 +5586,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     { id: 'precipSnow',       name: 'Snow Deposition',  col: 13, stops: 33 },
     { id: 'soilMoisture',     name: 'Soil Moisture',    col: 14, stops: 33 },
     { id: 'curl',             name: 'Curl',             col: 15, stops: 33 },
+    { id: 'temperatureChange',name: 'Temperature Change',col:16, stops: 33 },
   ];
 
   const DEFAULT_IR_PALETTE = [
@@ -5542,6 +5656,19 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       }
     }
     colorScaleData.waterVapor = wv;
+
+    const tempChange = [];
+    for (let i = 0; i <= 32; i++) {
+      const t = (i / 32) * 2.0 - 1.0;
+      if (t < 0.0) {
+        const f = 1.0 + t;
+        tempChange.push([Math.round(f * 255), Math.round(f * 255), 255]);
+      } else {
+        const f = 1.0 - t;
+        tempChange.push([255, Math.round(f * 255), Math.round(f * 255)]);
+      }
+    }
+    colorScaleData.temperatureChange = tempChange;
   }
 
   function uploadColorScaleTexture() {
@@ -5879,6 +6006,15 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   gl.uniform1i(gl.getUniformLocation(temperatureDisplayProgram, 'colorScalesTex'), 9);
   gl.uniform1f(gl.getUniformLocation(temperatureDisplayProgram, 'dryLapse'), dryLapse);
 
+  gl.useProgram(temperatureChangeDisplayProgram);
+  gl.uniform2f(gl.getUniformLocation(temperatureChangeDisplayProgram, 'resolution'), sim_res_x, sim_res_y);
+  gl.uniform2f(gl.getUniformLocation(temperatureChangeDisplayProgram, 'texelSize'), texelSizeX, texelSizeY);
+  gl.uniform1i(gl.getUniformLocation(temperatureChangeDisplayProgram, 'baseTex'), 0);
+  gl.uniform1i(gl.getUniformLocation(temperatureChangeDisplayProgram, 'prevBaseTex'), 1);
+  gl.uniform1i(gl.getUniformLocation(temperatureChangeDisplayProgram, 'wallTex'), 2);
+  gl.uniform1i(gl.getUniformLocation(temperatureChangeDisplayProgram, 'colorScalesTex'), 9);
+  gl.uniform1f(gl.getUniformLocation(temperatureChangeDisplayProgram, 'dryLapse'), dryLapse);
+
   gl.useProgram(airQualityDisplayProgram);
   gl.uniform2f(gl.getUniformLocation(airQualityDisplayProgram, 'resolution'), sim_res_x, sim_res_y);
   gl.uniform2f(gl.getUniformLocation(airQualityDisplayProgram, 'texelSize'), texelSizeX, texelSizeY);
@@ -6098,6 +6234,8 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
           inputType = 13;
         else if (guiControls.tool == 'TOOL_WALL_URBAN')
           inputType = 14;
+        else if (guiControls.tool == 'TOOL_WALL_SUBURBAN')
+          inputType = 17;
         else if (guiControls.tool == 'TOOL_WALL_RUNWAY')
           inputType = 15;
         else if (guiControls.tool == 'TOOL_WALL_INDUSTRIAL')
@@ -6223,6 +6361,15 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
             gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_1);
             gl.drawBuffers([ gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1, gl.COLOR_ATTACHMENT2 ]);
             gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+
+            // capture current temperature state for the temperature-change display
+            gl.bindFramebuffer(gl.READ_FRAMEBUFFER, frameBuff_1);
+            gl.readBuffer(gl.COLOR_ATTACHMENT0);
+            gl.activeTexture(gl.TEXTURE0);
+            gl.bindTexture(gl.TEXTURE_2D, temperatureChangeHistoryTextures[temperatureChangeHistoryIndex]);
+            gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, sim_res_x, sim_res_y);
+            gl.bindFramebuffer(gl.READ_FRAMEBUFFER, null);
+            temperatureChangeHistoryIndex = (temperatureChangeHistoryIndex + 1) % temperatureChangeHistoryTextures.length;
 
             // calc and apply pressure
             gl.useProgram(pressureProgram);
@@ -6685,6 +6832,36 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
           gl.uniform1f(gl.getUniformLocation(temperatureDisplayProgram, 'displayVectorField'), 0.0);
         }
 
+      } else if (guiControls.displayMode == 'DISP_TEMPERATURE_CHANGE') {
+        gl.useProgram(temperatureChangeDisplayProgram);
+        gl.uniform2f(gl.getUniformLocation(temperatureChangeDisplayProgram, 'aspectRatios'), sim_aspect, canvas_aspect);
+        gl.uniform3f(gl.getUniformLocation(temperatureChangeDisplayProgram, 'view'), cam.curXpos, cam.curYpos, cam.curZoom);
+        gl.uniform4f(gl.getUniformLocation(temperatureChangeDisplayProgram, 'cursor'), mouseXinSim, mouseYinSim, guiControls.brushSize * 0.5, cursorType);
+        gl.uniform1f(gl.getUniformLocation(temperatureChangeDisplayProgram, 'Xmult'), horizontalDisplayMult);
+        gl.uniform1i(gl.getUniformLocation(temperatureChangeDisplayProgram, 'baseTex'), 0);
+        gl.uniform1i(gl.getUniformLocation(temperatureChangeDisplayProgram, 'prevBaseTex'), 1);
+        gl.uniform1i(gl.getUniformLocation(temperatureChangeDisplayProgram, 'wallTex'), 2);
+        gl.uniform1i(gl.getUniformLocation(temperatureChangeDisplayProgram, 'colorScalesTex'), 9);
+        gl.uniform1i(gl.getUniformLocation(temperatureChangeDisplayProgram, 'colorScaleColumn'), 16);
+        let tempUnitCode = 0;
+        if (guiControls.tempUnit == 'TEMP_UNIT_F') tempUnitCode = 1;
+        else if (guiControls.tempUnit == 'TEMP_UNIT_K') tempUnitCode = 2;
+        gl.uniform1i(gl.getUniformLocation(temperatureChangeDisplayProgram, 'tempUnit'), tempUnitCode);
+
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, baseTexture_1);
+        gl.activeTexture(gl.TEXTURE1);
+        const historyOffset = Math.min(Math.max(Math.round(guiControls.temperatureChangeIterations), 1), temperatureChangeHistoryTextures.length - 1);
+        const historyIndex = (temperatureChangeHistoryIndex - historyOffset + temperatureChangeHistoryTextures.length) % temperatureChangeHistoryTextures.length;
+        gl.bindTexture(gl.TEXTURE_2D, temperatureChangeHistoryTextures[historyIndex]);
+        gl.activeTexture(gl.TEXTURE2);
+        gl.bindTexture(gl.TEXTURE_2D, wallTexture_1);
+
+        if (cam.curZoom / sim_res_x > 0.003) {
+          gl.uniform1f(gl.getUniformLocation(temperatureChangeDisplayProgram, 'displayVectorField'), displayVectorField);
+        } else {
+          gl.uniform1f(gl.getUniformLocation(temperatureChangeDisplayProgram, 'displayVectorField'), 0.0);
+        }
       } else if (guiControls.displayMode == 'DISP_AIRQUALITY') {
         gl.useProgram(airQualityDisplayProgram);
         gl.uniform2f(gl.getUniformLocation(airQualityDisplayProgram, 'aspectRatios'), sim_aspect, canvas_aspect);
@@ -6721,16 +6898,19 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         gl.uniform1i(gl.getUniformLocation(universalDisplayProgram, 'colorScaleColumn'), 4);
         gl.uniform1i(gl.getUniformLocation(universalDisplayProgram, 'useUnipolarScale'), 0);
 
+        let colorScaleStops = 33;
         switch (guiControls.displayMode) {
         case 'DISP_HORIVEL':
           gl.uniform1i(gl.getUniformLocation(universalDisplayProgram, 'quantityIndex'), 0);
           gl.uniform1f(gl.getUniformLocation(universalDisplayProgram, 'dispMultiplier'), 10.0); // 20.0
           gl.uniform1i(gl.getUniformLocation(universalDisplayProgram, 'colorScaleColumn'), 6);
+          colorScaleStops = 33;
           break;
         case 'DISP_VERTVEL':
           gl.uniform1i(gl.getUniformLocation(universalDisplayProgram, 'quantityIndex'), 1);
           gl.uniform1f(gl.getUniformLocation(universalDisplayProgram, 'dispMultiplier'), 10.0); // 20.0
           gl.uniform1i(gl.getUniformLocation(universalDisplayProgram, 'colorScaleColumn'), 7);
+          colorScaleStops = 33;
           break;
         case 'DISP_WATER':
           gl.activeTexture(gl.TEXTURE0);
@@ -6739,6 +6919,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
           gl.uniform1f(gl.getUniformLocation(universalDisplayProgram, 'dispMultiplier'), 0.06);
           gl.uniform1i(gl.getUniformLocation(universalDisplayProgram, 'colorScaleColumn'), 5);
           gl.uniform1i(gl.getUniformLocation(universalDisplayProgram, 'useUnipolarScale'), 1);
+          colorScaleStops = 33;
           break;
         case 'DISP_IRHEATING':
           gl.activeTexture(gl.TEXTURE0);
@@ -6747,6 +6928,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
           gl.uniform1f(gl.getUniformLocation(universalDisplayProgram, 'dispMultiplier'), 50000.0);
           gl.uniform1i(gl.getUniformLocation(universalDisplayProgram, 'colorScaleColumn'), 8);
           gl.uniform1i(gl.getUniformLocation(universalDisplayProgram, 'useUnipolarScale'), 0);
+          colorScaleStops = 33;
           break;
         case 'DISP_PRECIPFEEDBACK_MASS':
           gl.activeTexture(gl.TEXTURE0);
@@ -6755,6 +6937,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
           gl.uniform1f(gl.getUniformLocation(universalDisplayProgram, 'dispMultiplier'), 0.06);
           gl.uniform1i(gl.getUniformLocation(universalDisplayProgram, 'colorScaleColumn'), 9);
           gl.uniform1i(gl.getUniformLocation(universalDisplayProgram, 'useUnipolarScale'), 1);
+          colorScaleStops = 33;
           break;
         case 'DISP_PRECIPFEEDBACK_HEAT':
           gl.activeTexture(gl.TEXTURE0);
@@ -6763,6 +6946,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
           gl.uniform1f(gl.getUniformLocation(universalDisplayProgram, 'dispMultiplier'), 500.0);
           gl.uniform1i(gl.getUniformLocation(universalDisplayProgram, 'colorScaleColumn'), 10);
           gl.uniform1i(gl.getUniformLocation(universalDisplayProgram, 'useUnipolarScale'), 0);
+          colorScaleStops = 33;
           break;
         case 'DISP_PRECIPFEEDBACK_VAPOR':
           gl.activeTexture(gl.TEXTURE0);
@@ -6771,6 +6955,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
           gl.uniform1f(gl.getUniformLocation(universalDisplayProgram, 'dispMultiplier'), 500.0);
           gl.uniform1i(gl.getUniformLocation(universalDisplayProgram, 'colorScaleColumn'), 11);
           gl.uniform1i(gl.getUniformLocation(universalDisplayProgram, 'useUnipolarScale'), 0);
+          colorScaleStops = 33;
           break;
         case 'DISP_PRECIPFEEDBACK_RAIN':
           gl.activeTexture(gl.TEXTURE0);
@@ -6779,6 +6964,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
           gl.uniform1f(gl.getUniformLocation(universalDisplayProgram, 'dispMultiplier'), 1.0);
           gl.uniform1i(gl.getUniformLocation(universalDisplayProgram, 'colorScaleColumn'), 12);
           gl.uniform1i(gl.getUniformLocation(universalDisplayProgram, 'useUnipolarScale'), 1);
+          colorScaleStops = 33;
           break;
         case 'DISP_PRECIPFEEDBACK_SNOW':
           gl.activeTexture(gl.TEXTURE0);
@@ -6787,6 +6973,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
           gl.uniform1f(gl.getUniformLocation(universalDisplayProgram, 'dispMultiplier'), 1.0);
           gl.uniform1i(gl.getUniformLocation(universalDisplayProgram, 'colorScaleColumn'), 13);
           gl.uniform1i(gl.getUniformLocation(universalDisplayProgram, 'useUnipolarScale'), 1);
+          colorScaleStops = 33;
           break;
         case 'DISP_SOIL_MOISTURE':
           gl.activeTexture(gl.TEXTURE0);
@@ -6795,6 +6982,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
           gl.uniform1f(gl.getUniformLocation(universalDisplayProgram, 'dispMultiplier'), 0.02);
           gl.uniform1i(gl.getUniformLocation(universalDisplayProgram, 'colorScaleColumn'), 14);
           gl.uniform1i(gl.getUniformLocation(universalDisplayProgram, 'useUnipolarScale'), 1);
+          colorScaleStops = 33;
           break;
         case 'DISP_CURL':
           gl.activeTexture(gl.TEXTURE0);
@@ -6803,8 +6991,10 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
           gl.uniform1f(gl.getUniformLocation(universalDisplayProgram, 'dispMultiplier'), 7.0);
           gl.uniform1i(gl.getUniformLocation(universalDisplayProgram, 'colorScaleColumn'), 15);
           gl.uniform1i(gl.getUniformLocation(universalDisplayProgram, 'useUnipolarScale'), 0);
+          colorScaleStops = 33;
           break;
         }
+        gl.uniform1i(gl.getUniformLocation(universalDisplayProgram, 'colorScaleStops'), colorScaleStops);
       }
 
       gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4); // draw to canvas

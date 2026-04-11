@@ -16,7 +16,8 @@ uniform sampler2D colorScalesTex;
 uniform int quantityIndex; // wich quantity to display
 uniform float dispMultiplier;
 uniform int colorScaleColumn; // which column of colorScalesTex to sample (4=universal, 5=waterVapor)
-uniform int useUnipolarScale;  // 1 = clamp(val,0,1)*32, 0 = bipolar (val+1)*0.5*32
+uniform int useUnipolarScale;  // 1 = clamp(val,0,1), 0 = bipolar (val+1)*0.5
+uniform int colorScaleStops;  // number of palette stops in colorScalesTex
 
 uniform vec3 view;   // Xpos  Ypos    Zoom
 uniform vec4 cursor; // xpos   Ypos  Size   type
@@ -49,11 +50,11 @@ void main()
     }
   } else {
     int palIdx;
-    if (useUnipolarScale == 1) {
-      palIdx = int(clamp(val, 0.0, 1.0) * 32.0);
-    } else {
-      palIdx = int(clamp((val + 1.0) * 0.5, 0.0, 1.0) * 32.0);
-    }
+    float normalized = (useUnipolarScale == 1)
+      ? clamp(val, 0.0, 1.0)
+      : clamp((val + 1.0) * 0.5, 0.0, 1.0);
+    palIdx = int(normalized * float(colorScaleStops - 1));
+    palIdx = clamp(palIdx, 0, colorScaleStops - 1);
     fragmentColor = texelFetch(colorScalesTex, ivec2(colorScaleColumn, palIdx), 0);
   }
   drawCursor(cursor, view);

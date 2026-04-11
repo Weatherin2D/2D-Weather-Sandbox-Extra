@@ -211,7 +211,7 @@ vec3 spectral_zucconi(float w)
 vec4 getAirColor(vec2 fragCoordIn)
 {
   vec2 bndFragCoord = vec2(fragCoordIn.x, clamp(fragCoordIn.y, 0., resolution.y)); // bound y within range
-  base = bilerpWallVis(baseTex, wallTex, bndFragCoord);
+  base = smoothBilerpWallVis(baseTex, wallTex, bndFragCoord);
   wall = texture(wallTex, bndFragCoord * texelSize);                               // texCoord
   water = smoothClouds > 0.5
     ? smoothBilerpWallVis(waterTex, wallTex, bndFragCoord)
@@ -236,8 +236,6 @@ vec4 getAirColor(vec2 fragCoordIn)
 
   float totalDensity = cloudDensity + water[PRECIPITATION] * 0.8; // visualize precipitation
 
-
-  // float cloudOpacity = clamp(cloudwater * 4.0, 0.0, 1.0);
   float cloudOpacity = clamp(1.0 - (1.0 / (1. + totalDensity)), 0.0, 1.0);
 
   const vec3 smokeThinCol = vec3(0.8, 0.51, 0.26);
@@ -254,7 +252,12 @@ vec4 getAirColor(vec2 fragCoordIn)
   shadowLight += fireIntensity * 2.5;                                                                                 // 1.5
 
   float opacity = 1. - (1. - smokeOpacity) * (1. - cloudOpacity);                                                     // alpha blending
-  vec3 color = (smokeOrFireCol * smokeOpacity / opacity) + (cloudCol * cloudOpacity * (1. - smokeOpacity) / opacity); // color blending
+  vec3 color;
+  if (opacity > 0.0) {
+    color = (smokeOrFireCol * smokeOpacity / opacity) + (cloudCol * cloudOpacity * (1. - smokeOpacity) / opacity);
+  } else {
+    color = vec3(0.0);
+  }
 
 
   vec4 lightningData = texture(lightningDataTex, vec2(0.5));
@@ -286,7 +289,7 @@ float rand(float n) { return fract(sin(n) * 43758.5453123); }
 void main()
 {
   vec2 bndFragCoord = vec2(fragCoord.x, clamp(fragCoord.y, 0., resolution.y)); // bound y within range
-  base = bilerpWallVis(baseTex, wallTex, bndFragCoord);
+  base = smoothBilerpWallVis(baseTex, wallTex, bndFragCoord);
   wall = texture(wallTex, bndFragCoord * texelSize);                           // texCoord
   water = smoothClouds > 0.5
     ? smoothBilerpWallVis(waterTex, wallTex, bndFragCoord)
@@ -348,6 +351,7 @@ void main()
       }
 
     case WALLTYPE_URBAN:
+    case WALLTYPE_SUBURBAN:
     case WALLTYPE_INDUSTRIAL:
     case WALLTYPE_FIRE:
     case WALLTYPE_LAND:
@@ -469,7 +473,7 @@ void main()
 #define maxBuildingHeight 400.  // height in meters upto wich the urban texture reaches
 
 
-      if (wallX0Ym[TYPE] == WALLTYPE_URBAN) {
+      if (wallX0Ym[TYPE] == WALLTYPE_URBAN || wallX0Ym[TYPE] == WALLTYPE_SUBURBAN) {
 
         float heightAboveGround = localY + float(wall[VERT_DISTANCE] - 1);
 
@@ -489,7 +493,11 @@ void main()
             shadowLight = 1.0;                 // city lights
             texCol.rgb *= vec3(1.0, 0.8, 0.5); // yellowish windows
           } else {                             // day time
-            texCol.rgb *= vec3(0.8, 0.9, 1.0); // Blueish windows
+            if (wallX0Ym[TYPE] == WALLTYPE_SUBURBAN) {
+              texCol.rgb *= vec3(0.85, 0.95, 0.9); // suburban color shift
+            } else {
+              texCol.rgb *= vec3(0.8, 0.9, 1.0); // Blueish windows
+            }
 
             if (length(texCol.rgb) < 0.1)
               texCol.rgb = texture(noiseTex, fragCoord * 0.3).rgb * 0.3;
@@ -548,7 +556,7 @@ void main()
         treeTexCoordY = 1. - treeTexCoordY;                 // texture is upside down
 
         vec4 texCol;
-        if (wallX0Ym[TYPE] == WALLTYPE_LAND || wallX0Ym[TYPE] == WALLTYPE_URBAN) { // land below
+        if (wallX0Ym[TYPE] == WALLTYPE_LAND || wallX0Ym[TYPE] == WALLTYPE_URBAN || wallX0Ym[TYPE] == WALLTYPE_SUBURBAN) { // land below
           vec4 surfaceWater = texture(waterTex, texCoordX0Ym);                     // snow on land below
           float snow = surfaceWater[SNOW];
           if (snow * 0.01 / cellHeight > heightAboveGround)

@@ -29,10 +29,10 @@ void main()
   vec4 newLightningLocation = texelFetch(precipFeedbackTex, ivec2(1, 0), 0); // read pixel 1, 0 where the lightning location was written to by a precipitation particle
 
 
-  // No strike, or two strikes tried to generate during the same iteration, making the number twice as high
-  if (newLightningLocation[START_ITERNUM] < max(iterNum - 1.0, 1.0) || newLightningLocation[START_ITERNUM] > iterNum) {
-    discard; // no new lightning strike, so no update
+  vec4 currentLightningLocation = vec4(0.0, 0.0, 0.0, 0.0);
+  if (newLightningLocation[START_ITERNUM] >= max(iterNum - 1.0, 1.0) && newLightningLocation[START_ITERNUM] <= iterNum) {
+    currentLightningLocation = newLightningLocation;
   }
 
-  lightningLocation = newLightningLocation;
+  lightningLocation = currentLightningLocation;
 }
