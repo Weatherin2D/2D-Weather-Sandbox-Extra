@@ -1,6 +1,8 @@
 # 2D Weather Sandbox
 THIS IS FORK OF 2D WEATHER SANDBOX. I DO NOT GUARANTE THAT IT WILL WORK AS INTENDED!
 
+ALL RIGHTS RESERVED TO THE ORGINAL CREATOR Niels747!
+
 Previously called "Weather_Sim_4"
 
 This projects aims to produce a semirealistic two-dimensional, realtime, interactive simulation of the weather in earth's troposphere.
