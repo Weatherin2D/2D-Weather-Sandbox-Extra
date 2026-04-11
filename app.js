@@ -4070,9 +4070,10 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
       function computeCAPE(envTempsC, envDewC, parcelTemps, startIndex) {
         const dz = guiControls.simHeight / sim_res_y;
-        let lclIndex = -1;
-        let lfcIndex = -1;
-        let elIndex = -1;
+        const altFromIndex = (index) => index * dz;
+        let lclAlt = NaN;
+        let lfcAlt = NaN;
+        let elAlt = NaN;
         let cape = 0.0;
         let cinh = 0.0;
 
@@ -4083,23 +4084,50 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
           buoy[y] = 9.81 * (parcelTk - envTk) / envTk;
         }
 
+        let prevDewDiff = parcelTemps[startIndex] - envDewC[startIndex];
+        let prevBuoy = buoy[startIndex];
+
         for (let y = startIndex + 1; y < sim_res_y; y++) {
+          const alt1 = altFromIndex(y - 1);
+          const alt2 = altFromIndex(y);
           const seg = integrateSegment(buoy[y - 1], buoy[y], dz);
           cape += Math.max(0, seg.pos);
-          cinh += Math.min(0, seg.neg);
 
-          if (lclIndex === -1 && parcelTemps[y] <= envDewC[y]) {
-            lclIndex = y;
+          if (alt2 <= 10000) {
+            cinh += Math.min(0, seg.neg);
+          } else if (alt1 < 10000) {
+            const ratio = (10000 - alt1) / (alt2 - alt1);
+            const dzBelow = dz * ratio;
+            const buoyCut = buoy[y - 1] + (buoy[y] - buoy[y - 1]) * ratio;
+            const segBelow = integrateSegment(buoy[y - 1], buoyCut, dzBelow);
+            cinh += Math.min(0, segBelow.neg);
           }
-          if (lclIndex !== -1 && lfcIndex === -1 && buoy[y] > 0) {
-            lfcIndex = y;
+
+          const dewDiff = parcelTemps[y] - envDewC[y];
+          if (isNaN(lclAlt)) {
+            if (prevDewDiff > 0 && dewDiff <= 0) {
+              const ratio = prevDewDiff / (prevDewDiff - dewDiff);
+              lclAlt = altFromIndex(y - 1) + ratio * dz;
+            } else if (y === startIndex + 1 && prevDewDiff <= 0) {
+              lclAlt = altFromIndex(startIndex);
+            }
           }
-          if (lfcIndex !== -1 && elIndex === -1 && buoy[y] <= 0) {
-            elIndex = y;
+
+          if (!isNaN(lclAlt) && isNaN(lfcAlt) && prevBuoy <= 0 && buoy[y] > 0) {
+            const ratio = prevBuoy / (prevBuoy - buoy[y]);
+            lfcAlt = altFromIndex(y - 1) + ratio * dz;
           }
+
+          if (!isNaN(lfcAlt) && isNaN(elAlt) && prevBuoy > 0 && buoy[y] <= 0) {
+            const ratio = prevBuoy / (prevBuoy - buoy[y]);
+            elAlt = altFromIndex(y - 1) + ratio * dz;
+          }
+
+          prevDewDiff = dewDiff;
+          prevBuoy = buoy[y];
         }
 
-        return {cape, cinh, lclIndex, lfcIndex, elIndex};
+        return {cape, cinh, lclAlt, lfcAlt, elAlt};
       }
 
       function meanLayerParcel(envTempsC, envDewC, startIndex) {
@@ -4183,6 +4211,56 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       c.strokeStyle = '#FF0000';
       c.stroke();
 
+      // Compute sounding stability metrics for skew-T readout
+      const envTempsC = new Float32Array(sim_res_y);
+      const envDewC = new Float32Array(sim_res_y);
+      for (let y = 0; y < sim_res_y; y++) {
+        const potentialTemp = baseTextureValues[4 * y + 3];
+        envTempsC[y] = potentialTemp - ((y / sim_res_y) * guiControls.simHeight * guiControls.dryLapseRate) / 1000.0 - 273.15;
+        envDewC[y] = KtoC(dewpoint(waterTextureValues[4 * y]));
+      }
+
+      const surfaceWindSpeed = rawVelocityTo_ms(Math.sqrt(
+        Math.pow(baseTextureValues[4 * surfaceLevel], 2) + Math.pow(baseTextureValues[4 * surfaceLevel + 1], 2)
+      ));
+
+      const parcelProfile = computeParcelProfile(envTempsC[surfaceLevel], envDewC[surfaceLevel], surfaceLevel);
+      const soundingMetrics = computeCAPE(envTempsC, envDewC, parcelProfile, surfaceLevel);
+      const meanParcelProfile = meanLayerParcel(envTempsC, envDewC, surfaceLevel);
+      const meanLayerMetrics = computeCAPE(envTempsC, envDewC, meanParcelProfile, surfaceLevel);
+
+      let maxWindSpeed = 0.0;
+      for (let y = surfaceLevel; y < sim_res_y; y++) {
+        const speed = rawVelocityTo_ms(Math.sqrt(
+          Math.pow(baseTextureValues[4 * y], 2) + Math.pow(baseTextureValues[4 * y + 1], 2)
+        ));
+        if (speed > maxWindSpeed) maxWindSpeed = speed;
+      }
+      const windShear = Math.max(0.0, maxWindSpeed - surfaceWindSpeed);
+
+      const formatAltitude = (index) => {
+        if (index === -1) return 'N/A';
+        return printAltitude(Math.round(map_range(index, 0, sim_res_y, 0, guiControls.simHeight)));
+      };
+
+      const infoBoxWidth = 240;
+      const infoBoxX = graphCanvas.width - infoBoxWidth - 24;
+      const infoBoxY = 12;
+      const lineHeight = 22;
+      const textX = infoBoxX + 10;
+      let textY = infoBoxY + 10;
+
+      c.fillStyle = 'rgba(0, 0, 0, 0.45)';
+      c.fillRect(infoBoxX, infoBoxY, infoBoxWidth, lineHeight * 4 + 18);
+
+      c.font = '15px Arial';
+      c.fillStyle = 'white';
+      c.textAlign = 'left';
+      c.textBaseline = 'top';
+      c.fillText('CAPE: ' + Math.round(soundingMetrics.cape) + ' J/kg', textX, textY);
+      c.fillText('MLCAPE: ' + Math.round(meanLayerMetrics.cape) + ' J/kg', textX, textY += lineHeight);
+      c.fillText('CINH: ' + Math.round(soundingMetrics.cinh) + ' J/kg', textX, textY += lineHeight);
+      c.fillText('Wind shear: ' + printVelocity(windShear), textX, textY += lineHeight);
 
       // Draw wind indicators
       c.beginPath();
