@@ -15,7 +15,7 @@ uniform float dryLapse;
 uniform float simHeight;
 uniform float evapHeat;
 
-out float cape;
+layout(location = 0) out float cape;
 
 #include "common.glsl"
 

@@ -474,38 +474,82 @@ void main()
 #define maxBuildingHeight 400.  // height in meters upto wich the urban texture reaches
 
 
-      if (wallX0Ym[TYPE] == WALLTYPE_URBAN || wallX0Ym[TYPE] == WALLTYPE_SUBURBAN) {
+      if (wallX0Ym[TYPE] == WALLTYPE_URBAN) {
 
         float heightAboveGround = localY + float(wall[VERT_DISTANCE] - 1);
 
-        float urbanTexHeightNorm = maxBuildingHeight / cellHeight; // example: 200 / 40 = 5
+        float urbanTexHeightNorm = maxBuildingHeight / cellHeight;
 
         float urbanTexCoordX = mod(fragCoord.x, resolution.x) * texAspect / urbanTexHeightNorm;
         float urbanTexCoordY = heightAboveGround / urbanTexHeightNorm;
 
-        // urbanTexCoordY += map_rangeC(float(wallX0Ym[VEGETATION]), 127., 50., 0., 1.0); // building height
-
         urbanTexCoordY = 1.0 - urbanTexCoordY;
 
         vec4 texCol = surfaceTexture(URBAN, vec2(urbanTexCoordX, urbanTexCoordY));
-        if (texCol.a > 0.5) { // if not transparent
+        if (texCol.a > 0.5) {
 
           if (nightTime) {
-            shadowLight = 1.0;                 // city lights
-            texCol.rgb *= vec3(1.0, 0.8, 0.5); // yellowish windows
-          } else {                             // day time
-            if (wallX0Ym[TYPE] == WALLTYPE_SUBURBAN) {
-              texCol.rgb *= vec3(0.85, 0.95, 0.9); // suburban color shift
-            } else {
-              texCol.rgb *= vec3(0.8, 0.9, 1.0); // Blueish windows
-            }
-
+            shadowLight = 1.0;
+            texCol.rgb *= vec3(1.0, 0.8, 0.5);
+          } else {
+            texCol.rgb *= vec3(0.8, 0.9, 1.0);
             if (length(texCol.rgb) < 0.1)
               texCol.rgb = texture(noiseTex, fragCoord * 0.3).rgb * 0.3;
           }
           color = texCol.rgb;
           opacity = texCol.a;
         }
+      } else if (wallX0Ym[TYPE] == WALLTYPE_SUBURBAN) {
+
+        // American suburb: small houses with pitched roofs, warm colours, green lawns
+        float heightAboveGround = localY + float(wall[VERT_DISTANCE] - 1);
+        float cellX = mod(fragCoord.x, resolution.x);
+        float houseRepeat = 8.0;
+        float houseWidth  = 4.5;
+        float lawnWidth   = (houseRepeat - houseWidth) * 0.5;
+        float posInBlock  = mod(cellX, houseRepeat);
+        bool  isHouse     = posInBlock > lawnWidth && posInBlock < (lawnWidth + houseWidth);
+        float posInHouse  = (posInBlock - lawnWidth) / houseWidth;
+        float maxHouseBodyHeight = 2.0;
+        float maxRoofHeight      = 1.2;
+        float roofHeight  = mix(maxHouseBodyHeight, maxHouseBodyHeight + maxRoofHeight,
+                               1.0 - abs(posInHouse - 0.5) * 2.0);
+        bool inRoof = isHouse && heightAboveGround >= maxHouseBodyHeight && heightAboveGround < roofHeight;
+        bool inBody = isHouse && heightAboveGround < maxHouseBodyHeight;
+
+        if (inBody || inRoof) {
+          float blockId  = floor(cellX / houseRepeat);
+          float houseVar = fract(sin(blockId * 127.1) * 43758.5);
+          vec3 houseCol;
+          if (houseVar < 0.25)      houseCol = vec3(0.85, 0.72, 0.55);
+          else if (houseVar < 0.50) houseCol = vec3(0.75, 0.55, 0.45);
+          else if (houseVar < 0.75) houseCol = vec3(0.80, 0.80, 0.75);
+          else                      houseCol = vec3(0.65, 0.75, 0.65);
+          vec3 roofCol  = vec3(0.35, 0.28, 0.22);
+          vec3 noiseVal = texture(noiseTex, fragCoord * 0.25).rgb;
+          houseCol *= 0.85 + noiseVal * 0.3;
+          roofCol  *= 0.85 + noiseVal * 0.3;
+          float winX = mod(posInHouse * 4.0, 1.0);
+          float winY = mod(heightAboveGround * 2.5, 1.0);
+          bool isWindow = inBody && winX > 0.25 && winX < 0.75 && winY > 0.3 && winY < 0.8
+                          && posInHouse > 0.1 && posInHouse < 0.9;
+          if (isWindow) {
+            color = nightTime ? vec3(1.0, 0.9, 0.6) : vec3(0.5, 0.65, 0.8);
+            if (nightTime) shadowLight = 1.0;
+          } else {
+            color = inRoof ? roofCol : houseCol;
+            if (nightTime) shadowLight = 0.15;
+          }
+          opacity = 1.0;
+        } else if (!isHouse && heightAboveGround < 0.3) {
+          float soilMoisture = float(wallX0Ym[SOIL_MOISTURE]);
+          vec3 lawnCol = mix(vec3(0.15, 0.45, 0.12), vec3(0.45, 0.38, 0.18),
+                             max(0.5 - soilMoisture * 0.02, 0.0));
+          lawnCol *= 0.85 + texture(noiseTex, fragCoord * 0.15).r * 0.3;
+          color   = lawnCol;
+          opacity = 1.0;
+        }
+
       } else if (wallX0Ym[TYPE] == WALLTYPE_INDUSTRIAL) {
 
         float heightAboveGround = localY + float(wall[VERT_DISTANCE] - 1);
