@@ -84,7 +84,7 @@ void main()
   if (productType == 0) {
     // --- Reflectivity ---
     float massScore = precipFeedback.r;
-    float dBZ = 45.0 + 10.0 * log(max(massScore * 10.0, 1e-9)) / log(10.0);
+    float dBZ = 45.0 + 10.0 * log(max(massScore * 30.0, 1e-9)) / log(10.0);
     dBZ = clamp(dBZ, 0.0, 85.0);
     if (dBZ < 1.0) discard;
 
