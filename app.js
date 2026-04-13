@@ -6188,9 +6188,9 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     { id: 'curl',             name: 'Curl',             col: 15, stops: 33 },
     { id: 'temperatureChange',name: 'Temperature Change',col:16, stops: 33 },
     { id: 'cape',             name: 'CAPE',             col:17, stops: 72 },
-    { id: 'radarReflectivity', name: 'Radar Reflectivity', col:18, stops: 18 },
+    { id: 'radarReflectivity', name: 'Radar Reflectivity', col:18, stops: 36 },
     { id: 'radarVelocity',     name: 'Radar Velocity',     col:19, stops: 16 },
-    { id: 'radarCorrelation',  name: 'Radar Correlation',  col:20, stops: 11 },
+    { id: 'radarCorrelation',  name: 'Radar Correlation',  col:20, stops: 22 },
   ];
 
   const DEFAULT_IR_PALETTE = [
@@ -6308,68 +6308,91 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     }
     colorScaleData.cape = cape;
 
-    // Radar reflectivity: NWS WSR-88D standard colors (only set if not already customised)
-    if (!colorScaleData.radarReflectivity) {
-      colorScaleData.radarReflectivity = [
-        [  4,  4,  4],
-        [  0,236,236],
-        [  1,160,246],
-        [  0,  0,246],
-        [  0,255,  0],
-        [  0,200,  0],
-        [  0,144,  0],
-        [255,255,  0],
-        [231,192,  0],
-        [255,144,  0],
-        [255,  0,  0],
-        [214,  0,  0],
-        [192,  0,  0],
-        [255,  0,255],
-        [153, 85,201],
-        [235,235,235],
-        [255,255,255],
-        [255,255,255],
+    // Radar reflectivity: NWS WSR-88D expanded 36-stop scale (0-85 dBZ)
+    colorScaleData.radarReflectivity = [
+        [  4,  4,  4], //  0 dBZ  ND
+        [  0,200,200], //  2 dBZ
+        [  0,220,220], //  5 dBZ  light cyan
+        [  0,200,240], //  7 dBZ
+        [  1,160,246], // 10 dBZ  sky blue
+        [  0,100,220], // 12 dBZ
+        [  0, 50,200], // 15 dBZ  blue
+        [  0, 20,180], // 17 dBZ
+        [  0,180,  0], // 20 dBZ  green
+        [  0,220,  0], // 22 dBZ
+        [  0,255,  0], // 25 dBZ  bright green
+        [  0,220,  0], // 27 dBZ
+        [  0,180,  0], // 30 dBZ  medium green
+        [  0,144,  0], // 32 dBZ  dark green
+        [180,220,  0], // 35 dBZ  yellow-green
+        [220,240,  0], // 37 dBZ
+        [255,255,  0], // 40 dBZ  yellow
+        [240,220,  0], // 42 dBZ
+        [231,192,  0], // 45 dBZ  dark yellow
+        [255,160,  0], // 47 dBZ
+        [255,128,  0], // 50 dBZ  orange
+        [255, 80,  0], // 52 dBZ
+        [255,  0,  0], // 55 dBZ  red
+        [230,  0,  0], // 57 dBZ
+        [200,  0,  0], // 60 dBZ  dark red
+        [170,  0,  0], // 62 dBZ
+        [140,  0,  0], // 65 dBZ  darker red
+        [200,  0,150], // 67 dBZ
+        [255,  0,255], // 70 dBZ  magenta
+        [200, 50,220], // 72 dBZ
+        [153, 85,201], // 75 dBZ  purple
+        [180,150,220], // 77 dBZ
+        [210,210,230], // 80 dBZ  light grey
+        [235,235,235], // 82 dBZ
+        [255,255,255], // 85 dBZ  white (extreme hail)
+        [255,255,255], // 85+ dBZ
       ];
-    }
 
-    // Radar velocity: standard NWS dual-PRF color scale (negative=toward, positive=away)
-    if (!colorScaleData.radarVelocity) {
-      colorScaleData.radarVelocity = [
-        [ 49,  0,196], // -64 m/s  strong toward (deep purple)
-        [  0,  0,246], // -48 m/s  toward (blue)
-        [  0,144,246], // -32 m/s  (light blue)
-        [  0,236,236], // -16 m/s  (cyan)
-        [  0,255,  0], //  -8 m/s  (green)
-        [  0,200,  0], //  -4 m/s  (dark green)
-        [  0,144,  0], //  -2 m/s  (darker green)
-        [128,128,128], //   0 m/s  (grey - zero velocity)
-        [144,  0,  0], //  +2 m/s  (dark red)
-        [200,  0,  0], //  +4 m/s  (red)
-        [255,  0,  0], //  +8 m/s  (bright red)
-        [236,154,  0], // +16 m/s  (orange)
-        [246,200,  0], // +32 m/s  (yellow)
-        [255,255,  0], // +48 m/s  (bright yellow)
-        [255,255,255], // +64 m/s  strong away (white)
-        [255,  0,255], // aliased  (magenta)
-      ];
-    }
+    // Radar velocity: standard NWS dual-PRF 16-stop scale
+    colorScaleData.radarVelocity = [
+      [ 49,  0,196], // -64 m/s  strong toward (deep purple)
+      [  0,  0,246], // -48 m/s  blue
+      [  0,144,246], // -32 m/s  light blue
+      [  0,236,236], // -16 m/s  cyan
+      [  0,255,  0], //  -8 m/s  green
+      [  0,200,  0], //  -4 m/s  dark green
+      [  0,144,  0], //  -2 m/s  darker green
+      [  0, 90,  0], //  -1 m/s
+      [128,128,128], //   0 m/s  grey (center)
+      [144,  0,  0], //  +2 m/s  dark red
+      [200,  0,  0], //  +4 m/s  red
+      [255,  0,  0], //  +8 m/s  bright red
+      [236,154,  0], // +16 m/s  orange
+      [246,200,  0], // +32 m/s  yellow
+      [255,255,255], // +48 m/s  white
+      [255,  0,255], // aliased  magenta
+    ];
 
-    // Radar correlation coefficient: standard CC color scale (0.2-1.05)
-    if (!colorScaleData.radarCorrelation) {
-      colorScaleData.radarCorrelation = [
-        [ 50, 50, 50], // <0.2  non-met (dark grey)
-        [  0,  0,128], // 0.2   (dark blue)
-        [  0,  0,255], // 0.3   (blue)
-        [  0,128,255], // 0.5   (light blue)
-        [  0,255,255], // 0.7   (cyan)
-        [  0,255,  0], // 0.8   (green)
-        [255,255,  0], // 0.9   (yellow)
-        [255,128,  0], // 0.95  (orange)
-        [255,  0,  0], // 0.97  (red)
-        [255,  0,255], // 1.00  (magenta - pure rain)
-        [255,255,255], // 1.05  (white - large drops/hail)
+    // Radar correlation coefficient: expanded 22-stop scale (0.2-1.05)
+    colorScaleData.radarCorrelation = [
+        [ 30, 30, 30], // <0.20  non-met (near black)
+        [ 50, 50, 80], // 0.25
+        [  0,  0,128], // 0.30  dark blue
+        [  0,  0,200], // 0.40
+        [  0,  0,255], // 0.50  blue
+        [  0, 80,255], // 0.55
+        [  0,160,255], // 0.60  light blue
+        [  0,220,240], // 0.65
+        [  0,255,220], // 0.70  cyan-green
+        [  0,255,150], // 0.75
+        [  0,255,  0], // 0.80  green
+        [100,255,  0], // 0.83
+        [200,255,  0], // 0.86
+        [255,255,  0], // 0.90  yellow
+        [255,200,  0], // 0.92
+        [255,150,  0], // 0.94  orange
+        [255,100,  0], // 0.96
+        [255,  0,  0], // 0.97  red
+        [255,  0,100], // 0.98
+        [255,  0,200], // 0.99
+        [255,  0,255], // 1.00  magenta (pure rain)
+        [255,255,255], // 1.05  white (large drops/hail)
       ];
-    }
   }
 
   function uploadColorScaleTexture() {

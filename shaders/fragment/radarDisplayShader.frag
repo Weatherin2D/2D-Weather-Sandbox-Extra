@@ -29,14 +29,11 @@ uniform float radarResolution;
 
 out vec4 fragmentColor;
 
-vec3 sampleColorScale(float t)
+// Stepped (pixelated) color scale - no interpolation between stops
+vec3 sampleColorScaleStepped(float t)
 {
-  float fIdx = clamp(t, 0.0, 1.0) * float(colorScaleStops - 1);
-  int   lo   = clamp(int(fIdx),     0, colorScaleStops - 1);
-  int   hi   = clamp(int(fIdx) + 1, 0, colorScaleStops - 1);
-  vec3  cLo  = texelFetch(colorScalesTex, ivec2(colorScaleColumn, lo), 0).rgb;
-  vec3  cHi  = texelFetch(colorScalesTex, ivec2(colorScaleColumn, hi), 0).rgb;
-  return mix(cLo, cHi, smoothstep(0.0, 1.0, fract(fIdx)));
+  int idx = clamp(int(t * float(colorScaleStops)), 0, colorScaleStops - 1);
+  return texelFetch(colorScalesTex, ivec2(colorScaleColumn, idx), 0).rgb;
 }
 
 void main()
@@ -44,16 +41,16 @@ void main()
   float fx      = mod(fragCoord.x, resolution.x);
   vec2  cellPos = vec2(fx, fragCoord.y);
 
-  vec2  delta    = cellPos - radarPos;
-  float dist     = length(delta);
-  float angle    = atan(delta.y, delta.x);
+  vec2  delta = cellPos - radarPos;
+  float dist  = length(delta);
+  float angle = atan(delta.y, delta.x);
 
   if (dist > radarRange || dist < 0.5) discard;
 
   float distFrac = dist / radarRange;
 
-  // --- Polar range-gate snapping (same for all products for consistency) ---
-  float resMult  = 1.0 / max(radarResolution, 0.1);
+  // Polar range-gate snapping — same for all products for visual consistency
+  float resMult   = 1.0 / max(radarResolution, 0.1);
   float rangeStep = max(0.3, distFrac * distFrac * 3.0 * resMult * (radarRange / 400.0));
   float azStep    = max(0.008, 0.03 * resMult * (radarRange / 400.0));
 
@@ -67,7 +64,7 @@ void main()
 
   ivec4 wallData = texture(wallTexture, snappedTC);
 
-  // Show land as subtle grey background, discard underground cells
+  // Grey land background, discard underground
   if (wallData[1] == 0) {
     if (wallData[0] != 0) {
       fragmentColor = vec4(0.25, 0.25, 0.25, 0.5);
@@ -91,81 +88,67 @@ void main()
     dBZ = clamp(dBZ, 0.0, 85.0);
     if (dBZ < 1.0) discard;
 
-    float t = dBZ / 85.0;
     if (dBZ < 5.0) {
       color        = vec3(0.45, 0.82, 1.0);
       pixelOpacity *= smoothstep(1.0, 5.0, dBZ);
     } else {
-      color = sampleColorScale(t);
+      color = sampleColorScaleStepped(dBZ / 85.0);
       if (dBZ < 25.0)
         color = mix(vec3(0.45, 0.82, 1.0), color, smoothstep(5.0, 25.0, dBZ));
     }
 
   } else if (productType == 1) {
-    // --- Radial Velocity (relative to radar position) ---
-    // Unit vector from radar to sample cell
-    vec2 radialDir = normalize(delta);
-
-    // Wind velocity in sim units/iteration — convert to m/s
-    // baseData.xy = raw velocity (cells/iteration)
-    // rawVelocityTo_ms: vel * 3600 / cellHeight * timePerIteration (approx)
-    // Use a simple scale factor matching the JS rawVelocityTo_ms
-    const float velScale = 3600.0 * 0.00008; // timePerIteration * 3600
-    // cellHeight varies but use a representative value; actual m/s = raw * 3600 / cellHeight * timePerIteration
-    // We'll just use raw units scaled to a visible range
-    float vx = baseData.x;
-    float vy = baseData.y;
-
-    // Radial component: dot product of wind with unit vector toward radar
-    float radialVel = dot(vec2(vx, vy), radialDir);
-
-    // Scale: map ±0.005 raw units to ±1 (typical max wind in sim)
-    float maxRaw = 0.005;
-    float t = clamp((radialVel / maxRaw + 1.0) * 0.5, 0.0, 1.0);
-
-    // Only show where there's precipitation
+    // --- Radial Velocity ---
     float massScore = precipFeedback.r;
     if (massScore < 0.0001) discard;
 
-    color = sampleColorScale(t);
-    pixelOpacity *= min(massScore * 200.0, 1.0); // fade in with precip intensity
+    // Use the original angle (before snapping) for radial direction
+    // to avoid wrap-around artifacts
+    vec2 radialDir = vec2(cos(angle), sin(angle));
+
+    float radialVel = dot(baseData.xy, radialDir);
+    // maxRaw = 0.15 maps ~20 m/s to full scale (138.9 m/s per raw unit)
+    float maxRaw = 0.15;
+    // t=0.5 = zero velocity (grey at center stop 16 of 33)
+    float t = clamp((radialVel / maxRaw + 1.0) * 0.5, 0.0, 1.0);
+
+    color = sampleColorScaleStepped(t);
+    pixelOpacity *= min(massScore * 300.0, 1.0);
 
   } else {
     // --- Correlation Coefficient ---
-    // CC measures how uniform the particles are.
-    // High CC (>0.97) = uniform rain drops
-    // Low CC (<0.8)   = mixed phase, large hail, non-met
-    // We derive CC from the ice/water ratio and particle size
-
-    float water = waterData.r; // vapor+cloud
-    float cloud = waterData.g; // cloud water
-    float precip = precipFeedback.r; // precipitation mass
-
+    // CC is high for uniform particles (pure rain or pure snow),
+    // low for mixed phase, large hail, or non-meteorological targets.
+    float precip = precipFeedback.r;
     if (precip < 0.0001) discard;
 
-    // Ice fraction from precipitation feedback
-    // precipFeedback: .r=mass, .g=heat, .b=vapor
-    // Use temperature to estimate ice fraction
-    float tempK = baseData[3]; // potential temperature (approx real T at low levels)
-    float tempC = tempK - 273.15;
+    // Temperature at this cell (potential T → real T approximation)
+    float texY   = snappedTC.y;
+    float dryLapseApprox = 120.0; // typical total lapse (K) across sim height
+    float tempK  = baseData[3] - texY * dryLapseApprox;
+    float tempC  = tempK - 273.15;
 
-    // Ice fraction: 0=pure rain, 1=pure ice/snow
-    float iceFrac = clamp(-tempC / 20.0, 0.0, 1.0);
+    // Ice fraction: 0 = pure rain (>5°C), 1 = pure ice (<-20°C)
+    float iceFrac = clamp((-tempC - 5.0) / 25.0, 0.0, 1.0);
 
-    // CC is high for pure rain or pure snow, low for mixed phase
-    // Mixed phase occurs near 0°C
-    float mixedPhase = 1.0 - abs(iceFrac - 0.5) * 2.0; // peaks at 0.5 (mixed)
-    float cc = 1.0 - mixedPhase * 0.4; // range ~0.6-1.0
+    // Mixed phase penalty: CC drops near 0°C melting layer
+    float mixedPhase = 1.0 - abs(iceFrac - 0.5) * 2.0; // peaks at 50% mixed
+    float cc = 1.0 - mixedPhase * 0.35;
 
-    // Large hail: very high precip mass + near-freezing = lower CC
-    float hailFactor = clamp(precip * 5.0, 0.0, 1.0) * clamp(1.0 - abs(tempC) / 10.0, 0.0, 1.0);
-    cc -= hailFactor * 0.3;
+    // Large hail: high mass near freezing → lower CC
+    float hailFactor = clamp(precip * 8.0, 0.0, 1.0)
+                     * clamp(1.0 - abs(tempC + 5.0) / 15.0, 0.0, 1.0);
+    cc -= hailFactor * 0.25;
+
+    // Non-met / very light precip → lower CC
+    cc -= clamp(1.0 - precip * 500.0, 0.0, 0.2);
+
     cc = clamp(cc, 0.2, 1.05);
 
-    // Map 0.2-1.05 to 0-1 for color scale
+    // Map 0.2–1.05 → 0–1 for color scale
     float t = clamp((cc - 0.2) / 0.85, 0.0, 1.0);
-    color = sampleColorScale(t);
-    pixelOpacity *= min(precip * 200.0, 1.0);
+    color = sampleColorScaleStepped(t);
+    pixelOpacity *= min(precip * 300.0, 1.0);
   }
 
   float edgeFade = pow(max(1.0 - distFrac, 0.0), 0.3);

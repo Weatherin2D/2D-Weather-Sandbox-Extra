@@ -510,8 +510,8 @@ void main()
         float posInBlock  = mod(cellX, houseRepeat);
         bool  isHouse     = posInBlock > lawnWidth && posInBlock < (lawnWidth + houseWidth);
         float posInHouse  = (posInBlock - lawnWidth) / houseWidth;
-        float maxHouseBodyHeight = 2.0;
-        float maxRoofHeight      = 1.2;
+        float maxHouseBodyHeight = 0.8;
+        float maxRoofHeight      = 0.5;
         float roofHeight  = mix(maxHouseBodyHeight, maxHouseBodyHeight + maxRoofHeight,
                                1.0 - abs(posInHouse - 0.5) * 2.0);
         bool inRoof = isHouse && heightAboveGround >= maxHouseBodyHeight && heightAboveGround < roofHeight;
@@ -530,7 +530,7 @@ void main()
           houseCol *= 0.85 + noiseVal * 0.3;
           roofCol  *= 0.85 + noiseVal * 0.3;
           float winX = mod(posInHouse * 4.0, 1.0);
-          float winY = mod(heightAboveGround * 2.5, 1.0);
+          float winY = mod(heightAboveGround * 6.0, 1.0);
           bool isWindow = inBody && winX > 0.25 && winX < 0.75 && winY > 0.3 && winY < 0.8
                           && posInHouse > 0.1 && posInHouse < 0.9;
           if (isWindow) {
