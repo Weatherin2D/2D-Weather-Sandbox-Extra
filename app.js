@@ -318,6 +318,11 @@ document.addEventListener('DOMContentLoaded', () => {
   createPresetSelect();
   stationSelector = createStationSelect();
   prepareSounding();
+  
+  // Add event listeners for the sliders
+  document.getElementById('simResSelX').addEventListener('input', updateSetupSliders);
+  document.getElementById('simResSelY').addEventListener('input', updateSetupSliders);
+  document.getElementById('simHeightSel').addEventListener('input', updateSetupSliders);
 });
 
 
@@ -412,6 +417,9 @@ const guiControls_default = {
   tempUnit : 'TEMP_UNIT_C',
   windUnit : 'SPEED_UNIT_KMH',
   temperatureChangeIterations : 5,
+  radarOpacity : 0.8,
+  radarUpdateFrequency : 60, // iterations per update
+  radarOverlay : false,
 };
 
 var horizontalDisplayMult = 3.0; // 3.0 to cover srceen while zoomed out
@@ -421,6 +429,9 @@ var guiControls;
 var displayVectorField = false;
 
 var displayWeatherStations = true;
+var displayRadars = true;
+
+var riskCanvas = null;
 
 var sunIsUp = true;
 
@@ -1258,7 +1269,251 @@ class Weatherstation
 }
 
 
+class Radar
+{
+  #width = 80;
+  #height = 60;
+  #mainDiv;
+  #canvas;
+  #c; // 2d canvas context
+  #x; // position in simulation
+  #y;
+
+  #name = 'Radar';
+  #product = 'reflectivity'; // reflectivity, velocity, correlation
+  #range = 100; // range in simulation units
+  #resolution = 1.0; // imagery resolution multiplier (0.5=coarse, 2.0=fine)
+  #menuDiv; // settings menu div
+
+  constructor(xIn, yIn)
+  {
+    this.#x = Math.floor(xIn);
+    this.#y = Math.floor(yIn);
+    this.#mainDiv = document.createElement('div');
+    this.#canvas = document.createElement('canvas');
+    this.#mainDiv.appendChild(this.#canvas);
+    document.body.appendChild(this.#mainDiv);
+    this.#canvas.height = this.#height;
+    this.#canvas.width = this.#width;
+
+    this.#mainDiv.style.position = 'absolute';
+    this.#mainDiv.style.width = '0px';
+    this.#mainDiv.style.height = '0px';
+
+    this.#c = this.#canvas.getContext('2d');
+
+    this.#canvas.style.position = 'absolute';
+    this.#canvas.style.zIndex = 1;
+
+    let thisObj = this;
+    this.#canvas.addEventListener('mousedown', function(event) {
+      if (event.button == 0) { // left mouse button
+        if (guiControls.tool == 'TOOL_RADAR') {
+          thisObj.destroy();
+          event.stopPropagation();
+        } else {
+          thisObj.toggleMenu();
+        }
+      }
+    });
+
+    this.#canvas.addEventListener('contextmenu', function(event) { event.preventDefault(); });
+
+    this.createMenu();
+  }
+
+  createMenu()
+  {
+    this.#menuDiv = document.createElement('div');
+    this.#menuDiv.style.cssText = `
+      position: absolute;
+      display: none;
+      z-index: 1000;
+      background: #1a1a2e;
+      border: 1px solid #3a3a5c;
+      border-radius: 10px;
+      padding: 0;
+      color: white;
+      font-family: Arial, sans-serif;
+      font-size: 13px;
+      min-width: 240px;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.6);
+      overflow: hidden;
+    `;
+
+    let thisObj = this;
+
+    // Header bar
+    const hdr = document.createElement('div');
+    hdr.style.cssText = 'display:flex; justify-content:space-between; align-items:center; padding:10px 14px; background:#12122a; border-bottom:1px solid #3a3a5c;';
+    const hdrTitle = document.createElement('span');
+    hdrTitle.textContent = '📡 Radar Settings';
+    hdrTitle.style.fontWeight = 'bold';
+    const closeBtn = document.createElement('button');
+    closeBtn.textContent = '✕';
+    closeBtn.style.cssText = 'background:none; border:none; color:#aaa; font-size:16px; cursor:pointer; padding:0 4px; line-height:1;';
+    closeBtn.addEventListener('click', () => { thisObj.#menuDiv.style.display = 'none'; });
+    hdr.appendChild(hdrTitle);
+    hdr.appendChild(closeBtn);
+    this.#menuDiv.appendChild(hdr);
+
+    // Body
+    const body = document.createElement('div');
+    body.style.cssText = 'padding: 14px;';
+
+    const mkLabel = (text) => {
+      const l = document.createElement('div');
+      l.textContent = text;
+      l.style.cssText = 'color:#aaa; font-size:11px; text-transform:uppercase; letter-spacing:1px; margin-bottom:5px; margin-top:10px;';
+      return l;
+    };
+
+    const mkInput = (type, val) => {
+      const i = document.createElement('input');
+      i.type = type;
+      i.value = val;
+      i.style.cssText = 'width:100%; box-sizing:border-box; background:#0d0d1a; border:1px solid #3a3a5c; border-radius:5px; color:white; padding:6px 8px; font-size:13px;';
+      return i;
+    };
+
+    // Name
+    body.appendChild(mkLabel('Name'));
+    const nameInput = mkInput('text', this.#name);
+    nameInput.addEventListener('change', function() { thisObj.#name = this.value; });
+    body.appendChild(nameInput);
+
+    // Product
+    body.appendChild(mkLabel('Product'));
+    const productSelect = document.createElement('select');
+    productSelect.style.cssText = nameInput.style.cssText;
+    ['reflectivity', 'velocity', 'correlation'].forEach(prod => {
+      const opt = document.createElement('option');
+      opt.value = prod;
+      opt.textContent = prod.charAt(0).toUpperCase() + prod.slice(1);
+      if (prod === this.#product) opt.selected = true;
+      productSelect.appendChild(opt);
+    });
+    productSelect.addEventListener('change', function() { thisObj.#product = this.value; });
+    body.appendChild(productSelect);
+
+    // Range
+    const rangeLabel = mkLabel('Range: ' + this.#range);
+    body.appendChild(rangeLabel);
+    const rangeSlider = document.createElement('input');
+    rangeSlider.type = 'range';
+    rangeSlider.min = '10';
+    rangeSlider.max = '1000';
+    rangeSlider.value = this.#range;
+    rangeSlider.style.cssText = 'width:100%; margin-top:4px; accent-color:#4a90e2;';
+    rangeSlider.addEventListener('input', function() {
+      thisObj.#range = parseInt(this.value);
+      rangeLabel.textContent = 'Range: ' + thisObj.#range;
+    });
+    body.appendChild(rangeSlider);
+
+    const resLabel = mkLabel('Resolution: ' + thisObj.#resolution.toFixed(1) + 'x');
+    body.appendChild(resLabel);
+    const resSlider = document.createElement('input');
+    resSlider.type = 'range';
+    resSlider.min = '0.3';
+    resSlider.max = '10.0';
+    resSlider.step = '0.1';
+    resSlider.value = thisObj.#resolution;
+    resSlider.style.cssText = 'width:100%; margin-top:4px; accent-color:#4a90e2;';
+    resSlider.addEventListener('input', function() {
+      thisObj.#resolution = parseFloat(this.value);
+      resLabel.textContent = 'Resolution: ' + thisObj.#resolution.toFixed(1) + 'x';
+    });
+    body.appendChild(resSlider);
+
+    this.#menuDiv.appendChild(body);
+    document.body.appendChild(this.#menuDiv);
+  }
+
+  toggleMenu()
+  {
+    if (this.#menuDiv.style.display === 'none') {
+      let screenX = simToScreenX(this.#x);
+      let screenY = simToScreenY(this.#y);
+      this.#menuDiv.style.left = screenX + 'px';
+      this.#menuDiv.style.top = (screenY - 200) + 'px';
+      this.#menuDiv.style.display = 'block';
+    } else {
+      this.#menuDiv.style.display = 'none';
+    }
+  }
+
+  destroy()
+  {
+    this.#menuDiv.remove();
+    this.#canvas.parentElement.removeChild(this.#canvas);
+    let index = radars.indexOf(this);
+    radars.splice(index, 1);
+  }
+
+  getXpos() { return this.#x; }
+  getYpos() { return this.#y; }
+  getName() { return this.#name; }
+  getProduct() { return this.#product; }
+  getRange() { return this.#range; }
+  getResolution() { return this.#resolution; }
+
+  setHidden(hidden)
+  {
+    this.#mainDiv.style.display = hidden ? 'none' : 'block';
+  }
+
+  updateCanvas()
+  {
+    let screenX = simToScreenX(this.#x) - this.#width / 2;
+    let screenY = simToScreenY(this.#y) - this.#height;
+
+    this.#mainDiv.style.left = screenX + 'px';
+    this.#mainDiv.style.top = screenY + 'px';
+
+    let c = this.#c;
+    c.clearRect(0, 0, this.#width, this.#height);
+    c.fillStyle = '#00000000';
+    c.fillRect(0, 0, this.#width, this.#height);
+
+    // Draw radar tower icon
+    c.fillStyle = '#FF0000';
+    c.beginPath();
+    c.arc(this.#width / 2, this.#height / 2, 8, 0, Math.PI * 2);
+    c.fill();
+
+    // Draw tower structure
+    c.strokeStyle = '#FF0000';
+    c.lineWidth = 2;
+    c.beginPath();
+    c.moveTo(this.#width / 2, this.#height / 2 + 8);
+    c.lineTo(this.#width / 2, this.#height - 5);
+    c.stroke();
+
+    // Draw radar dish
+    c.beginPath();
+    c.arc(this.#width / 2, this.#height / 2 - 5, 12, Math.PI, 0);
+    c.stroke();
+
+    // Draw name above tower
+    c.font = 'bold 12px Arial';
+    c.fillStyle = '#FFFFFF';
+    c.textAlign = 'center';
+    c.fillText(this.#name, this.#width / 2, 12);
+
+    // Position pointer
+    c.beginPath();
+    c.moveTo(this.#width / 2, this.#height - 5);
+    c.lineTo(this.#width / 2, this.#height);
+    c.strokeStyle = 'white';
+    c.lineWidth = 2;
+    c.stroke();
+  }
+}
+
+
 let weatherStations = []; // array holding all weather stations
+let radars = []; // array holding all radars
 
 
 async function loadData()
@@ -1343,6 +1598,25 @@ async function loadData()
 
         for (i = 0; i < numWeatherStations; i++) {
           weatherStations.push(new Weatherstation(weatherStationArray[i * 2], weatherStationArray[i * 2 + 1]));
+        }
+
+        // Load radars
+        sliceStart = sliceEnd;
+        sliceEnd += 1 * Int16Array.BYTES_PER_ELEMENT; // one 16 bit int indicates number of radars
+        let numRadarsArrayBlob = dataBlob.slice(sliceStart, sliceEnd);
+        let numRadarsBuf = await numRadarsArrayBlob.arrayBuffer();
+        let numRadars = new Int16Array(numRadarsBuf)[0];
+
+        console.log('numRadars', numRadars);
+
+        sliceStart = sliceEnd;
+        sliceEnd += numRadars * 2 * Int16Array.BYTES_PER_ELEMENT;
+        let radarArrayBlob = dataBlob.slice(sliceStart, sliceEnd);
+        let radarBuf = await radarArrayBlob.arrayBuffer();
+        let radarArray = new Int16Array(radarBuf);
+
+        for (i = 0; i < numRadars; i++) {
+          radars.push(new Radar(radarArray[i * 2], radarArray[i * 2 + 1]));
         }
 
         sliceStart = sliceEnd;
@@ -3578,6 +3852,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         'Snow' : 'TOOL_WALL_SNOW',
         'Wind' : 'TOOL_WIND',
         'Weather Station' : 'TOOL_STATION',
+        'Radar' : 'TOOL_RADAR'
       })
       .name('Tool')
       .listen();
@@ -3671,6 +3946,8 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'evapHeat'), guiControls.evapHeat);
         gl.useProgram(boundaryProgram);
         gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'evapHeat'), guiControls.evapHeat);
+        gl.useProgram(capeProgram);
+        gl.uniform1f(gl.getUniformLocation(capeProgram, 'evapHeat'), guiControls.evapHeat);
       })
       .name('Evaporation Heat');
     water_folder.add(guiControls, 'meltingHeat', 0.0, 10.0, 0.1)
@@ -3772,6 +4049,14 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
     precipitation_folder.add(guiControls, 'inactiveDroplets', 0, NUM_DROPLETS).listen().name('Inactive Droplets');
 
+    var radar_folder = datGui.addFolder('Radar');
+
+    radar_folder.add(guiControls, 'radarOpacity', 0.0, 1.0, 0.05).name('Radar Imagery Opacity').listen();
+
+    radar_folder.add(guiControls, 'radarUpdateFrequency', 1, 300, 10).name('Update Frequency (iterations)').listen();
+
+    radar_folder.add(guiControls, 'radarOverlay').name('Overlay on Realistic View').listen();
+
 
     var display_folder = datGui.addFolder('Display');
 
@@ -3793,7 +4078,10 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         'Snow Deposition' : 'DISP_PRECIPFEEDBACK_SNOW',
         'Precipitation/Soil Moisture' : 'DISP_SOIL_MOISTURE',
         'Curl' : 'DISP_CURL',
-        'Air Quality' : 'DISP_AIRQUALITY'
+        'Air Quality' : 'DISP_AIRQUALITY',
+        'Radar' : 'DISP_RADAR',
+        'CAPE' : 'DISP_CAPE',
+        'Risk' : 'DISP_RISK'
       })
       .name('Display Mode')
       .listen();
@@ -3966,6 +4254,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
   function startSimulation()
   {
+    console.log('startSimulation called, SETUP_MODE was:', SETUP_MODE);
     SETUP_MODE = false;
     gl.useProgram(postProcessingProgram);
     gl.uniform1f(postProc_exposure_loc, guiControls.exposure);
@@ -3981,6 +4270,11 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     clockEl.style.fontFamily = 'Monospace';
     clockEl.style.fontSize = '35px';
     clockEl.style.color = 'white';
+    clockEl.style.width = '100%';
+    clockEl.style.textAlign = 'center';
+    clockEl.style.top = '0';
+    clockEl.style.left = '200px';
+    clockEl.style.pointerEvents = 'none';
 
     simDateTime = new Date(2000, Math.floor(guiControls.month) - 1, (guiControls.month % 1) * 30.417);
 
@@ -4084,7 +4378,13 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
           buoy[y] = 9.81 * (parcelTk - envTk) / envTk;
         }
 
-        let prevDewDiff = parcelTemps[startIndex] - envDewC[startIndex];
+        // LCL: parcel cools at dry lapse until its temp equals its own dew point.
+        // Parcel dew point is constant (fixed mixing ratio = maxWater at surface Td).
+        // Use the simple approximation: LCL_height ~ (T_sfc - Td_sfc) / 8 * 1000 m
+        const surfTdiff = parcelTemps[startIndex] - envDewC[startIndex];
+        lclAlt = surfTdiff > 0 ? (surfTdiff / 8.0) * 1000.0 : altFromIndex(startIndex);
+        lclAlt = Math.max(0, lclAlt) + altFromIndex(startIndex);
+
         let prevBuoy = buoy[startIndex];
 
         for (let y = startIndex + 1; y < sim_res_y; y++) {
@@ -4103,17 +4403,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
             cinh += Math.min(0, segBelow.neg);
           }
 
-          const dewDiff = parcelTemps[y] - envDewC[y];
-          if (isNaN(lclAlt)) {
-            if (prevDewDiff > 0 && dewDiff <= 0) {
-              const ratio = prevDewDiff / (prevDewDiff - dewDiff);
-              lclAlt = altFromIndex(y - 1) + ratio * dz;
-            } else if (y === startIndex + 1 && prevDewDiff <= 0) {
-              lclAlt = altFromIndex(startIndex);
-            }
-          }
-
-          if (!isNaN(lclAlt) && isNaN(lfcAlt) && prevBuoy <= 0 && buoy[y] > 0) {
+          if (isNaN(lfcAlt) && prevBuoy <= 0 && buoy[y] > 0) {
             const ratio = prevBuoy / (prevBuoy - buoy[y]);
             lfcAlt = altFromIndex(y - 1) + ratio * dz;
           }
@@ -4123,7 +4413,6 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
             elAlt = altFromIndex(y - 1) + ratio * dz;
           }
 
-          prevDewDiff = dewDiff;
           prevBuoy = buoy[y];
         }
 
@@ -4229,38 +4518,220 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       const meanParcelProfile = meanLayerParcel(envTempsC, envDewC, surfaceLevel);
       const meanLayerMetrics = computeCAPE(envTempsC, envDewC, meanParcelProfile, surfaceLevel);
 
-      let maxWindSpeed = 0.0;
-      for (let y = surfaceLevel; y < sim_res_y; y++) {
-        const speed = rawVelocityTo_ms(Math.sqrt(
-          Math.pow(baseTextureValues[4 * y], 2) + Math.pow(baseTextureValues[4 * y + 1], 2)
-        ));
-        if (speed > maxWindSpeed) maxWindSpeed = speed;
+      // Most Unstable CAPE: try every level in lowest 3km, pick max CAPE
+      let muCape = soundingMetrics.cape;
+      let muCinh = soundingMetrics.cinh;
+      let muLcl = soundingMetrics.lclAlt;
+      let muLfc = soundingMetrics.lfcAlt;
+      let muEl = soundingMetrics.elAlt;
+      const dz = guiControls.simHeight / sim_res_y;
+      const maxMUlevel = surfaceLevel + Math.round(3000 / dz);
+      for (let y = surfaceLevel; y < Math.min(maxMUlevel, sim_res_y); y++) {
+        if (wallTextureValues[4 * y + 1] === 0) continue;
+        const pp = computeParcelProfile(envTempsC[y], envDewC[y], y);
+        const m = computeCAPE(envTempsC, envDewC, pp, y);
+        if (m.cape > muCape) { muCape = m.cape; muCinh = m.cinh; muLcl = m.lclAlt; muLfc = m.lfcAlt; muEl = m.elAlt; }
       }
-      const windShear = Math.max(0.0, maxWindSpeed - surfaceWindSpeed);
 
-      const formatAltitude = (index) => {
-        if (index === -1) return 'N/A';
-        return printAltitude(Math.round(map_range(index, 0, sim_res_y, 0, guiControls.simHeight)));
-      };
+      // Wind shear at 0-3km, 0-6km, 0-8km (bulk shear = vector difference magnitude)
+      function windSpeedAtY(y) {
+        const i = Math.min(y, sim_res_y - 1) * 4;
+        return rawVelocityTo_ms(Math.sqrt(
+          Math.pow(baseTextureValues[i], 2) + Math.pow(baseTextureValues[i + 1], 2)
+        ));
+      }
+      function windShearToAlt(altM) {
+        const targetY = surfaceLevel + Math.round(altM / dz);
+        if (targetY >= sim_res_y) return 0;
+        // bulk shear: find max speed change in the layer
+        const surfVx = rawVelocityTo_ms(baseTextureValues[surfaceLevel * 4]);
+        const surfVy = rawVelocityTo_ms(baseTextureValues[surfaceLevel * 4 + 1]);
+        const topVx  = rawVelocityTo_ms(baseTextureValues[targetY * 4]);
+        const topVy  = rawVelocityTo_ms(baseTextureValues[targetY * 4 + 1]);
+        return Math.sqrt(Math.pow(topVx - surfVx, 2) + Math.pow(topVy - surfVy, 2));
+      }
+      const shear3km = windShearToAlt(3000);
+      const shear6km = windShearToAlt(6000);
+      const shear8km = windShearToAlt(8000);
 
-      const infoBoxWidth = 240;
-      const infoBoxX = graphCanvas.width - infoBoxWidth - 24;
+      // Precipitable Water (integrate water vapor from surface to top)
+      let pwat_mm = 0;
+      for (let y = surfaceLevel; y < sim_res_y; y++) {
+        if (wallTextureValues[4 * y + 1] === 0) continue;
+        pwat_mm += waterTextureValues[4 * y] * dz * 0.001; // g/m3 * m -> g/m2 -> mm
+      }
+
+      // Lapse rates: 0-3km and 3-6km
+      function lapseRateLayer(altBot, altTop) {
+        const yBot = surfaceLevel + Math.round(altBot / dz);
+        const yTop = surfaceLevel + Math.round(altTop / dz);
+        if (yTop >= sim_res_y || yBot >= sim_res_y) return NaN;
+        return (envTempsC[yBot] - envTempsC[yTop]) / ((altTop - altBot) / 1000);
+      }
+      const lapse03 = lapseRateLayer(0, 3000);
+      const lapse36 = lapseRateLayer(3000, 6000);
+
+      // STP (Significant Tornado Parameter) - simplified
+      // STP = (MLCAPE/1500) * (ESRH/150) * ((2000-MLLCL)/1000) * (MLCINH+200)/150
+      // We approximate ESRH ~ 0-3km shear * 0.5 (no hodograph), LCL from ML parcel
+      const mlLcl_m = meanLayerMetrics.lclAlt || 0;
+      const mlCape = meanLayerMetrics.cape;
+      const mlCinh = meanLayerMetrics.cinh;
+      const esrh_approx = shear3km * 50; // rough proxy
+      const stpLcl = Math.max(0, (2000 - mlLcl_m) / 1000);
+      const stpCinh = Math.min(1, (mlCinh + 200) / 150);
+      const stp = (mlCape / 1500) * (esrh_approx / 150) * stpLcl * stpCinh;
+
+      // VTP (Violent Tornado Parameter) - simplified
+      // VTP = (MUCAPE/1500) * (0-6km shear/20m/s) * (0-3km lapse/6.5) * (PWAT/1.5in)
+      const vtpLapse = isNaN(lapse03) ? 0 : Math.max(0, lapse03 / 6.5);
+      const vtpShear = shear6km / 20;
+      const vtpPwat = pwat_mm / 38; // 38mm ~ 1.5 inch
+      const vtp = (muCape / 1500) * vtpShear * vtpLapse * vtpPwat;
+
+      // Generated risk category
+      function getRisk(cape, shear6, stp_val) {
+        if (cape < 100 || shear6 < 3) return {label: 'None', color: '#444444'};
+        if (cape < 300 || shear6 < 5) return {label: 'Thunderstorm', color: '#00AAFF'};
+        if (stp_val >= 4 || (cape >= 3000 && shear6 >= 25)) return {label: 'High', color: '#FF00FF'};
+        if (stp_val >= 2 || (cape >= 2000 && shear6 >= 20)) return {label: 'Moderate', color: '#FF4400'};
+        if (stp_val >= 1 || (cape >= 1500 && shear6 >= 15)) return {label: 'Enhanced', color: '#FF8800'};
+        if (cape >= 500 && shear6 >= 10) return {label: 'Slight', color: '#FFFF00'};
+        return {label: 'Marginal', color: '#00FF88'};
+      }
+      const risk = getRisk(muCape, shear6km, stp);
+
+      const altStr = (m) => isNaN(m) || m == null ? 'N/A' : printAltitude(Math.round(m));
+
+      const infoBoxWidth = 310;
+      const infoBoxX = graphCanvas.width - infoBoxWidth - 75;
       const infoBoxY = 12;
-      const lineHeight = 22;
-      const textX = infoBoxX + 10;
-      let textY = infoBoxY + 10;
+      const lineHeight = 19;
+      const textX = infoBoxX + 8;
+      let textY = infoBoxY + 8;
+      const numLines = 18;
 
-      c.fillStyle = 'rgba(0, 0, 0, 0.45)';
-      c.fillRect(infoBoxX, infoBoxY, infoBoxWidth, lineHeight * 4 + 18);
+      c.fillStyle = 'rgba(0, 0, 0, 0.60)';
+      c.fillRect(infoBoxX, infoBoxY, infoBoxWidth, lineHeight * numLines + 16);
 
-      c.font = '15px Arial';
-      c.fillStyle = 'white';
+      c.font = '13px monospace';
       c.textAlign = 'left';
       c.textBaseline = 'top';
-      c.fillText('CAPE: ' + Math.round(soundingMetrics.cape) + ' J/kg', textX, textY);
-      c.fillText('MLCAPE: ' + Math.round(meanLayerMetrics.cape) + ' J/kg', textX, textY += lineHeight);
-      c.fillText('CINH: ' + Math.round(soundingMetrics.cinh) + ' J/kg', textX, textY += lineHeight);
-      c.fillText('Wind shear: ' + printVelocity(windShear), textX, textY += lineHeight);
+
+      const row = (label, value, color) => {
+        c.fillStyle = '#AAAAAA';
+        c.fillText(label, textX, textY);
+        c.fillStyle = color || 'white';
+        c.fillText(value, textX + 140, textY);
+        textY += lineHeight;
+      };
+
+      row('MUcape:', Math.round(muCape) + ' J/kg', muCape > 2500 ? '#FF4400' : muCape > 1000 ? '#FFAA00' : 'white');
+      row('MLCAPE:', Math.round(mlCape) + ' J/kg');
+      row('CINH:', Math.round(muCinh) + ' J/kg', muCinh < -100 ? '#FF4444' : 'white');
+      row('Pwat:', pwat_mm.toFixed(1) + ' mm');
+      row('LCL:', altStr(muLcl), muLcl != null && muLcl < 1000 ? '#FF8800' : 'white');
+      row('LFC:', altStr(muLfc));
+      row('EL:', altStr(muEl));
+      row('0-3km Shear:', printVelocity(shear3km));
+      row('0-6km Shear:', printVelocity(shear6km), shear6km > 20 ? '#FFAA00' : 'white');
+      row('0-8km Shear:', printVelocity(shear8km));
+      row('Lapse 0-3km:', isNaN(lapse03) ? 'N/A' : lapse03.toFixed(1) + ' °C/km', lapse03 > 8 ? '#FF8800' : 'white');
+      row('Lapse 3-6km:', isNaN(lapse36) ? 'N/A' : lapse36.toFixed(1) + ' °C/km');
+      // DCAPE: downdraft CAPE - descend a parcel from level of min thetaE in 4-8km layer
+      let dcape = 0;
+      {
+        // Find level of minimum equivalent potential temperature between 4-8km AGL
+        const y4km = surfaceLevel + Math.round(4000 / dz);
+        const y8km = Math.min(surfaceLevel + Math.round(8000 / dz), sim_res_y - 1);
+        let minThetaE = Infinity, dcapeStartY = y4km;
+        for (let y = y4km; y <= y8km; y++) {
+          const tK  = CtoK(envTempsC[y]);
+          const tdK = dewpoint(Math.max(waterTextureValues[4*y], 0));
+          // Equivalent potential temperature proxy: T + Lv/cp * w  (simplified)
+          const thetaE = tK + 2500 * Math.max(waterTextureValues[4*y], 0) / 1004;
+          if (thetaE < minThetaE) { minThetaE = thetaE; dcapeStartY = y; }
+        }
+        // Descend parcel dry-adiabatically (saturated at start) to surface
+        const startTk = CtoK(envTempsC[dcapeStartY]);
+        const startW  = Math.max(waterTextureValues[4*dcapeStartY], 0);
+        let parcelTk  = startTk;
+        for (let y = dcapeStartY - 1; y >= surfaceLevel; y--) {
+          const envTk = CtoK(envTempsC[y]);
+          parcelTk += 9.8 * dz / 1000.0; // dry adiabatic descent
+          const buoy = 9.81 * (envTk - parcelTk) / parcelTk; // negative = downdraft energy
+          if (buoy > 0) dcape += buoy * dz;
+        }
+      }
+
+      row('STP:', stp.toFixed(2), stp >= 1 ? '#FF8800' : 'white');
+      row('VTP:', vtp.toFixed(2), vtp >= 1 ? '#FF4400' : 'white');
+      row('DCAPE:', Math.round(dcape) + ' J/kg', dcape > 1000 ? '#FF4400' : dcape > 500 ? '#FFAA00' : 'white');
+
+      // Possible Hazard Type
+      (function() {
+        let hazard = 'None';
+        let hazardColor = '#888888';
+        const hasCAPE = muCape >= 500;
+        const highCAPE = muCape >= 2000;
+        const extremeCAPE = muCape >= 4000;
+        const highShear6 = shear6km >= 20;
+        const extremeShear6 = shear6km >= 30;
+        const highShear3 = shear3km >= 15;
+        const lowLCL = (muLcl || 9999) < 1000;
+        const veryLowLCL = (muLcl || 9999) < 500;
+        const highPwat = pwat_mm >= 40;
+        const extremePwat = pwat_mm >= 55;
+        const steepLapse = !isNaN(lapse03) && lapse03 >= 7.5;
+        const extremeLapse = !isNaN(lapse03) && lapse03 >= 9.0;
+
+        if (!hasCAPE) {
+          hazard = 'None'; hazardColor = '#888888';
+        } else if (vtp >= 3 && extremeCAPE && extremeShear6 && veryLowLCL) {
+          hazard = 'PDS Tornado'; hazardColor = '#FF00FF';
+        } else if (vtp >= 1.5 || (stp >= 4 && lowLCL && highShear6)) {
+          hazard = 'Tornado'; hazardColor = '#FF0066';
+        } else if (stp >= 1 && lowLCL) {
+          hazard = 'Slight Tornado'; hazardColor = '#FF6699';
+        } else if ((extremeCAPE && extremeShear6) || (highCAPE && extremeShear6 && steepLapse)) {
+          hazard = 'Supercell'; hazardColor = '#FF4400';
+        } else if (extremeLapse && highCAPE && highShear6) {
+          hazard = 'Giant Hail'; hazardColor = '#AA00FF';
+        } else if (steepLapse && highCAPE && highShear6) {
+          hazard = 'Large Hail'; hazardColor = '#FF8800';
+        } else if (steepLapse && hasCAPE) {
+          hazard = 'Hail'; hazardColor = '#FFCC00';
+        } else if (dcape >= 1200 && highShear6) {
+          hazard = 'Destructive Winds'; hazardColor = '#FF4400';
+        } else if (dcape >= 700 || (highShear6 && hasCAPE)) {
+          hazard = 'Damaging Winds'; hazardColor = '#FF8800';
+        } else if (extremePwat && hasCAPE) {
+          hazard = 'Flooding/Heavy Rainfall'; hazardColor = '#0088FF';
+        } else if (highPwat && hasCAPE) {
+          hazard = 'Intense Rainfall'; hazardColor = '#00AAFF';
+        } else {
+          hazard = 'General Thunderstorm'; hazardColor = '#AAAAAA';
+        }
+
+        c.fillStyle = '#AAAAAA';
+        c.font = '13px monospace';
+        c.fillText('Hazard:', textX, textY);
+        c.fillStyle = hazardColor;
+        c.font = 'bold 11px monospace';
+        c.fillText(hazard, textX + 90, textY);
+        c.font = '13px monospace';
+        textY += lineHeight;
+      })();
+
+      // Risk row with colored label
+      c.fillStyle = '#AAAAAA';
+      c.font = '13px monospace';
+      c.fillText('Risk:', textX, textY);
+      c.fillStyle = risk.color;
+      c.font = 'bold 11px monospace';
+      c.fillText(risk.label, textX + 90, textY);
+      c.font = '13px monospace';
+      textY += lineHeight;
 
       // Draw wind indicators
       c.beginPath();
@@ -4632,6 +5103,12 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
         if (simXpos >= 0 && simXpos < sim_res_x)
           weatherStations.push(new Weatherstation(simXpos, simYpos)); // add weather station
+      } else if (guiControls.tool == 'TOOL_RADAR') {
+        let simXpos = Math.floor(mouseXinSim * sim_res_x);
+        let simYpos = findSimYposAboveSurfaceAtMouseX();
+
+        if (simXpos >= 0 && simXpos < sim_res_x)
+          radars.push(new Radar(simXpos, simYpos)); // add radar
       }
     } else if (e.button == 1) {
       // middle mouse button
@@ -4961,6 +5438,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   const velocityShader = await loadShader('velocityShader.frag');
   const advectionShader = await loadShader('advectionShader.frag');
   const curlShader = await loadShader('curlShader.frag');
+  const capeShader = await loadShader('capeShader.frag');
   const vorticityShader = await loadShader('vorticityShader.frag');
   const boundaryShader = await loadShader('boundaryShader.frag');
 
@@ -4989,6 +5467,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   const velocityProgram = createProgram(simVertexShader, velocityShader);
   const advectionProgram = createProgram(simVertexShader, advectionShader);
   const curlProgram = createProgram(simVertexShader, curlShader);
+  const capeProgram = createProgram(simVertexShader, capeShader);
   const vorticityProgram = createProgram(simVertexShader, vorticityShader);
   const boundaryProgram = createProgram(simVertexShader, boundaryShader);
 
@@ -5134,6 +5613,11 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   const precipitationVertexShader = await loadShader('precipitationShader.vert');
   const precipitationShader = await loadShader('precipitationShader.frag');
   const precipitationProgram = createProgram(precipitationVertexShader, precipitationShader, [ 'position_out', 'mass_out', 'density_out' ]);
+
+  // Radar display setup
+  const radarVertexShader = await loadShader('radarDisplayShader.vert');
+  const radarFragmentShader = await loadShader('radarDisplayShader.frag');
+  let radarDisplayProgram; try { radarDisplayProgram = createProgram(radarVertexShader, radarFragmentShader, []); } catch(e) { loadingBar.showError("Radar link error: " + e.message); throw e; }
 
   gl.useProgram(precipitationProgram);
 
@@ -5409,6 +5893,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   const wallTexture_1 = gl.createTexture();
 
   const curlTexture = gl.createTexture();
+  const capeTexture = gl.createTexture();
   const vortForceTexture = gl.createTexture();
 
   const lightTexture_0 = gl.createTexture();
@@ -5416,6 +5901,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   const precipitationFeedbackTexture = gl.createTexture();
   const precipitationDepositionTexture = gl.createTexture();
   const lightningDataTexture = gl.createTexture(); // single pixel texture holding location and timing of current lightning strike
+  const radarTexture = gl.createTexture();
 
   // Static texures:
   const noiseTexture = gl.createTexture();
@@ -5443,12 +5929,14 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   const frameBuff_1 = gl.createFramebuffer();
 
   const curlFrameBuff = gl.createFramebuffer();
+  const capeFrameBuff = gl.createFramebuffer();
   const vortForceFrameBuff = gl.createFramebuffer();
 
   lightFrameBuff_0 = gl.createFramebuffer();
   const lightFrameBuff_1 = gl.createFramebuffer();
   const precipitationFeedbackFrameBuff = gl.createFramebuffer();
   const lightningDataFrameBuff = gl.createFramebuffer();
+  const radarFrameBuff = gl.createFramebuffer();
 
   // Set up Textures
   async function setupTextures()
@@ -5532,6 +6020,15 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, curlTexture,
                           0); // attach the texture as the first color attachment
 
+  gl.bindTexture(gl.TEXTURE_2D, capeTexture);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.R32F, sim_res_x, sim_res_y, 0, gl.RED, gl.FLOAT, null);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+
+  gl.bindFramebuffer(gl.FRAMEBUFFER, capeFrameBuff);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, capeTexture,
+                          0); // attach the texture as the first color attachment
+
 
   gl.bindTexture(gl.TEXTURE_2D, vortForceTexture);
   gl.texImage2D(gl.TEXTURE_2D, 0, gl.RG32F, sim_res_x, sim_res_y, 0, gl.RG, gl.FLOAT, null);
@@ -5578,6 +6075,14 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   gl.bindFramebuffer(gl.FRAMEBUFFER, precipitationFeedbackFrameBuff);
   gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, precipitationFeedbackTexture, 0);
   gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT1, gl.TEXTURE_2D, precipitationDepositionTexture, 0);
+
+  gl.bindTexture(gl.TEXTURE_2D, radarTexture);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, sim_res_x, sim_res_y, 0, gl.RGBA, gl.FLOAT, null);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+
+  gl.bindFramebuffer(gl.FRAMEBUFFER, radarFrameBuff);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, radarTexture, 0);
 
   gl.bindTexture(gl.TEXTURE_2D, lightningDataTexture);
   gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, 1, 1, 0, gl.RGBA, gl.FLOAT, null);
@@ -5665,6 +6170,8 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     { id: 'soilMoisture',     name: 'Soil Moisture',    col: 14, stops: 33 },
     { id: 'curl',             name: 'Curl',             col: 15, stops: 33 },
     { id: 'temperatureChange',name: 'Temperature Change',col:16, stops: 33 },
+    { id: 'cape',             name: 'CAPE',             col:17, stops: 72 },
+    { id: 'radarReflectivity', name: 'Radar Reflectivity', col:18, stops: 18 },
   ];
 
   const DEFAULT_IR_PALETTE = [
@@ -5747,9 +6254,66 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       }
     }
     colorScaleData.temperatureChange = tempChange;
+
+    // CAPE color scale: 0-10000 J/Kg mapped to 72 stops
+    // Colors: White -> Pale light blue -> Dark desat blue -> Lime Green -> Yellow -> Red -> Dark red -> Pink -> Dark Grey -> Bright sat light blue
+    const cape = [];
+    const capeStops = [
+      { idx: 0,   val: 0,    col: [255, 255, 255] },    // White
+      { idx: 1,   val: 100,  col: [200, 230, 255] },    // Pale light blue
+      { idx: 4,   val: 500,  col: [60, 80, 120] },      // Dark desaturated blue
+      { idx: 6,   val: 750,  col: [50, 205, 50] },       // Lime Green
+      { idx: 7,   val: 1000, col: [255, 255, 0] },       // Yellow
+      { idx: 18,  val: 2500, col: [255, 0, 0] },         // Red
+      { idx: 22,  val: 3000, col: [139, 0, 0] },         // Dark red
+      { idx: 29,  val: 4000, col: [255, 105, 180] },     // Pink
+      { idx: 36,  val: 5000, col: [80, 80, 80] },        // Dark Grey
+      { idx: 71,  val: 10000, col: [0, 191, 255] },      // Bright saturated light blue (DeepSkyBlue)
+    ];
+    for (let i = 0; i < 72; i++) {
+      // Find which segment this stop belongs to
+      let segStart = capeStops[0], segEnd = capeStops[capeStops.length - 1];
+      for (let j = 0; j < capeStops.length - 1; j++) {
+        if (i >= capeStops[j].idx && i <= capeStops[j + 1].idx) {
+          segStart = capeStops[j];
+          segEnd = capeStops[j + 1];
+          break;
+        }
+      }
+      // Interpolate
+      const t = segStart.idx === segEnd.idx ? 0 : (i - segStart.idx) / (segEnd.idx - segStart.idx);
+      const r = Math.round(segStart.col[0] + t * (segEnd.col[0] - segStart.col[0]));
+      const g = Math.round(segStart.col[1] + t * (segEnd.col[1] - segStart.col[1]));
+      const b = Math.round(segStart.col[2] + t * (segEnd.col[2] - segStart.col[2]));
+      cape.push([r, g, b]);
+    }
+    colorScaleData.cape = cape;
   }
 
   function uploadColorScaleTexture() {
+    // Radar reflectivity: 18 stops, each = 5 dBZ, range 0-85 dBZ
+    // Standard NWS WSR-88D color scale
+    colorScaleData.radarReflectivity = [
+      [  4,  4,  4],  //  0 dBZ  - ND (black)
+      [  0,236,236],  //  5 dBZ  - light cyan
+      [  1,160,246],  // 10 dBZ  - sky blue
+      [  0,  0,246],  // 15 dBZ  - blue
+      [  0,255,  0],  // 20 dBZ  - green
+      [  0,200,  0],  // 25 dBZ  - medium green
+      [  0,144,  0],  // 30 dBZ  - dark green
+      [255,255,  0],  // 35 dBZ  - yellow
+      [231,192,  0],  // 40 dBZ  - dark yellow
+      [255,144,  0],  // 45 dBZ  - orange
+      [255,  0,  0],  // 50 dBZ  - red
+      [214,  0,  0],  // 55 dBZ  - dark red
+      [192,  0,  0],  // 60 dBZ  - darker red
+      [255,  0,255],  // 65 dBZ  - magenta
+      [153, 85,201],  // 70 dBZ  - purple
+      [235,235,235],  // 75 dBZ  - light grey (large hail)
+      [255,255,255],  // 80 dBZ  - white (extreme hail)
+      [255,255,255],  // 85 dBZ  - white
+    ];
+
     const TEX_W = COLOR_SCALE_CONFIGS.length, TEX_H = 72;
     const offC = document.createElement('canvas');
     offC.width = TEX_W; offC.height = TEX_H;
@@ -6065,6 +6629,16 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   gl.uniform2f(gl.getUniformLocation(curlProgram, 'texelSize'), texelSizeX, texelSizeY);
   gl.uniform1i(gl.getUniformLocation(curlProgram, 'baseTex'), 0);
 
+  gl.useProgram(capeProgram);
+  gl.uniform2f(gl.getUniformLocation(capeProgram, 'resolution'), sim_res_x, sim_res_y);
+  gl.uniform2f(gl.getUniformLocation(capeProgram, 'texelSize'), texelSizeX, texelSizeY);
+  gl.uniform1i(gl.getUniformLocation(capeProgram, 'baseTex'), 0);
+  gl.uniform1i(gl.getUniformLocation(capeProgram, 'waterTex'), 1);
+  gl.uniform1i(gl.getUniformLocation(capeProgram, 'wallTex'), 2);
+  gl.uniform1f(gl.getUniformLocation(capeProgram, 'dryLapse'), dryLapse);
+  gl.uniform1f(gl.getUniformLocation(capeProgram, 'simHeight'), guiControls.simHeight);
+  gl.uniform1f(gl.getUniformLocation(capeProgram, 'evapHeat'), guiControls.evapHeat);
+
   gl.useProgram(lightingProgram);
   gl.uniform2f(gl.getUniformLocation(lightingProgram, 'resolution'), sim_res_x, sim_res_y);
   gl.uniform2f(gl.getUniformLocation(lightingProgram, 'texelSize'), texelSizeX, texelSizeY);
@@ -6226,8 +6800,88 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   setInterval(calcFps, 1000); // log fps
   requestAnimationFrame(draw);
 
+  function onUpdateTimeOfDaySlider()
+  {
+    let minutes = (guiControls.timeOfDay % 1) * 60;
+    simDateTime.setHours(guiControls.timeOfDay, minutes);
+    updateSunlight();
+  }
+
+  function onUpdateMonthSlider()
+  {
+    let month = guiControls.month - 0.96;
+    let date = (month % 1) * 30;
+    simDateTime.setMonth(month, date);
+    updateSunlight();
+  }
+
+  function updateSunlight(deltaT_hours)
+  {
+    if (deltaT_hours != 'MANUAL_ANGLE') {
+      if (deltaT_hours != null) {                                                   // increment time
+        simDateTime = new Date(simDateTime.getTime() + deltaT_hours * 3600 * 1000); // convert hours to ms and add to current date
+        guiControls.timeOfDay = simDateTime.getHours() + simDateTime.getMinutes() / 60. + simDateTime.getSeconds() / 3600.;
+        guiControls.month = simDateTime.getMonth() + 1 + simDateTime.getDate() / 30.5 + simDateTime.getHours() / 720.;
+      } else {
+        for (i = 0; i < weatherStations.length; i++) {
+          weatherStations[i].clearChart();
+        }
+      }
+
+      let timeOfDayRad = (guiControls.timeOfDay / 24.0) * 2.0 * Math.PI; // convert to radians
+
+      timeOfDayRad -= Math.PI / 2.0;
+
+      let tiltDeg = Math.sin(guiControls.month * 0.5236 - 1.92) * 23.5; // axis tilt
+      let t = tiltDeg * degToRad;                                       // axis tilt in radians
+      let l = guiControls.latitude * degToRad;                          // latitude
+
+      guiControls.sunAngle = Math.asin(Math.sin(t) * Math.sin(l) + Math.cos(t) * Math.cos(l) * Math.sin(timeOfDayRad)) * radToDeg;
+
+      if (guiControls.latitude - tiltDeg < 0.0) {
+        // If sun is to the north, flip angle
+        guiControls.sunAngle = 180.0 - guiControls.sunAngle;
+      }
+    }
+    let solarZenithAngleDeg = (guiControls.sunAngle - 90);
+    let solarZenithAngle = solarZenithAngleDeg * degToRad; // Solar zenith angle centered around 0. (0 = vertical)
+    // Calculations visualized: https://www.desmos.com/calculator/kzr76zj5hq
+    if (Math.abs(solarZenithAngle) < 85.0 * degToRad) {
+      sunIsUp = true;
+    } else {
+      sunIsUp = false;
+    }
+    //          console.log(solarZenithAngle, sunIsUp);
+    //  let sunIntensity = guiControls.sunIntensity *
+    // Math.pow(Math.max(Math.sin((90.0 - Math.abs(guiControls.sunAngle)) *
+    // degToRad) - 0.1, 0.0) * 1.111, 0.4);
+    let sunIntensity = guiControls.sunIntensity * Math.pow(Math.max(Math.sin((180.0 - guiControls.sunAngle) * degToRad), 0.0), 0.1) * 1300.0; // max 1300 w/m2 at 12 km
+    // console.log('sunIntensity: ', sunIntensity);
+
+    // minShadowLight = clamp(((90 + 10) - Math.abs(solarZenithAngleDeg)) * 0.006, 0.005, 0.040); // decrease until the sun goes 10 deg below the horizon
+
+    minShadowLight = map_range_C(Math.abs(solarZenithAngleDeg), 100.0, 85.0, 0.005, 0.040); // decrease until the sun goes 10 deg below the horizon
+
+    gl.useProgram(boundaryProgram);
+    gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'sunAngle'), solarZenithAngle);
+    gl.useProgram(lightingProgram);
+    gl.uniform1f(gl.getUniformLocation(lightingProgram, 'sunIntensity'), sunIntensity);
+    gl.uniform1f(gl.getUniformLocation(lightingProgram, 'sunAngle'), solarZenithAngle);
+    gl.useProgram(realisticDisplayProgram);
+    gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'sunAngle'), solarZenithAngle);
+    gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'minShadowLight'), minShadowLight);
+    gl.useProgram(skyBackgroundDisplayProgram);
+    gl.uniform1f(gl.getUniformLocation(skyBackgroundDisplayProgram, 'minShadowLight'), minShadowLight);
+
+    if (guiControls.dayNightCycle)
+      clockEl.innerHTML = dateTimeStr(); // update clock
+    else
+      clockEl.innerHTML = '';
+  }
+
   function draw()
   { // Runs for every frame
+    var inputType = -1;
     let camPanSpeed = guiControls.camSpeed;
 
     if (rightCtrlPressed) {
@@ -6350,7 +7004,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         gl.uniform2f(gl.getUniformLocation(advectionProgram, 'userInputMove'), moveX, moveY);
         gl.uniform1i(gl.getUniformLocation(advectionProgram, 'wrapHorizontally'), guiControls.wrapHorizontally);
       }
-      gl.uniform1i(gl.getUniformLocation(advectionProgram, 'userInputType'), inputType);
+        gl.uniform1i(gl.getUniformLocation(advectionProgram, 'userInputType'), inputType);
 
 
       // guiControls.IterPerFrame = 1.0 / timePerIteration * 3600 / 60.0;
@@ -6394,6 +7048,18 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
             gl.activeTexture(gl.TEXTURE0);
             gl.bindTexture(gl.TEXTURE_2D, baseTexture_1);
             gl.bindFramebuffer(gl.FRAMEBUFFER, curlFrameBuff);
+            gl.drawBuffers([ gl.COLOR_ATTACHMENT0 ]);
+            gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+
+            // calc CAPE
+            gl.useProgram(capeProgram);
+            gl.activeTexture(gl.TEXTURE0);
+            gl.bindTexture(gl.TEXTURE_2D, baseTexture_1);
+            gl.activeTexture(gl.TEXTURE1);
+            gl.bindTexture(gl.TEXTURE_2D, waterTexture_0);
+            gl.activeTexture(gl.TEXTURE2);
+            gl.bindTexture(gl.TEXTURE_2D, wallTexture_0);
+            gl.bindFramebuffer(gl.FRAMEBUFFER, capeFrameBuff);
             gl.drawBuffers([ gl.COLOR_ATTACHMENT0 ]);
             gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
 
@@ -6583,7 +7249,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     let cursorType = 1.0; // normal circular brush
     if (guiControls.wholeWidth) {
       cursorType = 2.0;   // cursor whole width brush
-    } else if (SETUP_MODE || (inputType <= 0 && !bPressed && (guiControls.tool == 'TOOL_NONE' || guiControls.tool == 'TOOL_STATION'))) {
+    } else if (SETUP_MODE || (inputType <= 0 && !bPressed && (guiControls.tool == 'TOOL_NONE' || guiControls.tool == 'TOOL_STATION' || guiControls.tool == 'TOOL_RADAR'))) {
       cursorType = 0;     // cursor off sig
     }
 
@@ -6889,6 +7555,44 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         gl.disable(gl.BLEND);
       }
 
+      // Radar overlay on realistic view
+      if (guiControls.radarOverlay && radars.length > 0) {
+        gl.enable(gl.BLEND);
+        gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+        gl.useProgram(radarDisplayProgram);
+        gl.uniform2f(gl.getUniformLocation(radarDisplayProgram, 'aspectRatios'), sim_aspect, canvas_aspect);
+        gl.uniform3f(gl.getUniformLocation(radarDisplayProgram, 'view'), cam.curXpos, cam.curYpos, cam.curZoom);
+        gl.uniform1f(gl.getUniformLocation(radarDisplayProgram, 'Xmult'), horizontalDisplayMult);
+        gl.uniform2f(gl.getUniformLocation(radarDisplayProgram, 'resolution'), sim_res_x, sim_res_y);
+        gl.uniform2f(gl.getUniformLocation(radarDisplayProgram, 'texelSize'), 1.0 / sim_res_x, 1.0 / sim_res_y);
+        gl.uniform1f(gl.getUniformLocation(radarDisplayProgram, 'opacity'), guiControls.radarOpacity);
+        gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, baseTexture_0);
+        gl.uniform1i(gl.getUniformLocation(radarDisplayProgram, 'baseTexture'), 0);
+        gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, waterTexture_0);
+        gl.uniform1i(gl.getUniformLocation(radarDisplayProgram, 'waterTexture'), 1);
+        gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, wallTexture_0);
+        gl.uniform1i(gl.getUniformLocation(radarDisplayProgram, 'wallTexture'), 2);
+        gl.activeTexture(gl.TEXTURE3); gl.bindTexture(gl.TEXTURE_2D, colorScalesTexture);
+        gl.uniform1i(gl.getUniformLocation(radarDisplayProgram, 'colorScalesTex'), 3);
+        gl.uniform1i(gl.getUniformLocation(radarDisplayProgram, 'colorScaleColumn'), 18);
+        gl.uniform1i(gl.getUniformLocation(radarDisplayProgram, 'colorScaleStops'), 18);
+        gl.activeTexture(gl.TEXTURE4); gl.bindTexture(gl.TEXTURE_2D, precipitationFeedbackTexture);
+        gl.uniform1i(gl.getUniformLocation(radarDisplayProgram, 'precipFeedbackTexture'), 4);
+        for (let r = 0; r < radars.length; r++) {
+          const radar = radars[r];
+          let productType = 0;
+          if (radar.getProduct() === 'velocity') productType = 1;
+          else if (radar.getProduct() === 'correlation') productType = 2;
+          gl.uniform2f(gl.getUniformLocation(radarDisplayProgram, 'radarPos'), radar.getXpos(), radar.getYpos());
+          gl.uniform1f(gl.getUniformLocation(radarDisplayProgram, 'radarRange'), radar.getRange());
+          gl.uniform1f(gl.getUniformLocation(radarDisplayProgram, 'radarResolution'), radar.getResolution());
+          gl.uniform1i(gl.getUniformLocation(radarDisplayProgram, 'productType'), productType);
+          gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+        }
+        gl.disable(gl.BLEND);
+        gl.bindVertexArray(fluidVao);
+      }
+
 
     } else {
       gl.activeTexture(gl.TEXTURE9);
@@ -7071,22 +7775,252 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
           gl.uniform1i(gl.getUniformLocation(universalDisplayProgram, 'useUnipolarScale'), 0);
           colorScaleStops = 33;
           break;
+        case 'DISP_RADAR':
+          // Radar Reflectivity - render radar imagery from all radars
+          gl.clearColor(0.0, 0.0, 0.0, 1.0);
+          gl.clear(gl.COLOR_BUFFER_BIT);
+
+          // Render radar imagery for each radar
+          if (radars.length > 0) {
+            gl.useProgram(radarDisplayProgram);
+
+            // Set common uniforms
+            gl.uniform2f(gl.getUniformLocation(radarDisplayProgram, 'aspectRatios'), sim_aspect, canvas_aspect);
+            gl.uniform3f(gl.getUniformLocation(radarDisplayProgram, 'view'), cam.curXpos, cam.curYpos, cam.curZoom);
+            gl.uniform1f(gl.getUniformLocation(radarDisplayProgram, 'Xmult'), horizontalDisplayMult);
+            gl.uniform2f(gl.getUniformLocation(radarDisplayProgram, 'resolution'), sim_res_x, sim_res_y);
+            gl.uniform2f(gl.getUniformLocation(radarDisplayProgram, 'texelSize'), 1.0 / sim_res_x, 1.0 / sim_res_y);
+            gl.uniform1f(gl.getUniformLocation(radarDisplayProgram, 'opacity'), guiControls.radarOpacity);
+
+            // Bind textures
+            gl.activeTexture(gl.TEXTURE0);
+            gl.bindTexture(gl.TEXTURE_2D, baseTexture_0);
+            gl.uniform1i(gl.getUniformLocation(radarDisplayProgram, 'baseTexture'), 0);
+
+            gl.activeTexture(gl.TEXTURE1);
+            gl.bindTexture(gl.TEXTURE_2D, waterTexture_0);
+            gl.uniform1i(gl.getUniformLocation(radarDisplayProgram, 'waterTexture'), 1);
+
+            gl.activeTexture(gl.TEXTURE2);
+            gl.bindTexture(gl.TEXTURE_2D, wallTexture_0);
+            gl.uniform1i(gl.getUniformLocation(radarDisplayProgram, 'wallTexture'), 2);
+
+            gl.activeTexture(gl.TEXTURE3);
+            gl.bindTexture(gl.TEXTURE_2D, colorScalesTexture);
+            gl.uniform1i(gl.getUniformLocation(radarDisplayProgram, 'colorScalesTex'), 3);
+            gl.uniform1i(gl.getUniformLocation(radarDisplayProgram, 'colorScaleColumn'), 18);
+            gl.uniform1i(gl.getUniformLocation(radarDisplayProgram, 'colorScaleStops'), 18);
+
+            gl.activeTexture(gl.TEXTURE4);
+            gl.bindTexture(gl.TEXTURE_2D, precipitationFeedbackTexture);
+            gl.uniform1i(gl.getUniformLocation(radarDisplayProgram, 'precipFeedbackTexture'), 4);
+
+            // Enable blending for radar overlay
+            gl.enable(gl.BLEND);
+            gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+
+            // Render each radar
+            for (let r = 0; r < radars.length; r++) {
+              let radar = radars[r];
+              let productType = 0; // 0 = reflectivity, 1 = velocity, 2 = correlation
+
+              if (radar.getProduct() === 'velocity') productType = 1;
+              else if (radar.getProduct() === 'correlation') productType = 2;
+
+              gl.uniform2f(gl.getUniformLocation(radarDisplayProgram, 'radarPos'), radar.getXpos(), radar.getYpos());
+              gl.uniform1f(gl.getUniformLocation(radarDisplayProgram, 'radarRange'), radar.getRange());
+              gl.uniform1f(gl.getUniformLocation(radarDisplayProgram, 'radarResolution'), radar.getResolution());
+              gl.uniform1i(gl.getUniformLocation(radarDisplayProgram, 'productType'), productType);
+
+              gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+            }
+
+            gl.disable(gl.BLEND);
+          }
+          break;
+        case 'DISP_CAPE':
+          // CAPE display - using actual CAPE calculation
+          gl.activeTexture(gl.TEXTURE0);
+          gl.bindTexture(gl.TEXTURE_2D, capeTexture);
+          gl.uniform1i(gl.getUniformLocation(universalDisplayProgram, 'quantityIndex'), 0);
+          gl.uniform1f(gl.getUniformLocation(universalDisplayProgram, 'dispMultiplier'), 0.0001); // 1/10000 to map to color scale
+          gl.uniform1i(gl.getUniformLocation(universalDisplayProgram, 'colorScaleColumn'), 17);
+          gl.uniform1i(gl.getUniformLocation(universalDisplayProgram, 'useUnipolarScale'), 1);
+          colorScaleStops = 72;
+          break;
+        case 'DISP_RISK':
+          // Risk display rendered as 2D canvas overlay - skip WebGL draw
+          break;
         }
         gl.uniform1i(gl.getUniformLocation(universalDisplayProgram, 'colorScaleStops'), colorScaleStops);
       }
 
-      gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4); // draw to canvas
-    }
-
-    if (displayWeatherStations) {
-      for (i = 0; i < weatherStations.length; i++) {
-        weatherStations[i].updateCanvas(); // update weather stations
+      if (guiControls.displayMode != 'DISP_RADAR' && guiControls.displayMode != 'DISP_RISK') {
+        gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4); // draw to canvas
       }
-    }
 
-    frameNum++;
-    requestAnimationFrame(draw);
+      // Risk display: draw per-column risk as colored canvas overlay
+      if (guiControls.displayMode === 'DISP_RISK') {
+        if (!riskCanvas) {
+          riskCanvas = document.createElement('canvas');
+          riskCanvas.style.cssText = 'position:fixed;top:0;left:0;pointer-events:none;z-index:1;';
+          document.body.appendChild(riskCanvas);
+        }
+        if (riskCanvas.width !== canvas.width || riskCanvas.height !== canvas.height) {
+          riskCanvas.width = canvas.width;
+          riskCanvas.height = canvas.height;
+        }
+        riskCanvas.style.display = 'block';
+
+        if (frameNum % 30 === 0) {
+          const rc = riskCanvas.getContext('2d');
+          rc.clearRect(0, 0, riskCanvas.width, riskCanvas.height);
+
+          const step = Math.max(1, Math.round(sim_res_x / 200));
+          const dzR  = guiControls.simHeight / sim_res_y;
+          const dT   = -9.8 * dzR / 1000.0;
+
+          // 3 bulk readbacks - much faster than per-column reads
+          gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_1);
+          gl.readBuffer(gl.COLOR_ATTACHMENT0);
+          const baseAll = new Float32Array(4 * sim_res_x * sim_res_y);
+          gl.readPixels(0, 0, sim_res_x, sim_res_y, gl.RGBA, gl.FLOAT, baseAll);
+          gl.readBuffer(gl.COLOR_ATTACHMENT1);
+          const waterAll = new Float32Array(4 * sim_res_x * sim_res_y);
+          gl.readPixels(0, 0, sim_res_x, sim_res_y, gl.RGBA, gl.FLOAT, waterAll);
+          gl.readBuffer(gl.COLOR_ATTACHMENT2);
+          const wallAll = new Int8Array(4 * sim_res_x * sim_res_y);
+          gl.readPixels(0, 0, sim_res_x, sim_res_y, gl.RGBA_INTEGER, gl.BYTE, wallAll);
+
+          function getRisk(muCape, shear6, stp) {
+            if (muCape < 100 || shear6 < 3)                   return null;
+            if (muCape < 300 || shear6 < 5)                   return 'rgba(0,170,255,0.55)';
+            if (stp >= 4 || (muCape >= 3000 && shear6 >= 25)) return 'rgba(255,0,255,0.65)';
+            if (stp >= 2 || (muCape >= 2000 && shear6 >= 20)) return 'rgba(255,68,0,0.65)';
+            if (stp >= 1 || (muCape >= 1500 && shear6 >= 15)) return 'rgba(255,136,0,0.65)';
+            if (muCape >= 500 && shear6 >= 10)                return 'rgba(255,255,0,0.55)';
+            return 'rgba(0,255,136,0.50)';
+          }
+
+          const screenTop = simToScreenY(sim_res_y - 1);
+          const screenBot = simToScreenY(0);
+
+          // Draw grey terrain silhouette first
+          rc.fillStyle = 'rgba(80, 80, 80, 0.5)';
+          for (let sx = 0; sx < sim_res_x; sx += step) {
+            let sfcY = -1;
+            for (let y = 0; y < sim_res_y; y++) {
+              if (wallAll[(y * sim_res_x + sx) * 4 + 1] !== 0) { sfcY = y; break; }
+            }
+            if (sfcY <= 0) continue;
+            const x0 = simToScreenX(sx - 0.5);
+            rc.fillRect(x0, simToScreenY(sfcY), simToScreenX(sx + step - 0.5) - x0, screenBot - simToScreenY(sfcY));
+          }
+
+          for (let sx = 0; sx < sim_res_x; sx += step) {
+            const b  = (y, c) => baseAll[ (y * sim_res_x + sx) * 4 + c];
+            const w  = (y, c) => waterAll[(y * sim_res_x + sx) * 4 + c];
+
+            // Find surface
+            let sfcY = -1;
+            for (let y = 0; y < sim_res_y; y++) {
+              if (wallAll[(y * sim_res_x + sx) * 4 + 1] !== 0) { sfcY = y; break; }
+            }
+            if (sfcY < 0) continue;
+
+            // MU CAPE: most unstable parcel in lowest 3km
+            const maxMUlevel = Math.min(sfcY + Math.round(3000 / dzR), sim_res_y - 1);
+            let muCape = 0;
+            for (let startY = sfcY; startY <= maxMUlevel; startY++) {
+              if (wallAll[(startY * sim_res_x + sx) * 4 + 1] === 0) continue;
+              const startTempC = b(startY,3) - ((startY/sim_res_y)*guiControls.simHeight*guiControls.dryLapseRate)/1000.0 - 273.15;
+              const mixW = maxWater(CtoK(KtoC(dewpoint(Math.max(w(startY,0), 0)))));
+              let prevT = startTempC, prevCW = 0, parcelCape = 0;
+              for (let y = startY + 1; y < sim_res_y; y++) {
+                const envTk = CtoK(b(y,3) - ((y/sim_res_y)*guiControls.simHeight*guiControls.dryLapseRate)/1000.0 - 273.15);
+                const cw   = Math.max(mixW - maxWater(CtoK(prevT + dT)), 0);
+                const dWt  = (cw - prevCW) * guiControls.evapHeat;
+                const mult = dT / (dT - dWt) || 1;
+                prevT  = prevT + dT * mult;
+                prevCW = Math.max(mixW - maxWater(CtoK(prevT)), 0);
+                if (9.81 * (CtoK(prevT) - envTk) / envTk > 0)
+                  parcelCape += 9.81 * (CtoK(prevT) - envTk) / envTk * dzR;
+              }
+              if (parcelCape > muCape) muCape = parcelCape;
+            }
+            if (muCape < 100) continue;
+
+            // ML CAPE + CINH (mean lowest 1km)
+            const mlLevels = Math.max(1, Math.min(sim_res_y - sfcY, Math.round(1000 / dzR)));
+            let sumT = 0, sumTd = 0;
+            for (let y = sfcY; y < sfcY + mlLevels; y++) {
+              sumT  += b(y,3) - ((y/sim_res_y)*guiControls.simHeight*guiControls.dryLapseRate)/1000.0 - 273.15;
+              sumTd += KtoC(dewpoint(Math.max(w(y,0), 0)));
+            }
+            const mlMixW = maxWater(CtoK(sumTd / mlLevels));
+            let mlPrevT = sumT/mlLevels, mlPrevCW = 0, mlCape = 0, mlCinh = 0;
+            for (let y = sfcY + 1; y < sim_res_y; y++) {
+              const envTk = CtoK(b(y,3) - ((y/sim_res_y)*guiControls.simHeight*guiControls.dryLapseRate)/1000.0 - 273.15);
+              const cw   = Math.max(mlMixW - maxWater(CtoK(mlPrevT + dT)), 0);
+              const dWt  = (cw - mlPrevCW) * guiControls.evapHeat;
+              const mult = dT / (dT - dWt) || 1;
+              mlPrevT  = mlPrevT + dT * mult;
+              mlPrevCW = Math.max(mlMixW - maxWater(CtoK(mlPrevT)), 0);
+              const buoy = 9.81 * (CtoK(mlPrevT) - envTk) / envTk;
+              if (buoy > 0) mlCape += buoy * dzR;
+              else if (y * dzR < 10000) mlCinh += buoy * dzR;
+            }
+
+            // LCL, shear, STP
+            const sfcTempC = b(sfcY,3) - ((sfcY/sim_res_y)*guiControls.simHeight*guiControls.dryLapseRate)/1000.0 - 273.15;
+            const mlLcl    = Math.max(0, (sfcTempC - KtoC(dewpoint(Math.max(w(sfcY,0),0)))) / 8.0 * 1000.0);
+            const t3y = Math.min(sfcY + Math.round(3000/dzR), sim_res_y-1);
+            const t6y = Math.min(sfcY + Math.round(6000/dzR), sim_res_y-1);
+            const shear3 = Math.hypot(rawVelocityTo_ms(b(t3y,0))-rawVelocityTo_ms(b(sfcY,0)), rawVelocityTo_ms(b(t3y,1))-rawVelocityTo_ms(b(sfcY,1)));
+            const shear6 = Math.hypot(rawVelocityTo_ms(b(t6y,0))-rawVelocityTo_ms(b(sfcY,0)), rawVelocityTo_ms(b(t6y,1))-rawVelocityTo_ms(b(sfcY,1)));
+            const stp = (mlCape/1500) * (shear3*50/150) * Math.max(0,(2000-mlLcl)/1000) * Math.min(1,(mlCinh+200)/150);
+
+            const rColor = getRisk(muCape, shear6, stp);
+            if (!rColor) continue;
+            rc.fillStyle = rColor;
+            rc.fillRect(simToScreenX(sx-0.5), screenTop,
+                        simToScreenX(sx+step-0.5) - simToScreenX(sx-0.5),
+                        simToScreenY(sfcY) - screenTop);
+          }
+
+          const legend = [
+            {label:'High',color:'#FF00FF'},{label:'Moderate',color:'#FF4400'},
+            {label:'Enhanced',color:'#FF8800'},{label:'Slight',color:'#FFFF00'},
+            {label:'Marginal',color:'#00FF88'},{label:'Thunderstorm',color:'#00AAFF'},
+          ];
+          rc.font = 'bold 13px monospace'; rc.textBaseline = 'middle';
+          let ly = 20;
+          legend.forEach(e => {
+            rc.fillStyle = e.color; rc.fillRect(10, ly-7, 16, 14);
+            rc.fillStyle = 'white'; rc.fillText(e.label, 32, ly); ly += 20;
+          });
+        }
+      } else if (riskCanvas) {
+        riskCanvas.style.display = 'none';
+      }
+
+  } // end of display mode else block
+
+  if (displayWeatherStations) {
+    for (i = 0; i < weatherStations.length; i++) {
+      weatherStations[i].updateCanvas();
+    }
   }
+
+  if (displayRadars) {
+    for (i = 0; i < radars.length; i++) {
+      radars[i].updateCanvas();
+    }
+  }
+
+  frameNum++;
+  requestAnimationFrame(draw);
+} // end of draw() outer
 
   //////////////////////////////////////////////////////// functions:
 
@@ -7118,85 +8052,6 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
     const monthStr = simDateTime.toLocaleString('en-us', {month : 'short', day : 'numeric'});
     return timeStr + '&nbsp; ' + monthStr;
-  }
-
-  function onUpdateTimeOfDaySlider()
-  {
-    let minutes = (guiControls.timeOfDay % 1) * 60;
-    simDateTime.setHours(guiControls.timeOfDay, minutes);
-    updateSunlight();
-  }
-
-  function onUpdateMonthSlider()
-  {
-    let month = guiControls.month - 0.96;
-    let date = (month % 1) * 30;
-    simDateTime.setMonth(month, date);
-    updateSunlight();
-  }
-
-  function updateSunlight(deltaT_hours)
-  {
-    if (deltaT_hours != 'MANUAL_ANGLE') {
-      if (deltaT_hours != null) {                                                   // increment time
-        simDateTime = new Date(simDateTime.getTime() + deltaT_hours * 3600 * 1000); // convert hours to ms and add to current date
-        guiControls.timeOfDay = simDateTime.getHours() + simDateTime.getMinutes() / 60. + simDateTime.getSeconds() / 3600.;
-        guiControls.month = simDateTime.getMonth() + 1 + simDateTime.getDate() / 30.5 + simDateTime.getHours() / 720.;
-      } else {
-        for (i = 0; i < weatherStations.length; i++) {
-          weatherStations[i].clearChart();
-        }
-      }
-
-      let timeOfDayRad = (guiControls.timeOfDay / 24.0) * 2.0 * Math.PI; // convert to radians
-
-      timeOfDayRad -= Math.PI / 2.0;
-
-      let tiltDeg = Math.sin(guiControls.month * 0.5236 - 1.92) * 23.5; // axis tilt
-      let t = tiltDeg * degToRad;                                       // axis tilt in radians
-      let l = guiControls.latitude * degToRad;                          // latitude
-
-      guiControls.sunAngle = Math.asin(Math.sin(t) * Math.sin(l) + Math.cos(t) * Math.cos(l) * Math.sin(timeOfDayRad)) * radToDeg;
-
-      if (guiControls.latitude - tiltDeg < 0.0) {
-        // If sun is to the north, flip angle
-        guiControls.sunAngle = 180.0 - guiControls.sunAngle;
-      }
-    }
-    let solarZenithAngleDeg = (guiControls.sunAngle - 90);
-    let solarZenithAngle = solarZenithAngleDeg * degToRad; // Solar zenith angle centered around 0. (0 = vertical)
-    // Calculations visualized: https://www.desmos.com/calculator/kzr76zj5hq
-    if (Math.abs(solarZenithAngle) < 85.0 * degToRad) {
-      sunIsUp = true;
-    } else {
-      sunIsUp = false;
-    }
-    //          console.log(solarZenithAngle, sunIsUp);
-    //  let sunIntensity = guiControls.sunIntensity *
-    // Math.pow(Math.max(Math.sin((90.0 - Math.abs(guiControls.sunAngle)) *
-    // degToRad) - 0.1, 0.0) * 1.111, 0.4);
-    let sunIntensity = guiControls.sunIntensity * Math.pow(Math.max(Math.sin((180.0 - guiControls.sunAngle) * degToRad), 0.0), 0.1) * 1300.0; // max 1300 w/m2 at 12 km
-    // console.log('sunIntensity: ', sunIntensity);
-
-    // minShadowLight = clamp(((90 + 10) - Math.abs(solarZenithAngleDeg)) * 0.006, 0.005, 0.040); // decrease until the sun goes 10 deg below the horizon
-
-    minShadowLight = map_range_C(Math.abs(solarZenithAngleDeg), 100.0, 85.0, 0.005, 0.040); // decrease until the sun goes 10 deg below the horizon
-
-    gl.useProgram(boundaryProgram);
-    gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'sunAngle'), solarZenithAngle);
-    gl.useProgram(lightingProgram);
-    gl.uniform1f(gl.getUniformLocation(lightingProgram, 'sunIntensity'), sunIntensity);
-    gl.uniform1f(gl.getUniformLocation(lightingProgram, 'sunAngle'), solarZenithAngle);
-    gl.useProgram(realisticDisplayProgram);
-    gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'sunAngle'), solarZenithAngle);
-    gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'minShadowLight'), minShadowLight);
-    gl.useProgram(skyBackgroundDisplayProgram);
-    gl.uniform1f(gl.getUniformLocation(skyBackgroundDisplayProgram, 'minShadowLight'), minShadowLight);
-
-    if (guiControls.dayNightCycle)
-      clockEl.innerHTML = dateTimeStr(); // update clock
-    else
-      clockEl.innerHTML = '';
   }
 
 
@@ -7232,12 +8087,18 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
           weatherStationsPositions[i * 2 + 1] = weatherStations[i].getYpos();
         }
 
+        let radarsPositions = new Int16Array(radars.length * 2);
+        for (i = 0; i < radars.length; i++) {
+          radarsPositions[i * 2] = radars[i].getXpos();
+          radarsPositions[i * 2 + 1] = radars[i].getYpos();
+        }
+
 
         let strGuiControls = JSON.stringify(guiControls);
 
         let saveDataArray = [
           Uint16Array.of(sim_res_x), Uint16Array.of(sim_res_y), baseTextureValues, waterTextureValues, wallTextureValues, precipBufferValues, Uint16Array.of(weatherStations.length),
-          weatherStationsPositions, strGuiControls
+          weatherStationsPositions, Uint16Array.of(radars.length), radarsPositions, strGuiControls
         ];
         let blob = new Blob(saveDataArray);        // combine everything into a single blob
         let arrBuff = await blob.arrayBuffer();    // turn into array for pako
@@ -7269,28 +8130,28 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     if (gl.getProgramParameter(program, gl.LINK_STATUS)) {
       return program; // linked succesfully
     } else {
-      throw 'ERROR: ' + gl.getProgramInfoLog(program);
+      const infoLog = gl.getProgramInfoLog(program);
       gl.deleteProgram(program);
+      console.error('Program link error:', infoLog);
+      throw new Error('Program link error: ' + infoLog);
     }
   }
 
   async function loadSourceFile(fileName)
   {
     try {
-      var request = new XMLHttpRequest();
-      request.open('GET', fileName, false);
-      request.send(null);
+      const response = await fetch(fileName);
+      if (!response.ok) {
+        if (response.status === 404)
+          throw new Error('File not found: ' + fileName);
+        throw new Error('File loading error: ' + response.status + ' ' + response.statusText + ' for ' + fileName);
+      }
+      return await response.text();
     } catch (error) {
       await loadingBar.showError('ERROR loading shader files! If you just opened index.html, try again using a local server!');
+      console.error('Shader source load failed:', fileName, error);
       throw error;
     }
-
-    if (request.status === 200)
-      return request.responseText;
-    else if (request.status === 404)
-      throw 'File not found: ' + fileName;
-    else
-      throw 'File loading error' + request.status;
   }
 
   async function loadShader(nameIn)
@@ -7330,13 +8191,15 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     // console.timeEnd('compileShader')
 
     if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
-      // Compile error
-      throw filename + ' COMPILATION ' + gl.getShaderInfoLog(shader);
+      const infoLog = gl.getShaderInfoLog(shader);
+      await loadingBar.showError('ERROR compiling shader: ' + nameIn + '\n' + infoLog);
+      console.error('Shader compile error:', nameIn, infoLog);
+      gl.deleteShader(shader);
+      throw new Error(filename + ' COMPILATION ' + infoLog);
     }
-    return new Promise(async (resolve) => {
-      await loadingBar.add(3, 'Loading shader: ' + nameIn);
-      resolve(shader);
-    });
+
+    await loadingBar.add(3, 'Loading shader: ' + nameIn);
+    return shader;
   }
 
   function adjIterPerFrame(adj) { guiControls.IterPerFrame = Math.round(clamp(guiControls.IterPerFrame + adj, 1, 50)); }

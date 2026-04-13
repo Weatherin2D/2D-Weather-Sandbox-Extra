@@ -312,7 +312,7 @@
                 alt="Sounding not available, Please select a different time.">
         </div>
 
-        <form id="startBtn" oninput="updateSetupSliders();">
+        <div id="startBtn">
             <div class="resolution-warning">
                 <p>Choose a resolution - Higher resolutions provide more detail but significantly impact performance
                 </p>
@@ -350,9 +350,9 @@
                             12000 m are not optimized and may be buggy!</i></td>
                 </tr>
             </table>
-            <input type="button" value="Create New Simulation" onclick="loadData ()" />
+            <input type="button" value="Create New Simulation" onclick="loadData()" />
             <i>Move the mouse until you see a terrain you like, then just click to start.</i>
-        </form>
+        </div>
 
 
         <p style="margin-top: 70px;">

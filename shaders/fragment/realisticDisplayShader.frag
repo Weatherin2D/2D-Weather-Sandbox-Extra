@@ -119,7 +119,7 @@ const float lightningTexAspect = lightningTexRes.x / lightningTexRes.y;
 float calcLightningTime(float startIterNum)
 {
   float lightningTime = iterNum - startIterNum;
-  return lightningTime / 5.0; // 30.0    0. to 1. leader stage, 1. + Flash stage
+  return lightningTime / 60.0; // 30.0    0. to 1. leader stage, 1. + Flash stage
 }
 
 float lightningIntensityOverTime(float Tin, vec2 lightningPos, float intensity)
@@ -156,7 +156,7 @@ vec3 displayLightning(vec2 pos, float lightningTime, float currentLightningInten
 
   float pixVal = texture(lightningTex, lightningTexCoord).r;
 
-  const float branchShowFactor = 2.5;       // 1.5
+  const float branchShowFactor = 0.6;       // 1.5
   const float leaderBrightness = 50000.;    // 200.0
   const float mainBoltBrightness = 100000.; // 100000.
 
