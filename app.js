@@ -1292,6 +1292,7 @@ class Radar
   #enabled = false;
   #menuDiv;
   #selectBtn;
+  #menuSelectBtn;
 
   constructor(xIn, yIn)
   {
@@ -1471,6 +1472,18 @@ class Radar
     enabledToggle.addEventListener('change', function() { thisObj.setEnabled(this.checked); });
     body.appendChild(enabledToggle);
 
+    // Select button inside menu
+    body.appendChild(mkLabel(''));
+    this.#menuSelectBtn = document.createElement('button');
+    this.#menuSelectBtn.textContent = 'Select';
+    this.#menuSelectBtn.style.cssText = 'width:100%;padding:7px;cursor:pointer;background:#1a1a2e;color:#4a90e2;border:2px solid #4a90e2;border-radius:5px;font-size:13px;font-weight:bold;';
+    this.#menuSelectBtn.addEventListener('click', function(event) {
+      event.stopPropagation();
+      radars.forEach(r => r.setEnabled(false));
+      thisObj.setEnabled(true);
+    });
+    body.appendChild(this.#menuSelectBtn);
+
     this.#menuDiv.appendChild(body);
     document.body.appendChild(this.#menuDiv);
   }
@@ -1506,6 +1519,7 @@ class Radar
   setEnabled(val) {
     this.#enabled = val;
     if (this.#selectBtn) this.#selectBtn.style.display = val ? 'none' : 'block';
+    if (this.#menuSelectBtn) this.#menuSelectBtn.style.display = val ? 'none' : 'block';
   }
 
   setHidden(hidden)
@@ -1577,22 +1591,35 @@ async function loadData()
 
     if (version == saveFileVersionID || version == 1939327491) { // also allow previous version, settings will not be loaded
       // check version id, only proceed if file has the right version id
-      let fileArrBuf = await file.slice(4).arrayBuffer(); // slice from behind version id to
-      // the end of the file
-      let fileUint8Arr = new Uint8Array(fileArrBuf);        // convert to Uint8Array for pako
-      let decompressed = window.pako.inflate(fileUint8Arr); // uncompress
-      let dataBlob = new Blob([ decompressed ]);            // turn into blob
+      let fileArrBuf = await file.slice(4).arrayBuffer();
+      let fileUint8Arr = new Uint8Array(fileArrBuf);
+      let decompressed;
+      try {
+        decompressed = window.pako.inflate(fileUint8Arr);
+      } catch(e) {
+        alert('Failed to decompress save file. The file may be corrupted or from an incompatible version.');
+        document.getElementById('fileInput').value = '';
+        return;
+      }
+      let dataBlob = new Blob([ decompressed ]);
 
       let sliceStart = 0;
       let sliceEnd = 4;
 
-      let resBlob = dataBlob.slice(sliceStart, sliceEnd); // extract first 4 bytes containing resolution
+      let resBlob = dataBlob.slice(sliceStart, sliceEnd);
       let resBuf = await resBlob.arrayBuffer();
       resArray = new Uint16Array(resBuf);
       sim_res_x = resArray[0];
       sim_res_y = resArray[1];
 
+      if (!sim_res_x || !sim_res_y || sim_res_x > 10000 || sim_res_y > 10000) {
+        alert('Save file has invalid resolution (' + sim_res_x + 'x' + sim_res_y + '). File may be corrupted.');
+        document.getElementById('fileInput').value = '';
+        return;
+      }
+
       NUM_DROPLETS = (sim_res_x * sim_res_y) / NUM_DROPLETS_DEVIDER;
+      NUM_DROPLETS = Math.min(NUM_DROPLETS, 120000); // safety cap to prevent freeze on large old files
 
       saveFileName = file.name;
 
@@ -4653,9 +4680,9 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       function getRisk(cape, shear6, stp_val) {
         if (cape < 100 || shear6 < 3) return {label: 'None', color: '#444444'};
         if (cape < 300 || shear6 < 5) return {label: 'Thunderstorm', color: '#00AAFF'};
-        if (stp_val >= 4 || (cape >= 3000 && shear6 >= 25)) return {label: 'High', color: '#FF00FF'};
-        if (stp_val >= 2 || (cape >= 2000 && shear6 >= 20)) return {label: 'Moderate', color: '#FF4400'};
-        if (stp_val >= 1 || (cape >= 1500 && shear6 >= 15)) return {label: 'Enhanced', color: '#FF8800'};
+        if (stp_val >= 10 || (cape >= 5000 && shear6 >= 40)) return {label: 'High', color: '#FF00FF'};
+        if (stp_val >= 6 || (cape >= 3500 && shear6 >= 30)) return {label: 'Moderate', color: '#FF4400'};
+        if (stp_val >= 3 || (cape >= 2500 && shear6 >= 22)) return {label: 'Enhanced', color: '#FF8800'};
         if (cape >= 500 && shear6 >= 10) return {label: 'Slight', color: '#FFFF00'};
         return {label: 'Marginal', color: '#00FF88'};
       }
@@ -6920,6 +6947,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
   // preload uniform locations - avoids expensive driver roundtrips every frame
   var uniformLocation_boundaryProgram_iterNum = gl.getUniformLocation(boundaryProgram, 'iterNum');
+  var ulocsReady = false; // flag so updateSunlight skips GPU calls before cache is built
 
   // updateSunlight uniforms
   const uloc_boundary_sunAngle         = gl.getUniformLocation(boundaryProgram,            'sunAngle');
@@ -7038,6 +7066,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   const uloc_tempChg_wallTex           = gl.getUniformLocation(temperatureChangeDisplayProgram, 'wallTex');
   const uloc_tempChg_colorScalesTex    = gl.getUniformLocation(temperatureChangeDisplayProgram, 'colorScalesTex');
   const uloc_tempChg_colorScaleColumn  = gl.getUniformLocation(temperatureChangeDisplayProgram, 'colorScaleColumn');
+  ulocsReady = true; // all uniform locations cached, updateSunlight can now use them
 
 
   for (i = 0; i < weatherStations.length; i++) { // initial measurement at weather stations
@@ -7109,16 +7138,18 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
     minShadowLight = map_range_C(Math.abs(solarZenithAngleDeg), 100.0, 85.0, 0.005, 0.040); // decrease until the sun goes 10 deg below the horizon
 
-    gl.useProgram(boundaryProgram);
-    gl.uniform1f(uloc_boundary_sunAngle, solarZenithAngle);
-    gl.useProgram(lightingProgram);
-    gl.uniform1f(uloc_lighting_sunIntensity, sunIntensity);
-    gl.uniform1f(uloc_lighting_sunAngle, solarZenithAngle);
-    gl.useProgram(realisticDisplayProgram);
-    gl.uniform1f(uloc_realistic_sunAngle, solarZenithAngle);
-    gl.uniform1f(uloc_realistic_minShadowLight, minShadowLight);
-    gl.useProgram(skyBackgroundDisplayProgram);
-    gl.uniform1f(uloc_sky_minShadowLight, minShadowLight);
+    if (ulocsReady) {
+      gl.useProgram(boundaryProgram);
+      gl.uniform1f(uloc_boundary_sunAngle, solarZenithAngle);
+      gl.useProgram(lightingProgram);
+      gl.uniform1f(uloc_lighting_sunIntensity, sunIntensity);
+      gl.uniform1f(uloc_lighting_sunAngle, solarZenithAngle);
+      gl.useProgram(realisticDisplayProgram);
+      gl.uniform1f(uloc_realistic_sunAngle, solarZenithAngle);
+      gl.uniform1f(uloc_realistic_minShadowLight, minShadowLight);
+      gl.useProgram(skyBackgroundDisplayProgram);
+      gl.uniform1f(uloc_sky_minShadowLight, minShadowLight);
+    }
 
     if (guiControls.dayNightCycle)
       clockEl.innerHTML = dateTimeStr(); // update clock
