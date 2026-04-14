@@ -81,10 +81,12 @@ void main()
   vec3  color        = vec3(0.0);
   float pixelOpacity = opacity;
 
+  // Grid-based precipitation mass (smooth, no particle artifacts)
+  float gridPrecip = waterData[2];
+
   if (productType == 0) {
     // --- Reflectivity ---
-    float massScore = precipFeedback.r;
-    float dBZ = 45.0 + 10.0 * log(max(massScore * 30.0, 1e-9)) / log(10.0);
+    float dBZ = 45.0 + 10.0 * log(max(gridPrecip * 30.0, 1e-9)) / log(10.0);
     dBZ = clamp(dBZ, 0.0, 85.0);
     if (dBZ < 1.0) discard;
 
@@ -99,8 +101,6 @@ void main()
 
   } else if (productType == 1) {
     // --- Radial Velocity ---
-    float massScore = precipFeedback.r;
-    if (massScore < 0.0001) discard;
 
     // Use the original angle (before snapping) for radial direction
     // to avoid wrap-around artifacts
@@ -112,14 +112,38 @@ void main()
     // t=0.5 = zero velocity (grey at center stop 16 of 33)
     float t = clamp((radialVel / maxRaw + 1.0) * 0.5, 0.0, 1.0);
 
+    // Skip near-zero air velocity with no precip to avoid noise
+    if (gridPrecip < 0.0001 && abs(radialVel) < maxRaw * 0.05) discard;
+
     color = sampleColorScaleStepped(t);
-    pixelOpacity *= min(massScore * 300.0, 1.0);
+    // Precip gets full opacity; clear-air gets reduced opacity based on wind speed
+    float airOpacity = clamp(abs(radialVel) / (maxRaw * 0.3), 0.0, 1.0) * 0.45;
+    pixelOpacity *= (gridPrecip > 0.0001) ? min(gridPrecip * 300.0, 1.0) : airOpacity;
+
+  } else if (productType == 3) {
+    // --- Echo Tops ---
+    // Find the highest altitude with significant precipitation at this column.
+    // Ray-march upward from ground to top of sim, track highest echo level.
+    float echoTopFrac = 0.0; // normalized 0-1 height of highest echo
+    float threshold = 0.0005;
+    for (int step = 0; step < 300; step++) {
+      float yFrac = float(step) / 300.0;
+      vec2 sampleTC = vec2(snappedTC.x, yFrac);
+      ivec4 wData = texture(wallTexture, sampleTC);
+      if (wData[1] == 0) continue; // skip wall/ground cells
+      vec4 wSample = texture(waterTexture, sampleTC);
+      if (wSample[2] > threshold) echoTopFrac = yFrac;
+    }
+    if (echoTopFrac < 0.001) discard;
+    // Map height to color scale — sim top (~1.0) = 60 kft, scale linearly
+    float t = clamp(echoTopFrac, 0.0, 1.0);
+    color = sampleColorScaleStepped(t);
+    pixelOpacity *= smoothstep(0.01, 0.05, echoTopFrac);
 
   } else {
-    // --- Correlation Coefficient ---
     // CC is high for uniform particles (pure rain or pure snow),
     // low for mixed phase, large hail, or non-meteorological targets.
-    float precip = precipFeedback.r;
+    float precip = gridPrecip;
     if (precip < 0.0001) discard;
 
     // Temperature at this cell (potential T → real T approximation)
@@ -148,7 +172,7 @@ void main()
     // Map 0.2–1.05 → 0–1 for color scale
     float t = clamp((cc - 0.2) / 0.85, 0.0, 1.0);
     color = sampleColorScaleStepped(t);
-    pixelOpacity *= min(precip * 300.0, 1.0);
+    pixelOpacity *= min(gridPrecip * 300.0, 1.0);
   }
 
   float edgeFade = pow(max(1.0 - distFrac, 0.0), 0.3);

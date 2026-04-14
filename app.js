@@ -435,6 +435,9 @@ var displayRadars = true;
 var riskCanvas = null;
 var riskData = []; // stores {sx, sfcY, color} computed on frequency interval
 
+var radarOverlayCanvas = null;
+var radarImageData = null;
+
 var sunIsUp = true;
 
 var airplaneMode = false;
@@ -1275,7 +1278,7 @@ class Weatherstation
 class Radar
 {
   #width = 80;
-  #height = 60;
+  #height = 90;
   #mainDiv;
   #canvas;
   #c; // 2d canvas context
@@ -1284,10 +1287,11 @@ class Radar
 
   #name = 'Radar';
   #product = 'reflectivity';
-  #range = 1000;
-  #resolution = 2.0;
-  #enabled = true;
+  #range = 2500;
+  #resolution = 25.0;
+  #enabled = false;
   #menuDiv;
+  #selectBtn;
 
   constructor(xIn, yIn)
   {
@@ -1324,6 +1328,19 @@ class Radar
     this.#canvas.addEventListener('contextmenu', function(event) { event.preventDefault(); });
 
     this.createMenu();
+
+    // Select button below icon — only visible when disabled
+    this.#selectBtn = document.createElement('button');
+    this.#selectBtn.textContent = 'Select';
+    this.#selectBtn.style.cssText = 'position:absolute;left:50%;transform:translateX(-50%);top:' + (this.#height - 22) + 'px;font-size:13px;font-weight:bold;padding:4px 14px;cursor:pointer;background:#1a1a2e;color:#4a90e2;border:2px solid #4a90e2;border-radius:5px;white-space:nowrap;z-index:2;';
+    let thisObj2 = this;
+    this.#selectBtn.addEventListener('click', function(event) {
+      event.stopPropagation();
+      radars.forEach(r => r.setEnabled(false));
+      thisObj2.setEnabled(true);
+    });
+    this.#mainDiv.appendChild(this.#selectBtn);
+    this.#selectBtn.style.display = this.#enabled ? 'none' : 'block';
   }
 
   createMenu()
@@ -1349,9 +1366,24 @@ class Radar
 
     // Header bar
     const hdr = document.createElement('div');
-    hdr.style.cssText = 'display:flex; justify-content:space-between; align-items:center; padding:10px 14px; background:#12122a; border-bottom:1px solid #3a3a5c;';
+    hdr.style.cssText = 'display:flex; justify-content:space-between; align-items:center; padding:10px 14px; background:#12122a; border-bottom:1px solid #3a3a5c; cursor:move;';
+    // Drag to move
+    let dragOffX = 0, dragOffY = 0, dragging = false;
+    hdr.addEventListener('mousedown', (e) => {
+      if (e.target === closeBtn) return;
+      dragging = true;
+      dragOffX = e.clientX - thisObj.#menuDiv.getBoundingClientRect().left;
+      dragOffY = e.clientY - thisObj.#menuDiv.getBoundingClientRect().top;
+      e.preventDefault();
+    });
+    document.addEventListener('mousemove', (e) => {
+      if (!dragging) return;
+      thisObj.#menuDiv.style.left = (e.clientX - dragOffX) + 'px';
+      thisObj.#menuDiv.style.top  = (e.clientY - dragOffY) + 'px';
+    });
+    document.addEventListener('mouseup', () => { dragging = false; });
     const hdrTitle = document.createElement('span');
-    hdrTitle.textContent = '📡 Radar Settings';
+    hdrTitle.textContent = '📡 ' + this.#name + ' Settings';
     hdrTitle.style.fontWeight = 'bold';
     const closeBtn = document.createElement('button');
     closeBtn.textContent = '✕';
@@ -1383,14 +1415,14 @@ class Radar
     // Name
     body.appendChild(mkLabel('Name'));
     const nameInput = mkInput('text', this.#name);
-    nameInput.addEventListener('change', function() { thisObj.#name = this.value; });
+    nameInput.addEventListener('change', function() { thisObj.#name = this.value; hdrTitle.textContent = '📡 ' + thisObj.#name + ' Settings'; });
     body.appendChild(nameInput);
 
     // Product
     body.appendChild(mkLabel('Product'));
     const productSelect = document.createElement('select');
     productSelect.style.cssText = nameInput.style.cssText;
-    ['reflectivity', 'velocity', 'correlation'].forEach(prod => {
+    ['reflectivity', 'velocity', 'correlation', 'echotops'].forEach(prod => {
       const opt = document.createElement('option');
       opt.value = prod;
       opt.textContent = prod.charAt(0).toUpperCase() + prod.slice(1);
@@ -1406,7 +1438,7 @@ class Radar
     const rangeSlider = document.createElement('input');
     rangeSlider.type = 'range';
     rangeSlider.min = '10';
-    rangeSlider.max = '1000';
+    rangeSlider.max = '5000';
     rangeSlider.value = this.#range;
     rangeSlider.style.cssText = 'width:100%; margin-top:4px; accent-color:#4a90e2;';
     rangeSlider.addEventListener('input', function() {
@@ -1420,7 +1452,7 @@ class Radar
     const resSlider = document.createElement('input');
     resSlider.type = 'range';
     resSlider.min = '0.3';
-    resSlider.max = '10.0';
+    resSlider.max = '50.0';
     resSlider.step = '0.1';
     resSlider.value = thisObj.#resolution;
     resSlider.style.cssText = 'width:100%; margin-top:4px; accent-color:#4a90e2;';
@@ -1436,7 +1468,7 @@ class Radar
     enabledToggle.type = 'checkbox';
     enabledToggle.checked = this.#enabled;
     enabledToggle.style.cssText = 'width:18px; height:18px; cursor:pointer; accent-color:#4a90e2;';
-    enabledToggle.addEventListener('change', function() { thisObj.#enabled = this.checked; });
+    enabledToggle.addEventListener('change', function() { thisObj.setEnabled(this.checked); });
     body.appendChild(enabledToggle);
 
     this.#menuDiv.appendChild(body);
@@ -1471,6 +1503,10 @@ class Radar
   getRange() { return this.#range; }
   getResolution() { return this.#resolution; }
   getEnabled() { return this.#enabled; }
+  setEnabled(val) {
+    this.#enabled = val;
+    if (this.#selectBtn) this.#selectBtn.style.display = val ? 'none' : 'block';
+  }
 
   setHidden(hidden)
   {
@@ -3445,7 +3481,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       let gearPos = clamp(-(heightAboveGround - gearTouchAlt), 0.0, 5.0) + this.#gearExtPos; // 0 is all the way down, positive is up into the airplane
 
       gl.useProgram(skyBackgroundDisplayProgram);
-      gl.uniform2f(gl.getUniformLocation(skyBackgroundDisplayProgram, 'planeDirectionAndGearPos'), this.directionIsLeft, gearPos);
+      gl.uniform2f(uloc_sky_planeDirectionAndGearPos, this.directionIsLeft, gearPos);
 
       if (wallTextureValues[0] != 2 && (heightAboveObstacles < 6.0 || radarAltL < 6.0 || (heightAboveObstacles < 10.0 && Math.abs(this.phys.angle) > 0.25))) { // crash into the surface
         guiControls.IterPerFrame = 1;
@@ -3626,9 +3662,9 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
       // console.log(normXpos, normYpos);
       gl.useProgram(skyBackgroundDisplayProgram);
-      gl.uniform3f(gl.getUniformLocation(skyBackgroundDisplayProgram, 'planePos'), normXpos, normYpos, this.directionIsLeft ? this.phys.angle : -this.phys.angle);
+      gl.uniform3f(uloc_sky_planePos, normXpos, normYpos, this.directionIsLeft ? this.phys.angle : -this.phys.angle);
       gl.useProgram(advectionProgram);
-      gl.uniform4f(gl.getUniformLocation(advectionProgram, 'airplaneValues'), normXpos, normYpos, this.throttle, this.#framesSinceCrash > 0 ? 1.0 : (zPressed ? -1.0 : 0.0));
+      gl.uniform4f(uloc_adv_airplaneValues, normXpos, normYpos, this.throttle, this.#framesSinceCrash > 0 ? 1.0 : (zPressed ? -1.0 : 0.0));
       gl.useProgram(skyBackgroundDisplayProgram);
 
       if (this.#camFollow) {
@@ -3786,10 +3822,21 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
     fluidParams_folder.add(guiControls, 'dragMultiplier', 0.0, 1.0, 0.01)
       .onChange(function() {
-        gl.useProgram(velocityProgram);
-        gl.uniform1f(gl.getUniformLocation(velocityProgram, 'dragMultiplier'), guiControls.dragMultiplier);
+        if (!guiControls.soundingMode) {
+          gl.useProgram(velocityProgram);
+          gl.uniform1f(gl.getUniformLocation(velocityProgram, 'dragMultiplier'), guiControls.dragMultiplier);
+        }
       })
       .name('Drag');
+
+    guiControls.soundingMode = false;
+    fluidParams_folder.add(guiControls, 'soundingMode')
+      .onChange(function() {
+        gl.useProgram(velocityProgram);
+        gl.uniform1f(gl.getUniformLocation(velocityProgram, 'dragMultiplier'),
+          guiControls.soundingMode ? 999.0 : guiControls.dragMultiplier);
+      })
+      .name('Sounding Mode');
 
     fluidParams_folder.add(guiControls, 'wind', -10.0, 10.0, 0.01)
       .onChange(function() {
@@ -3872,7 +3919,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       .listen();
     UI_folder.add(guiControls, 'brushSize', 1, 200, 1).name('Brush Diameter').listen();
     UI_folder.add(guiControls, 'wholeWidth').name('Whole Width Brush').listen();
-    UI_folder.add(guiControls, 'brushIntensity', 0.005, 0.05, 0.001).name('Brush Intensity');
+    UI_folder.add(guiControls, 'brushIntensity', 0.005, 1.0, 0.001).name('Brush Intensity');
     UI_folder.add(guiControls, 'allowCaves')
       .onChange(function() {
         gl.useProgram(boundaryProgram);
@@ -4700,13 +4747,13 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
         if (!hasCAPE) {
           hazard = 'None'; hazardColor = '#888888';
-        } else if (vtp >= 3 && extremeCAPE && extremeShear6 && veryLowLCL) {
+        } else if (vtp >= 8 && extremeCAPE && extremeShear6 && veryLowLCL) {
           hazard = 'PDS Tornado'; hazardColor = '#FF00FF';
-        } else if (vtp >= 1.5 || (stp >= 4 && lowLCL && highShear6)) {
+        } else if (vtp >= 5 || (stp >= 10 && lowLCL && highShear6)) {
           hazard = 'Tornado'; hazardColor = '#FF0066';
-        } else if (stp >= 1 && lowLCL) {
+        } else if (stp >= 2 && lowLCL) {
           hazard = 'Slight Tornado'; hazardColor = '#FF6699';
-        } else if ((extremeCAPE && extremeShear6) || (highCAPE && extremeShear6 && steepLapse)) {
+        } else if (hasCAPE && highShear6) {
           hazard = 'Supercell'; hazardColor = '#FF4400';
         } else if (extremeLapse && highCAPE && highShear6) {
           hazard = 'Giant Hail'; hazardColor = '#AA00FF';
@@ -4939,6 +4986,10 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     // Render output framebuffers need to match canvas resolution
     createBloomFBOs(); // recreate bloom framebuffers
     createHdrFBO();    // recreate hdr framebuffer
+
+    // Recreate radar cache texture at new screen size
+    gl.bindTexture(gl.TEXTURE_2D, radarTexture);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, canvas.width, canvas.height, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
   });
 
   function logSample()
@@ -5636,6 +5687,9 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   const radarFragmentShader = await loadShader('radarDisplayShader.frag');
   let radarDisplayProgram; try { radarDisplayProgram = createProgram(radarVertexShader, radarFragmentShader, []); } catch(e) { loadingBar.showError("Radar link error: " + e.message); throw e; }
 
+  const passthroughFragmentShader = await loadShader('passthroughShader.frag');
+  let passthroughProgram; try { passthroughProgram = createProgram(postProcessingVertexShader, passthroughFragmentShader, []); } catch(e) { loadingBar.showError("Passthrough link error: " + e.message); throw e; }
+
   gl.useProgram(precipitationProgram);
 
   const dropPositionAttribLocation = 0;
@@ -6094,7 +6148,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT1, gl.TEXTURE_2D, precipitationDepositionTexture, 0);
 
   gl.bindTexture(gl.TEXTURE_2D, radarTexture);
-  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, sim_res_x, sim_res_y, 0, gl.RGBA, gl.FLOAT, null);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, canvas.width, canvas.height, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
 
@@ -6191,6 +6245,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     { id: 'radarReflectivity', name: 'Radar Reflectivity', col:18, stops: 18 },
     { id: 'radarVelocity',     name: 'Radar Velocity',     col:19, stops: 16 },
     { id: 'radarCorrelation',  name: 'Radar Correlation',  col:20, stops: 11 },
+    { id: 'radarEchoTops',     name: 'Radar Echo Tops',    col:21, stops: 16 },
   ];
 
   const DEFAULT_IR_PALETTE = [
@@ -6363,6 +6418,26 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       [255,  0,  0],  // 0.97
       [255,  0,255],  // 1.00
       [255,255,255],  // 1.05
+    ];
+
+    // Radar echo tops: standard 16-stop scale (0-60 kft / ~0-18 km)
+    colorScaleData.radarEchoTops = [
+      [  0,  0,  0],  //  0 kft (no echo)
+      [  0,  0,100],  //  4 kft
+      [  0,  0,200],  //  8 kft
+      [  0, 60,255],  // 12 kft
+      [  0,160,255],  // 16 kft
+      [  0,255,200],  // 20 kft
+      [  0,255,100],  // 24 kft
+      [  0,255,  0],  // 28 kft
+      [100,255,  0],  // 32 kft
+      [200,255,  0],  // 36 kft
+      [255,255,  0],  // 40 kft
+      [255,180,  0],  // 44 kft
+      [255,100,  0],  // 48 kft
+      [255, 30,  0],  // 52 kft
+      [200,  0, 80],  // 56 kft
+      [140,  0,180],  // 60 kft
     ];
   }
 
@@ -6843,8 +6918,126 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   var destVAO;
   var destTF;
 
-  // preload uniform locations for tiny performance gain
+  // preload uniform locations - avoids expensive driver roundtrips every frame
   var uniformLocation_boundaryProgram_iterNum = gl.getUniformLocation(boundaryProgram, 'iterNum');
+
+  // updateSunlight uniforms
+  const uloc_boundary_sunAngle         = gl.getUniformLocation(boundaryProgram,            'sunAngle');
+  const uloc_lighting_sunIntensity     = gl.getUniformLocation(lightingProgram,             'sunIntensity');
+  const uloc_lighting_sunAngle         = gl.getUniformLocation(lightingProgram,             'sunAngle');
+  const uloc_realistic_sunAngle        = gl.getUniformLocation(realisticDisplayProgram,     'sunAngle');
+  const uloc_realistic_minShadowLight  = gl.getUniformLocation(realisticDisplayProgram,     'minShadowLight');
+  const uloc_sky_minShadowLight        = gl.getUniformLocation(skyBackgroundDisplayProgram, 'minShadowLight');
+
+  // per-frame lighting
+  const uloc_lighting_IR_rate          = gl.getUniformLocation(lightingProgram,             'IR_rate');
+
+  // per-frame user input
+  const uloc_adv_userInputValues       = gl.getUniformLocation(advectionProgram, 'userInputValues');
+  const uloc_adv_userInputMove         = gl.getUniformLocation(advectionProgram, 'userInputMove');
+  const uloc_adv_wrapHorizontally      = gl.getUniformLocation(advectionProgram, 'wrapHorizontally');
+  const uloc_adv_userInputType         = gl.getUniformLocation(advectionProgram, 'userInputType');
+
+  // per-frame precipitation
+  const uloc_precip_iterNum            = gl.getUniformLocation(precipitationProgram,     'iterNum');
+  const uloc_precip_inactiveDroplets   = gl.getUniformLocation(precipitationProgram,     'inactiveDroplets');
+  const uloc_lightning_iterNum         = gl.getUniformLocation(lightningLocationProgram, 'iterNum');
+
+  // bloom blur
+  const uloc_bloom_bloomTexture        = gl.getUniformLocation(bloomBlurProgram, 'bloomTexture');
+  const uloc_bloom_texelSize           = gl.getUniformLocation(bloomBlurProgram, 'texelSize');
+
+  // skyBackground per-frame
+  const uloc_sky_aspectRatios          = gl.getUniformLocation(skyBackgroundDisplayProgram, 'aspectRatios');
+  const uloc_sky_view                  = gl.getUniformLocation(skyBackgroundDisplayProgram, 'view');
+  const uloc_sky_Xmult                 = gl.getUniformLocation(skyBackgroundDisplayProgram, 'Xmult');
+  const uloc_sky_iterNum               = gl.getUniformLocation(skyBackgroundDisplayProgram, 'iterNum');
+
+  // realistic display per-frame
+  const uloc_real_aspectRatios         = gl.getUniformLocation(realisticDisplayProgram, 'aspectRatios');
+  const uloc_real_view                 = gl.getUniformLocation(realisticDisplayProgram, 'view');
+  const uloc_real_cursor               = gl.getUniformLocation(realisticDisplayProgram, 'cursor');
+  const uloc_real_Xmult                = gl.getUniformLocation(realisticDisplayProgram, 'Xmult');
+  const uloc_real_iterNum              = gl.getUniformLocation(realisticDisplayProgram, 'iterNum');
+  const uloc_real_greenHueStart        = gl.getUniformLocation(realisticDisplayProgram, 'greenHueStartThreshold');
+  const uloc_real_greenHueEnd          = gl.getUniformLocation(realisticDisplayProgram, 'greenHueEndThreshold');
+  const uloc_real_greenHueStrength     = gl.getUniformLocation(realisticDisplayProgram, 'greenHueStrength');
+  const uloc_real_displayVectorField   = gl.getUniformLocation(realisticDisplayProgram, 'displayVectorField');
+
+  // precipDisplay per-frame
+  const uloc_precipDisp_aspectRatios   = gl.getUniformLocation(precipDisplayProgram, 'aspectRatios');
+  const uloc_precipDisp_view           = gl.getUniformLocation(precipDisplayProgram, 'view');
+
+  // radarDisplay per-frame
+  const uloc_radar_aspectRatios        = gl.getUniformLocation(radarDisplayProgram, 'aspectRatios');
+  const uloc_radar_view                = gl.getUniformLocation(radarDisplayProgram, 'view');
+  const uloc_radar_Xmult               = gl.getUniformLocation(radarDisplayProgram, 'Xmult');
+  const uloc_radar_resolution          = gl.getUniformLocation(radarDisplayProgram, 'resolution');
+  const uloc_radar_texelSize           = gl.getUniformLocation(radarDisplayProgram, 'texelSize');
+  const uloc_radar_opacity             = gl.getUniformLocation(radarDisplayProgram, 'opacity');
+  const uloc_radar_colorScaleColumn    = gl.getUniformLocation(radarDisplayProgram, 'colorScaleColumn');
+  const uloc_radar_colorScaleStops     = gl.getUniformLocation(radarDisplayProgram, 'colorScaleStops');
+  const uloc_radar_radarPos            = gl.getUniformLocation(radarDisplayProgram, 'radarPos');
+  const uloc_radar_radarRange          = gl.getUniformLocation(radarDisplayProgram, 'radarRange');
+  const uloc_radar_radarResolution     = gl.getUniformLocation(radarDisplayProgram, 'radarResolution');
+  const uloc_radar_productType         = gl.getUniformLocation(radarDisplayProgram, 'productType');
+
+  // temperature display per-frame
+  const uloc_temp_aspectRatios         = gl.getUniformLocation(temperatureDisplayProgram, 'aspectRatios');
+  const uloc_temp_view                 = gl.getUniformLocation(temperatureDisplayProgram, 'view');
+  const uloc_temp_cursor               = gl.getUniformLocation(temperatureDisplayProgram, 'cursor');
+  const uloc_temp_Xmult                = gl.getUniformLocation(temperatureDisplayProgram, 'Xmult');
+  const uloc_temp_displayVectorField   = gl.getUniformLocation(temperatureDisplayProgram, 'displayVectorField');
+
+  // temperatureChange display per-frame
+  const uloc_tempChg_aspectRatios      = gl.getUniformLocation(temperatureChangeDisplayProgram, 'aspectRatios');
+  const uloc_tempChg_view              = gl.getUniformLocation(temperatureChangeDisplayProgram, 'view');
+  const uloc_tempChg_cursor            = gl.getUniformLocation(temperatureChangeDisplayProgram, 'cursor');
+  const uloc_tempChg_Xmult             = gl.getUniformLocation(temperatureChangeDisplayProgram, 'Xmult');
+  const uloc_tempChg_tempUnit          = gl.getUniformLocation(temperatureChangeDisplayProgram, 'tempUnit');
+  const uloc_tempChg_displayVectorField= gl.getUniformLocation(temperatureChangeDisplayProgram, 'displayVectorField');
+
+  // airQuality display per-frame
+  const uloc_airQ_aspectRatios         = gl.getUniformLocation(airQualityDisplayProgram, 'aspectRatios');
+  const uloc_airQ_view                 = gl.getUniformLocation(airQualityDisplayProgram, 'view');
+  const uloc_airQ_cursor               = gl.getUniformLocation(airQualityDisplayProgram, 'cursor');
+  const uloc_airQ_Xmult                = gl.getUniformLocation(airQualityDisplayProgram, 'Xmult');
+
+  // IR temp display per-frame
+  const uloc_IR_aspectRatios           = gl.getUniformLocation(IRtempDisplayProgram, 'aspectRatios');
+  const uloc_IR_view                   = gl.getUniformLocation(IRtempDisplayProgram, 'view');
+  const uloc_IR_cursor                 = gl.getUniformLocation(IRtempDisplayProgram, 'cursor');
+  const uloc_IR_upOrDown               = gl.getUniformLocation(IRtempDisplayProgram, 'upOrDown');
+  const uloc_IR_Xmult                  = gl.getUniformLocation(IRtempDisplayProgram, 'Xmult');
+
+  // universal display per-frame
+  const uloc_univ_aspectRatios         = gl.getUniformLocation(universalDisplayProgram, 'aspectRatios');
+  const uloc_univ_view                 = gl.getUniformLocation(universalDisplayProgram, 'view');
+  const uloc_univ_cursor               = gl.getUniformLocation(universalDisplayProgram, 'cursor');
+  const uloc_univ_Xmult                = gl.getUniformLocation(universalDisplayProgram, 'Xmult');
+  const uloc_univ_colorScaleColumn     = gl.getUniformLocation(universalDisplayProgram, 'colorScaleColumn');
+  const uloc_univ_useUnipolarScale     = gl.getUniformLocation(universalDisplayProgram, 'useUnipolarScale');
+  const uloc_univ_quantityIndex        = gl.getUniformLocation(universalDisplayProgram, 'quantityIndex');
+  const uloc_univ_dispMultiplier       = gl.getUniformLocation(universalDisplayProgram, 'dispMultiplier');
+  const uloc_univ_colorScaleStops      = gl.getUniformLocation(universalDisplayProgram, 'colorScaleStops');
+
+  // airplane per-frame
+  const uloc_sky_planeDirectionAndGearPos = gl.getUniformLocation(skyBackgroundDisplayProgram, 'planeDirectionAndGearPos');
+  const uloc_sky_planePos                 = gl.getUniformLocation(skyBackgroundDisplayProgram, 'planePos');
+  const uloc_adv_airplaneValues           = gl.getUniformLocation(advectionProgram,            'airplaneValues');
+
+  // radar texture slot uniforms
+  const uloc_radar_baseTexture         = gl.getUniformLocation(radarDisplayProgram, 'baseTexture');
+  const uloc_radar_waterTexture        = gl.getUniformLocation(radarDisplayProgram, 'waterTexture');
+  const uloc_radar_wallTexture         = gl.getUniformLocation(radarDisplayProgram, 'wallTexture');
+  const uloc_radar_colorScalesTex      = gl.getUniformLocation(radarDisplayProgram, 'colorScalesTex');
+  const uloc_radar_precipFeedbackTex   = gl.getUniformLocation(radarDisplayProgram, 'precipFeedbackTexture');
+  // temperatureChange texture slot uniforms
+  const uloc_tempChg_baseTex           = gl.getUniformLocation(temperatureChangeDisplayProgram, 'baseTex');
+  const uloc_tempChg_prevBaseTex       = gl.getUniformLocation(temperatureChangeDisplayProgram, 'prevBaseTex');
+  const uloc_tempChg_wallTex           = gl.getUniformLocation(temperatureChangeDisplayProgram, 'wallTex');
+  const uloc_tempChg_colorScalesTex    = gl.getUniformLocation(temperatureChangeDisplayProgram, 'colorScalesTex');
+  const uloc_tempChg_colorScaleColumn  = gl.getUniformLocation(temperatureChangeDisplayProgram, 'colorScaleColumn');
 
 
   for (i = 0; i < weatherStations.length; i++) { // initial measurement at weather stations
@@ -6917,15 +7110,15 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     minShadowLight = map_range_C(Math.abs(solarZenithAngleDeg), 100.0, 85.0, 0.005, 0.040); // decrease until the sun goes 10 deg below the horizon
 
     gl.useProgram(boundaryProgram);
-    gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'sunAngle'), solarZenithAngle);
+    gl.uniform1f(uloc_boundary_sunAngle, solarZenithAngle);
     gl.useProgram(lightingProgram);
-    gl.uniform1f(gl.getUniformLocation(lightingProgram, 'sunIntensity'), sunIntensity);
-    gl.uniform1f(gl.getUniformLocation(lightingProgram, 'sunAngle'), solarZenithAngle);
+    gl.uniform1f(uloc_lighting_sunIntensity, sunIntensity);
+    gl.uniform1f(uloc_lighting_sunAngle, solarZenithAngle);
     gl.useProgram(realisticDisplayProgram);
-    gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'sunAngle'), solarZenithAngle);
-    gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'minShadowLight'), minShadowLight);
+    gl.uniform1f(uloc_realistic_sunAngle, solarZenithAngle);
+    gl.uniform1f(uloc_realistic_minShadowLight, minShadowLight);
     gl.useProgram(skyBackgroundDisplayProgram);
-    gl.uniform1f(gl.getUniformLocation(skyBackgroundDisplayProgram, 'minShadowLight'), minShadowLight);
+    gl.uniform1f(uloc_sky_minShadowLight, minShadowLight);
 
     if (guiControls.dayNightCycle)
       clockEl.innerHTML = dateTimeStr(); // update clock
@@ -7054,11 +7247,11 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         let moveX = mouseXinSim - prevMouseXinSim;
         let moveY = mouseYinSim - prevMouseYinSim;
 
-        gl.uniform4f(gl.getUniformLocation(advectionProgram, 'userInputValues'), posXinSim, mouseYinSim, intensity, guiControls.brushSize * 0.5);
-        gl.uniform2f(gl.getUniformLocation(advectionProgram, 'userInputMove'), moveX, moveY);
-        gl.uniform1i(gl.getUniformLocation(advectionProgram, 'wrapHorizontally'), guiControls.wrapHorizontally);
+        gl.uniform4f(uloc_adv_userInputValues, posXinSim, mouseYinSim, intensity, guiControls.brushSize * 0.5);
+        gl.uniform2f(uloc_adv_userInputMove, moveX, moveY);
+        gl.uniform1i(uloc_adv_wrapHorizontally, guiControls.wrapHorizontally);
       }
-        gl.uniform1i(gl.getUniformLocation(advectionProgram, 'userInputType'), inputType);
+        gl.uniform1i(uloc_adv_userInputType, inputType);
 
 
       // guiControls.IterPerFrame = 1.0 / timePerIteration * 3600 / 60.0;
@@ -7077,7 +7270,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         }
 
         gl.useProgram(lightingProgram);
-        gl.uniform1f(gl.getUniformLocation(lightingProgram, 'IR_rate'), guiControls.IR_rate * (nightAccelerationActive ? 10.0 : 1.0));
+        gl.uniform1f(uloc_lighting_IR_rate, guiControls.IR_rate * (nightAccelerationActive ? 10.0 : 1.0));
 
         gl.viewport(0, 0, sim_res_x, sim_res_y);
         gl.clearColor(0.0, 0.0, 0.0, 0.0);
@@ -7216,7 +7409,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
             if (guiControls.enablePrecipitation) { // move precipitation, HUGE PERFORMANCE BOTTLENECK!
 
               gl.useProgram(precipitationProgram);
-              gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'iterNum'), iterNum);
+              gl.uniform1f(uloc_precip_iterNum, iterNum);
               gl.enable(gl.BLEND);
               gl.blendFunc(gl.ONE, gl.ONE); // add everything together
               gl.activeTexture(gl.TEXTURE0);
@@ -7243,7 +7436,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
                 // console.log(sampleValues[0]);  // number of inactive droplets
                 guiControls.inactiveDroplets = sampleValues[0];
                 // gl.useProgram(precipitationProgram); // already set
-                gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'inactiveDroplets'), sampleValues[0]);
+                gl.uniform1f(uloc_precip_inactiveDroplets, sampleValues[0]);
               }
 
               gl.bindTransformFeedback(gl.TRANSFORM_FEEDBACK, null);
@@ -7253,7 +7446,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
               // Extract lightningLocation from precipitationfeedback
               gl.useProgram(lightningLocationProgram);
-              gl.uniform1f(gl.getUniformLocation(lightningLocationProgram, 'iterNum'), iterNum);
+              gl.uniform1f(uloc_lightning_iterNum, iterNum);
 
               gl.activeTexture(gl.TEXTURE0);
               gl.bindTexture(gl.TEXTURE_2D, precipitationFeedbackTexture);
@@ -7376,14 +7569,14 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         let prevFBO = emittedLightFBO; // the previous FBO
 
         gl.useProgram(bloomBlurProgram);
-        gl.uniform1i(gl.getUniformLocation(bloomBlurProgram, 'bloomTexture'), 0);
+        gl.uniform1i(uloc_bloom_bloomTexture, 0);
 
         for (let blurTimes = 0; blurTimes < 2; blurTimes++) { // blur twice for smoother result
 
           // downsample
           for (let i = 1; i < ambientLightFBOs.length; i++) {
             let destFBO = ambientLightFBOs[i];
-            gl.uniform2f(gl.getUniformLocation(bloomBlurProgram, 'texelSize'), prevFBO.texelSizeX, prevFBO.texelSizeY);
+            gl.uniform2f(uloc_bloom_texelSize, prevFBO.texelSizeX, prevFBO.texelSizeY);
 
             gl.viewport(0, 0, destFBO.width, destFBO.height);
 
@@ -7405,7 +7598,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
           for (let i = ambientLightFBOs.length - 2; i >= 0; i--) {
             let destFBO = ambientLightFBOs[i];
 
-            gl.uniform2f(gl.getUniformLocation(bloomBlurProgram, 'texelSize'), prevFBO.texelSizeX, prevFBO.texelSizeY);
+            gl.uniform2f(uloc_bloom_texelSize, prevFBO.texelSizeX, prevFBO.texelSizeY);
 
             gl.activeTexture(gl.TEXTURE0);
             gl.bindTexture(gl.TEXTURE_2D, prevFBO.texture);
@@ -7458,10 +7651,10 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       gl.bindTexture(gl.TEXTURE_2D, A380GearTexture);
 
       gl.useProgram(skyBackgroundDisplayProgram);
-      gl.uniform2f(gl.getUniformLocation(skyBackgroundDisplayProgram, 'aspectRatios'), sim_aspect, canvas_aspect);
-      gl.uniform3f(gl.getUniformLocation(skyBackgroundDisplayProgram, 'view'), cam.curXpos, cam.curYpos, cam.curZoom);
-      gl.uniform1f(gl.getUniformLocation(skyBackgroundDisplayProgram, 'Xmult'), horizontalDisplayMult);
-      gl.uniform1f(gl.getUniformLocation(skyBackgroundDisplayProgram, 'iterNum'), iterNum);
+      gl.uniform2f(uloc_sky_aspectRatios, sim_aspect, canvas_aspect);
+      gl.uniform3f(uloc_sky_view, cam.curXpos, cam.curYpos, cam.curZoom);
+      gl.uniform1f(uloc_sky_Xmult, horizontalDisplayMult);
+      gl.uniform1f(uloc_sky_iterNum, iterNum);
 
       gl.drawBuffers([ gl.COLOR_ATTACHMENT0 ]);
 
@@ -7473,20 +7666,20 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
       // draw clouds and terrain
       gl.useProgram(realisticDisplayProgram);
-      gl.uniform2f(gl.getUniformLocation(realisticDisplayProgram, 'aspectRatios'), sim_aspect, canvas_aspect);
-      gl.uniform3f(gl.getUniformLocation(realisticDisplayProgram, 'view'), cam.curXpos, cam.curYpos, cam.curZoom);
-      gl.uniform4f(gl.getUniformLocation(realisticDisplayProgram, 'cursor'), mouseXinSim, mouseYinSim, guiControls.brushSize * 0.5, cursorType);
-      gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'Xmult'), horizontalDisplayMult);
-      gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'iterNum'), iterNum);
-      gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'greenHueStartThreshold'), guiControls.greenHueStartThreshold);
-      gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'greenHueEndThreshold'), guiControls.greenHueEndThreshold);
-      gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'greenHueStrength'), guiControls.greenHueStrength);
+      gl.uniform2f(uloc_real_aspectRatios, sim_aspect, canvas_aspect);
+      gl.uniform3f(uloc_real_view, cam.curXpos, cam.curYpos, cam.curZoom);
+      gl.uniform4f(uloc_real_cursor, mouseXinSim, mouseYinSim, guiControls.brushSize * 0.5, cursorType);
+      gl.uniform1f(uloc_real_Xmult, horizontalDisplayMult);
+      gl.uniform1f(uloc_real_iterNum, iterNum);
+      gl.uniform1f(uloc_real_greenHueStart, guiControls.greenHueStartThreshold);
+      gl.uniform1f(uloc_real_greenHueEnd, guiControls.greenHueEndThreshold);
+      gl.uniform1f(uloc_real_greenHueStrength, guiControls.greenHueStrength);
 
       // Don't display vectors when zoomed out because you would just see noise
       if (cam.curZoom / sim_res_x > 0.003) {
-        gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'displayVectorField'), displayVectorField);
+        gl.uniform1f(uloc_real_displayVectorField, displayVectorField);
       } else {
-        gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'displayVectorField'), 0.0);
+        gl.uniform1f(uloc_real_displayVectorField, 0.0);
       }
 
 
@@ -7529,13 +7722,13 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       let prevFBO = bloomFBOs[0]; // the previous FBO
 
       gl.useProgram(bloomBlurProgram);
-      gl.uniform1i(gl.getUniformLocation(bloomBlurProgram, 'bloomTexture'), 0);
+      gl.uniform1i(uloc_bloom_bloomTexture, 0);
 
 
       // downsample
       for (let i = 1; i < bloomFBOs.length; i++) {
         let destFBO = bloomFBOs[i];
-        gl.uniform2f(gl.getUniformLocation(bloomBlurProgram, 'texelSize'), prevFBO.texelSizeX, prevFBO.texelSizeY);
+        gl.uniform2f(uloc_bloom_texelSize, prevFBO.texelSizeX, prevFBO.texelSizeY);
 
         gl.viewport(0, 0, destFBO.width, destFBO.height);
 
@@ -7557,7 +7750,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       for (let i = bloomFBOs.length - 2; i >= 0; i--) {
         let destFBO = bloomFBOs[i];
 
-        gl.uniform2f(gl.getUniformLocation(bloomBlurProgram, 'texelSize'), prevFBO.texelSizeX, prevFBO.texelSizeY);
+        gl.uniform2f(uloc_bloom_texelSize, prevFBO.texelSizeX, prevFBO.texelSizeY);
 
         gl.activeTexture(gl.TEXTURE0);
         gl.bindTexture(gl.TEXTURE_2D, prevFBO.texture);
@@ -7601,8 +7794,8 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         // draw drops over clouds
         // draw precipitation
         gl.useProgram(precipDisplayProgram);
-        gl.uniform2f(gl.getUniformLocation(precipDisplayProgram, 'aspectRatios'), sim_aspect, canvas_aspect);
-        gl.uniform3f(gl.getUniformLocation(precipDisplayProgram, 'view'), cam.curXpos, cam.curYpos, cam.curZoom);
+        gl.uniform2f(uloc_precipDisp_aspectRatios, sim_aspect, canvas_aspect);
+        gl.uniform3f(uloc_precipDisp_view, cam.curXpos, cam.curYpos, cam.curZoom);
         gl.bindVertexArray(destVAO);
         gl.drawArrays(gl.POINTS, 0, NUM_DROPLETS);
         gl.bindVertexArray(fluidVao); // set screenfilling rect again
@@ -7614,44 +7807,48 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         gl.enable(gl.BLEND);
         gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
         gl.useProgram(radarDisplayProgram);
-        gl.uniform2f(gl.getUniformLocation(radarDisplayProgram, 'aspectRatios'), sim_aspect, canvas_aspect);
-        gl.uniform3f(gl.getUniformLocation(radarDisplayProgram, 'view'), cam.curXpos, cam.curYpos, cam.curZoom);
-        gl.uniform1f(gl.getUniformLocation(radarDisplayProgram, 'Xmult'), horizontalDisplayMult);
-        gl.uniform2f(gl.getUniformLocation(radarDisplayProgram, 'resolution'), sim_res_x, sim_res_y);
-        gl.uniform2f(gl.getUniformLocation(radarDisplayProgram, 'texelSize'), 1.0 / sim_res_x, 1.0 / sim_res_y);
-        gl.uniform1f(gl.getUniformLocation(radarDisplayProgram, 'opacity'), guiControls.radarOpacity);
+        gl.uniform2f(uloc_radar_aspectRatios, sim_aspect, canvas_aspect);
+        gl.uniform3f(uloc_radar_view, cam.curXpos, cam.curYpos, cam.curZoom);
+        gl.uniform1f(uloc_radar_Xmult, horizontalDisplayMult);
+        gl.uniform2f(uloc_radar_resolution, sim_res_x, sim_res_y);
+        gl.uniform2f(uloc_radar_texelSize, 1.0 / sim_res_x, 1.0 / sim_res_y);
+        gl.uniform1f(uloc_radar_opacity, guiControls.radarOpacity);
         gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, baseTexture_0);
-        gl.uniform1i(gl.getUniformLocation(radarDisplayProgram, 'baseTexture'), 0);
+        gl.uniform1i(uloc_radar_baseTexture, 0);
         gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, waterTexture_0);
-        gl.uniform1i(gl.getUniformLocation(radarDisplayProgram, 'waterTexture'), 1);
+        gl.uniform1i(uloc_radar_waterTexture, 1);
         gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, wallTexture_0);
-        gl.uniform1i(gl.getUniformLocation(radarDisplayProgram, 'wallTexture'), 2);
+        gl.uniform1i(uloc_radar_wallTexture, 2);
         gl.activeTexture(gl.TEXTURE3); gl.bindTexture(gl.TEXTURE_2D, colorScalesTexture);
-        gl.uniform1i(gl.getUniformLocation(radarDisplayProgram, 'colorScalesTex'), 3);
-        gl.uniform1i(gl.getUniformLocation(radarDisplayProgram, 'colorScaleColumn'), 18);
-        gl.uniform1i(gl.getUniformLocation(radarDisplayProgram, 'colorScaleStops'), 18);
+        gl.uniform1i(uloc_radar_colorScalesTex, 3);
+        gl.uniform1i(uloc_radar_colorScaleColumn, 18);
+        gl.uniform1i(uloc_radar_colorScaleStops, 18);
         gl.activeTexture(gl.TEXTURE4); gl.bindTexture(gl.TEXTURE_2D, precipitationFeedbackTexture);
-        gl.uniform1i(gl.getUniformLocation(radarDisplayProgram, 'precipFeedbackTexture'), 4);
+        gl.uniform1i(uloc_radar_precipFeedbackTex, 4);
         for (let r = 0; r < radars.length; r++) {
           const radar = radars[r];
           if (!radar.getEnabled()) continue;
           let productType = 0;
           if (radar.getProduct() === 'velocity') productType = 1;
           else if (radar.getProduct() === 'correlation') productType = 2;
+          else if (radar.getProduct() === 'echotops') productType = 3;
           if (productType === 0) {
-            gl.uniform1i(gl.getUniformLocation(radarDisplayProgram, 'colorScaleColumn'), 18);
-            gl.uniform1i(gl.getUniformLocation(radarDisplayProgram, 'colorScaleStops'), 18);
+            gl.uniform1i(uloc_radar_colorScaleColumn, 18);
+            gl.uniform1i(uloc_radar_colorScaleStops, 18);
           } else if (productType === 1) {
-            gl.uniform1i(gl.getUniformLocation(radarDisplayProgram, 'colorScaleColumn'), 19);
-            gl.uniform1i(gl.getUniformLocation(radarDisplayProgram, 'colorScaleStops'), 16);
+            gl.uniform1i(uloc_radar_colorScaleColumn, 19);
+            gl.uniform1i(uloc_radar_colorScaleStops, 16);
+          } else if (productType === 2) {
+            gl.uniform1i(uloc_radar_colorScaleColumn, 20);
+            gl.uniform1i(uloc_radar_colorScaleStops, 11);
           } else {
-            gl.uniform1i(gl.getUniformLocation(radarDisplayProgram, 'colorScaleColumn'), 20);
-            gl.uniform1i(gl.getUniformLocation(radarDisplayProgram, 'colorScaleStops'), 11);
+            gl.uniform1i(uloc_radar_colorScaleColumn, 21);
+            gl.uniform1i(uloc_radar_colorScaleStops, 16);
           }
-          gl.uniform2f(gl.getUniformLocation(radarDisplayProgram, 'radarPos'), radar.getXpos(), radar.getYpos());
-          gl.uniform1f(gl.getUniformLocation(radarDisplayProgram, 'radarRange'), radar.getRange());
-          gl.uniform1f(gl.getUniformLocation(radarDisplayProgram, 'radarResolution'), radar.getResolution());
-          gl.uniform1i(gl.getUniformLocation(radarDisplayProgram, 'productType'), productType);
+          gl.uniform2f(uloc_radar_radarPos, radar.getXpos(), radar.getYpos());
+          gl.uniform1f(uloc_radar_radarRange, radar.getRange());
+          gl.uniform1f(uloc_radar_radarResolution, radar.getResolution());
+          gl.uniform1i(uloc_radar_productType, productType);
           gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
         }
         gl.disable(gl.BLEND);
@@ -7665,35 +7862,34 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
       if (guiControls.displayMode == 'DISP_TEMPERATURE') {
         gl.useProgram(temperatureDisplayProgram);
-        gl.uniform2f(gl.getUniformLocation(temperatureDisplayProgram, 'aspectRatios'), sim_aspect, canvas_aspect);
-        gl.uniform3f(gl.getUniformLocation(temperatureDisplayProgram, 'view'), cam.curXpos, cam.curYpos, cam.curZoom);
-        gl.uniform4f(gl.getUniformLocation(temperatureDisplayProgram, 'cursor'), mouseXinSim, mouseYinSim, guiControls.brushSize * 0.5, cursorType);
-        gl.uniform1f(gl.getUniformLocation(temperatureDisplayProgram, 'Xmult'), horizontalDisplayMult);
-
+        gl.uniform2f(uloc_temp_aspectRatios, sim_aspect, canvas_aspect);
+        gl.uniform3f(uloc_temp_view, cam.curXpos, cam.curYpos, cam.curZoom);
+        gl.uniform4f(uloc_temp_cursor, mouseXinSim, mouseYinSim, guiControls.brushSize * 0.5, cursorType);
+        gl.uniform1f(uloc_temp_Xmult, horizontalDisplayMult);
 
         // Don't display vectors when zoomed out because you would just see
         // noise
         if (cam.curZoom / sim_res_x > 0.003) {
-          gl.uniform1f(gl.getUniformLocation(temperatureDisplayProgram, 'displayVectorField'), displayVectorField);
+          gl.uniform1f(uloc_temp_displayVectorField, displayVectorField);
         } else {
-          gl.uniform1f(gl.getUniformLocation(temperatureDisplayProgram, 'displayVectorField'), 0.0);
+          gl.uniform1f(uloc_temp_displayVectorField, 0.0);
         }
 
       } else if (guiControls.displayMode == 'DISP_TEMPERATURE_CHANGE') {
         gl.useProgram(temperatureChangeDisplayProgram);
-        gl.uniform2f(gl.getUniformLocation(temperatureChangeDisplayProgram, 'aspectRatios'), sim_aspect, canvas_aspect);
-        gl.uniform3f(gl.getUniformLocation(temperatureChangeDisplayProgram, 'view'), cam.curXpos, cam.curYpos, cam.curZoom);
-        gl.uniform4f(gl.getUniformLocation(temperatureChangeDisplayProgram, 'cursor'), mouseXinSim, mouseYinSim, guiControls.brushSize * 0.5, cursorType);
-        gl.uniform1f(gl.getUniformLocation(temperatureChangeDisplayProgram, 'Xmult'), horizontalDisplayMult);
-        gl.uniform1i(gl.getUniformLocation(temperatureChangeDisplayProgram, 'baseTex'), 0);
-        gl.uniform1i(gl.getUniformLocation(temperatureChangeDisplayProgram, 'prevBaseTex'), 1);
-        gl.uniform1i(gl.getUniformLocation(temperatureChangeDisplayProgram, 'wallTex'), 2);
-        gl.uniform1i(gl.getUniformLocation(temperatureChangeDisplayProgram, 'colorScalesTex'), 9);
-        gl.uniform1i(gl.getUniformLocation(temperatureChangeDisplayProgram, 'colorScaleColumn'), 16);
+        gl.uniform2f(uloc_tempChg_aspectRatios, sim_aspect, canvas_aspect);
+        gl.uniform3f(uloc_tempChg_view, cam.curXpos, cam.curYpos, cam.curZoom);
+        gl.uniform4f(uloc_tempChg_cursor, mouseXinSim, mouseYinSim, guiControls.brushSize * 0.5, cursorType);
+        gl.uniform1f(uloc_tempChg_Xmult, horizontalDisplayMult);
+        gl.uniform1i(uloc_tempChg_baseTex, 0);
+        gl.uniform1i(uloc_tempChg_prevBaseTex, 1);
+        gl.uniform1i(uloc_tempChg_wallTex, 2);
+        gl.uniform1i(uloc_tempChg_colorScalesTex, 9);
+        gl.uniform1i(uloc_tempChg_colorScaleColumn, 16);
         let tempUnitCode = 0;
         if (guiControls.tempUnit == 'TEMP_UNIT_F') tempUnitCode = 1;
         else if (guiControls.tempUnit == 'TEMP_UNIT_K') tempUnitCode = 2;
-        gl.uniform1i(gl.getUniformLocation(temperatureChangeDisplayProgram, 'tempUnit'), tempUnitCode);
+        gl.uniform1i(uloc_tempChg_tempUnit, tempUnitCode);
 
         gl.activeTexture(gl.TEXTURE0);
         gl.bindTexture(gl.TEXTURE_2D, baseTexture_1);
@@ -7705,139 +7901,139 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         gl.bindTexture(gl.TEXTURE_2D, wallTexture_1);
 
         if (cam.curZoom / sim_res_x > 0.003) {
-          gl.uniform1f(gl.getUniformLocation(temperatureChangeDisplayProgram, 'displayVectorField'), displayVectorField);
+          gl.uniform1f(uloc_tempChg_displayVectorField, displayVectorField);
         } else {
-          gl.uniform1f(gl.getUniformLocation(temperatureChangeDisplayProgram, 'displayVectorField'), 0.0);
+          gl.uniform1f(uloc_tempChg_displayVectorField, 0.0);
         }
       } else if (guiControls.displayMode == 'DISP_AIRQUALITY') {
         gl.useProgram(airQualityDisplayProgram);
-        gl.uniform2f(gl.getUniformLocation(airQualityDisplayProgram, 'aspectRatios'), sim_aspect, canvas_aspect);
-        gl.uniform3f(gl.getUniformLocation(airQualityDisplayProgram, 'view'), cam.curXpos, cam.curYpos, cam.curZoom);
-        gl.uniform4f(gl.getUniformLocation(airQualityDisplayProgram, 'cursor'), mouseXinSim, mouseYinSim, guiControls.brushSize * 0.5, cursorType);
-        gl.uniform1f(gl.getUniformLocation(airQualityDisplayProgram, 'Xmult'), horizontalDisplayMult);
+        gl.uniform2f(uloc_airQ_aspectRatios, sim_aspect, canvas_aspect);
+        gl.uniform3f(uloc_airQ_view, cam.curXpos, cam.curYpos, cam.curZoom);
+        gl.uniform4f(uloc_airQ_cursor, mouseXinSim, mouseYinSim, guiControls.brushSize * 0.5, cursorType);
+        gl.uniform1f(uloc_airQ_Xmult, horizontalDisplayMult);
 
       } else if (guiControls.displayMode == 'DISP_IRDOWNTEMP') {
         gl.useProgram(IRtempDisplayProgram);
-        gl.uniform2f(gl.getUniformLocation(IRtempDisplayProgram, 'aspectRatios'), sim_aspect, canvas_aspect);
-        gl.uniform3f(gl.getUniformLocation(IRtempDisplayProgram, 'view'), cam.curXpos, cam.curYpos, cam.curZoom);
-        gl.uniform4f(gl.getUniformLocation(IRtempDisplayProgram, 'cursor'), mouseXinSim, mouseYinSim, guiControls.brushSize * 0.5, cursorType);
-        gl.uniform1i(gl.getUniformLocation(IRtempDisplayProgram, 'upOrDown'), 0);
-        gl.uniform1f(gl.getUniformLocation(IRtempDisplayProgram, 'Xmult'), horizontalDisplayMult);
+        gl.uniform2f(uloc_IR_aspectRatios, sim_aspect, canvas_aspect);
+        gl.uniform3f(uloc_IR_view, cam.curXpos, cam.curYpos, cam.curZoom);
+        gl.uniform4f(uloc_IR_cursor, mouseXinSim, mouseYinSim, guiControls.brushSize * 0.5, cursorType);
+        gl.uniform1i(uloc_IR_upOrDown, 0);
+        gl.uniform1f(uloc_IR_Xmult, horizontalDisplayMult);
 
         gl.activeTexture(gl.TEXTURE0);
         gl.bindTexture(gl.TEXTURE_2D, lightTexture_0);
       } else if (guiControls.displayMode == 'DISP_IRUPTEMP') {
         gl.useProgram(IRtempDisplayProgram);
-        gl.uniform2f(gl.getUniformLocation(IRtempDisplayProgram, 'aspectRatios'), sim_aspect, canvas_aspect);
-        gl.uniform3f(gl.getUniformLocation(IRtempDisplayProgram, 'view'), cam.curXpos, cam.curYpos, cam.curZoom);
-        gl.uniform4f(gl.getUniformLocation(IRtempDisplayProgram, 'cursor'), mouseXinSim, mouseYinSim, guiControls.brushSize * 0.5, cursorType);
-        gl.uniform1i(gl.getUniformLocation(IRtempDisplayProgram, 'upOrDown'), 1);
-        gl.uniform1f(gl.getUniformLocation(IRtempDisplayProgram, 'Xmult'), horizontalDisplayMult);
+        gl.uniform2f(uloc_IR_aspectRatios, sim_aspect, canvas_aspect);
+        gl.uniform3f(uloc_IR_view, cam.curXpos, cam.curYpos, cam.curZoom);
+        gl.uniform4f(uloc_IR_cursor, mouseXinSim, mouseYinSim, guiControls.brushSize * 0.5, cursorType);
+        gl.uniform1i(uloc_IR_upOrDown, 1);
+        gl.uniform1f(uloc_IR_Xmult, horizontalDisplayMult);
 
         gl.activeTexture(gl.TEXTURE0);
         gl.bindTexture(gl.TEXTURE_2D, lightTexture_0);
       } else {
         gl.useProgram(universalDisplayProgram);
-        gl.uniform2f(gl.getUniformLocation(universalDisplayProgram, 'aspectRatios'), sim_aspect, canvas_aspect);
-        gl.uniform3f(gl.getUniformLocation(universalDisplayProgram, 'view'), cam.curXpos, cam.curYpos, cam.curZoom);
-        gl.uniform4f(gl.getUniformLocation(universalDisplayProgram, 'cursor'), mouseXinSim, mouseYinSim, guiControls.brushSize * 0.5, cursorType);
-        gl.uniform1f(gl.getUniformLocation(universalDisplayProgram, 'Xmult'), horizontalDisplayMult);
-        gl.uniform1i(gl.getUniformLocation(universalDisplayProgram, 'colorScaleColumn'), 4);
-        gl.uniform1i(gl.getUniformLocation(universalDisplayProgram, 'useUnipolarScale'), 0);
+        gl.uniform2f(uloc_univ_aspectRatios, sim_aspect, canvas_aspect);
+        gl.uniform3f(uloc_univ_view, cam.curXpos, cam.curYpos, cam.curZoom);
+        gl.uniform4f(uloc_univ_cursor, mouseXinSim, mouseYinSim, guiControls.brushSize * 0.5, cursorType);
+        gl.uniform1f(uloc_univ_Xmult, horizontalDisplayMult);
+        gl.uniform1i(uloc_univ_colorScaleColumn, 4);
+        gl.uniform1i(uloc_univ_useUnipolarScale, 0);
 
         let colorScaleStops = 33;
         switch (guiControls.displayMode) {
         case 'DISP_HORIVEL':
-          gl.uniform1i(gl.getUniformLocation(universalDisplayProgram, 'quantityIndex'), 0);
-          gl.uniform1f(gl.getUniformLocation(universalDisplayProgram, 'dispMultiplier'), 10.0); // 20.0
-          gl.uniform1i(gl.getUniformLocation(universalDisplayProgram, 'colorScaleColumn'), 6);
+          gl.uniform1i(uloc_univ_quantityIndex, 0);
+          gl.uniform1f(uloc_univ_dispMultiplier, 10.0);
+          gl.uniform1i(uloc_univ_colorScaleColumn, 6);
           colorScaleStops = 33;
           break;
         case 'DISP_VERTVEL':
-          gl.uniform1i(gl.getUniformLocation(universalDisplayProgram, 'quantityIndex'), 1);
-          gl.uniform1f(gl.getUniformLocation(universalDisplayProgram, 'dispMultiplier'), 10.0); // 20.0
-          gl.uniform1i(gl.getUniformLocation(universalDisplayProgram, 'colorScaleColumn'), 7);
+          gl.uniform1i(uloc_univ_quantityIndex, 1);
+          gl.uniform1f(uloc_univ_dispMultiplier, 10.0);
+          gl.uniform1i(uloc_univ_colorScaleColumn, 7);
           colorScaleStops = 33;
           break;
         case 'DISP_WATER':
           gl.activeTexture(gl.TEXTURE0);
           gl.bindTexture(gl.TEXTURE_2D, waterTexture_1);
-          gl.uniform1i(gl.getUniformLocation(universalDisplayProgram, 'quantityIndex'), 0);
-          gl.uniform1f(gl.getUniformLocation(universalDisplayProgram, 'dispMultiplier'), 0.06);
-          gl.uniform1i(gl.getUniformLocation(universalDisplayProgram, 'colorScaleColumn'), 5);
-          gl.uniform1i(gl.getUniformLocation(universalDisplayProgram, 'useUnipolarScale'), 1);
+          gl.uniform1i(uloc_univ_quantityIndex, 0);
+          gl.uniform1f(uloc_univ_dispMultiplier, 0.06);
+          gl.uniform1i(uloc_univ_colorScaleColumn, 5);
+          gl.uniform1i(uloc_univ_useUnipolarScale, 1);
           colorScaleStops = 33;
           break;
         case 'DISP_IRHEATING':
           gl.activeTexture(gl.TEXTURE0);
           gl.bindTexture(gl.TEXTURE_2D, lightTexture_0);
-          gl.uniform1i(gl.getUniformLocation(universalDisplayProgram, 'quantityIndex'), 1);
-          gl.uniform1f(gl.getUniformLocation(universalDisplayProgram, 'dispMultiplier'), 50000.0);
-          gl.uniform1i(gl.getUniformLocation(universalDisplayProgram, 'colorScaleColumn'), 8);
-          gl.uniform1i(gl.getUniformLocation(universalDisplayProgram, 'useUnipolarScale'), 0);
+          gl.uniform1i(uloc_univ_quantityIndex, 1);
+          gl.uniform1f(uloc_univ_dispMultiplier, 50000.0);
+          gl.uniform1i(uloc_univ_colorScaleColumn, 8);
+          gl.uniform1i(uloc_univ_useUnipolarScale, 0);
           colorScaleStops = 33;
           break;
         case 'DISP_PRECIPFEEDBACK_MASS':
           gl.activeTexture(gl.TEXTURE0);
           gl.bindTexture(gl.TEXTURE_2D, precipitationFeedbackTexture);
-          gl.uniform1i(gl.getUniformLocation(universalDisplayProgram, 'quantityIndex'), 0);
-          gl.uniform1f(gl.getUniformLocation(universalDisplayProgram, 'dispMultiplier'), 0.06);
-          gl.uniform1i(gl.getUniformLocation(universalDisplayProgram, 'colorScaleColumn'), 9);
-          gl.uniform1i(gl.getUniformLocation(universalDisplayProgram, 'useUnipolarScale'), 1);
+          gl.uniform1i(uloc_univ_quantityIndex, 0);
+          gl.uniform1f(uloc_univ_dispMultiplier, 0.06);
+          gl.uniform1i(uloc_univ_colorScaleColumn, 9);
+          gl.uniform1i(uloc_univ_useUnipolarScale, 1);
           colorScaleStops = 33;
           break;
         case 'DISP_PRECIPFEEDBACK_HEAT':
           gl.activeTexture(gl.TEXTURE0);
           gl.bindTexture(gl.TEXTURE_2D, precipitationFeedbackTexture);
-          gl.uniform1i(gl.getUniformLocation(universalDisplayProgram, 'quantityIndex'), 1);
-          gl.uniform1f(gl.getUniformLocation(universalDisplayProgram, 'dispMultiplier'), 500.0);
-          gl.uniform1i(gl.getUniformLocation(universalDisplayProgram, 'colorScaleColumn'), 10);
-          gl.uniform1i(gl.getUniformLocation(universalDisplayProgram, 'useUnipolarScale'), 0);
+          gl.uniform1i(uloc_univ_quantityIndex, 1);
+          gl.uniform1f(uloc_univ_dispMultiplier, 500.0);
+          gl.uniform1i(uloc_univ_colorScaleColumn, 10);
+          gl.uniform1i(uloc_univ_useUnipolarScale, 0);
           colorScaleStops = 33;
           break;
         case 'DISP_PRECIPFEEDBACK_VAPOR':
           gl.activeTexture(gl.TEXTURE0);
           gl.bindTexture(gl.TEXTURE_2D, precipitationFeedbackTexture);
-          gl.uniform1i(gl.getUniformLocation(universalDisplayProgram, 'quantityIndex'), 2);
-          gl.uniform1f(gl.getUniformLocation(universalDisplayProgram, 'dispMultiplier'), 500.0);
-          gl.uniform1i(gl.getUniformLocation(universalDisplayProgram, 'colorScaleColumn'), 11);
-          gl.uniform1i(gl.getUniformLocation(universalDisplayProgram, 'useUnipolarScale'), 0);
+          gl.uniform1i(uloc_univ_quantityIndex, 2);
+          gl.uniform1f(uloc_univ_dispMultiplier, 500.0);
+          gl.uniform1i(uloc_univ_colorScaleColumn, 11);
+          gl.uniform1i(uloc_univ_useUnipolarScale, 0);
           colorScaleStops = 33;
           break;
         case 'DISP_PRECIPFEEDBACK_RAIN':
           gl.activeTexture(gl.TEXTURE0);
           gl.bindTexture(gl.TEXTURE_2D, precipitationDepositionTexture);
-          gl.uniform1i(gl.getUniformLocation(universalDisplayProgram, 'quantityIndex'), 0);
-          gl.uniform1f(gl.getUniformLocation(universalDisplayProgram, 'dispMultiplier'), 1.0);
-          gl.uniform1i(gl.getUniformLocation(universalDisplayProgram, 'colorScaleColumn'), 12);
-          gl.uniform1i(gl.getUniformLocation(universalDisplayProgram, 'useUnipolarScale'), 1);
+          gl.uniform1i(uloc_univ_quantityIndex, 0);
+          gl.uniform1f(uloc_univ_dispMultiplier, 1.0);
+          gl.uniform1i(uloc_univ_colorScaleColumn, 12);
+          gl.uniform1i(uloc_univ_useUnipolarScale, 1);
           colorScaleStops = 33;
           break;
         case 'DISP_PRECIPFEEDBACK_SNOW':
           gl.activeTexture(gl.TEXTURE0);
           gl.bindTexture(gl.TEXTURE_2D, precipitationDepositionTexture);
-          gl.uniform1i(gl.getUniformLocation(universalDisplayProgram, 'quantityIndex'), 1);
-          gl.uniform1f(gl.getUniformLocation(universalDisplayProgram, 'dispMultiplier'), 1.0);
-          gl.uniform1i(gl.getUniformLocation(universalDisplayProgram, 'colorScaleColumn'), 13);
-          gl.uniform1i(gl.getUniformLocation(universalDisplayProgram, 'useUnipolarScale'), 1);
+          gl.uniform1i(uloc_univ_quantityIndex, 1);
+          gl.uniform1f(uloc_univ_dispMultiplier, 1.0);
+          gl.uniform1i(uloc_univ_colorScaleColumn, 13);
+          gl.uniform1i(uloc_univ_useUnipolarScale, 1);
           colorScaleStops = 33;
           break;
         case 'DISP_SOIL_MOISTURE':
           gl.activeTexture(gl.TEXTURE0);
           gl.bindTexture(gl.TEXTURE_2D, waterTexture_0);
-          gl.uniform1i(gl.getUniformLocation(universalDisplayProgram, 'quantityIndex'), 2);
-          gl.uniform1f(gl.getUniformLocation(universalDisplayProgram, 'dispMultiplier'), 0.02);
-          gl.uniform1i(gl.getUniformLocation(universalDisplayProgram, 'colorScaleColumn'), 14);
-          gl.uniform1i(gl.getUniformLocation(universalDisplayProgram, 'useUnipolarScale'), 1);
+          gl.uniform1i(uloc_univ_quantityIndex, 2);
+          gl.uniform1f(uloc_univ_dispMultiplier, 0.02);
+          gl.uniform1i(uloc_univ_colorScaleColumn, 14);
+          gl.uniform1i(uloc_univ_useUnipolarScale, 1);
           colorScaleStops = 33;
           break;
         case 'DISP_CURL':
           gl.activeTexture(gl.TEXTURE0);
           gl.bindTexture(gl.TEXTURE_2D, curlTexture);
-          gl.uniform1i(gl.getUniformLocation(universalDisplayProgram, 'quantityIndex'), 0);
-          gl.uniform1f(gl.getUniformLocation(universalDisplayProgram, 'dispMultiplier'), 7.0);
-          gl.uniform1i(gl.getUniformLocation(universalDisplayProgram, 'colorScaleColumn'), 15);
-          gl.uniform1i(gl.getUniformLocation(universalDisplayProgram, 'useUnipolarScale'), 0);
+          gl.uniform1i(uloc_univ_quantityIndex, 0);
+          gl.uniform1f(uloc_univ_dispMultiplier, 7.0);
+          gl.uniform1i(uloc_univ_colorScaleColumn, 15);
+          gl.uniform1i(uloc_univ_useUnipolarScale, 0);
           colorScaleStops = 33;
           break;
         case 'DISP_RADAR':
@@ -7849,65 +8045,64 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
           if (radars.length > 0) {
             gl.useProgram(radarDisplayProgram);
 
-            // Set common uniforms
-            gl.uniform2f(gl.getUniformLocation(radarDisplayProgram, 'aspectRatios'), sim_aspect, canvas_aspect);
-            gl.uniform3f(gl.getUniformLocation(radarDisplayProgram, 'view'), cam.curXpos, cam.curYpos, cam.curZoom);
-            gl.uniform1f(gl.getUniformLocation(radarDisplayProgram, 'Xmult'), horizontalDisplayMult);
-            gl.uniform2f(gl.getUniformLocation(radarDisplayProgram, 'resolution'), sim_res_x, sim_res_y);
-            gl.uniform2f(gl.getUniformLocation(radarDisplayProgram, 'texelSize'), 1.0 / sim_res_x, 1.0 / sim_res_y);
-            gl.uniform1f(gl.getUniformLocation(radarDisplayProgram, 'opacity'), guiControls.radarOpacity);
+            gl.uniform2f(uloc_radar_aspectRatios, sim_aspect, canvas_aspect);
+            gl.uniform3f(uloc_radar_view, cam.curXpos, cam.curYpos, cam.curZoom);
+            gl.uniform1f(uloc_radar_Xmult, horizontalDisplayMult);
+            gl.uniform2f(uloc_radar_resolution, sim_res_x, sim_res_y);
+            gl.uniform2f(uloc_radar_texelSize, 1.0 / sim_res_x, 1.0 / sim_res_y);
+            gl.uniform1f(uloc_radar_opacity, guiControls.radarOpacity);
 
-            // Bind textures
             gl.activeTexture(gl.TEXTURE0);
             gl.bindTexture(gl.TEXTURE_2D, baseTexture_0);
-            gl.uniform1i(gl.getUniformLocation(radarDisplayProgram, 'baseTexture'), 0);
+            gl.uniform1i(uloc_radar_baseTexture, 0);
 
             gl.activeTexture(gl.TEXTURE1);
             gl.bindTexture(gl.TEXTURE_2D, waterTexture_0);
-            gl.uniform1i(gl.getUniformLocation(radarDisplayProgram, 'waterTexture'), 1);
+            gl.uniform1i(uloc_radar_waterTexture, 1);
 
             gl.activeTexture(gl.TEXTURE2);
             gl.bindTexture(gl.TEXTURE_2D, wallTexture_0);
-            gl.uniform1i(gl.getUniformLocation(radarDisplayProgram, 'wallTexture'), 2);
+            gl.uniform1i(uloc_radar_wallTexture, 2);
 
             gl.activeTexture(gl.TEXTURE3);
             gl.bindTexture(gl.TEXTURE_2D, colorScalesTexture);
-            gl.uniform1i(gl.getUniformLocation(radarDisplayProgram, 'colorScalesTex'), 3);
-            gl.uniform1i(gl.getUniformLocation(radarDisplayProgram, 'colorScaleColumn'), 18);
-            gl.uniform1i(gl.getUniformLocation(radarDisplayProgram, 'colorScaleStops'), 18);
+            gl.uniform1i(uloc_radar_colorScalesTex, 3);
+            gl.uniform1i(uloc_radar_colorScaleColumn, 18);
+            gl.uniform1i(uloc_radar_colorScaleStops, 18);
 
             gl.activeTexture(gl.TEXTURE4);
             gl.bindTexture(gl.TEXTURE_2D, precipitationFeedbackTexture);
-            gl.uniform1i(gl.getUniformLocation(radarDisplayProgram, 'precipFeedbackTexture'), 4);
+            gl.uniform1i(uloc_radar_precipFeedbackTex, 4);
 
-            // Enable blending for radar overlay
             gl.enable(gl.BLEND);
             gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
 
-            // Render each radar
             for (let r = 0; r < radars.length; r++) {
               let radar = radars[r];
               if (!radar.getEnabled()) continue;
               let productType = 0;
               if (radar.getProduct() === 'velocity') productType = 1;
               else if (radar.getProduct() === 'correlation') productType = 2;
+              else if (radar.getProduct() === 'echotops') productType = 3;
 
-              // Set color scale per product
               if (productType === 0) {
-                gl.uniform1i(gl.getUniformLocation(radarDisplayProgram, 'colorScaleColumn'), 18);
-                gl.uniform1i(gl.getUniformLocation(radarDisplayProgram, 'colorScaleStops'), 18);
+                gl.uniform1i(uloc_radar_colorScaleColumn, 18);
+                gl.uniform1i(uloc_radar_colorScaleStops, 18);
               } else if (productType === 1) {
-                gl.uniform1i(gl.getUniformLocation(radarDisplayProgram, 'colorScaleColumn'), 19);
-                gl.uniform1i(gl.getUniformLocation(radarDisplayProgram, 'colorScaleStops'), 16);
+                gl.uniform1i(uloc_radar_colorScaleColumn, 19);
+                gl.uniform1i(uloc_radar_colorScaleStops, 16);
+              } else if (productType === 2) {
+                gl.uniform1i(uloc_radar_colorScaleColumn, 20);
+                gl.uniform1i(uloc_radar_colorScaleStops, 11);
               } else {
-                gl.uniform1i(gl.getUniformLocation(radarDisplayProgram, 'colorScaleColumn'), 20);
-                gl.uniform1i(gl.getUniformLocation(radarDisplayProgram, 'colorScaleStops'), 11);
+                gl.uniform1i(uloc_radar_colorScaleColumn, 21);
+                gl.uniform1i(uloc_radar_colorScaleStops, 16);
               }
 
-              gl.uniform2f(gl.getUniformLocation(radarDisplayProgram, 'radarPos'), radar.getXpos(), radar.getYpos());
-              gl.uniform1f(gl.getUniformLocation(radarDisplayProgram, 'radarRange'), radar.getRange());
-              gl.uniform1f(gl.getUniformLocation(radarDisplayProgram, 'radarResolution'), radar.getResolution());
-              gl.uniform1i(gl.getUniformLocation(radarDisplayProgram, 'productType'), productType);
+              gl.uniform2f(uloc_radar_radarPos, radar.getXpos(), radar.getYpos());
+              gl.uniform1f(uloc_radar_radarRange, radar.getRange());
+              gl.uniform1f(uloc_radar_radarResolution, radar.getResolution());
+              gl.uniform1i(uloc_radar_productType, productType);
 
               gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
             }
@@ -7916,20 +8111,18 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
           }
           break;
         case 'DISP_CAPE':
-          // CAPE display - using actual CAPE calculation
           gl.activeTexture(gl.TEXTURE0);
           gl.bindTexture(gl.TEXTURE_2D, capeTexture);
-          gl.uniform1i(gl.getUniformLocation(universalDisplayProgram, 'quantityIndex'), 0);
-          gl.uniform1f(gl.getUniformLocation(universalDisplayProgram, 'dispMultiplier'), 1.0 / 5000.0); // 5000 J/kg = full scale
-          gl.uniform1i(gl.getUniformLocation(universalDisplayProgram, 'colorScaleColumn'), 17);
-          gl.uniform1i(gl.getUniformLocation(universalDisplayProgram, 'useUnipolarScale'), 1);
+          gl.uniform1i(uloc_univ_quantityIndex, 0);
+          gl.uniform1f(uloc_univ_dispMultiplier, 1.0 / 5000.0);
+          gl.uniform1i(uloc_univ_colorScaleColumn, 17);
+          gl.uniform1i(uloc_univ_useUnipolarScale, 1);
           colorScaleStops = 72;
           break;
         case 'DISP_RISK':
-          // Risk display rendered as 2D canvas overlay - skip WebGL draw
           break;
         }
-        gl.uniform1i(gl.getUniformLocation(universalDisplayProgram, 'colorScaleStops'), colorScaleStops);
+        gl.uniform1i(uloc_univ_colorScaleStops, colorScaleStops);
       }
 
       if (guiControls.displayMode != 'DISP_RADAR' && guiControls.displayMode != 'DISP_RISK') {
@@ -8072,15 +8265,25 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     riskCanvas.style.display = 'none';
   }
 
+  if (guiControls.displayMode !== 'DISP_RADAR' && radarOverlayCanvas) {
+    radarOverlayCanvas.style.display = 'none';
+  }
+
   if (displayWeatherStations) {
     for (i = 0; i < weatherStations.length; i++) {
-      weatherStations[i].updateCanvas();
+      const sx = simToScreenX(weatherStations[i].getXpos());
+      const sy = simToScreenY(weatherStations[i].getYpos());
+      if (sx > -200 && sx < canvas.width + 200 && sy > -200 && sy < canvas.height + 200)
+        weatherStations[i].updateCanvas();
     }
   }
 
   if (displayRadars) {
     for (i = 0; i < radars.length; i++) {
-      radars[i].updateCanvas();
+      const sx = simToScreenX(radars[i].getXpos());
+      const sy = simToScreenY(radars[i].getYpos());
+      if (sx > -200 && sx < canvas.width + 200 && sy > -200 && sy < canvas.height + 200)
+        radars[i].updateCanvas();
     }
   }
 
