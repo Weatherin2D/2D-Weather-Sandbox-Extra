@@ -6269,10 +6269,10 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     { id: 'curl',             name: 'Curl',             col: 15, stops: 33 },
     { id: 'temperatureChange',name: 'Temperature Change',col:16, stops: 33 },
     { id: 'cape',             name: 'CAPE',             col:17, stops: 72 },
-    { id: 'radarReflectivity', name: 'Radar Reflectivity', col:18, stops: 18 },
-    { id: 'radarVelocity',     name: 'Radar Velocity',     col:19, stops: 16 },
-    { id: 'radarCorrelation',  name: 'Radar Correlation',  col:20, stops: 11 },
-    { id: 'radarEchoTops',     name: 'Radar Echo Tops',    col:21, stops: 16 },
+    { id: 'radarReflectivity', name: 'Radar Reflectivity', col:18, stops: 36 },
+    { id: 'radarVelocity',     name: 'Radar Velocity',     col:19, stops: 32 },
+    { id: 'radarCorrelation',  name: 'Radar Correlation',  col:20, stops: 22 },
+    { id: 'radarEchoTops',     name: 'Radar Echo Tops',    col:21, stops: 32 },
   ];
 
   const DEFAULT_IR_PALETTE = [
@@ -6390,81 +6390,142 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     }
     colorScaleData.cape = cape;
 
-    // Radar reflectivity: NWS WSR-88D expanded 36-stop scale (0-85 dBZ)
+    // Radar reflectivity: doubled to 36 stops with gradients between key colors (0-85 dBZ, ~2.5 dBZ/stop)
     colorScaleData.radarReflectivity = [
       [  4,  4,  4],  //  0 dBZ  ND
+      [  2,120,120],  //  2 dBZ  (gradient)
       [  0,236,236],  //  5 dBZ  light cyan
+      [  1,198,241],  //  7 dBZ  (gradient)
       [  1,160,246],  // 10 dBZ  sky blue
+      [  1, 80,246],  // 12 dBZ  (gradient)
       [  0,  0,246],  // 15 dBZ  blue
+      [  0,128,  0],  // 17 dBZ  (gradient - jump to green family)
       [  0,255,  0],  // 20 dBZ  green
+      [  0,228,  0],  // 22 dBZ  (gradient)
       [  0,200,  0],  // 25 dBZ  medium green
+      [  0,172,  0],  // 27 dBZ  (gradient)
       [  0,144,  0],  // 30 dBZ  dark green
+      [128,200,  0],  // 32 dBZ  (gradient)
       [255,255,  0],  // 35 dBZ  yellow
+      [243,224,  0],  // 37 dBZ  (gradient)
       [231,192,  0],  // 40 dBZ  dark yellow
+      [243,168,  0],  // 42 dBZ  (gradient)
       [255,144,  0],  // 45 dBZ  orange
+      [255, 72,  0],  // 47 dBZ  (gradient)
       [255,  0,  0],  // 50 dBZ  red
+      [235,  0,  0],  // 52 dBZ  (gradient)
       [214,  0,  0],  // 55 dBZ  dark red
+      [203,  0,  0],  // 57 dBZ  (gradient)
       [192,  0,  0],  // 60 dBZ  darker red
+      [224,  0,128],  // 62 dBZ  (gradient)
       [255,  0,255],  // 65 dBZ  magenta
+      [204, 43,228],  // 67 dBZ  (gradient)
       [153, 85,201],  // 70 dBZ  purple
+      [194,160,218],  // 72 dBZ  (gradient)
       [235,235,235],  // 75 dBZ  light grey
+      [245,245,245],  // 77 dBZ  (gradient)
       [255,255,255],  // 80 dBZ  white
+      [255,255,255],  // 82 dBZ
+      [255,255,255],  // 83 dBZ
       [255,255,255],  // 85 dBZ
     ];
 
-    // Radar velocity: standard NWS dual-PRF 16-stop scale
+    // Radar velocity: doubled to 32 stops with gradients
     colorScaleData.radarVelocity = [
-      [ 49,  0,196],
+      [ 49,  0,196],  // strong inbound
+      [ 25,  0,221],  // (gradient)
       [  0,  0,246],
+      [  0, 72,246],  // (gradient)
       [  0,144,246],
+      [  0,190,241],  // (gradient)
       [  0,236,236],
+      [  0,246,118],  // (gradient)
       [  0,255,  0],
+      [  0,228,  0],  // (gradient)
       [  0,200,  0],
+      [  0,172,  0],  // (gradient)
       [  0,144,  0],
+      [  0,117,  0],  // (gradient)
       [  0, 90,  0],
-      [128,128,128],
+      [ 64, 96, 64],  // (gradient to grey)
+      [128,128,128],  // zero / no data
+      [136, 64, 64],  // (gradient)
       [144,  0,  0],
+      [172,  0,  0],  // (gradient)
       [200,  0,  0],
+      [228,  0,  0],  // (gradient)
       [255,  0,  0],
+      [246, 77,  0],  // (gradient)
       [236,154,  0],
+      [241,177,  0],  // (gradient)
       [246,200,  0],
+      [251,228,  0],  // (gradient)
       [255,255,255],
+      [255,128,255],  // (gradient)
       [255,  0,255],
+      [255,  0,255],  // strong outbound
     ];
 
-    // Radar correlation coefficient: standard 11-stop scale (0.2-1.05)
+    // Radar correlation coefficient: doubled to 22 stops
     colorScaleData.radarCorrelation = [
       [ 50, 50, 50],  // <0.20
+      [ 25, 25, 89],  // (gradient)
       [  0,  0,128],  // 0.30
+      [  0,  0,192],  // (gradient)
       [  0,  0,255],  // 0.50
+      [  0, 64,255],  // (gradient)
       [  0,128,255],  // 0.65
+      [  0,192,255],  // (gradient)
       [  0,255,255],  // 0.75
+      [  0,255,128],  // (gradient)
       [  0,255,  0],  // 0.85
+      [128,255,  0],  // (gradient)
       [255,255,  0],  // 0.90
+      [255,192,  0],  // (gradient)
       [255,128,  0],  // 0.95
+      [255, 64,  0],  // (gradient)
       [255,  0,  0],  // 0.97
+      [255,  0,128],  // (gradient)
       [255,  0,255],  // 1.00
+      [255,128,255],  // (gradient)
       [255,255,255],  // 1.05
+      [255,255,255],
     ];
 
-    // Radar echo tops: standard 16-stop scale (0-60 kft / ~0-18 km)
+    // Radar echo tops: doubled to 32 stops (0-60 kft)
     colorScaleData.radarEchoTops = [
-      [  0,  0,  0],  //  0 kft (no echo)
+      [  0,  0,  0],  //  0 kft
+      [  0,  0, 50],  // (gradient)
       [  0,  0,100],  //  4 kft
+      [  0,  0,150],  // (gradient)
       [  0,  0,200],  //  8 kft
+      [  0, 30,228],  // (gradient)
       [  0, 60,255],  // 12 kft
+      [  0,110,255],  // (gradient)
       [  0,160,255],  // 16 kft
+      [  0,208,228],  // (gradient)
       [  0,255,200],  // 20 kft
+      [  0,255,150],  // (gradient)
       [  0,255,100],  // 24 kft
+      [  0,255, 50],  // (gradient)
       [  0,255,  0],  // 28 kft
+      [ 50,255,  0],  // (gradient)
       [100,255,  0],  // 32 kft
+      [150,255,  0],  // (gradient)
       [200,255,  0],  // 36 kft
+      [228,255,  0],  // (gradient)
       [255,255,  0],  // 40 kft
+      [255,218,  0],  // (gradient)
       [255,180,  0],  // 44 kft
+      [255,140,  0],  // (gradient)
       [255,100,  0],  // 48 kft
+      [255, 65,  0],  // (gradient)
       [255, 30,  0],  // 52 kft
+      [228, 15, 40],  // (gradient)
       [200,  0, 80],  // 56 kft
+      [170,  0,130],  // (gradient)
       [140,  0,180],  // 60 kft
+      [140,  0,180],
     ];
   }
 
@@ -7865,16 +7926,16 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
           else if (radar.getProduct() === 'echotops') productType = 3;
           if (productType === 0) {
             gl.uniform1i(uloc_radar_colorScaleColumn, 18);
-            gl.uniform1i(uloc_radar_colorScaleStops, 18);
+            gl.uniform1i(uloc_radar_colorScaleStops, 36);
           } else if (productType === 1) {
             gl.uniform1i(uloc_radar_colorScaleColumn, 19);
-            gl.uniform1i(uloc_radar_colorScaleStops, 16);
+            gl.uniform1i(uloc_radar_colorScaleStops, 32);
           } else if (productType === 2) {
             gl.uniform1i(uloc_radar_colorScaleColumn, 20);
-            gl.uniform1i(uloc_radar_colorScaleStops, 11);
+            gl.uniform1i(uloc_radar_colorScaleStops, 22);
           } else {
             gl.uniform1i(uloc_radar_colorScaleColumn, 21);
-            gl.uniform1i(uloc_radar_colorScaleStops, 16);
+            gl.uniform1i(uloc_radar_colorScaleStops, 32);
           }
           gl.uniform2f(uloc_radar_radarPos, radar.getXpos(), radar.getYpos());
           gl.uniform1f(uloc_radar_radarRange, radar.getRange());
@@ -8099,7 +8160,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
             gl.bindTexture(gl.TEXTURE_2D, colorScalesTexture);
             gl.uniform1i(uloc_radar_colorScalesTex, 3);
             gl.uniform1i(uloc_radar_colorScaleColumn, 18);
-            gl.uniform1i(uloc_radar_colorScaleStops, 18);
+            gl.uniform1i(uloc_radar_colorScaleStops, 36);
 
             gl.activeTexture(gl.TEXTURE4);
             gl.bindTexture(gl.TEXTURE_2D, precipitationFeedbackTexture);
@@ -8118,16 +8179,16 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
               if (productType === 0) {
                 gl.uniform1i(uloc_radar_colorScaleColumn, 18);
-                gl.uniform1i(uloc_radar_colorScaleStops, 18);
+                gl.uniform1i(uloc_radar_colorScaleStops, 36);
               } else if (productType === 1) {
                 gl.uniform1i(uloc_radar_colorScaleColumn, 19);
-                gl.uniform1i(uloc_radar_colorScaleStops, 16);
+                gl.uniform1i(uloc_radar_colorScaleStops, 32);
               } else if (productType === 2) {
                 gl.uniform1i(uloc_radar_colorScaleColumn, 20);
-                gl.uniform1i(uloc_radar_colorScaleStops, 11);
+                gl.uniform1i(uloc_radar_colorScaleStops, 22);
               } else {
                 gl.uniform1i(uloc_radar_colorScaleColumn, 21);
-                gl.uniform1i(uloc_radar_colorScaleStops, 16);
+                gl.uniform1i(uloc_radar_colorScaleStops, 32);
               }
 
               gl.uniform2f(uloc_radar_radarPos, radar.getXpos(), radar.getYpos());
