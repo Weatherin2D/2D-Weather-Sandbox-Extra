@@ -429,6 +429,7 @@ const guiControls_default = {
   displayWeatherStations : true,
   displayRadars : true,
   airplaneMode : false,
+  readoutCursor : false,
 };
 
 var horizontalDisplayMult = 3.0; // 3.0 to cover srceen while zoomed out
@@ -1521,6 +1522,7 @@ class Radar
   getYpos() { return this.#y; }
   getName() { return this.#name; }
   getProduct() { return this.#product; }
+  setProduct(product) { this.#product = product; }
   getRange() { return this.#range; }
   getResolution() { return this.#resolution; }
   getEnabled() { return this.#enabled; }
@@ -1581,6 +1583,20 @@ class Radar
     c.lineWidth = 2;
     c.stroke();
   }
+}
+
+
+function cycleRadarProducts(direction)
+{
+  const products = ['reflectivity', 'velocity', 'correlation', 'echotops'];
+  radars.forEach(radar => {
+    if (radar.getEnabled()) {
+      const currentProduct = radar.getProduct();
+      const currentIndex = products.indexOf(currentProduct);
+      const nextIndex = (currentIndex + direction + products.length) % products.length;
+      radar.setProduct(products[nextIndex]);
+    }
+  });
 }
 
 
@@ -4395,6 +4411,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
     advanced_folder.add(guiControls, 'resetSettings').name('Reset all settings');
     advanced_folder.add(guiControls, 'riskUpdateFrequency', 1, 50, 1).name('Risk Update Frequency (iterations)').listen();
+    advanced_folder.add(guiControls, 'readoutCursor').name('Readout Cursor');
 
     datGui.add(guiControls, 'paused').onChange(handlePause).name('Paused').listen();
     datGui.add(guiControls, 'download').name('Save Simulation to File');
@@ -5219,10 +5236,227 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       prevMouseX = mouseX;
       prevMouseY = mouseY;
     }
+
+    if (guiControls.readoutCursor && !SETUP_MODE) {
+      updateCursorReadout(event);
+    }
   });
 
   canvas.addEventListener('mousedown', function(e) { mouseDownEvent(e); });
   graphCanvas.addEventListener('mousedown', function(e) { mouseDownEvent(e); });
+
+  function updateCursorReadout(event)
+  {
+    if (!guiControls.readoutCursor || SETUP_MODE) return;
+
+    let simXpos = clamp(Math.floor(mouseXinSim * sim_res_x), 0, sim_res_x - 1);
+    let simYpos = clamp(Math.floor(mouseYinSim * sim_res_y), 0, sim_res_y - 1);
+
+    let readoutText = '';
+    let unit = '';
+
+    switch (guiControls.displayMode) {
+      case 'DISP_TEMPERATURE':
+        gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_0);
+        gl.readBuffer(gl.COLOR_ATTACHMENT0);
+        var baseTextureValues = new Float32Array(4);
+        gl.readPixels(simXpos, simYpos, 1, 1, gl.RGBA, gl.FLOAT, baseTextureValues);
+        let T = potentialToRealT(baseTextureValues[3], simYpos);
+        readoutText = KtoC(T).toFixed(1);
+        unit = '°C';
+        break;
+
+      case 'DISP_WATER':
+        gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_0);
+        gl.readBuffer(gl.COLOR_ATTACHMENT1);
+        var waterTextureValues = new Float32Array(4);
+        gl.readPixels(simXpos, simYpos, 1, 1, gl.RGBA, gl.FLOAT, waterTextureValues);
+        let dp = KtoC(dewpoint(waterTextureValues[0]));
+        let rh = relativeHumd(KtoC(potentialToRealT(waterTextureValues[3], simYpos)), waterTextureValues[0]);
+        readoutText = `DP: ${dp.toFixed(1)}°C\nRH: ${rh.toFixed(1)}%`;
+        unit = '';
+        break;
+
+      case 'DISP_HORIVEL':
+        gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_0);
+        gl.readBuffer(gl.COLOR_ATTACHMENT0);
+        var baseTextureValues = new Float32Array(4);
+        gl.readPixels(simXpos, simYpos, 1, 1, gl.RGBA, gl.FLOAT, baseTextureValues);
+        let hVel = rawVelocityTo_ms(Math.sqrt(Math.pow(baseTextureValues[0], 2) + Math.pow(baseTextureValues[1], 2)));
+        readoutText = hVel.toFixed(1);
+        unit = 'm/s';
+        break;
+
+      case 'DISP_VERTVEL':
+        gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_0);
+        gl.readBuffer(gl.COLOR_ATTACHMENT0);
+        var baseTextureValues = new Float32Array(4);
+        gl.readPixels(simXpos, simYpos, 1, 1, gl.RGBA, gl.FLOAT, baseTextureValues);
+        let vVel = rawVelocityTo_ms(baseTextureValues[2]);
+        readoutText = vVel.toFixed(1);
+        unit = 'm/s';
+        break;
+
+      case 'DISP_IRHEATING':
+        gl.bindFramebuffer(gl.FRAMEBUFFER, lightFrameBuff_0);
+        gl.readBuffer(gl.COLOR_ATTACHMENT0);
+        var lightTextureValues = new Float32Array(4);
+        gl.readPixels(simXpos, simYpos, 1, 1, gl.RGBA, gl.FLOAT, lightTextureValues);
+        let irHeat = lightTextureValues[2] - lightTextureValues[3];
+        readoutText = irHeat.toFixed(2);
+        unit = 'K/day';
+        break;
+
+      case 'DISP_IRDOWNTEMP':
+        gl.bindFramebuffer(gl.FRAMEBUFFER, lightFrameBuff_0);
+        gl.readBuffer(gl.COLOR_ATTACHMENT0);
+        var lightTextureValues = new Float32Array(4);
+        gl.readPixels(simXpos, simYpos, 1, 1, gl.RGBA, gl.FLOAT, lightTextureValues);
+        let irDown = lightTextureValues[2];
+        readoutText = KtoC(irDown).toFixed(1);
+        unit = '°C';
+        break;
+
+      case 'DISP_IRUPTEMP':
+        gl.bindFramebuffer(gl.FRAMEBUFFER, lightFrameBuff_0);
+        gl.readBuffer(gl.COLOR_ATTACHMENT0);
+        var lightTextureValues = new Float32Array(4);
+        gl.readPixels(simXpos, simYpos, 1, 1, gl.RGBA, gl.FLOAT, lightTextureValues);
+        let irUp = lightTextureValues[3];
+        readoutText = KtoC(irUp).toFixed(1);
+        unit = '°C';
+        break;
+
+      case 'DISP_TEMPERATURE_CHANGE':
+        gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_0);
+        gl.readBuffer(gl.COLOR_ATTACHMENT0);
+        var baseTextureValues = new Float32Array(4);
+        gl.readPixels(simXpos, simYpos, 1, 1, gl.RGBA, gl.FLOAT, baseTextureValues);
+        let tempChange = baseTextureValues[3] * 100.0;
+        readoutText = tempChange.toFixed(2);
+        unit = '°C/10min';
+        break;
+
+      case 'DISP_PRECIPFEEDBACK_MASS':
+        gl.bindFramebuffer(gl.FRAMEBUFFER, precipFeedbackFrameBuff);
+        gl.readBuffer(gl.COLOR_ATTACHMENT0);
+        var precipValues = new Float32Array(4);
+        gl.readPixels(simXpos, simYpos, 1, 1, gl.RGBA, gl.FLOAT, precipValues);
+        readoutText = precipValues[0].toFixed(3);
+        unit = 'kg/m²';
+        break;
+
+      case 'DISP_PRECIPFEEDBACK_HEAT':
+        gl.bindFramebuffer(gl.FRAMEBUFFER, precipFeedbackFrameBuff);
+        gl.readBuffer(gl.COLOR_ATTACHMENT1);
+        var precipValues = new Float32Array(4);
+        gl.readPixels(simXpos, simYpos, 1, 1, gl.RGBA, gl.FLOAT, precipValues);
+        readoutText = precipValues[0].toFixed(2);
+        unit = 'K/h';
+        break;
+
+      case 'DISP_PRECIPFEEDBACK_VAPOR':
+        gl.bindFramebuffer(gl.FRAMEBUFFER, precipFeedbackFrameBuff);
+        gl.readBuffer(gl.COLOR_ATTACHMENT2);
+        var precipValues = new Float32Array(4);
+        gl.readPixels(simXpos, simYpos, 1, 1, gl.RGBA, gl.FLOAT, precipValues);
+        readoutText = precipValues[0].toFixed(3);
+        unit = 'kg/m²/h';
+        break;
+
+      case 'DISP_PRECIPFEEDBACK_RAIN':
+        gl.bindFramebuffer(gl.FRAMEBUFFER, precipFeedbackFrameBuff);
+        gl.readBuffer(gl.COLOR_ATTACHMENT3);
+        var precipValues = new Float32Array(4);
+        gl.readPixels(simXpos, simYpos, 1, 1, gl.RGBA, gl.FLOAT, precipValues);
+        readoutText = precipValues[0].toFixed(3);
+        unit = 'mm/h';
+        break;
+
+      case 'DISP_PRECIPFEEDBACK_SNOW':
+        gl.bindFramebuffer(gl.FRAMEBUFFER, precipFeedbackFrameBuff);
+        gl.readBuffer(gl.COLOR_ATTACHMENT4);
+        var precipValues = new Float32Array(4);
+        gl.readPixels(simXpos, simYpos, 1, 1, gl.RGBA, gl.FLOAT, precipValues);
+        readoutText = precipValues[0].toFixed(3);
+        unit = 'mm/h';
+        break;
+
+      case 'DISP_SOILMOISTURE':
+        gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_0);
+        gl.readBuffer(gl.COLOR_ATTACHMENT1);
+        var waterTextureValues = new Float32Array(4);
+        gl.readPixels(simXpos, simYpos, 1, 1, gl.RGBA, gl.FLOAT, waterTextureValues);
+        readoutText = waterTextureValues[1].toFixed(3);
+        unit = 'm³/m³';
+        break;
+
+      case 'DISP_CURL':
+        gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_0);
+        gl.readBuffer(gl.COLOR_ATTACHMENT0);
+        var baseTextureValues = new Float32Array(4);
+        gl.readPixels(simXpos, simYpos, 1, 1, gl.RGBA, gl.FLOAT, baseTextureValues);
+        let curl = baseTextureValues[3] * 10000.0;
+        readoutText = curl.toFixed(2);
+        unit = 's⁻¹';
+        break;
+
+      case 'DISP_CAPE':
+        gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_0);
+        gl.readBuffer(gl.COLOR_ATTACHMENT0);
+        var baseTextureValues = new Float32Array(4);
+        gl.readPixels(simXpos, simYpos, 1, 1, gl.RGBA, gl.FLOAT, baseTextureValues);
+        let cape = baseTextureValues[3] * 5000.0;
+        readoutText = cape.toFixed(0);
+        unit = 'J/kg';
+        break;
+
+      case 'DISP_AIRQUALITY':
+        gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_0);
+        gl.readBuffer(gl.COLOR_ATTACHMENT1);
+        var waterTextureValues = new Float32Array(4);
+        gl.readPixels(simXpos, simYpos, 1, 1, gl.RGBA, gl.FLOAT, waterTextureValues);
+        let airQuality = waterTextureValues[3] * 300.0;
+        readoutText = airQuality.toFixed(1);
+        unit = 'µg/m³';
+        break;
+
+      case 'DISP_RADAR':
+        readoutText = 'Radar Imagery';
+        unit = '';
+        break;
+
+      case 'DISP_RISK':
+        readoutText = 'Convective Risk';
+        unit = '';
+        break;
+
+      default:
+        readoutText = '';
+        unit = '';
+    }
+
+    if (readoutText) {
+      let readoutEl = document.getElementById('cursorReadout');
+      if (!readoutEl) {
+        readoutEl = document.createElement('div');
+        readoutEl.id = 'cursorReadout';
+        readoutEl.style.position = 'absolute';
+        readoutEl.style.backgroundColor = 'rgba(0, 0, 0, 0.7)';
+        readoutEl.style.color = 'white';
+        readoutEl.style.padding = '5px 10px';
+        readoutEl.style.borderRadius = '4px';
+        readoutEl.style.pointerEvents = 'none';
+        readoutEl.style.fontSize = '12px';
+        readoutEl.style.zIndex = '1000';
+        readoutEl.style.whiteSpace = 'pre';
+        document.body.appendChild(readoutEl);
+      }
+      readoutEl.textContent = readoutText + (unit ? ' ' + unit : '');
+      readoutEl.style.left = (event.clientX + 15) + 'px';
+      readoutEl.style.top = (event.clientY + 15) + 'px';
+    }
+  }
 
 
   function findSimYposAboveSurfaceAtMouseX() // find the lowest location that is not underground
@@ -5403,10 +5637,11 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       event.preventDefault();
       guiControls.enableVectorField = !guiControls.enableVectorField;
     } else if (event.code == 'KeyS') {
-      // S: log sample at mouse location
-      logSample();
+      // S: toggle radar overlay on realistic view
+      guiControls.radarOverlay = !guiControls.radarOverlay;
     } else if (event.code == 'KeyZ') {
-      zPressed = true;
+      // Z: display risk view
+      guiControls.displayMode = 'DISP_RISK';
     } else if (event.code == 'KeyX') {
       // Sample droplets around mouse location
       logDropletsAndToggleFollow();
@@ -5420,6 +5655,12 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         airplane.setAutopilot(event.getModifierState('CapsLock'));
     } else if (event.code == 'ShiftLeft') {
       airplane.toggleGear();
+    } else if (event.code == 'Slash') {
+      // Slash: cycle radar products backward for enabled radars
+      cycleRadarProducts(-1);
+    } else if (event.code == 'Enter') {
+      // Enter: cycle radar products forward for enabled radars
+      cycleRadarProducts(1);
     } else if (event.key == 1) { // number keys for displaymodes
       guiControls.displayMode = 'DISP_TEMPERATURE';
     } else if (event.key == 2) {
@@ -5493,29 +5734,18 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       guiControls.tool = 'TOOL_WALL_RUNWAY';
     } else if (event.code == 'Backslash') {
       guiControls.tool = 'TOOL_WALL_INDUSTRIAL';
-    } else if (event.code == 'KeyN') {
-      if (displayWeatherStations) {
-        displayWeatherStations = false;
-        for (i = 0; i < weatherStations.length; i++) {
-          weatherStations[i].setHidden(true);
-        }
+    } else if (event.code == 'Period') {
+      if (airplaneMode) {
+        airplane.setBrakes(true);
       } else {
-        displayWeatherStations = true;
-        for (i = 0; i < weatherStations.length; i++) {
-          weatherStations[i].setHidden(false);
-        }
+        guiControls.displayMode = 'DISP_RADAR';
       }
-
-      if (guiControls.tool == 'TOOL_STATION') // prevent placing weather stations when not visible
-        guiControls.tool = 'TOOL_NONE';
     } else if (event.code == 'KeyM') {
       guiControls.tool = 'TOOL_STATION';
       displayWeatherStations = true;
       for (i = 0; i < weatherStations.length; i++) {
         weatherStations[i].setHidden(false);
       }
-    } else if (event.code == 'Period') {
-      airplane.setBrakes(true);
     } else if (event.code == 'Slash') {
       airplane.toggleEngine();
     } else if (event.code == 'KeyL') {
