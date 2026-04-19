@@ -410,6 +410,9 @@ const guiControls_default = {
   IterPerFrame : 10,
   auto_IterPerFrame : true,
   sound : true,
+  enableLightning : true,
+  enableBloom : true,
+  enableVectorField : false,
   dryLapseRate : 10.0,     // Real: 9.8 degrees / km
   simHeight : 12000,       // meters
   twelveHourClock : false, // only for display.  false = metric
@@ -421,6 +424,11 @@ const guiControls_default = {
   radarUpdateFrequency : 60,
   radarOverlay : false,
   riskUpdateFrequency : 30,
+  starVisibility : 0.25,
+  starLightEmitStrength : 0.15,
+  displayWeatherStations : true,
+  displayRadars : true,
+  airplaneMode : false,
 };
 
 var horizontalDisplayMult = 3.0; // 3.0 to cover srceen while zoomed out
@@ -1287,8 +1295,8 @@ class Radar
 
   #name = 'Radar';
   #product = 'reflectivity';
-  #range = 2500;
-  #resolution = 25.0;
+  #range = 1000;
+  #resolution = 100.0;
   #enabled = false;
   #menuDiv;
   #selectBtn;
@@ -1439,7 +1447,7 @@ class Radar
     const rangeSlider = document.createElement('input');
     rangeSlider.type = 'range';
     rangeSlider.min = '10';
-    rangeSlider.max = '5000';
+    rangeSlider.max = '10000';
     rangeSlider.value = this.#range;
     rangeSlider.style.cssText = 'width:100%; margin-top:4px; accent-color:#4a90e2;';
     rangeSlider.addEventListener('input', function() {
@@ -1453,7 +1461,7 @@ class Radar
     const resSlider = document.createElement('input');
     resSlider.type = 'range';
     resSlider.min = '0.3';
-    resSlider.max = '50.0';
+    resSlider.max = '100.0';
     resSlider.step = '0.1';
     resSlider.value = thisObj.#resolution;
     resSlider.style.cssText = 'width:100%; margin-top:4px; accent-color:#4a90e2;';
@@ -1580,7 +1588,7 @@ let weatherStations = []; // array holding all weather stations
 let radars = []; // array holding all radars
 
 
-async function loadData()
+window.loadData = async function()
 {
   let file = document.getElementById('fileInput').files[0];
 
@@ -3809,6 +3817,10 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     datGui = new dat.GUI();
     guiControls = JSON.parse(strGuiControls); // load settings object
 
+    // Ensure new properties have default values if not present in save file
+    if (guiControls.starVisibility === undefined) guiControls.starVisibility = 0.25;
+    if (guiControls.starLightEmitStrength === undefined) guiControls.starLightEmitStrength = 0.15;
+
     guiControls.tool = 'TOOL_NONE';
 
     cam.wrapHorizontally = guiControls.wrapHorizontally;
@@ -3855,15 +3867,6 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         }
       })
       .name('Drag');
-
-    guiControls.soundingMode = false;
-    fluidParams_folder.add(guiControls, 'soundingMode')
-      .onChange(function() {
-        gl.useProgram(velocityProgram);
-        gl.uniform1f(gl.getUniformLocation(velocityProgram, 'dragMultiplier'),
-          guiControls.soundingMode ? 999.0 : guiControls.dragMultiplier);
-      })
-      .name('Sounding Mode');
 
     fluidParams_folder.add(guiControls, 'wind', -10.0, 10.0, 0.01)
       .onChange(function() {
@@ -3958,8 +3961,6 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
     radiation_folder.add(guiControls, 'timeOfDay', 0.0, 23.96, 0.01).onChange(onUpdateTimeOfDaySlider).name('Time of day').listen();
 
-    radiation_folder.add(guiControls, 'dayNightCycle').name('Day/Night Cycle').listen();
-
     radiation_folder.add(guiControls, 'accelerateNight').name('Accelerate Night').listen();
 
     radiation_folder.add(guiControls, 'latitude', -90.0, 90.0, 0.1).onChange(function() { updateSunlight(); }).name('Latitude').listen();
@@ -3997,6 +3998,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         gl.uniform1f(gl.getUniformLocation(lightingProgram, 'IR_rate'), guiControls.IR_rate);
       })*/
       .name('IR Multiplier');
+
 
     var water_folder = datGui.addFolder('Water');
 
@@ -4217,12 +4219,18 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'greenHueStrength'), guiControls.greenHueStrength);
       })
       .name('Green Hue Strength');
-    image_folder.add(guiControls, 'smoothClouds')
+    image_folder.add(guiControls, 'starVisibility', 0.0, 1.0, 0.01)
       .onChange(function() {
-        gl.useProgram(realisticDisplayProgram);
-        gl.uniform1f(realDisp_smoothClouds_loc, guiControls.smoothClouds ? 1.0 : 0.0);
+        gl.useProgram(skyBackgroundDisplayProgram);
+        gl.uniform1f(gl.getUniformLocation(skyBackgroundDisplayProgram, 'starVisibility'), guiControls.starVisibility);
       })
-      .name('Smooth Clouds');
+      .name('Star Visibility');
+    image_folder.add(guiControls, 'starLightEmitStrength', 0.0, 0.5, 0.01)
+      .onChange(function() {
+        gl.useProgram(skyBackgroundDisplayProgram);
+        gl.uniform1f(gl.getUniformLocation(skyBackgroundDisplayProgram, 'starLightEmitStrength'), guiControls.starLightEmitStrength);
+      })
+      .name('Star Light Emit Strength');
 
     var lightning_folder = datGui.addFolder('Lightning');
     lightning_folder.add(guiControls, 'lightningFrequency', 0.0, 500.0, 0.1)
@@ -4255,8 +4263,6 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
     display_folder.add(guiControls, 'showGraph').onChange(hideOrShowGraph).name('Show Sounding Graph').listen();
     display_folder.add(guiControls, 'showDrops').name('Show Droplets').listen();
-    display_folder.add(guiControls, 'realDewPoint').name('Show Real Dew Point');
-
 
     display_folder.add(guiControls, 'twelveHourClock').name('12-hour clock');
 
@@ -4302,7 +4308,9 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
     var advanced_folder = datGui.addFolder('Advanced');
 
-    advanced_folder.add(guiControls, 'enablePrecipitation')
+    var performance_folder = datGui.addFolder('Performance');
+
+    performance_folder.add(guiControls, 'enablePrecipitation')
       .onChange(function() {
         initRainDrops();
         setupPrecipitationBuffers();
@@ -4310,20 +4318,80 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       })
       .name('Enable Precipitation');
 
-    advanced_folder.add(guiControls, 'IterPerFrame', 1, 100, 1).onChange(function() { guiControls.auto_IterPerFrame = false; }).name('Iterations / Frame').listen();
+    performance_folder.add(guiControls, 'enableLightning')
+      .name('Enable Lightning');
 
-    advanced_folder.add(guiControls, 'auto_IterPerFrame').name('Auto Adjust').listen();
+    performance_folder.add(guiControls, 'enableBloom')
+      .name('Enable Bloom');
 
+    performance_folder.add(guiControls, 'enableVectorField')
+      .name('Enable Vector Field (Wind Arrows)');
 
-    advanced_folder.add(guiControls, 'sound').name('Enable Sound').onChange(function() {
-      if (guiControls.sound) {
-        if (soundSystem == null) {
-          soundSystem = new SoundSystem();
+    performance_folder.add(guiControls, 'IterPerFrame', 1, 100, 1).onChange(function() { guiControls.auto_IterPerFrame = false; }).name('Iterations / Frame').listen();
+
+    performance_folder.add(guiControls, 'auto_IterPerFrame').name('Auto Adjust Iterations').listen();
+
+    performance_folder.add(guiControls, 'sound')
+      .name('Enable Sound')
+      .onChange(function() {
+        if (guiControls.sound) {
+          if (soundSystem == null) {
+            soundSystem = new SoundSystem();
+          }
+        } else {
+          soundSystem.mute();
         }
-      } else {
-        soundSystem.mute();
-      }
-    });
+      });
+
+    performance_folder.add(guiControls, 'smoothClouds')
+      .onChange(function() {
+        gl.useProgram(realisticDisplayProgram);
+        gl.uniform1f(realDisp_smoothClouds_loc, guiControls.smoothClouds ? 1.0 : 0.0);
+      })
+      .name('Smooth Clouds');
+
+    performance_folder.add(guiControls, 'displayWeatherStations')
+      .onChange(function() {
+        displayWeatherStations = guiControls.displayWeatherStations;
+        for (i = 0; i < weatherStations.length; i++) {
+          weatherStations[i].setHidden(!displayWeatherStations);
+        }
+      })
+      .name('Display Weather Stations');
+
+    performance_folder.add(guiControls, 'displayRadars')
+      .onChange(function() {
+        displayRadars = guiControls.displayRadars;
+        for (i = 0; i < radars.length; i++) {
+          radars[i].setHidden(!displayRadars);
+        }
+      })
+      .name('Display Radars');
+
+    performance_folder.add(guiControls, 'airplaneMode')
+      .onChange(function() {
+        airplaneMode = guiControls.airplaneMode;
+        if (airplaneMode) {
+          airplane.enableAirplaneMode(false);
+        } else {
+          airplane.disableAirplaneMode();
+        }
+      })
+      .name('Enable Airplane Mode');
+
+    performance_folder.add(guiControls, 'dayNightCycle')
+      .name('Day/Night Cycle');
+
+    performance_folder.add(guiControls, 'realDewPoint')
+      .name('Real Dew Point Calculations');
+
+    performance_folder.add(guiControls, 'soundingMode')
+      .onChange(function() {
+        gl.useProgram(velocityProgram);
+        gl.uniform1f(gl.getUniformLocation(velocityProgram, 'dragMultiplier'),
+          guiControls.soundingMode ? 999.0 : guiControls.dragMultiplier);
+      })
+      .name('Sounding Mode');
 
     advanced_folder.add(guiControls, 'resetSettings').name('Reset all settings');
     advanced_folder.add(guiControls, 'riskUpdateFrequency', 1, 50, 1).name('Risk Update Frequency (iterations)').listen();
@@ -4339,7 +4407,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   await loadingBar.set(3, 'Initializing Sounding Graph');
   // END OF GUI
 
-  function startSimulation()
+  window.startSimulation = function()
   {
     console.log('startSimulation called, SETUP_MODE was:', SETUP_MODE);
     SETUP_MODE = false;
@@ -5333,7 +5401,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     } else if (event.code == 'Tab') {
       // TAB
       event.preventDefault();
-      displayVectorField = !displayVectorField;
+      guiControls.enableVectorField = !guiControls.enableVectorField;
     } else if (event.code == 'KeyS') {
       // S: log sample at mouse location
       logSample();
@@ -6251,28 +6319,28 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
   // ========================= Color Scale System =========================
   const COLOR_SCALE_CONFIGS = [
-    { id: 'temperature',      name: 'Temperature',      col: 0,  stops: 71 },
-    { id: 'airQuality',       name: 'Air Quality',      col: 1,  stops: 27 },
-    { id: 'irDown',           name: 'IR Down Temp',     col: 2,  stops: 30 },
-    { id: 'irUp',             name: 'IR Up Temp',       col: 3,  stops: 30 },
-    { id: 'universal',        name: 'Universal',        col: 4,  stops: 33 },
-    { id: 'waterVapor',       name: 'Water Vapor',      col: 5,  stops: 33 },
-    { id: 'horizontalVelocity', name: 'Horizontal Velocity', col: 6,  stops: 33 },
-    { id: 'verticalVelocity',   name: 'Vertical Velocity',   col: 7,  stops: 33 },
-    { id: 'irHeating',        name: 'IR Heating/Cooling', col: 8,  stops: 33 },
-    { id: 'precipMass',       name: 'Precip Mass',      col: 9,  stops: 33 },
-    { id: 'precipHeat',       name: 'Precip Heat',      col: 10, stops: 33 },
-    { id: 'precipVapor',      name: 'Precip Vapor',     col: 11, stops: 33 },
-    { id: 'precipRain',       name: 'Rain Deposition',  col: 12, stops: 33 },
-    { id: 'precipSnow',       name: 'Snow Deposition',  col: 13, stops: 33 },
-    { id: 'soilMoisture',     name: 'Soil Moisture',    col: 14, stops: 33 },
-    { id: 'curl',             name: 'Curl',             col: 15, stops: 33 },
-    { id: 'temperatureChange',name: 'Temperature Change',col:16, stops: 33 },
-    { id: 'cape',             name: 'CAPE',             col:17, stops: 72 },
-    { id: 'radarReflectivity', name: 'Radar Reflectivity', col:18, stops: 36 },
-    { id: 'radarVelocity',     name: 'Radar Velocity',     col:19, stops: 32 },
-    { id: 'radarCorrelation',  name: 'Radar Correlation',  col:20, stops: 22 },
-    { id: 'radarEchoTops',     name: 'Radar Echo Tops',    col:21, stops: 32 },
+    { id: 'temperature',      name: 'Temperature',      col: 0,  stops: 71, interpolate: true },
+    { id: 'airQuality',       name: 'Air Quality',      col: 1,  stops: 27, interpolate: false },
+    { id: 'irDown',           name: 'IR Down Temp',     col: 2,  stops: 30, interpolate: false },
+    { id: 'irUp',             name: 'IR Up Temp',       col: 3,  stops: 30, interpolate: false },
+    { id: 'universal',        name: 'Universal',        col: 4,  stops: 33, interpolate: false },
+    { id: 'waterVapor',       name: 'Water Vapor',      col: 5,  stops: 33, interpolate: true },
+    { id: 'horizontalVelocity', name: 'Horizontal Velocity', col: 6,  stops: 33, interpolate: false },
+    { id: 'verticalVelocity',   name: 'Vertical Velocity',   col: 7,  stops: 33, interpolate: false },
+    { id: 'irHeating',        name: 'IR Heating/Cooling', col: 8,  stops: 33, interpolate: false },
+    { id: 'precipMass',       name: 'Precip Mass',      col: 9,  stops: 33, interpolate: false },
+    { id: 'precipHeat',       name: 'Precip Heat',      col: 10, stops: 33, interpolate: false },
+    { id: 'precipVapor',      name: 'Precip Vapor',     col: 11, stops: 33, interpolate: false },
+    { id: 'precipRain',       name: 'Rain Deposition',  col: 12, stops: 33, interpolate: false },
+    { id: 'precipSnow',       name: 'Snow Deposition',  col: 13, stops: 33, interpolate: false },
+    { id: 'soilMoisture',     name: 'Soil Moisture',    col: 14, stops: 33, interpolate: false },
+    { id: 'curl',             name: 'Curl',             col: 15, stops: 33, interpolate: false },
+    { id: 'temperatureChange',name: 'Temperature Change',col:16, stops: 33, interpolate: false },
+    { id: 'cape',             name: 'CAPE',             col:17, stops: 72, interpolate: false },
+    { id: 'radarReflectivity', name: 'Radar Reflectivity', col:18, stops: 36, interpolate: false },
+    { id: 'radarVelocity',     name: 'Radar Velocity',     col: 19, stops: 33, interpolate: false },
+    { id: 'radarCorrelation',  name: 'Radar Correlation',  col:20, stops: 22, interpolate: false },
+    { id: 'radarEchoTops',     name: 'Radar Echo Tops',    col:21, stops: 32, interpolate: false },
   ];
 
   const DEFAULT_IR_PALETTE = [
@@ -6285,6 +6353,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   ];
 
   let colorScaleData = {};
+  let colorScaleValues = {};
 
   function initColorScaleData(img) {
     const offC = document.createElement('canvas');
@@ -6300,9 +6369,13 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       return arr;
     }
     colorScaleData.temperature = readCol(0, 71);
+    colorScaleValues.temperature = Array.from({length: 71}, (_, i) => i);
     colorScaleData.airQuality  = readCol(1, 27);
+    colorScaleValues.airQuality = Array.from({length: 27}, (_, i) => i);
     colorScaleData.irDown      = DEFAULT_IR_PALETTE.map(c => [...c]);
+    colorScaleValues.irDown = Array.from({length: DEFAULT_IR_PALETTE.length}, (_, i) => i);
     colorScaleData.irUp        = DEFAULT_IR_PALETTE.map(c => [...c]);
+    colorScaleValues.irUp = Array.from({length: DEFAULT_IR_PALETTE.length}, (_, i) => i);
     const univ = [];
     for (let i = 0; i <= 32; i++) {
       if      (i <  16) univ.push([Math.round(i / 16 * 255), Math.round(i / 16 * 255), 255]);
@@ -6310,17 +6383,29 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       else              univ.push([255, Math.round((32 - i) / 16 * 255), Math.round((32 - i) / 16 * 255)]);
     }
     colorScaleData.universal = univ;
+    colorScaleValues.universal = Array.from({length: 33}, (_, i) => i);
     const cloneScale = s => s.map(c => [...c]);
+    const cloneValues = n => Array.from({length: n}, (_, i) => i);
     colorScaleData.horizontalVelocity = cloneScale(univ);
+    colorScaleValues.horizontalVelocity = cloneValues(33);
     colorScaleData.verticalVelocity = cloneScale(univ);
+    colorScaleValues.verticalVelocity = cloneValues(33);
     colorScaleData.irHeating = cloneScale(univ);
+    colorScaleValues.irHeating = cloneValues(33);
     colorScaleData.precipMass = cloneScale(univ);
+    colorScaleValues.precipMass = cloneValues(33);
     colorScaleData.precipHeat = cloneScale(univ);
+    colorScaleValues.precipHeat = cloneValues(33);
     colorScaleData.precipVapor = cloneScale(univ);
+    colorScaleValues.precipVapor = cloneValues(33);
     colorScaleData.precipRain = cloneScale(univ);
+    colorScaleValues.precipRain = cloneValues(33);
     colorScaleData.precipSnow = cloneScale(univ);
+    colorScaleValues.precipSnow = cloneValues(33);
     colorScaleData.soilMoisture = cloneScale(univ);
+    colorScaleValues.soilMoisture = cloneValues(33);
     colorScaleData.curl = cloneScale(univ);
+    colorScaleValues.curl = cloneValues(33);
 
     // Water vapor: idx 0 = dry (black) → idx 32 = saturated (white/cyan)
     // Used with unipolar mapping: val = water * 0.06, idx = clamp(val,0,1)*32
@@ -6342,6 +6427,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       }
     }
     colorScaleData.waterVapor = wv;
+    colorScaleValues.waterVapor = Array.from({length: 33}, (_, i) => i);
 
     const tempChange = [];
     for (let i = 0; i <= 32; i++) {
@@ -6355,6 +6441,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       }
     }
     colorScaleData.temperatureChange = tempChange;
+    colorScaleValues.temperatureChange = Array.from({length: 33}, (_, i) => i);
 
     // CAPE color scale: 0-10000 J/Kg mapped to 72 stops
     // Colors: White -> Pale light blue -> Dark desat blue -> Lime Green -> Yellow -> Red -> Dark red -> Pink -> Dark Grey -> Bright sat light blue
@@ -6389,6 +6476,22 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       cape.push([r, g, b]);
     }
     colorScaleData.cape = cape;
+    // Initialize CAPE values based on the capeStops definition
+    colorScaleValues.cape = [];
+    for (let i = 0; i < 72; i++) {
+      // Find which segment this index belongs to and interpolate the value
+      let segStart = capeStops[0], segEnd = capeStops[capeStops.length - 1];
+      for (let j = 0; j < capeStops.length - 1; j++) {
+        if (i >= capeStops[j].idx && i <= capeStops[j + 1].idx) {
+          segStart = capeStops[j];
+          segEnd = capeStops[j + 1];
+          break;
+        }
+      }
+      const t = segStart.idx === segEnd.idx ? 0 : (i - segStart.idx) / (segEnd.idx - segStart.idx);
+      const value = segStart.val + t * (segEnd.val - segStart.val);
+      colorScaleValues.cape.push(value);
+    }
 
     // Radar reflectivity: doubled to 36 stops with gradients between key colors (0-85 dBZ, ~2.5 dBZ/stop)
     colorScaleData.radarReflectivity = [
@@ -6429,8 +6532,9 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       [255,255,255],  // 83 dBZ
       [255,255,255],  // 85 dBZ
     ];
+    colorScaleValues.radarReflectivity = Array.from({length: 36}, (_, i) => i * 2.5); // 0-85 dBZ in ~2.5 dBZ steps
 
-    // Radar velocity: doubled to 32 stops with gradients
+    // Radar velocity: 33 stops with gradients (odd number so center is at index 16)
     colorScaleData.radarVelocity = [
       [ 49,  0,196],  // strong inbound
       [ 25,  0,221],  // (gradient)
@@ -6448,7 +6552,8 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       [  0,117,  0],  // (gradient)
       [  0, 90,  0],
       [ 64, 96, 64],  // (gradient to grey)
-      [128,128,128],  // zero / no data
+      [128,128,128],  // zero / no data (center at index 16)
+      [128,128,128],  // duplicate zero for exact center at t=0.5
       [136, 64, 64],  // (gradient)
       [144,  0,  0],
       [172,  0,  0],  // (gradient)
@@ -6465,6 +6570,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       [255,  0,255],
       [255,  0,255],  // strong outbound
     ];
+    colorScaleValues.radarVelocity = Array.from({length: 33}, (_, i) => i);
 
     // Radar correlation coefficient: doubled to 22 stops
     colorScaleData.radarCorrelation = [
@@ -6491,6 +6597,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       [255,255,255],  // 1.05
       [255,255,255],
     ];
+    colorScaleValues.radarCorrelation = Array.from({length: 22}, (_, i) => i);
 
     // Radar echo tops: doubled to 32 stops (0-60 kft)
     colorScaleData.radarEchoTops = [
@@ -6527,6 +6634,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       [140,  0,180],  // 60 kft
       [140,  0,180],
     ];
+    colorScaleValues.radarEchoTops = Array.from({length: 32}, (_, i) => i * 2); // 0-60 kft in ~2 kft steps
   }
 
   function uploadColorScaleTexture() {
@@ -6537,16 +6645,37 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     const ctx2d = offC.getContext('2d');
     COLOR_SCALE_CONFIGS.forEach(cfg => {
       const stops = colorScaleData[cfg.id];
-      for (let row = 0; row < stops.length; row++) {
-        const [r, g, b] = stops[row];
-        ctx2d.fillStyle = `rgb(${r},${g},${b})`;
-        ctx2d.fillRect(cfg.col, row, 1, 1);
+      // If interpolation is enabled for this scale, interpolate across full texture height
+      if (cfg.interpolate) {
+        for (let row = 0; row < TEX_H; row++) {
+          const t = row / (TEX_H - 1);
+          const idx = t * (stops.length - 1);
+          const idxFloor = Math.floor(idx);
+          const idxCeil = Math.min(Math.ceil(idx), stops.length - 1);
+          const localT = idx - idxFloor;
+          const c1 = stops[idxFloor];
+          const c2 = stops[idxCeil];
+          const r = Math.round(c1[0] + localT * (c2[0] - c1[0]));
+          const g = Math.round(c1[1] + localT * (c2[1] - c1[1]));
+          const b = Math.round(c1[2] + localT * (c2[2] - c1[2]));
+          ctx2d.fillStyle = `rgb(${r},${g},${b})`;
+          ctx2d.fillRect(cfg.col, row, 1, 1);
+        }
+      } else {
+        // Original behavior: place colors at their index positions
+        for (let row = 0; row < stops.length; row++) {
+          const [r, g, b] = stops[row];
+          ctx2d.fillStyle = `rgb(${r},${g},${b})`;
+          ctx2d.fillRect(cfg.col, row, 1, 1);
+        }
       }
     });
     gl.bindTexture(gl.TEXTURE_2D, colorScalesTexture);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, offC);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    // Use LINEAR filtering for scales with interpolation enabled, NEAREST otherwise
+    const anyInterpolate = COLOR_SCALE_CONFIGS.some(cfg => cfg.interpolate);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, anyInterpolate ? gl.LINEAR : gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, anyInterpolate ? gl.LINEAR : gl.NEAREST);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
   }
@@ -6554,31 +6683,52 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   function buildColorScaleEditor() {
     const styleEl = document.createElement('style');
     styleEl.textContent = `
-      #colorScalePanel{display:none;position:fixed;top:50px;right:420px;width:316px;
-        background:#16162a;border:1px solid #4a4a7a;border-radius:8px;padding:13px;
-        z-index:10000;font-family:Arial,sans-serif;color:#eee;max-height:82vh;
+      #colorScalePanel{display:none;position:fixed;top:50px;right:420px;width:500px;
+        background:#16162a;border:1px solid #4a4a7a;border-radius:8px;padding:15px;
+        z-index:10000;font-family:Arial,sans-serif;color:#eee;max-height:90vh;
         overflow-y:auto;box-shadow:0 4px 24px rgba(0,0,0,.65);}
-      .cse-hdr{display:flex;align-items:center;margin-bottom:10px;}
-      .cse-hdr span{font-size:13px;font-weight:700;flex:1;}
-      .cse-close{background:transparent;border:none;color:#888;cursor:pointer;font-size:17px;padding:0;}
+      .cse-hdr{display:flex;align-items:center;margin-bottom:12px;}
+      .cse-hdr span{font-size:16px;font-weight:700;flex:1;}
+      .cse-close{background:transparent;border:none;color:#888;cursor:pointer;font-size:20px;padding:0;}
       .cse-close:hover{color:#fff;}
-      .cse-tabs{display:flex;gap:4px;flex-wrap:wrap;margin-bottom:8px;}
-      .cse-tab{padding:4px 9px;border:1px solid #555;border-radius:4px;background:#23233d;
-        color:#aaa;cursor:pointer;font-size:10px;}
+      .cse-tabs{display:flex;gap:4px;flex-wrap:wrap;margin-bottom:10px;}
+      .cse-tab{padding:6px 12px;border:1px solid #555;border-radius:4px;background:#23233d;
+        color:#aaa;cursor:pointer;font-size:12px;}
       .cse-tab.active{background:#2a4a9a;color:#fff;border-color:#5070cc;}
-      .cse-grad{height:18px;border-radius:4px;margin-bottom:8px;border:1px solid #444;}
-      .cse-stops{max-height:230px;overflow-y:auto;display:grid;
-        grid-template-columns:repeat(6,1fr);gap:3px;margin-bottom:10px;}
-      .cse-stop{display:flex;flex-direction:column;align-items:center;gap:1px;}
-      .cse-stop-lbl{font-size:8px;color:#666;}
-      .cse-stop input[type=color]{width:30px;height:20px;border:1px solid #444;
-        border-radius:2px;padding:0;cursor:pointer;}
-      .cse-io-lbl{font-size:10px;color:#888;margin-bottom:3px;}
-      .cse-json{width:100%;height:60px;background:#111;color:#ccc;border:1px solid #444;
-        border-radius:4px;padding:5px;font-size:10px;resize:vertical;box-sizing:border-box;}
-      .cse-btns{display:flex;gap:6px;margin-top:6px;}
-      .cse-btn{flex:1;padding:6px;border:none;border-radius:4px;cursor:pointer;font-size:11px;color:#fff;}
+      .cse-grad{height:24px;border-radius:4px;margin-bottom:10px;border:1px solid #444;}
+      .cse-stops{max-height:350px;overflow-y:auto;display:grid;
+        grid-template-columns:repeat(6,1fr);gap:6px;margin-bottom:12px;}
+      .cse-stop{display:flex;flex-direction:column;align-items:center;gap:4px;}
+      .cse-stop-lbl{font-size:10px;color:#666;}
+      .cse-stop-val{width:50px;height:22px;border:1px solid #444;border-radius:3px;
+        background:#23233d;color:#ccc;font-size:11px;text-align:center;padding:2px;}
+      .cse-stop input[type=color]{width:50px;height:28px;border:1px solid #444;
+        border-radius:3px;padding:0;cursor:pointer;}
+      .cse-stop-btns{display:flex;gap:2px;}
+      .cse-btn-sm{padding:2px 6px;border:1px solid #555;border-radius:2px;background:#23233d;
+        color:#aaa;cursor:pointer;font-size:9px;}
+      .cse-btn-sm:hover{background:#2a4a9a;color:#fff;}
+      .cse-io-lbl{font-size:11px;color:#888;margin-bottom:4px;}
+      .cse-format-row{display:flex;gap:8px;margin-bottom:8px;align-items:center;}
+      .cse-format-sel{flex:1;padding:6px;border:1px solid #444;border-radius:4px;
+        background:#23233d;color:#ccc;font-size:11px;}
+      .cse-json{width:100%;height:120px;background:#111;color:#ccc;border:1px solid #444;
+        border-radius:4px;padding:6px;font-size:11px;resize:vertical;box-sizing:border-box;}
+      .cse-btns{display:flex;gap:8px;margin-top:8px;}
+      .cse-btn{flex:1;padding:8px;border:none;border-radius:4px;cursor:pointer;font-size:12px;color:#fff;}
       .cse-btn-imp{background:#2a7a4a;} .cse-btn-exp{background:#2a4a8a;}
+      .cse-controls{display:flex;gap:8px;margin-bottom:10px;}
+      .cse-ctrl-btn{flex:1;padding:8px;border:1px solid #555;border-radius:4px;background:#23233d;
+        color:#aaa;cursor:pointer;font-size:12px;}
+      .cse-ctrl-btn:hover{background:#2a4a9a;color:#fff;}
+      .cse-ctrl-btn.add{background:#2a7a4a;border-color:#3a9a5a;color:#fff;}
+      .cse-ctrl-btn.remove{background:#7a2a4a;border-color:#9a3a5a;color:#fff;}
+      .cse-ctrl-btn.copy{background:#2a5a7a;border-color:#4a7a9a;color:#fff;}
+      .cse-ctrl-btn.paste{background:#5a7a2a;border-color:#7a9a4a;color:#fff;}
+      .cse-opt-row{display:flex;align-items:center;margin-bottom:10px;padding:8px;
+        background:#1a1a2e;border:1px solid #333;border-radius:4px;}
+      .cse-opt-lbl{display:flex;align-items:center;gap:8px;color:#aaa;font-size:12px;cursor:pointer;}
+      .cse-opt-lbl input[type=checkbox]{width:16px;height:16px;cursor:pointer;}
     `;
     document.head.appendChild(styleEl);
 
@@ -6589,14 +6739,33 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         <button class="cse-close" title="Close">✕</button></div>
       <div class="cse-tabs" id="cse-tabs"></div>
       <div class="cse-grad" id="cse-grad"></div>
+      <div class="cse-controls">
+        <button class="cse-ctrl-btn add" id="cse-add">+ Add Stop</button>
+        <button class="cse-ctrl-btn remove" id="cse-remove">- Remove Stop</button>
+        <button class="cse-ctrl-btn copy" id="cse-copy">Copy Color</button>
+        <button class="cse-ctrl-btn paste" id="cse-paste">Paste Color</button>
+      </div>
+      <div class="cse-opt-row">
+        <label class="cse-opt-lbl">
+          <input type="checkbox" id="cse-interpolate"> Enable smooth interpolation
+        </label>
+      </div>
       <div class="cse-stops" id="cse-stops"></div>
-      <div>
-        <div class="cse-io-lbl">Export / Import (JSON hex array)</div>
-        <textarea class="cse-json" id="cse-json"></textarea>
-        <div class="cse-btns">
-          <button class="cse-btn cse-btn-imp" id="cse-import">Import</button>
-          <button class="cse-btn cse-btn-exp" id="cse-export">Copy to Clipboard</button>
-        </div>
+      <div class="cse-io-lbl">Import / Export</div>
+      <div class="cse-format-row">
+        <span class="cse-io-lbl">Format:</span>
+        <select class="cse-format-sel" id="cse-format">
+          <option value="json">JSON hex array (Current)</option>
+          <option value="windy">Windy format</option>
+          <option value="radarscope">RadarScope format</option>
+          <option value="wxtools">wxtools.org / GR2 format</option>
+        </select>
+      </div>
+      <textarea class="cse-json" id="cse-json"></textarea>
+      <div class="cse-btns">
+        <button class="cse-btn cse-btn-imp" id="cse-import">Import</button>
+        <button class="cse-btn cse-btn-exp" id="cse-export">Copy to Clipboard</button>
+      </div>
       </div>`;
     document.body.appendChild(panel);
     panel.querySelector('.cse-close').onclick = () => { panel.style.display = 'none'; };
@@ -6608,25 +6777,148 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       return m ? [parseInt(m[1],16), parseInt(m[2],16), parseInt(m[3],16)] : [0,0,0];
     };
 
+    // Conversion functions for different formats
+    function toJsonFormat(colors) {
+      return JSON.stringify(colors.map(c => rgb2hex(...c)));
+    }
+
+    function toWindyFormat(colors, values) {
+      // Windy format: [[value, [r,g,b]], [value, [r,g,b]], ...]
+      return JSON.stringify(colors.map((c, i) => [values[i], c]));
+    }
+
+    function toRadarScopeFormat(colors, values) {
+      // RadarScope format: SolidColor: value r g b (one per line)
+      return colors.map((c, i) => `SolidColor: ${values[i]} ${c[0]} ${c[1]} ${c[2]}`).join('\n');
+    }
+
+    function fromJsonFormat(text) {
+      const parsed = JSON.parse(text);
+      if (!Array.isArray(parsed)) throw new Error('Expected array of hex colors');
+      return parsed.map(h => hex2rgb(h));
+    }
+
+    function fromWindyFormat(text) {
+      const parsed = JSON.parse(text);
+      if (!Array.isArray(parsed)) throw new Error('Expected Windy format array');
+      // Windy format: [[value, [r,g,b]], [value, [r,g,b]], ...]
+      // Return both colors and values
+      const colors = [];
+      const values = [];
+      parsed.forEach(entry => {
+        if (!Array.isArray(entry) || entry.length < 2) {
+          throw new Error('Invalid Windy format entry');
+        }
+        const value = entry[0];
+        const color = entry[1];
+        if (!Array.isArray(color) || color.length < 3) {
+          throw new Error('Invalid color in Windy format');
+        }
+        values.push(value);
+        colors.push([color[0], color[1], color[2]]);
+      });
+      return { colors, values };
+    }
+
+    function fromRadarScopeFormat(text) {
+      const lines = text.trim().split('\n');
+      const colors = [];
+      const values = [];
+      for (const line of lines) {
+        const match = line.match(/SolidColor:\s*(\d+)\s+(\d+)\s+(\d+)\s+(\d+)/i);
+        if (match) {
+          values.push(parseFloat(match[1]));
+          colors.push([parseInt(match[2]), parseInt(match[3]), parseInt(match[4])]);
+        }
+      }
+      if (colors.length === 0) throw new Error('No valid RadarScope color entries found');
+      return { colors, values };
+    }
+
+    function fromWxtoolsFormat(text) {
+      const lines = text.trim().split('\n');
+      const colors = [];
+      const values = [];
+      for (const line of lines) {
+        // Match both "Color: value r g b" and "Color4: value r g b a" formats
+        const match = line.match(/Color4?:\s*(-?\d+(?:\.\d+)?)\s+(\d+)\s+(\d+)\s+(\d+)/i);
+        if (match) {
+          values.push(parseFloat(match[1]));
+          colors.push([parseInt(match[2]), parseInt(match[3]), parseInt(match[4])]);
+        }
+      }
+      if (colors.length === 0) throw new Error('No valid wxtools color entries found');
+      return { colors, values };
+    }
+
+    function toWxtoolsFormat(colors, values) {
+      // wxtools format: Color: value r g b (one per line)
+      return colors.map((c, i) => `Color:  ${values[i]} ${c[0]} ${c[1]} ${c[2]}`).join('\n');
+    }
+
     function refreshGrad(cfg) {
-      const s = colorScaleData[cfg.id];
+      const colors = colorScaleData[cfg.id];
+      const values = colorScaleValues[cfg.id];
+      const minVal = Math.min(...values);
+      const maxVal = Math.max(...values);
+      const range = maxVal - minVal || 1;
       document.getElementById('cse-grad').style.background =
-        'linear-gradient(to right,' + s.map((c,i) =>
-          `rgb(${c[0]},${c[1]},${c[2]}) ${(i/(s.length-1)*100).toFixed(1)}%`).join(',') + ')';
+        'linear-gradient(to right,' + colors.map((c,i) =>
+          `rgb(${c[0]},${c[1]},${c[2]}) ${(((values[i] - minVal) / range) * 100).toFixed(1)}%`).join(',') + ')';
     }
     function refreshJson(cfg) {
-      document.getElementById('cse-json').value =
-        JSON.stringify(colorScaleData[cfg.id].map(c => rgb2hex(...c)));
+      const format = document.getElementById('cse-format').value;
+      const colors = colorScaleData[cfg.id];
+      const values = colorScaleValues[cfg.id];
+      let output;
+      switch (format) {
+        case 'windy':
+          output = toWindyFormat(colors, values);
+          break;
+        case 'radarscope':
+          output = toRadarScopeFormat(colors, values);
+          break;
+        case 'wxtools':
+          output = toWxtoolsFormat(colors, values);
+          break;
+        default:
+          output = toJsonFormat(colors);
+      }
+      document.getElementById('cse-json').value = output;
     }
+    let selectedStopIndex = -1;
+    let copiedColor = null;
+
     function renderStops(cfg) {
       const container = document.getElementById('cse-stops');
       container.innerHTML = '';
-      colorScaleData[cfg.id].forEach((color, i) => {
+      const colors = colorScaleData[cfg.id];
+      const values = colorScaleValues[cfg.id];
+      colors.forEach((color, i) => {
         const item = document.createElement('div');
         item.className = 'cse-stop';
+        if (i === selectedStopIndex) {
+          item.style.border = '2px solid #5070cc';
+          item.style.borderRadius = '4px';
+          item.style.padding = '2px';
+        }
         const lbl = document.createElement('div');
         lbl.className = 'cse-stop-lbl';
         lbl.textContent = i;
+        const valInput = document.createElement('input');
+        valInput.type = 'number';
+        valInput.className = 'cse-stop-val';
+        valInput.value = values[i];
+        valInput.title = 'Value for stop ' + i;
+        valInput.step = '0.1';
+        valInput.addEventListener('input', () => {
+          colorScaleValues[cfg.id][i] = parseFloat(valInput.value) || 0;
+          refreshGrad(cfg);
+          refreshJson(cfg);
+        });
+        valInput.addEventListener('change', () => {
+          uploadColorScaleTexture();
+        });
         const picker = document.createElement('input');
         picker.type = 'color';
         picker.value = rgb2hex(...color);
@@ -6637,8 +6929,49 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
           refreshJson(cfg);
           uploadColorScaleTexture();
         });
+        const btns = document.createElement('div');
+        btns.className = 'cse-stop-btns';
+        const copyBtn = document.createElement('button');
+        copyBtn.className = 'cse-btn-sm';
+        copyBtn.textContent = 'Copy';
+        copyBtn.onclick = (e) => {
+          e.stopPropagation();
+          copiedColor = [...color];
+          copyBtn.textContent = '✓';
+          setTimeout(() => copyBtn.textContent = 'Copy', 1000);
+        };
+        const pasteBtn = document.createElement('button');
+        pasteBtn.className = 'cse-btn-sm';
+        pasteBtn.textContent = 'Paste';
+        pasteBtn.onclick = (e) => {
+          e.stopPropagation();
+          if (copiedColor) {
+            colorScaleData[cfg.id][i] = [...copiedColor];
+            picker.value = rgb2hex(...copiedColor);
+            refreshGrad(cfg);
+            refreshJson(cfg);
+            uploadColorScaleTexture();
+          }
+        };
+        const selectBtn = document.createElement('button');
+        selectBtn.className = 'cse-btn-sm';
+        selectBtn.textContent = 'Sel';
+        selectBtn.onclick = (e) => {
+          e.stopPropagation();
+          selectedStopIndex = i;
+          renderStops(cfg);
+        };
+        btns.appendChild(copyBtn);
+        btns.appendChild(pasteBtn);
+        btns.appendChild(selectBtn);
         item.appendChild(lbl);
+        item.appendChild(valInput);
         item.appendChild(picker);
+        item.appendChild(btns);
+        item.onclick = () => {
+          selectedStopIndex = i;
+          renderStops(cfg);
+        };
         container.appendChild(item);
       });
     }
@@ -6650,6 +6983,8 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       refreshGrad(cfg);
       renderStops(cfg);
       refreshJson(cfg);
+      // Update interpolation checkbox state
+      document.getElementById('cse-interpolate').checked = cfg.interpolate || false;
     }
 
     const tabContainer = document.getElementById('cse-tabs');
@@ -6665,12 +7000,105 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     document.getElementById('cse-import').onclick = () => {
       try {
         const cfg = COLOR_SCALE_CONFIGS.find(c => c.id === activeId);
-        const parsed = JSON.parse(document.getElementById('cse-json').value);
-        if (!Array.isArray(parsed)) throw new Error('Expected array');
-        colorScaleData[activeId] = parsed.slice(0, cfg.stops).map(h => hex2rgb(h));
+        const format = document.getElementById('cse-format').value;
+        const text = document.getElementById('cse-json').value;
+        let colors, values;
+        switch (format) {
+          case 'windy':
+            const windyResult = fromWindyFormat(text);
+            colors = windyResult.colors;
+            values = windyResult.values;
+            break;
+          case 'radarscope':
+            const radarResult = fromRadarScopeFormat(text);
+            colors = radarResult.colors;
+            values = radarResult.values;
+            break;
+          case 'wxtools':
+            const wxtoolsResult = fromWxtoolsFormat(text);
+            colors = wxtoolsResult.colors;
+            values = wxtoolsResult.values;
+            break;
+          default:
+            colors = fromJsonFormat(text);
+            values = Array.from({length: colors.length}, (_, i) => i);
+        }
+        if (!Array.isArray(colors)) throw new Error('Expected array of colors');
+        colorScaleData[activeId] = colors.slice(0, cfg.stops);
+        colorScaleValues[activeId] = values.slice(0, cfg.stops);
         uploadColorScaleTexture();
         showScale(activeId);
       } catch(e) { alert('Import error: ' + e.message); }
+    };
+    document.getElementById('cse-format').onchange = () => {
+      const cfg = COLOR_SCALE_CONFIGS.find(c => c.id === activeId);
+      refreshJson(cfg);
+    };
+
+    document.getElementById('cse-interpolate').onchange = () => {
+      const cfg = COLOR_SCALE_CONFIGS.find(c => c.id === activeId);
+      cfg.interpolate = document.getElementById('cse-interpolate').checked;
+      uploadColorScaleTexture();
+    };
+
+    document.getElementById('cse-add').onclick = () => {
+      const cfg = COLOR_SCALE_CONFIGS.find(c => c.id === activeId);
+      const colors = colorScaleData[cfg.id];
+      const values = colorScaleValues[cfg.id];
+      const insertIndex = selectedStopIndex >= 0 ? selectedStopIndex + 1 : colors.length;
+      const prevColor = colors[insertIndex - 1] || [128, 128, 128];
+      const prevValue = values[insertIndex - 1] || 0;
+      const nextColor = colors[insertIndex] || prevColor;
+      const nextValue = values[insertIndex] || prevValue + 1;
+      const newColor = [
+        Math.round((prevColor[0] + nextColor[0]) / 2),
+        Math.round((prevColor[1] + nextColor[1]) / 2),
+        Math.round((prevColor[2] + nextColor[2]) / 2)
+      ];
+      const newValue = (prevValue + nextValue) / 2;
+      colors.splice(insertIndex, 0, newColor);
+      values.splice(insertIndex, 0, newValue);
+      selectedStopIndex = insertIndex;
+      renderStops(cfg);
+      refreshGrad(cfg);
+      refreshJson(cfg);
+      uploadColorScaleTexture();
+    };
+
+    document.getElementById('cse-remove').onclick = () => {
+      const cfg = COLOR_SCALE_CONFIGS.find(c => c.id === activeId);
+      const colors = colorScaleData[cfg.id];
+      const values = colorScaleValues[cfg.id];
+      if (selectedStopIndex >= 0 && colors.length > 2) {
+        colors.splice(selectedStopIndex, 1);
+        values.splice(selectedStopIndex, 1);
+        selectedStopIndex = Math.min(selectedStopIndex, colors.length - 1);
+        renderStops(cfg);
+        refreshGrad(cfg);
+        refreshJson(cfg);
+        uploadColorScaleTexture();
+      }
+    };
+
+    document.getElementById('cse-copy').onclick = () => {
+      if (selectedStopIndex >= 0) {
+        const cfg = COLOR_SCALE_CONFIGS.find(c => c.id === activeId);
+        copiedColor = [...colorScaleData[cfg.id][selectedStopIndex]];
+        const btn = document.getElementById('cse-copy');
+        btn.textContent = '✓ Copied!';
+        setTimeout(() => btn.textContent = 'Copy Color', 1500);
+      }
+    };
+
+    document.getElementById('cse-paste').onclick = () => {
+      if (selectedStopIndex >= 0 && copiedColor) {
+        const cfg = COLOR_SCALE_CONFIGS.find(c => c.id === activeId);
+        colorScaleData[cfg.id][selectedStopIndex] = [...copiedColor];
+        renderStops(cfg);
+        refreshGrad(cfg);
+        refreshJson(cfg);
+        uploadColorScaleTexture();
+      }
     };
     document.getElementById('cse-export').onclick = () => {
       navigator.clipboard.writeText(document.getElementById('cse-json').value)
@@ -6904,6 +7332,8 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   gl.uniform2f(gl.getUniformLocation(skyBackgroundDisplayProgram, 'texelSize'), texelSizeX, texelSizeY);
   gl.uniform1f(gl.getUniformLocation(skyBackgroundDisplayProgram, 'simHeight'), guiControls.simHeight);
   gl.uniform1f(gl.getUniformLocation(skyBackgroundDisplayProgram, 'minShadowLight'), minShadowLight);
+  gl.uniform1f(gl.getUniformLocation(skyBackgroundDisplayProgram, 'starVisibility'), guiControls.starVisibility);
+  gl.uniform1f(gl.getUniformLocation(skyBackgroundDisplayProgram, 'starLightEmitStrength'), guiControls.starLightEmitStrength);
   gl.uniform1i(gl.getUniformLocation(skyBackgroundDisplayProgram, 'lightTex'), 3);
   gl.uniform1i(gl.getUniformLocation(skyBackgroundDisplayProgram, 'ambientLightTex'), 9);
   gl.uniform1i(gl.getUniformLocation(skyBackgroundDisplayProgram, 'precipFeedbackTex'), 7);
@@ -7537,18 +7967,19 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
 
               // Extract lightningLocation from precipitationfeedback
-              gl.useProgram(lightningLocationProgram);
-              gl.uniform1f(uloc_lightning_iterNum, iterNum);
+              if (guiControls.enableLightning) {
+                gl.useProgram(lightningLocationProgram);
+                gl.uniform1f(uloc_lightning_iterNum, iterNum);
 
-              gl.activeTexture(gl.TEXTURE0);
-              gl.bindTexture(gl.TEXTURE_2D, precipitationFeedbackTexture);
+                gl.activeTexture(gl.TEXTURE0);
+                gl.bindTexture(gl.TEXTURE_2D, precipitationFeedbackTexture);
 
-              gl.bindFramebuffer(gl.FRAMEBUFFER, lightningDataFrameBuff);
-              gl.drawBuffers([ gl.COLOR_ATTACHMENT0 ]);
-              gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+                gl.bindFramebuffer(gl.FRAMEBUFFER, lightningDataFrameBuff);
+                gl.drawBuffers([ gl.COLOR_ATTACHMENT0 ]);
+                gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
 
-              if (guiControls.sound) {
-                gl.readBuffer(gl.COLOR_ATTACHMENT0);
+                if (guiControls.sound) {
+                  gl.readBuffer(gl.COLOR_ATTACHMENT0);
                 var lightningDataValues = new Float32Array(4);
                 gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.FLOAT, lightningDataValues);
                 // console.log('lightningDataValues: ', lightningDataValues[0], lightningDataValues[1], lightningDataValues[2], iterNum, lightningDataValues[3]);
@@ -7556,6 +7987,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
                 if (Math.round(lightningDataValues[2]) == iterNum) {
                   soundSystem.soundThunder(lightningDataValues[0], lightningDataValues[1], Math.pow(lightningDataValues[3], 2.0));
                 }
+              }
               }
             }
 
@@ -7769,7 +8201,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
       // Don't display vectors when zoomed out because you would just see noise
       if (cam.curZoom / sim_res_x > 0.003) {
-        gl.uniform1f(uloc_real_displayVectorField, displayVectorField);
+        gl.uniform1f(uloc_real_displayVectorField, guiControls.enableVectorField ? 1.0 : 0.0);
       } else {
         gl.uniform1f(uloc_real_displayVectorField, 0.0);
       }
@@ -7810,52 +8242,52 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
 
       // BLOOM
+      if (guiControls.enableBloom) {
+        let prevFBO = bloomFBOs[0]; // the previous FBO
 
-      let prevFBO = bloomFBOs[0]; // the previous FBO
+        gl.useProgram(bloomBlurProgram);
+        gl.uniform1i(uloc_bloom_bloomTexture, 0);
 
-      gl.useProgram(bloomBlurProgram);
-      gl.uniform1i(uloc_bloom_bloomTexture, 0);
+        // downsample
+        for (let i = 1; i < bloomFBOs.length; i++) {
+          let destFBO = bloomFBOs[i];
+          gl.uniform2f(uloc_bloom_texelSize, prevFBO.texelSizeX, prevFBO.texelSizeY);
 
+          gl.viewport(0, 0, destFBO.width, destFBO.height);
 
-      // downsample
-      for (let i = 1; i < bloomFBOs.length; i++) {
-        let destFBO = bloomFBOs[i];
-        gl.uniform2f(uloc_bloom_texelSize, prevFBO.texelSizeX, prevFBO.texelSizeY);
+          // bind texture
+          gl.activeTexture(gl.TEXTURE0);
+          gl.bindTexture(gl.TEXTURE_2D, prevFBO.texture);
 
-        gl.viewport(0, 0, destFBO.width, destFBO.height);
+          gl.bindFramebuffer(gl.FRAMEBUFFER, destFBO.frameBuffer);
+          // gl.drawBuffers([ gl.BACK ]);
+          gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4); // draw to destFBO
 
-        // bind texture
-        gl.activeTexture(gl.TEXTURE0);
-        gl.bindTexture(gl.TEXTURE_2D, prevFBO.texture);
+          prevFBO = destFBO;
+        }
 
-        gl.bindFramebuffer(gl.FRAMEBUFFER, destFBO.frameBuffer);
-        // gl.drawBuffers([ gl.BACK ]);
-        gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4); // draw to destFBO
+        // upsample and add
+        gl.blendFunc(gl.ONE, gl.ONE); // add to the existing texture in the framebuffer
+        gl.enable(gl.BLEND);
 
-        prevFBO = destFBO;
+        for (let i = bloomFBOs.length - 2; i >= 0; i--) {
+          let destFBO = bloomFBOs[i];
+
+          gl.uniform2f(uloc_bloom_texelSize, prevFBO.texelSizeX, prevFBO.texelSizeY);
+
+          gl.activeTexture(gl.TEXTURE0);
+          gl.bindTexture(gl.TEXTURE_2D, prevFBO.texture);
+
+          gl.viewport(0, 0, destFBO.width, destFBO.height);
+          gl.bindFramebuffer(gl.FRAMEBUFFER, destFBO.frameBuffer);
+          // gl.drawBuffers([ gl.BACK ]);
+          gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4); // draw to destFBO
+
+          prevFBO = destFBO;
+        }
+
+        gl.disable(gl.BLEND);
       }
-
-      // upsample and add
-      gl.blendFunc(gl.ONE, gl.ONE); // add to the existing texture in the framebuffer
-      gl.enable(gl.BLEND);
-
-      for (let i = bloomFBOs.length - 2; i >= 0; i--) {
-        let destFBO = bloomFBOs[i];
-
-        gl.uniform2f(uloc_bloom_texelSize, prevFBO.texelSizeX, prevFBO.texelSizeY);
-
-        gl.activeTexture(gl.TEXTURE0);
-        gl.bindTexture(gl.TEXTURE_2D, prevFBO.texture);
-
-        gl.viewport(0, 0, destFBO.width, destFBO.height);
-        gl.bindFramebuffer(gl.FRAMEBUFFER, destFBO.frameBuffer);
-        // gl.drawBuffers([ gl.BACK ]);
-        gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4); // draw to destFBO
-
-        prevFBO = destFBO;
-      }
-
-      gl.disable(gl.BLEND);
 
       gl.useProgram(postProcessingProgram);
       gl.activeTexture(gl.TEXTURE0);
@@ -7929,7 +8361,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
             gl.uniform1i(uloc_radar_colorScaleStops, 36);
           } else if (productType === 1) {
             gl.uniform1i(uloc_radar_colorScaleColumn, 19);
-            gl.uniform1i(uloc_radar_colorScaleStops, 32);
+            gl.uniform1i(uloc_radar_colorScaleStops, 33);
           } else if (productType === 2) {
             gl.uniform1i(uloc_radar_colorScaleColumn, 20);
             gl.uniform1i(uloc_radar_colorScaleStops, 22);
@@ -7962,7 +8394,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         // Don't display vectors when zoomed out because you would just see
         // noise
         if (cam.curZoom / sim_res_x > 0.003) {
-          gl.uniform1f(uloc_temp_displayVectorField, displayVectorField);
+          gl.uniform1f(uloc_temp_displayVectorField, guiControls.enableVectorField ? 1.0 : 0.0);
         } else {
           gl.uniform1f(uloc_temp_displayVectorField, 0.0);
         }
@@ -7993,7 +8425,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         gl.bindTexture(gl.TEXTURE_2D, wallTexture_1);
 
         if (cam.curZoom / sim_res_x > 0.003) {
-          gl.uniform1f(uloc_tempChg_displayVectorField, displayVectorField);
+          gl.uniform1f(uloc_tempChg_displayVectorField, guiControls.enableVectorField ? 1.0 : 0.0);
         } else {
           gl.uniform1f(uloc_tempChg_displayVectorField, 0.0);
         }
@@ -8182,7 +8614,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
                 gl.uniform1i(uloc_radar_colorScaleStops, 36);
               } else if (productType === 1) {
                 gl.uniform1i(uloc_radar_colorScaleColumn, 19);
-                gl.uniform1i(uloc_radar_colorScaleStops, 32);
+                gl.uniform1i(uloc_radar_colorScaleStops, 33);
               } else if (productType === 2) {
                 gl.uniform1i(uloc_radar_colorScaleColumn, 20);
                 gl.uniform1i(uloc_radar_colorScaleStops, 22);

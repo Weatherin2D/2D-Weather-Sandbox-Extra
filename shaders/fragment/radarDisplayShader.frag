@@ -51,8 +51,8 @@ void main()
 
   // Polar range-gate snapping — same for all products for visual consistency
   float resMult   = 1.0 / max(radarResolution, 0.1);
-  float rangeStep = max(0.3, distFrac * distFrac * 3.0 * resMult * (radarRange / 400.0));
-  float azStep    = max(0.008, 0.03 * resMult * (radarRange / 400.0));
+  float rangeStep = max(0.01, distFrac * distFrac * 3.0 * resMult * (radarRange / 400.0));
+  float azStep    = max(0.001, 0.03 * resMult * (radarRange / 400.0));
 
   float snappedDist  = (floor(dist  / rangeStep + 0.5)) * rangeStep;
   float snappedAngle = (floor(angle / azStep    + 0.5)) * azStep;

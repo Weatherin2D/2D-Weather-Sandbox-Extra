@@ -9,6 +9,7 @@ in vec2 texCoord;
 uniform vec2 resolution;
 uniform vec2 texelSize;
 uniform vec2 aspectRatios;
+uniform vec3 view;
 
 uniform sampler2D lightTex;
 uniform sampler2D planeTex;
@@ -17,6 +18,8 @@ uniform sampler2D planeGearTex;
 uniform sampler2D ambientLightTex;
 
 uniform float minShadowLight;
+uniform float starVisibility;
+uniform float starLightEmitStrength;
 
 uniform float iterNum;
 
@@ -141,6 +144,52 @@ void main()
 
   vec3 mixedCol = hsv2rgb(vec3(hue, sat, val));                     // blue air
 
+  // Star field - only visible at night
+  vec3 starColor = vec3(0.0);
+  vec3 starLight = vec3(0.0);
+  if (starVisibility > 0.0 && light < 0.08) {
+    float nightFactor = 1.0 - smoothstep(0.0, 0.08, light);
+    
+    // Fade out stars near the surface (bottom of screen)
+    float surfaceFade = smoothstep(0.0, 0.2, texCoord.y);
+    
+    // Generate pseudo-random star positions using world coordinates
+    // Offset texCoord by view position to keep stars fixed in world space
+    vec2 worldPos = texCoord;
+    worldPos.x += view.x * 0.5;
+    worldPos.y += view.y * 0.5;
+    vec2 starSeed = worldPos * 100.0;
+    float starRand1 = fract(sin(dot(starSeed, vec2(12.9898, 78.233))) * 43758.5453);
+    float starRand2 = fract(sin(dot(starSeed + 100.0, vec2(39.346, 57.123))) * 23421.1234);
+    float starRand3 = fract(sin(dot(starSeed + 200.0, vec2(73.456, 12.789))) * 12345.6789);
+    
+    // Star size (0.0 to 1.0, weighted toward smaller stars)
+    float starSize = pow(starRand1, 3.0);
+    
+    // Twinkling speed varies by star
+    float twinkleSpeed = 0.05 + starRand2 * 0.15;
+    float twinkle = sin(iterNum * twinkleSpeed + starRand3 * 100.0) * 0.5 + 0.5;
+    twinkle = pow(twinkle, 2.0 + starSize * 2.0); // Bigger stars twinkle more
+    
+    // Only render stars at certain positions (more sparse star field)
+    if (starRand1 > 0.992) {
+      // Brightness based on size and twinkling
+      float starBrightness = starSize * 2.0 + 0.3;
+      starBrightness *= twinkle;
+      starBrightness *= starVisibility * nightFactor * surfaceFade;
+      
+      // Star color variation (slight blue/white tint)
+      vec3 starTint = mix(vec3(1.0, 1.0, 0.95), vec3(0.85, 0.9, 1.0), starRand2);
+      starColor = starTint * starBrightness;
+      
+      // Bigger stars emit more light, controlled by starLightEmitStrength
+      starLight = starTint * starSize * starLightEmitStrength * starVisibility * nightFactor * surfaceFade * twinkle;
+    }
+    
+    // Add stars to the sky background (mixedCol) so they're behind all objects
+    mixedCol += starColor;
+  }
+
   vec3 airplaneLights;
 
   vec3 airplaneOnLight;
@@ -151,6 +200,7 @@ void main()
   mixedCol += A380Col.rgb * A380Col.a;
 
   vec3 finalColor = mixedCol * (light + minShadowLight + airplaneOnLight);
+  finalColor += starLight;
 
   float airDensityFactor = clamp(1.0 - texCoord.y, 0., 1.);
 

@@ -228,6 +228,25 @@ vec4 getAirColor(vec2 fragCoordIn)
 
   // fragmentColor = vec4(vec3(light),1); return; // View light texture for debugging
 
+  // Calculate fog/mist opacity based on relative humidity (only when smooth clouds is enabled)
+  float fogMistOpacity = 0.0;
+  if (smoothClouds > 0.5) {
+    float relHum = water[TOTAL] / maxWater(realTemp);
+    
+    // Mist: 80% RH -> 0.1% opacity, 91% RH -> 1% opacity
+    if (relHum >= 0.80 && relHum < 0.91) {
+      fogMistOpacity = 0.001 + (relHum - 0.80) * (0.01 - 0.001) / (0.91 - 0.80);
+    }
+    // Plateau: 91% - 98.5% RH -> 1% opacity
+    else if (relHum >= 0.91 && relHum < 0.985) {
+      fogMistOpacity = 0.01;
+    }
+    // Fog: 98.5% RH -> 1% opacity, 99.9% RH -> 99% opacity
+    else if (relHum >= 0.985) {
+      fogMistOpacity = 0.01 + (relHum - 0.985) * (0.99 - 0.01) / (0.999 - 0.985);
+    }
+  }
+
   float cloudwater = water[CLOUD];
 
   vec3 cloudCol = vec3(1.0 / (cloudwater * 0.005 + 1.0)); // 0.10 white to black
@@ -252,10 +271,11 @@ vec4 getAirColor(vec2 fragCoordIn)
 
   shadowLight += fireIntensity * 2.5;                                                                                 // 1.5
 
-  float opacity = 1. - (1. - smokeOpacity) * (1. - cloudOpacity);                                                     // alpha blending
+  float opacity = 1. - (1. - smokeOpacity) * (1. - cloudOpacity) * (1. - fogMistOpacity);                     // alpha blending with fog/mist
   vec3 color;
   if (opacity > 0.0) {
-    color = (smokeOrFireCol * smokeOpacity / opacity) + (cloudCol * cloudOpacity * (1. - smokeOpacity) / opacity);
+    float smokeCloudFogWeight = smokeOpacity + cloudOpacity * (1. - smokeOpacity) + fogMistOpacity * (1. - smokeOpacity) * (1. - cloudOpacity);
+    color = (smokeOrFireCol * smokeOpacity / opacity) + (cloudCol * cloudOpacity * (1. - smokeOpacity) / opacity) + (vec3(0.95) * fogMistOpacity * (1. - smokeOpacity) * (1. - cloudOpacity) / opacity);
   } else {
     color = vec3(0.0);
   }
