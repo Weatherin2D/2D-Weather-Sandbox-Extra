@@ -228,30 +228,32 @@ vec4 getAirColor(vec2 fragCoordIn)
 
   // fragmentColor = vec4(vec3(light),1); return; // View light texture for debugging
 
-  // Calculate fog/mist opacity based on relative humidity (only when smooth clouds is enabled)
+  // Calculate fog/mist opacity based on relative humidity (haze only, no condensation effects)
+  float relHum = water[TOTAL] / maxWater(realTemp);
   float fogMistOpacity = 0.0;
-  if (smoothClouds > 0.5) {
-    float relHum = water[TOTAL] / maxWater(realTemp);
-    
-    // Mist: 80% RH -> 0.1% opacity, 91% RH -> 1% opacity
-    if (relHum >= 0.80 && relHum < 0.91) {
-      fogMistOpacity = 0.001 + (relHum - 0.80) * (0.01 - 0.001) / (0.91 - 0.80);
+
+  // Only apply fog if relative humidity is strictly above 95% and maxWater is valid
+  if (relHum > 0.95 && maxWater(realTemp) > 0.001) {
+    // Mist: 95% RH -> 0.00025% opacity, 98% RH -> 0.0025% opacity
+    if (relHum < 0.98) {
+      fogMistOpacity = mix(0.0000025, 0.000025, (relHum - 0.95) / (0.98 - 0.95));
     }
-    // Plateau: 91% - 98.5% RH -> 1% opacity
-    else if (relHum >= 0.91 && relHum < 0.985) {
-      fogMistOpacity = 0.01;
+    // Plateau: 98% - 98.5% RH -> 0.0025% opacity
+    else if (relHum < 0.985) {
+      fogMistOpacity = 0.000025;
     }
-    // Fog: 98.5% RH -> 1% opacity, 99.9% RH -> 99% opacity
-    else if (relHum >= 0.985) {
-      fogMistOpacity = 0.01 + (relHum - 0.985) * (0.99 - 0.01) / (0.999 - 0.985);
+    // Fog: 98.5% RH -> 0.0025% opacity, 100% RH -> 0.025% opacity (haze only, not cloud)
+    else {
+      fogMistOpacity = mix(0.000025, 0.00025, clamp((relHum - 0.985) / (1.0 - 0.985), 0.0, 1.0));
     }
+    fogMistOpacity = clamp(fogMistOpacity, 0.0, 0.00025);
   }
 
   float cloudwater = water[CLOUD];
 
   vec3 cloudCol = vec3(1.0 / (cloudwater * 0.005 + 1.0)); // 0.10 white to black
 
-  float cloudDensity = max(cloudwater * 13.6, 0.0);
+  float cloudDensity = max(cloudwater * 23.0, 0.0);
 
   float precipDensity = max(water[PRECIPITATION] - 0.05, 0.0) * 0.8;
   float totalDensity = cloudDensity + precipDensity; // visualize precipitation
@@ -274,7 +276,6 @@ vec4 getAirColor(vec2 fragCoordIn)
   float opacity = 1. - (1. - smokeOpacity) * (1. - cloudOpacity) * (1. - fogMistOpacity);                     // alpha blending with fog/mist
   vec3 color;
   if (opacity > 0.0) {
-    float smokeCloudFogWeight = smokeOpacity + cloudOpacity * (1. - smokeOpacity) + fogMistOpacity * (1. - smokeOpacity) * (1. - cloudOpacity);
     color = (smokeOrFireCol * smokeOpacity / opacity) + (cloudCol * cloudOpacity * (1. - smokeOpacity) / opacity) + (vec3(0.95) * fogMistOpacity * (1. - smokeOpacity) * (1. - cloudOpacity) / opacity);
   } else {
     color = vec3(0.0);

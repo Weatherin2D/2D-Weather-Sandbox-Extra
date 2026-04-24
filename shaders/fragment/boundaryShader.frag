@@ -104,12 +104,17 @@ void main()
 
     float precipCoalescence = max(-precipFeedback[VAPOR], 0.); // how much cloud water turns into rain
 
-    water[CLOUD] -= precipCoalescence;
-    water[TOTAL] -= precipCoalescence;
+    water[CLOUD] = max(water[CLOUD] - precipCoalescence, 0.0); // clamp to prevent negative
+
+    // Limit water removal to prevent unrealistic dew points (e.g., -100°C)
+    // Minimum water corresponds to dew point of -80°C
+    float minWaterForTemp = maxWater(max(realTemp - 80.0, CtoK(-80.0)));
+    water[TOTAL] = max(water[TOTAL] - precipCoalescence, minWaterForTemp);
 
     float precipEvaporation = max(precipFeedback[VAPOR], 0.);
 
     water[TOTAL] += precipEvaporation; // evaporating rain adds water vapor to air
+    water[TOTAL] = max(water[TOTAL], 0.0); // ensure water[TOTAL] stays non-negative after evaporation
 
 
     //  0.004 for rain visualisation
@@ -370,6 +375,9 @@ void main()
         break;
       }
     }
+
+    // Final clamp to ensure water[TOTAL] never goes negative
+    water[TOTAL] = max(water[TOTAL], 0.0);
   } else {                                                                 // this is wall
 
     wall[VERT_DISTANCE] = wallX0Yp[VERT_DISTANCE] - 1;                     // height below ground is counted

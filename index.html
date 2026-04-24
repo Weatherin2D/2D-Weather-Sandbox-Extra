@@ -306,6 +306,11 @@
                         <option value="18">18H</option>
                     </select>
                     <p>Select a real world sounding to use as forcing in the simulation</p>
+                    <div style="margin-top: 10px;">
+                        <button onclick="saveSoundingToFile();" style="margin-right: 10px; padding: 5px 10px;">Save Sounding</button>
+                        <button onclick="document.getElementById('soundingFileInput').click();" style="padding: 5px 10px;">Load Sounding</button>
+                        <input type="file" id="soundingFileInput" accept=".txt" style="display: none;" onchange="loadSoundingFromFile(this.files[0]);">
+                    </div>
                 </div>
             </div>
             <img style="float: left; height: 500px;" id="soundingPreview"

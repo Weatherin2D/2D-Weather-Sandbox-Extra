@@ -148,37 +148,61 @@ function rawSoundingToSimSounding(soundingData, simHeight, inSimSoundingRes)
 {
   let soundingForSim = [];
 
-  soundingDataIndex = soundingData.length - 1; // start from lowest datapoint
-
-  for (let y = 0; y < inSimSoundingRes; y++) {
-
-    const inSimAlt = y * (simHeight / sim_res_y);
-
-    while (soundingData[soundingDataIndex]['alt'] < inSimAlt ||
-           sampleIsInvalid(soundingData[soundingDataIndex])) { // go up in the sounding until the altitude matches, or is more than the in sim altitude
-      soundingDataIndex--;
+  // Safety check: ensure soundingData exists and has valid data
+  if (!soundingData || soundingData.length === 0) {
+    console.warn('No sounding data available, using default profile');
+    // Return a default sounding profile
+    for (let y = 0; y < inSimSoundingRes; y++) {
+      const alt = y * (simHeight / sim_res_y);
+      const temp = 20 - (alt / 1000) * 6.5; // Standard lapse rate
+      soundingForSim[y] = {'t' : temp, 'td' : temp - 10, 'vel' : 0.01};
     }
-
-    const sampleAboveOrEqual = soundingData[soundingDataIndex];
-
-    const sampleBelow = soundingData[Math.min(soundingDataIndex + 1, soundingData.length - 1)];
-
-    let s = sampleAboveOrEqual;
-    if (sampleAboveOrEqual['alt'] != inSimAlt && inSimAlt >= soundingData[soundingData.length - 1].alt) {
-      let a = (inSimAlt - sampleBelow['alt']) / (sampleAboveOrEqual['alt'] - sampleBelow['alt']);
-      s = mixGeneric(sampleBelow, sampleAboveOrEqual, a);
-    }
-
-    // console.log(inSimAlt, sampleBelow['alt'], sampleAboveOrEqual['alt'], s);
-
-    let twoDimentionalVel = s.vel * Math.cos(s.angle * degToRad);   // km/h
-
-    const inSimVel = msToRawVelocity(twoDimentionalVel / 3.6);      // convert to m/s first
-
-    soundingForSim[y] = {'t' : s.t, 'td' : s.td, 'vel' : inSimVel}; // Put the requered data in an array of objects
+    return soundingForSim;
   }
 
-  // console.log('soundingForSim', soundingForSim);
+  // Debug: check first few data points to understand the input format
+  console.log('rawSoundingToSimSounding input sample:', soundingData[0], soundingData[Math.floor(soundingData.length/2)], soundingData[soundingData.length-1]);
+
+  // The sounding data is stored with increasing altitude (index 0 = lowest, last = highest)
+  // We need to find the correct data point for each simulation level
+  
+  for (let y = 0; y < inSimSoundingRes; y++) {
+    const inSimAlt = y * (simHeight / sim_res_y);
+    
+    // Find the data point just above or equal to the simulation altitude
+    let idx = 0;
+    while (idx < soundingData.length - 1 && soundingData[idx]['alt'] < inSimAlt) {
+      idx++;
+    }
+    
+    // Safety check
+    if (idx >= soundingData.length) {
+      soundingForSim[y] = {'t' : -50, 'td' : -60, 'vel' : 0.01};
+      continue;
+    }
+    
+    const sampleAbove = soundingData[idx];
+    const sampleBelow = soundingData[Math.max(0, idx - 1)];
+    
+    let s = sampleAbove;
+    
+    // Interpolate if we have a sample below and the altitudes don't match
+    if (sampleAbove['alt'] !== inSimAlt && idx > 0) {
+      const altDiff = sampleAbove['alt'] - sampleBelow['alt'];
+      if (altDiff > 0) {
+        const a = (inSimAlt - sampleBelow['alt']) / altDiff;
+        s = mixGeneric(sampleBelow, sampleAbove, a);
+      }
+    }
+
+    let twoDimentionalVel = s.vel * Math.cos(s.angle * degToRad);   // km/h
+    const inSimVel = msToRawVelocity(twoDimentionalVel / 3.6);      // convert to m/s first
+
+    soundingForSim[y] = {'t' : s.t, 'td' : s.td, 'vel' : inSimVel};
+  }
+
+  // Debug: check output
+  console.log('rawSoundingToSimSounding output sample:', soundingForSim[0], soundingForSim[Math.floor(inSimSoundingRes/2)], soundingForSim[inSimSoundingRes-1]);
 
   return soundingForSim;
 }
@@ -403,6 +427,9 @@ const guiControls_default = {
   brushIntensity : 0.01,
   allowCaves : true,
   showGraph : false,
+  graphFixedPosition : false, // When true, graph stays at fixed position instead of following cursor
+  graphFixedX : 0,
+  graphFixedY : 0,
   realDewPoint : false, // show real dew point in graph, instead of dew point with cloud water included
   enablePrecipitation : true,
   showDrops : false,
@@ -430,6 +457,17 @@ const guiControls_default = {
   displayRadars : true,
   airplaneMode : false,
   readoutCursor : false,
+  fullscreenResolution : 'Default',
+  skipCurlCalculation : false,
+  skipCAPECalculation : false,
+  simulationQuality : 1.0,
+  skipLightning : false,
+  reducedPrecipitation : false,
+  disableTempChangeHistory : false,
+  skipLightingCalculation : false,
+  skipPressure : false,
+  reducedWeatherStationUpdates : false,
+  skipAdvection : false,
 };
 
 var horizontalDisplayMult = 3.0; // 3.0 to cover srceen while zoomed out
@@ -914,6 +952,10 @@ class Weatherstation
   #netIRpow = 0;
   #solarPower = 0;
 
+  #predictedWeather = 'sunny'; // sunny, partly_cloudy, cloudy, rainy, thunderstorms
+
+  #weatherIconDiv;
+
   #chartCanvas;
   #historyChart;
 
@@ -941,6 +983,15 @@ class Weatherstation
     this.#canvas.style.zIndex = 1; // z-index
 
     this.#displaySunAndIRPower = false;
+
+    // Create weather icon div
+    this.#weatherIconDiv = document.createElement('div');
+    this.#weatherIconDiv.style.position = 'absolute';
+    this.#weatherIconDiv.style.fontSize = '32px';
+    this.#weatherIconDiv.style.zIndex = 2;
+    this.#weatherIconDiv.style.pointerEvents = 'none';
+    this.#weatherIconDiv.textContent = '☀️';
+    document.body.appendChild(this.#weatherIconDiv);
 
     let thisObj = this;
     this.#canvas.addEventListener('mousedown', function(event) {
@@ -1109,6 +1160,7 @@ class Weatherstation
   {
     this.#chartCanvas.remove();
     this.#canvas.parentElement.removeChild(this.#canvas); // remove canvas element
+    this.#weatherIconDiv.remove(); // remove weather icon div
     let index = weatherStations.indexOf(this);
     weatherStations.splice(index, 1);                     // remove object from array
   }
@@ -1206,7 +1258,78 @@ class Weatherstation
     this.#solarPower = directSunlight;
 
     this.#time = simDateTime.toISOString();
+    this.#predictWeather();
     this.updateChartJS(); // update chart
+  }
+
+  #predictWeather()
+  {
+    // Weather prediction based on sensor readings
+    // Factors: relative humidity, temperature, solar power, dew point, wind speed, air quality, soil moisture (rainfall), snow height, net IR power
+
+    const rh = this.#relativeHumd;
+    const temp = this.#temperature;
+    const solar = this.#solarPower;
+    const dewpoint = this.#dewpoint;
+    const wind = this.#velocity;
+    const airQuality = this.#airQuality;
+    const soilMoisture = this.#soilMoisture;
+    const snowHeight = this.#snowHeight;
+    const netIR = this.#netIRpow;
+
+    // Calculate dew point depression (temp - dewpoint)
+    const dewPointDepression = temp - dewpoint;
+
+    // Thunderstorm conditions: high humidity, high wind, high air quality (smoke), unstable conditions
+    if (rh > 75 && wind > 8 && airQuality > 50 && dewPointDepression < 5) {
+      this.#predictedWeather = 'thunderstorms';
+    }
+    // Rainy conditions: high humidity, significant soil moisture (rainfall), but only if solar is low (not sunny)
+    else if (soilMoisture > 0.5 && rh > 65 && solar < 100) {
+      this.#predictedWeather = 'rainy';
+    }
+    // Sunny: prioritize high solar power, even with moderate humidity (lowered threshold)
+    else if (solar > 200) {
+      this.#predictedWeather = 'sunny';
+    }
+    // Partly cloudy: moderate solar power (lowered threshold)
+    else if (solar > 100) {
+      this.#predictedWeather = 'partly_cloudy';
+    }
+    // Cloudy conditions: high humidity, low solar power, no significant precipitation
+    else if (rh > 60 && soilMoisture < 0.5) {
+      this.#predictedWeather = 'cloudy';
+    }
+    // Rainy conditions with low solar power
+    else if (soilMoisture > 0.5 && rh > 60) {
+      this.#predictedWeather = 'rainy';
+    }
+    // Default fallback based on humidity
+    else if (rh > 60) {
+      this.#predictedWeather = 'cloudy';
+    } else if (rh > 40) {
+      this.#predictedWeather = 'partly_cloudy';
+    } else {
+      this.#predictedWeather = 'sunny';
+    }
+  }
+
+  #getWeatherIcon()
+  {
+    switch(this.#predictedWeather) {
+      case 'sunny':
+        return '☀️';
+      case 'partly_cloudy':
+        return '⛅';
+      case 'cloudy':
+        return '☁️';
+      case 'rainy':
+        return '🌧️';
+      case 'thunderstorms':
+        return '⛈️';
+      default:
+        return '☀️';
+    }
   }
 
   getXpos() { return this.#x; }
@@ -1216,6 +1339,7 @@ class Weatherstation
   setHidden(hidden)
   {
     this.#mainDiv.style.display = hidden ? 'none' : 'block';
+    this.#weatherIconDiv.style.display = hidden ? 'none' : 'block';
     this.#chartCanvas.style.display = 'none'; // hide charts
   }
 
@@ -1233,6 +1357,17 @@ class Weatherstation
     c.clearRect(0, 0, this.#width, this.#height);
     c.fillStyle = '#00000000';
     c.fillRect(0, 0, this.#width, this.#height);
+
+    // Update weather icon div position (above the station)
+    this.#weatherIconDiv.style.left = (screenX + this.#width / 2 - 16) + 'px'; // Center the icon
+    this.#weatherIconDiv.style.top = (screenY - 40) + 'px'; // Position 40px above the station
+    
+    // Add wind icon if wind speed is above 20 knots (10.29 m/s)
+    let iconText = this.#getWeatherIcon();
+    if (this.#velocity > 10.29) { // 20 knots = 10.29 m/s
+      iconText += ' 💨';
+    }
+    this.#weatherIconDiv.textContent = iconText;
 
     // temperature
     c.font = '15px Arial';
@@ -1298,6 +1433,7 @@ class Radar
   #product = 'reflectivity';
   #range = 1000;
   #resolution = 100.0;
+  #sensitivity = 1.0; // 0.05 to 2.5 (5% to 250%)
   #enabled = false;
   #menuDiv;
   #selectBtn;
@@ -1472,6 +1608,21 @@ class Radar
     });
     body.appendChild(resSlider);
 
+    // Sensitivity
+    const sensLabel = mkLabel('Sensitivity: ' + Math.round(thisObj.#sensitivity * 100) + '%');
+    body.appendChild(sensLabel);
+    const sensSlider = document.createElement('input');
+    sensSlider.type = 'range';
+    sensSlider.min = '5';
+    sensSlider.max = '250';
+    sensSlider.value = thisObj.#sensitivity * 100;
+    sensSlider.style.cssText = 'width:100%; margin-top:4px; accent-color:#4a90e2;';
+    sensSlider.addEventListener('input', function() {
+      thisObj.#sensitivity = parseInt(this.value) / 100;
+      sensLabel.textContent = 'Sensitivity: ' + Math.round(thisObj.#sensitivity * 100) + '%';
+    });
+    body.appendChild(sensSlider);
+
     // Enabled toggle
     body.appendChild(mkLabel('Enabled'));
     const enabledToggle = document.createElement('input');
@@ -1525,6 +1676,7 @@ class Radar
   setProduct(product) { this.#product = product; }
   getRange() { return this.#range; }
   getResolution() { return this.#resolution; }
+  getSensitivity() { return this.#sensitivity; }
   getEnabled() { return this.#enabled; }
   setEnabled(val) {
     this.#enabled = val;
@@ -1643,6 +1795,9 @@ window.loadData = async function()
       }
 
       NUM_DROPLETS = (sim_res_x * sim_res_y) / NUM_DROPLETS_DEVIDER;
+      if (guiControls && guiControls.reducedPrecipitation) {
+        NUM_DROPLETS = Math.floor(NUM_DROPLETS * 0.5); // Reduce droplets by 50%
+      }
       NUM_DROPLETS = Math.min(NUM_DROPLETS, 120000); // safety cap to prevent freeze on large old files
 
       saveFileName = file.name;
@@ -1742,6 +1897,9 @@ window.loadData = async function()
     sim_height = parseInt(document.getElementById('simHeightSel').value);
 
     NUM_DROPLETS = (sim_res_x * sim_res_y) / NUM_DROPLETS_DEVIDER;
+    if (guiControls && guiControls.reducedPrecipitation) {
+      NUM_DROPLETS = Math.floor(NUM_DROPLETS * 0.5); // Reduce droplets by 50%
+    }
     SETUP_MODE = true;
 
     mainScript(null); // run without initial textures
@@ -1860,6 +2018,197 @@ function setLoadingBar()
 }
 
 var soundingData;
+var realWorldSounding_T;
+var realWorldSounding_W;
+var realWorldSounding_Vel;
+var customSoundingLoaded = false;
+
+function saveSoundingToFile()
+{
+  if (!soundingData || soundingData.length === 0) {
+    alert('No sounding data to save!');
+    return;
+  }
+
+  // Create header with metadata
+  let content = "# Sounding Data Export\n";
+  content += "# Alt(m), Pressure(hPa), Temp(C), WetBulb(C), DewPoint(C), RH(%), Velocity(km/h), Angle(deg)\n";
+  
+  // Add data rows
+  soundingData.forEach(row => {
+    content += `${row.alt.toFixed(1)}, ${row.p.toFixed(1)}, ${row.t.toFixed(1)}, ${row.tw.toFixed(1)}, ${row.td.toFixed(1)}, ${row.rh.toFixed(1)}, ${row.vel.toFixed(1)}, ${row.angle.toFixed(1)}\n`;
+  });
+
+  // Create download
+  const blob = new Blob([content], { type: 'text/plain' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'sounding_data.txt';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+function loadSoundingFromFile(file)
+{
+  const reader = new FileReader();
+  reader.onload = function(e) {
+    const text = e.target.result;
+    const lines = text.split('\n');
+    const newSoundingData = [];
+    
+    lines.forEach(line => {
+      line = line.trim();
+      // Skip comments and empty lines
+      if (line.startsWith('#') || line === '') return;
+      
+      const parts = line.split(',').map(s => s.trim());
+      if (parts.length >= 8) {
+        const rowData = {
+          alt: parseFloat(parts[0]),
+          p: parseFloat(parts[1]),
+          t: parseFloat(parts[2]),
+          tw: parseFloat(parts[3]),
+          td: parseFloat(parts[4]),
+          rh: parseFloat(parts[5]),
+          vel: parseFloat(parts[6]),
+          angle: parseFloat(parts[7])
+        };
+        
+        // Validate data
+        if (!Object.values(rowData).some(v => isNaN(v))) {
+          newSoundingData.push(rowData);
+        }
+      }
+    });
+    
+    if (newSoundingData.length > 0) {
+      soundingData = newSoundingData;
+      customSoundingLoaded = true; // Mark that a custom sounding was loaded
+      console.log('Loaded custom sounding data sample:', newSoundingData[0], newSoundingData[Math.floor(newSoundingData.length/2)], newSoundingData[newSoundingData.length-1]);
+      // Update the sounding uniforms in the shader (only if simulation is initialized)
+      if (guiControls && guiControls.simHeight && realWorldSounding_T) {
+        updateSoundingUniforms();
+        console.log('Updated sounding uniforms. realWorldSounding_T[0]:', realWorldSounding_T[0], 'realWorldSounding_T[100]:', realWorldSounding_T[100]);
+      } else {
+        console.log('Simulation not yet initialized, uniforms will be updated when simulation starts');
+      }
+      // Update the preview image
+      updateSoundingPreview(newSoundingData);
+      alert('Sounding loaded successfully! Use the Sounding Forcing slider to apply it to the simulation.');
+    } else {
+      alert('Failed to load sounding data. Invalid file format.');
+    }
+  };
+  reader.readAsText(file);
+}
+
+function updateSoundingUniforms()
+{
+  if (!soundingData || soundingData.length < 10) return;
+  if (!guiControls || !guiControls.simHeight) {
+    console.warn('guiControls not initialized yet, cannot update sounding uniforms');
+    return;
+  }
+  
+  var soundingForSim = rawSoundingToSimSounding(soundingData, guiControls.simHeight, sim_res_y + 1);
+  
+  for (var y = 0; y < sim_res_y + 1; y++) {
+    let soundingSample = soundingForSim[y];
+    realWorldSounding_T[y] = realToPotentialT(CtoK(soundingSample.t), y);
+    realWorldSounding_W[y] = maxWater(CtoK(soundingSample.td), y);
+    realWorldSounding_Vel[y] = soundingSample.vel;
+  }
+  
+  gl.useProgram(advectionProgram);
+  gl.uniform4fv(gl.getUniformLocation(advectionProgram, 'realWorldSounding_Tv'), realWorldSounding_T);
+  gl.uniform4fv(gl.getUniformLocation(advectionProgram, 'realWorldSounding_Wv'), realWorldSounding_W);
+  gl.uniform4fv(gl.getUniformLocation(advectionProgram, 'realWorldSounding_Velv'), realWorldSounding_Vel);
+}
+
+function updateSoundingPreview(soundingData)
+{
+  const canvas = document.createElement('canvas');
+  canvas.width = 400;
+  canvas.height = 500;
+  const ctx = canvas.getContext('2d');
+  
+  // Background
+  ctx.fillStyle = '#1a1a2e';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  
+  // Draw grid
+  ctx.strokeStyle = '#333';
+  ctx.lineWidth = 1;
+  for (let i = 0; i <= 10; i++) {
+    const y = (i / 10) * canvas.height;
+    ctx.beginPath();
+    ctx.moveTo(0, y);
+    ctx.lineTo(canvas.width, y);
+    ctx.stroke();
+  }
+  
+  // Find min/max altitude and temperature
+  const alts = soundingData.map(d => d.alt);
+  const temps = soundingData.map(d => d.t);
+  const dewpoints = soundingData.map(d => d.td);
+  
+  const minAlt = Math.min(...alts);
+  const maxAlt = Math.max(...alts);
+  const minTemp = Math.min(...temps, ...dewpoints) - 5;
+  const maxTemp = Math.max(...temps, ...dewpoints) + 5;
+  
+  // Helper to map coordinates
+  const mapX = (temp) => ((temp - minTemp) / (maxTemp - minTemp)) * (canvas.width - 40) + 20;
+  const mapY = (alt) => canvas.height - ((alt - minAlt) / (maxAlt - minAlt)) * (canvas.height - 40) - 20;
+  
+  // Draw temperature line (red)
+  ctx.strokeStyle = '#ff4444';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  soundingData.forEach((d, i) => {
+    const x = mapX(d.t);
+    const y = mapY(d.alt);
+    if (i === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  });
+  ctx.stroke();
+  
+  // Draw dewpoint line (blue)
+  ctx.strokeStyle = '#4444ff';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  soundingData.forEach((d, i) => {
+    const x = mapX(d.td);
+    const y = mapY(d.alt);
+    if (i === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  });
+  ctx.stroke();
+  
+  // Labels
+  ctx.fillStyle = '#fff';
+  ctx.font = '12px Arial';
+  ctx.fillText('Temperature (°C)', 20, 15);
+  ctx.fillText('Altitude (m)', canvas.width - 80, canvas.height - 5);
+  
+  // Legend
+  ctx.fillStyle = '#ff4444';
+  ctx.fillRect(20, canvas.height - 30, 20, 10);
+  ctx.fillStyle = '#fff';
+  ctx.fillText('Temp', 45, canvas.height - 20);
+  
+  ctx.fillStyle = '#4444ff';
+  ctx.fillRect(100, canvas.height - 30, 20, 10);
+  ctx.fillStyle = '#fff';
+  ctx.fillText('Dewpoint', 125, canvas.height - 20);
+  
+  // Update preview image
+  const soundingImgEl = document.getElementById('soundingPreview');
+  soundingImgEl.src = canvas.toDataURL();
+}
 
 async function prepareSounding()
 {
@@ -1873,6 +2222,12 @@ async function prepareSounding()
   epochTime += hour * 3600;
 
   soundingData = await loadSounding(stationSelector.options[stationSelector.selectedIndex].value, epochTime);
+  customSoundingLoaded = false; // This is a real-world sounding, not custom
+  
+  // Update the shader uniforms with the new sounding data
+  if (soundingData && soundingData.length > 10) {
+    updateSoundingUniforms();
+  }
 }
 
 async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initialRainDrops)
@@ -3983,6 +4338,9 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
     radiation_folder.add(guiControls, 'month', 1.0, 12.99, 0.01).onChange(onUpdateMonthSlider).name('Month').listen();
 
+    radiation_folder.add(guiControls, 'dayNightCycle')
+      .name('Day/Night Cycle');
+
     radiation_folder.add(guiControls, 'sunAngle', -10.0, 190.0, 0.1)
       .onChange(function() {
         updateSunlight('MANUAL_ANGLE');
@@ -4214,14 +4572,14 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         gl.uniform1f(postProc_contrast_loc, guiControls.contrast);
       })
       .name('Contrast');
-    image_folder.add(guiControls, 'greenHueStartThreshold', 0.0, 10.0, 0.01)
+    image_folder.add(guiControls, 'greenHueStartThreshold', 0.0, 25.0, 0.01)
       .onChange(function() {
         gl.useProgram(realisticDisplayProgram);
         gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'greenHueStartThreshold'), guiControls.greenHueStartThreshold);
         gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'greenHueEndThreshold'), guiControls.greenHueEndThreshold);
       })
       .name('Green Hue Start');
-    image_folder.add(guiControls, 'greenHueEndThreshold', 0.0, 35.0, 0.01)
+    image_folder.add(guiControls, 'greenHueEndThreshold', 0.0, 50.0, 0.01)
       .onChange(function() {
         gl.useProgram(realisticDisplayProgram);
         gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'greenHueStartThreshold'), guiControls.greenHueStartThreshold);
@@ -4229,7 +4587,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'greenHueStrength'), guiControls.greenHueStrength);
       })
       .name('Green Hue End');
-    image_folder.add(guiControls, 'greenHueStrength', 0.0, 2.0, 0.01)
+    image_folder.add(guiControls, 'greenHueStrength', 0.0, 5.0, 0.001)
       .onChange(function() {
         gl.useProgram(realisticDisplayProgram);
         gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'greenHueStrength'), guiControls.greenHueStrength);
@@ -4324,9 +4682,8 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
     var advanced_folder = datGui.addFolder('Advanced');
 
-    var performance_folder = datGui.addFolder('Performance');
-
-    performance_folder.add(guiControls, 'enablePrecipitation')
+    // Performance optimizations moved to Advanced
+    advanced_folder.add(guiControls, 'enablePrecipitation')
       .onChange(function() {
         initRainDrops();
         setupPrecipitationBuffers();
@@ -4334,20 +4691,20 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       })
       .name('Enable Precipitation');
 
-    performance_folder.add(guiControls, 'enableLightning')
+    advanced_folder.add(guiControls, 'enableLightning')
       .name('Enable Lightning');
 
-    performance_folder.add(guiControls, 'enableBloom')
+    advanced_folder.add(guiControls, 'enableBloom')
       .name('Enable Bloom');
 
-    performance_folder.add(guiControls, 'enableVectorField')
-      .name('Enable Vector Field (Wind Arrows)');
+    advanced_folder.add(guiControls, 'enableVectorField')
+      .name('Vector Field');
 
-    performance_folder.add(guiControls, 'IterPerFrame', 1, 100, 1).onChange(function() { guiControls.auto_IterPerFrame = false; }).name('Iterations / Frame').listen();
+    advanced_folder.add(guiControls, 'IterPerFrame', 1, 100, 1).onChange(function() { guiControls.auto_IterPerFrame = false; }).name('Iterations/Frame').listen();
 
-    performance_folder.add(guiControls, 'auto_IterPerFrame').name('Auto Adjust Iterations').listen();
+    advanced_folder.add(guiControls, 'auto_IterPerFrame').name('Auto Adjust Iters').listen();
 
-    performance_folder.add(guiControls, 'sound')
+    advanced_folder.add(guiControls, 'sound')
       .name('Enable Sound')
       .onChange(function() {
         if (guiControls.sound) {
@@ -4359,32 +4716,32 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         }
       });
 
-    performance_folder.add(guiControls, 'smoothClouds')
+    advanced_folder.add(guiControls, 'smoothClouds')
       .onChange(function() {
         gl.useProgram(realisticDisplayProgram);
         gl.uniform1f(realDisp_smoothClouds_loc, guiControls.smoothClouds ? 1.0 : 0.0);
       })
       .name('Smooth Clouds');
 
-    performance_folder.add(guiControls, 'displayWeatherStations')
+    advanced_folder.add(guiControls, 'displayWeatherStations')
       .onChange(function() {
         displayWeatherStations = guiControls.displayWeatherStations;
         for (i = 0; i < weatherStations.length; i++) {
           weatherStations[i].setHidden(!displayWeatherStations);
         }
       })
-      .name('Display Weather Stations');
+      .name('Weather Stations');
 
-    performance_folder.add(guiControls, 'displayRadars')
+    advanced_folder.add(guiControls, 'displayRadars')
       .onChange(function() {
         displayRadars = guiControls.displayRadars;
         for (i = 0; i < radars.length; i++) {
           radars[i].setHidden(!displayRadars);
         }
       })
-      .name('Display Radars');
+      .name('Radars');
 
-    performance_folder.add(guiControls, 'airplaneMode')
+    advanced_folder.add(guiControls, 'airplaneMode')
       .onChange(function() {
         airplaneMode = guiControls.airplaneMode;
         if (airplaneMode) {
@@ -4393,15 +4750,12 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
           airplane.disableAirplaneMode();
         }
       })
-      .name('Enable Airplane Mode');
+      .name('Airplane Mode');
 
-    performance_folder.add(guiControls, 'dayNightCycle')
-      .name('Day/Night Cycle');
+    advanced_folder.add(guiControls, 'realDewPoint')
+      .name('Real Dew Point');
 
-    performance_folder.add(guiControls, 'realDewPoint')
-      .name('Real Dew Point Calculations');
-
-    performance_folder.add(guiControls, 'soundingMode')
+    advanced_folder.add(guiControls, 'soundingMode')
       .onChange(function() {
         gl.useProgram(velocityProgram);
         gl.uniform1f(gl.getUniformLocation(velocityProgram, 'dragMultiplier'),
@@ -4409,8 +4763,60 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       })
       .name('Sounding Mode');
 
+    // New optimization options with shortened labels and red color
+    let fullscreenResCtrl = advanced_folder.add(guiControls, 'fullscreenResolution', 
+      ['Default', '640x480', '800x600', '1024x768', '1280x720', '1280x1024', '1366x768', '1600x900', '1920x1080', '2560x1440', '3840x2160'])
+      .onChange(changeFullscreenResolution)
+      .name('Fullscreen Res');
+    fullscreenResCtrl.__li.querySelector('.property-name').style.color = '#ff4444';
+
+    let skipCurlCtrl = advanced_folder.add(guiControls, 'skipCurlCalculation')
+      .name('Skip Curl (Faster)');
+    skipCurlCtrl.__li.querySelector('.property-name').style.color = '#ff4444';
+    
+    let skipCAPECtrl = advanced_folder.add(guiControls, 'skipCAPECalculation')
+      .name('Skip CAPE (Faster)');
+    skipCAPECtrl.__li.querySelector('.property-name').style.color = '#ff4444';
+    
+    let simQualityCtrl = advanced_folder.add(guiControls, 'simulationQuality', 0.1, 25.0, 0.1)
+      .name('Sim Quality (High=Fast)');
+    simQualityCtrl.__li.querySelector('.property-name').style.color = '#ff4444';
+    
+    let skipLightningCtrl = advanced_folder.add(guiControls, 'skipLightning')
+      .name('Skip Lightning');
+    skipLightningCtrl.__li.querySelector('.property-name').style.color = '#ff4444';
+    
+    let skipLightingCalcCtrl = advanced_folder.add(guiControls, 'skipLightingCalculation')
+      .name('Skip Lighting (Major boost)');
+    skipLightingCalcCtrl.__li.querySelector('.property-name').style.color = '#ff4444';
+    
+    let skipPressureCtrl = advanced_folder.add(guiControls, 'skipPressure')
+      .name('Skip Pressure (Faster)');
+    skipPressureCtrl.__li.querySelector('.property-name').style.color = '#ff4444';
+    
+    let skipAdvectionCtrl = advanced_folder.add(guiControls, 'skipAdvection')
+      .name('Skip Advection (No fluid)');
+    skipAdvectionCtrl.__li.querySelector('.property-name').style.color = '#ff4444';
+    
+    let reducedStationCtrl = advanced_folder.add(guiControls, 'reducedWeatherStationUpdates')
+      .name('Reduce Station Updates');
+    reducedStationCtrl.__li.querySelector('.property-name').style.color = '#ff4444';
+    
+    let reducedPrecipCtrl = advanced_folder.add(guiControls, 'reducedPrecipitation')
+      .onChange(function() {
+        initRainDrops();
+        setupPrecipitationBuffers();
+        guiControls.inactiveDroplets = NUM_DROPLETS;
+      })
+      .name('Reduce Precipitation');
+    reducedPrecipCtrl.__li.querySelector('.property-name').style.color = '#ff4444';
+    
+    let disableTempHistCtrl = advanced_folder.add(guiControls, 'disableTempChangeHistory')
+      .name('Disable Temp History');
+    disableTempHistCtrl.__li.querySelector('.property-name').style.color = '#ff4444';
+
     advanced_folder.add(guiControls, 'resetSettings').name('Reset all settings');
-    advanced_folder.add(guiControls, 'riskUpdateFrequency', 1, 50, 1).name('Risk Update Frequency (iterations)').listen();
+    advanced_folder.add(guiControls, 'riskUpdateFrequency', 1, 50, 1).name('Risk Update Freq').listen();
     advanced_folder.add(guiControls, 'readoutCursor').name('Readout Cursor');
 
     datGui.add(guiControls, 'paused').onChange(handlePause).name('Paused').listen();
@@ -4462,6 +4868,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   var soundingGraph = {
     graphCanvas : null,
     ctx : null,
+    saveButtonBounds : null,
     init : function() {
       this.graphCanvas = document.getElementById('graphCanvas');
       this.graphCanvas.height = window.innerHeight;
@@ -4472,6 +4879,132 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         style.display = 'block';
       else
         style.display = 'none';
+      
+      // Add click handler for the Freeze/Save Sounding button
+      if (!this.buttonClickHandler) {
+        this.buttonClickHandler = (e) => {
+          if (!this.saveButtonBounds) {
+            console.log('Button bounds not set');
+            return;
+          }
+          const rect = this.graphCanvas.getBoundingClientRect();
+          const x = e.clientX - rect.left;
+          const y = e.clientY - rect.top;
+          
+          console.log('Click at:', x, y, 'Button bounds:', this.saveButtonBounds, this.unlockButtonBounds);
+          
+          // Check if save button was clicked
+          if (x >= this.saveButtonBounds.x && x <= this.saveButtonBounds.x + this.saveButtonBounds.width &&
+              y >= this.saveButtonBounds.y && y <= this.saveButtonBounds.y + this.saveButtonBounds.height) {
+            console.log('Save button clicked! Current fixedPosition:', guiControls.graphFixedPosition);
+            if (guiControls.graphFixedPosition) {
+              // Save sounding (stay frozen)
+              this.saveCurrentSounding();
+              console.log('Sounding saved, staying frozen');
+            } else {
+              // Freeze position
+              guiControls.graphFixedPosition = true;
+              guiControls.graphFixedX = Math.floor(Math.abs(mod(mouseXinSim * sim_res_x, sim_res_x)));
+              guiControls.graphFixedY = Math.floor(mouseYinSim * sim_res_y);
+              console.log('Frozen to position:', guiControls.graphFixedX, guiControls.graphFixedY);
+            }
+          }
+          
+          // Check if unlock button was clicked (only exists when frozen)
+          if (this.unlockButtonBounds && 
+              x >= this.unlockButtonBounds.x && x <= this.unlockButtonBounds.x + this.unlockButtonBounds.width &&
+              y >= this.unlockButtonBounds.y && y <= this.unlockButtonBounds.y + this.unlockButtonBounds.height) {
+            console.log('Unlock button clicked - unfreezing without saving');
+            guiControls.graphFixedPosition = false;
+            console.log('Unlocked - now following cursor');
+          }
+        };
+        this.graphCanvas.addEventListener('click', this.buttonClickHandler);
+      }
+    },
+    saveCurrentSounding : function() {
+      // Read the current column data from the simulation
+      const simXpos = guiControls.graphFixedX;
+      
+      gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_1);
+      gl.readBuffer(gl.COLOR_ATTACHMENT0);
+      var baseTextureValues = new Float32Array(4 * sim_res_y);
+      gl.readPixels(simXpos, 0, 1, sim_res_y, gl.RGBA, gl.FLOAT, baseTextureValues);
+      
+      gl.readBuffer(gl.COLOR_ATTACHMENT1);
+      var waterTextureValues = new Float32Array(4 * sim_res_y);
+      gl.readPixels(simXpos, 0, 1, sim_res_y, gl.RGBA, gl.FLOAT, waterTextureValues);
+      
+      gl.readBuffer(gl.COLOR_ATTACHMENT2);
+      var wallTextureValues = new Int32Array(4 * sim_res_y);
+      gl.readPixels(simXpos, 0, 1, sim_res_y, gl.RGBA_INTEGER, gl.INT, wallTextureValues);
+      
+      // Extract sounding data
+      const dz = guiControls.simHeight / sim_res_y;
+      const soundingData = [];
+      
+      console.log('saveCurrentSounding: dryLapse =', dryLapse, 'simHeight =', guiControls.simHeight, 'sim_res_y =', sim_res_y);
+      
+      for (let y = 0; y < sim_res_y; y++) {
+        if (wallTextureValues[4 * y + 1] === 0) continue; // Skip non-fluid cells
+        
+        const potentialTemp = baseTextureValues[4 * y + 3];
+        // Convert potential temperature (K) to real temperature (C)
+        // realToPotentialT does: potential = real + (y/sim_res_y) * dryLapse
+        // So to reverse: real = potential - (y/sim_res_y) * dryLapse
+        const tempK = potentialTemp - (y / sim_res_y) * dryLapse;
+        const temp = tempK - 273.15;
+        const water = waterTextureValues[4 * y];
+        const tdK = dewpoint(water);
+        const td = KtoC(tdK);
+        const rh = relativeHumd(CtoK(temp), water);
+        
+        // Calculate velocity from raw velocity
+        const velRaw = Math.sqrt(Math.pow(baseTextureValues[4 * y], 2) + Math.pow(baseTextureValues[4 * y + 1], 2));
+        const vel = rawVelocityTo_ms(velRaw) * 3.6; // Convert to km/h
+        const angle = Math.atan2(baseTextureValues[4 * y + 1], baseTextureValues[4 * y]) * 180 / Math.PI;
+        
+        // Estimate pressure (simple barometric formula)
+        const alt = y * dz;
+        const p = 1013.25 * Math.pow(1 - 2.25577e-5 * alt, 5.25588);
+        
+        // Estimate wet bulb (simplified)
+        const tw = temp - (100 - rh) / 5;
+        
+        soundingData.push({
+          alt: alt,
+          p: p,
+          t: temp,
+          tw: tw,
+          td: td,
+          rh: rh,
+          vel: vel,
+          angle: angle
+        });
+      }
+      
+      console.log('saveCurrentSounding: sample data at y=0:', soundingData[0], 'at y=100:', soundingData[100], 'at y=200:', soundingData[200]);
+      
+      // Create text file content
+      let content = "# Sounding Data Export from Simulation\n";
+      content += "# Alt(m), Pressure(hPa), Temp(C), WetBulb(C), DewPoint(C), RH(%), Velocity(km/h), Angle(deg)\n";
+      
+      soundingData.forEach(row => {
+        content += `${row.alt.toFixed(1)}, ${row.p.toFixed(1)}, ${row.t.toFixed(1)}, ${row.tw.toFixed(1)}, ${row.td.toFixed(1)}, ${row.rh.toFixed(1)}, ${row.vel.toFixed(1)}, ${row.angle.toFixed(1)}\n`;
+      });
+      
+      // Download the file
+      const blob = new Blob([content], { type: 'text/plain' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'simulation_sounding.txt';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      
+      alert('Sounding saved! You can load it from the main menu using the "Load Sounding" button (:');
     },
     draw : function(simXpos, simYpos) {
       // draw graph
@@ -4705,6 +5238,26 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         if (m.cape > muCape) { muCape = m.cape; muCinh = m.cinh; muLcl = m.lclAlt; muLfc = m.lfcAlt; muEl = m.elAlt; }
       }
 
+      // 3CAPE: CAPE for parcel lifted from 3km AGL
+      let cape3km = 0;
+      const y3km = surfaceLevel + Math.round(3000 / dz);
+      if (y3km < sim_res_y && wallTextureValues[4 * y3km + 1] !== 0) {
+        const pp3km = computeParcelProfile(envTempsC[y3km], envDewC[y3km], y3km);
+        const m3km = computeCAPE(envTempsC, envDewC, pp3km, y3km);
+        cape3km = m3km.cape;
+      }
+
+      // Lifted Index: difference between parcel temp and env temp at 500mb (~5.5km)
+      let liftedIndex = NaN;
+      const y500mb = surfaceLevel + Math.round(5500 / dz);
+      if (y500mb < sim_res_y && wallTextureValues[4 * y500mb + 1] !== 0) {
+        const parcelTemp500 = parcelProfile[y500mb];
+        const envTemp500 = envTempsC[y500mb];
+        if (!isNaN(parcelTemp500)) {
+          liftedIndex = envTemp500 - parcelTemp500; // Positive = stable, Negative = unstable
+        }
+      }
+
       // Wind shear at 0-3km, 0-6km, 0-8km (bulk shear = vector difference magnitude)
       function windSpeedAtY(y) {
         const i = Math.min(y, sim_res_y - 1) * 4;
@@ -4725,6 +5278,46 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       const shear3km = windShearToAlt(3000);
       const shear6km = windShearToAlt(6000);
       const shear8km = windShearToAlt(8000);
+
+      // Storm-relative helicity (SRH) - 2D rotation potential for horizontal rolls
+      function calculateSRH(altM) {
+        const targetY = surfaceLevel + Math.round(altM / dz);
+        if (targetY >= sim_res_y) return 0;
+        
+        // Use storm motion as mean wind in the layer (simplified for 2D)
+        let sumU = 0, count = 0;
+        for (let y = surfaceLevel; y < targetY; y++) {
+          if (wallTextureValues[4 * y + 1] === 0) continue;
+          sumU += baseTextureValues[y * 4]; // Only horizontal component
+          count++;
+        }
+        if (count === 0) return 0;
+        const stormU = sumU / count;
+        
+        // Calculate 2D SRH based on vertical wind shear (rotation potential in x-y plane)
+        // This measures the potential for horizontal roll circulations
+        let srh = 0;
+        for (let y = surfaceLevel; y < targetY - 1; y++) {
+          if (wallTextureValues[4 * y + 1] === 0 || wallTextureValues[4 * (y+1) + 1] === 0) continue;
+          
+          const u1 = baseTextureValues[y * 4];
+          const u2 = baseTextureValues[(y+1) * 4];
+          
+          const stormRelU1 = u1 - stormU;
+          const stormRelU2 = u2 - stormU;
+          
+          // Vertical wind shear: change in storm-relative wind with height
+          const du_dz = (stormRelU2 - stormRelU1) / dz;
+          
+          // Integrate storm-relative wind times vertical shear
+          // This represents the circulation potential in the x-y plane
+          const avgU = (stormRelU1 + stormRelU2) / 2;
+          srh += avgU * du_dz * dz;
+        }
+        return Math.abs(srh); // Return magnitude
+      }
+      const srh1km = calculateSRH(1000);
+      const srh3km = calculateSRH(3000);
 
       // Precipitable Water (integrate water vapor from surface to top)
       let pwat_mm = 0;
@@ -4761,6 +5354,32 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       const vtpPwat = pwat_mm / 38; // 38mm ~ 1.5 inch
       const vtp = (muCape / 1500) * vtpShear * vtpLapse * vtpPwat;
 
+      // Fire risk calculation based on temperature, humidity, wind, and soil moisture
+      let fireRisk = {label: 'Low', color: '#00FF00'};
+      const surfaceTemp = envTempsC[surfaceLevel];
+      const surfaceRH = relativeHumd(CtoK(surfaceTemp), waterTextureValues[4 * surfaceLevel]);
+      const surfaceWind = windSpeedAtY(surfaceLevel);
+      const soilMoisture = waterTextureValues[4 * surfaceLevel + 2]; // if land
+      
+      // Calculate fire danger index (simplified)
+      let fireIndex = 0;
+      if (surfaceTemp > 25) fireIndex += (surfaceTemp - 25) * 2; // Temperature contribution
+      if (surfaceRH < 30) fireIndex += (30 - surfaceRH) * 1.5; // Low humidity contribution
+      if (surfaceWind > 5) fireIndex += (surfaceWind - 5) * 1; // Wind contribution
+      if (soilMoisture < 10) fireIndex += (10 - soilMoisture) * 0.5; // Dry soil contribution
+      
+      if (fireIndex < 10) {
+        fireRisk = {label: 'Low', color: '#00FF00'};
+      } else if (fireIndex < 25) {
+        fireRisk = {label: 'Moderate', color: '#FFFF00'};
+      } else if (fireIndex < 45) {
+        fireRisk = {label: 'High', color: '#FF8800'};
+      } else if (fireIndex < 65) {
+        fireRisk = {label: 'Very High', color: '#FF4400'};
+      } else {
+        fireRisk = {label: 'Extreme', color: '#FF0000'};
+      }
+
       // Generated risk category
       function getRisk(cape, shear6, stp_val) {
         if (cape < 100 || shear6 < 3) return {label: 'None', color: '#444444'};
@@ -4781,7 +5400,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       const lineHeight = 19;
       const textX = infoBoxX + 8;
       let textY = infoBoxY + 8;
-      const numLines = 18;
+      const numLines = 21;
 
       c.fillStyle = 'rgba(0, 0, 0, 0.60)';
       c.fillRect(infoBoxX, infoBoxY, infoBoxWidth, lineHeight * numLines + 16);
@@ -4800,11 +5419,15 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
       row('MUcape:', Math.round(muCape) + ' J/kg', muCape > 2500 ? '#FF4400' : muCape > 1000 ? '#FFAA00' : 'white');
       row('MLCAPE:', Math.round(mlCape) + ' J/kg');
+      row('3CAPE:', Math.round(cape3km) + ' J/kg');
       row('CINH:', Math.round(muCinh) + ' J/kg', muCinh < -100 ? '#FF4444' : 'white');
+      row('LI:', isNaN(liftedIndex) ? 'N/A' : liftedIndex.toFixed(1) + ' °C', liftedIndex < -2 ? '#FF4400' : liftedIndex < 0 ? '#FFAA00' : 'white');
       row('Pwat:', pwat_mm.toFixed(1) + ' mm');
       row('LCL:', altStr(muLcl), muLcl != null && muLcl < 1000 ? '#FF8800' : 'white');
       row('LFC:', altStr(muLfc));
       row('EL:', altStr(muEl));
+      row('0-1km SRH:', Math.round(srh1km) + ' m²/s²', srh1km > 150 ? '#FF4400' : srh1km > 100 ? '#FFAA00' : 'white');
+      row('0-3km SRH:', Math.round(srh3km) + ' m²/s²', srh3km > 400 ? '#FF4400' : srh3km > 250 ? '#FFAA00' : 'white');
       row('0-3km Shear:', printVelocity(shear3km));
       row('0-6km Shear:', printVelocity(shear6km), shear6km > 20 ? '#FFAA00' : 'white');
       row('0-8km Shear:', printVelocity(shear8km));
@@ -4819,21 +5442,28 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         let minThetaE = Infinity, dcapeStartY = y4km;
         for (let y = y4km; y <= y8km; y++) {
           const tK  = CtoK(envTempsC[y]);
-          const tdK = dewpoint(Math.max(waterTextureValues[4*y], 0));
           // Equivalent potential temperature proxy: T + Lv/cp * w  (simplified)
           const thetaE = tK + 2500 * Math.max(waterTextureValues[4*y], 0) / 1004;
           if (thetaE < minThetaE) { minThetaE = thetaE; dcapeStartY = y; }
         }
-        // Descend parcel dry-adiabatically (saturated at start) to surface
+        // Descend parcel dry-adiabatically to surface
         const startTk = CtoK(envTempsC[dcapeStartY]);
-        const startW  = Math.max(waterTextureValues[4*dcapeStartY], 0);
         let parcelTk  = startTk;
+        let prevBuoy = 0;
         for (let y = dcapeStartY - 1; y >= surfaceLevel; y--) {
           const envTk = CtoK(envTempsC[y]);
-          parcelTk += 9.8 * dz / 1000.0; // dry adiabatic descent
-          const buoy = 9.81 * (envTk - parcelTk) / parcelTk; // negative = downdraft energy
-          if (buoy > 0) dcape += buoy * dz;
+          parcelTk += 9.8 * dz / 1000.0; // dry adiabatic descent (warming as it descends)
+          const buoy = 9.81 * (envTk - parcelTk) / parcelTk; // negative = parcel colder than environment = downdraft energy
+          
+          // Integrate using trapezoidal rule for better accuracy
+          if (buoy < 0) {
+            const avgBuoy = (Math.abs(buoy) + Math.abs(prevBuoy)) / 2;
+            dcape += avgBuoy * dz;
+          }
+          prevBuoy = buoy;
         }
+        // Clamp to realistic range (DCAPE rarely exceeds 1500 J/kg)
+        dcape = Math.min(dcape, 2000);
       }
 
       row('STP:', stp.toFixed(2), stp >= 1 ? '#FF8800' : 'white');
@@ -4902,6 +5532,16 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       c.fillStyle = risk.color;
       c.font = 'bold 11px monospace';
       c.fillText(risk.label, textX + 90, textY);
+      c.font = '13px monospace';
+      textY += lineHeight;
+
+      // Fire risk row with colored label
+      c.fillStyle = '#AAAAAA';
+      c.font = '13px monospace';
+      c.fillText('Fire Risk:', textX, textY);
+      c.fillStyle = fireRisk.color;
+      c.font = 'bold 11px monospace';
+      c.fillText(fireRisk.label, textX + 90, textY);
       c.font = '13px monospace';
       textY += lineHeight;
 
@@ -5034,8 +5674,100 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
       c.stroke();
 
+      // Draw LCL, LFC, EL markers on the parcel line
+      function drawMarker(altitude, label, color) {
+        if (isNaN(altitude) || altitude == null) return;
+        const yIndex = Math.round(altitude / dz);
+        if (yIndex < surfaceLevel || yIndex >= sim_res_y) return;
+        const scrYpos = map_range(yIndex, sim_res_y, 0, 0, graphBottem);
+        
+        // Get the parcel temperature at this altitude
+        const parcelTemp = parcelProfile[yIndex];
+        if (isNaN(parcelTemp)) return;
+        
+        const xPos = T_to_Xpos(parcelTemp, scrYpos);
+        
+        // Draw shorter horizontal line marker
+        c.beginPath();
+        c.moveTo(xPos - 15, scrYpos);
+        c.lineTo(xPos + 15, scrYpos);
+        c.strokeStyle = color;
+        c.lineWidth = 2;
+        c.stroke();
+        
+        // Draw label to the left to avoid overlap
+        c.fillStyle = color;
+        c.font = 'bold 11px Arial';
+        c.fillText(label, xPos - 50, scrYpos + 4);
+      }
+      
+      drawMarker(muLcl, 'LCL', '#00FFFF');
+      drawMarker(muLfc, 'LFC', '#FF00FF');
+      drawMarker(muEl, 'EL', '#FFFF00');
+
 
       c.fillText('' + printDistance(map_range(simXpos, 0, sim_res_y, 0, guiControls.simHeight)), this.graphCanvas.width - 70, 20);
+
+      // Draw buttons
+      const btnY = this.graphCanvas.height - 40;
+      const btnHeight = 25;
+      
+      if (guiControls.graphFixedPosition) {
+        // When frozen: show "Save Sounding" and "Unlock" buttons
+        const saveBtnX = this.graphCanvas.width - 260;
+        const saveBtnWidth = 120;
+        
+        c.fillStyle = 'rgba(0, 100, 200, 0.7)';
+        c.fillRect(saveBtnX, btnY, saveBtnWidth, btnHeight);
+        c.strokeStyle = '#0088FF';
+        c.lineWidth = 2;
+        c.strokeRect(saveBtnX, btnY, saveBtnWidth, btnHeight);
+        c.fillStyle = 'white';
+        c.font = 'bold 12px Arial';
+        c.textAlign = 'center';
+        c.textBaseline = 'middle';
+        c.fillText('Save Sounding', saveBtnX + saveBtnWidth/2, btnY + btnHeight/2);
+        
+        // Store save button bounds
+        this.saveButtonBounds = {x: saveBtnX, y: btnY, width: saveBtnWidth, height: btnHeight};
+        
+        // Unlock button
+        const unlockBtnX = this.graphCanvas.width - 130;
+        const unlockBtnWidth = 110;
+        
+        c.fillStyle = 'rgba(200, 100, 0, 0.7)';
+        c.fillRect(unlockBtnX, btnY, unlockBtnWidth, btnHeight);
+        c.strokeStyle = '#FF8800';
+        c.lineWidth = 2;
+        c.strokeRect(unlockBtnX, btnY, unlockBtnWidth, btnHeight);
+        c.fillStyle = 'white';
+        c.fillText('Unlock', unlockBtnX + unlockBtnWidth/2, btnY + btnHeight/2);
+        
+        // Store unlock button bounds
+        this.unlockButtonBounds = {x: unlockBtnX, y: btnY, width: unlockBtnWidth, height: btnHeight};
+      } else {
+        // When not frozen: show "Freeze" button
+        const freezeBtnX = this.graphCanvas.width - 140;
+        const freezeBtnWidth = 120;
+        
+        c.fillStyle = 'rgba(0, 100, 200, 0.7)';
+        c.fillRect(freezeBtnX, btnY, freezeBtnWidth, btnHeight);
+        c.strokeStyle = '#0088FF';
+        c.lineWidth = 2;
+        c.strokeRect(freezeBtnX, btnY, freezeBtnWidth, btnHeight);
+        c.fillStyle = 'white';
+        c.font = 'bold 12px Arial';
+        c.textAlign = 'center';
+        c.textBaseline = 'middle';
+        c.fillText('Freeze', freezeBtnX + freezeBtnWidth/2, btnY + btnHeight/2);
+        
+        // Store freeze button bounds
+        this.saveButtonBounds = {x: freezeBtnX, y: btnY, width: freezeBtnWidth, height: btnHeight};
+        this.unlockButtonBounds = null;
+      }
+      
+      c.textAlign = 'left';
+      c.textBaseline = 'top';
 
 
       function T_to_Xpos(T, y)
@@ -5273,6 +6005,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         gl.readPixels(simXpos, simYpos, 1, 1, gl.RGBA, gl.FLOAT, waterTextureValues);
         let dp = KtoC(dewpoint(waterTextureValues[0]));
         let rh = relativeHumd(KtoC(potentialToRealT(waterTextureValues[3], simYpos)), waterTextureValues[0]);
+        rh = Math.max(0, Math.min(rh, 100)); // Safety clamp to ensure RH is between 0 and 100%
         readoutText = `DP: ${dp.toFixed(1)}°C\nRH: ${rh.toFixed(1)}%`;
         unit = '';
         break;
@@ -5595,6 +6328,80 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     }
   }
 
+  function changeFullscreenResolution()
+  {
+    const resolution = guiControls.fullscreenResolution;
+    
+    if (resolution === 'Default') {
+      // Exit fullscreen and restore original window size
+      if (document.fullscreenElement) {
+        document.exitFullscreen();
+      }
+      return;
+    }
+
+    // Parse resolution string (e.g., "1920x1080")
+    const [width, height] = resolution.split('x').map(Number);
+    
+    // Request fullscreen with the specified resolution
+    const canvas = document.getElementById('mainCanvas');
+    
+    if (!document.fullscreenElement) {
+      canvas.requestFullscreen({ navigationUI: 'hide' })
+        .then(() => {
+          // Try to set the resolution using Screen Orientation API
+          if (screen.orientation && screen.orientation.lock) {
+            // Get available refresh rates for the resolution
+            const isLandscape = width > height;
+            const orientation = isLandscape ? 'landscape-primary' : 'portrait-primary';
+            
+            // Try to lock orientation (this may prompt user permission)
+            screen.orientation.lock(orientation).catch(() => {
+              console.log('Could not lock screen orientation');
+            });
+          }
+          
+          // Resize the canvas to the desired resolution
+          canvas.width = width;
+          canvas.height = height;
+          
+          // Update canvas aspect ratio
+          canvas_aspect = canvas.width / canvas.height;
+          
+          // Recreate framebuffers at new resolution
+          createBloomFBOs();
+          createHdrFBO();
+          
+          // Recreate radar cache texture at new screen size
+          gl.bindTexture(gl.TEXTURE_2D, radarTexture);
+          gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, canvas.width, canvas.height, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+          
+          // Ensure dat.GUI menu remains visible
+          if (datGui) {
+            datGui.show();
+          }
+        })
+        .catch(err => {
+          console.error('Error entering fullscreen:', err);
+          alert('Could not enter fullscreen mode. Please check your browser permissions.');
+        });
+    } else {
+      // Already in fullscreen, just resize
+      canvas.width = width;
+      canvas.height = height;
+      canvas_aspect = canvas.width / canvas.height;
+      createBloomFBOs();
+      createHdrFBO();
+      gl.bindTexture(gl.TEXTURE_2D, radarTexture);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, canvas.width, canvas.height, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+      
+      // Ensure dat.GUI menu remains visible
+      if (datGui) {
+        datGui.show();
+      }
+    }
+  }
+
   document.addEventListener('keydown', (event) => {
     // Don't fire keybinds when typing in an input or textarea
     const tag = document.activeElement.tagName;
@@ -5631,6 +6438,13 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     } else if (event.code == 'KeyG') {
       // G
       guiControls.showGraph = !guiControls.showGraph;
+      if (guiControls.showGraph) {
+        // When opening graph, start in cursor-following mode
+        guiControls.graphFixedPosition = false;
+      } else {
+        // When closing graph, reset to cursor-following mode
+        guiControls.graphFixedPosition = false;
+      }
       hideOrShowGraph();
     } else if (event.code == 'Tab') {
       // TAB
@@ -7404,10 +8218,12 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
   // generate sounding data for forcing in sim
 
-  var realWorldSounding_T = new Float32Array(504);   // sim_res_y + 1
-  var realWorldSounding_W = new Float32Array(504);   // sim_res_y + 1
-  var realWorldSounding_Vel = new Float32Array(504); // sim_res_y + 1
+  realWorldSounding_T = new Float32Array(504);   // sim_res_y + 1
+  realWorldSounding_W = new Float32Array(504);   // sim_res_y + 1
+  realWorldSounding_Vel = new Float32Array(504); // sim_res_y + 1
   if (soundingData && soundingData.length > 10) {
+    console.log('mainScript: Initializing with sounding data. customSoundingLoaded =', customSoundingLoaded);
+    console.log('mainScript: soundingData sample:', soundingData[0], soundingData[Math.floor(soundingData.length/2)], soundingData[soundingData.length-1]);
     var soundingForSim = rawSoundingToSimSounding(soundingData, guiControls.simHeight, sim_res_y + 1);
 
     for (var y = 0; y < sim_res_y + 1; y++) {
@@ -7418,11 +8234,20 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       realWorldSounding_W[y] = maxWater(CtoK(soundingSample.td), y);        // initial temperature profile
       realWorldSounding_Vel[y] = soundingSample.vel;
     }
-    // console.log(realWorldSounding_T);
-    // console.log(realWorldSounding_W);
-    // console.log(realWorldSounding_Vel);
+    console.log('mainScript: Initialized sounding arrays. realWorldSounding_T[0]:', realWorldSounding_T[0], 'realWorldSounding_T[100]:', realWorldSounding_T[100]);
   } else {
-    console.log('No valid sounding loaded!');
+    console.log('No valid sounding loaded! Using default profile.');
+    // Initialize with default atmospheric profile to prevent infinite cooling
+    // Use warmer temperatures to match typical simulation conditions
+    for (var y = 0; y < sim_res_y + 1; y++) {
+      let altitude = y / (sim_res_y + 1) * guiControls.simHeight;
+      var realTemp = Math.max(map_range(altitude, 0, 12000, 25.0, -50.0), -50);
+      var td = realTemp - 5; // Dew point 5°C colder
+      
+      realWorldSounding_T[y] = realToPotentialT(CtoK(realTemp), y);
+      realWorldSounding_W[y] = maxWater(CtoK(td), y);
+      realWorldSounding_Vel[y] = 0.01; // Minimal wind
+    }
   }
 
   // generate Initial temperature profile
@@ -7730,6 +8555,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   const uloc_radar_radarRange          = gl.getUniformLocation(radarDisplayProgram, 'radarRange');
   const uloc_radar_radarResolution     = gl.getUniformLocation(radarDisplayProgram, 'radarResolution');
   const uloc_radar_productType         = gl.getUniformLocation(radarDisplayProgram, 'productType');
+  const uloc_radar_sensitivity         = gl.getUniformLocation(radarDisplayProgram, 'sensitivity');
 
   // temperature display per-frame
   const uloc_temp_aspectRatios         = gl.getUniformLocation(temperatureDisplayProgram, 'aspectRatios');
@@ -7781,6 +8607,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   const uloc_radar_wallTexture         = gl.getUniformLocation(radarDisplayProgram, 'wallTexture');
   const uloc_radar_colorScalesTex      = gl.getUniformLocation(radarDisplayProgram, 'colorScalesTex');
   const uloc_radar_precipFeedbackTex   = gl.getUniformLocation(radarDisplayProgram, 'precipFeedbackTexture');
+  const uloc_radar_precipDepositionTex = gl.getUniformLocation(radarDisplayProgram, 'precipDepositionTexture');
   // temperatureChange texture slot uniforms
   const uloc_tempChg_baseTex           = gl.getUniformLocation(temperatureChangeDisplayProgram, 'baseTex');
   const uloc_tempChg_prevBaseTex       = gl.getUniformLocation(temperatureChangeDisplayProgram, 'prevBaseTex');
@@ -7825,20 +8652,30 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         }
       }
 
-      let timeOfDayRad = (guiControls.timeOfDay / 24.0) * 2.0 * Math.PI; // convert to radians
-
-      timeOfDayRad -= Math.PI / 2.0;
-
-      let tiltDeg = Math.sin(guiControls.month * 0.5236 - 1.92) * 23.5; // axis tilt
-      let t = tiltDeg * degToRad;                                       // axis tilt in radians
-      let l = guiControls.latitude * degToRad;                          // latitude
-
-      guiControls.sunAngle = Math.asin(Math.sin(t) * Math.sin(l) + Math.cos(t) * Math.cos(l) * Math.sin(timeOfDayRad)) * radToDeg;
-
-      if (guiControls.latitude - tiltDeg < 0.0) {
-        // If sun is to the north, flip angle
-        guiControls.sunAngle = 180.0 - guiControls.sunAngle;
-      }
+      // More accurate solar position calculation
+      let dayOfYear = Math.floor((guiControls.month - 1) * 30.44 + 1); // Approximate day of year
+      
+      // Solar declination (more accurate formula)
+      let declination = 23.45 * Math.sin(degToRad * (360 / 365 * (dayOfYear - 81)));
+      
+      // Hour angle from time of day (solar noon at 12:00)
+      let hourAngle = (guiControls.timeOfDay - 12) * 15; // degrees, 15 degrees per hour
+      
+      // Convert to radians
+      let declinationRad = declination * degToRad;
+      let latitudeRad = guiControls.latitude * degToRad;
+      let hourAngleRad = hourAngle * degToRad;
+      
+      // Calculate solar elevation angle
+      let sinElevation = Math.sin(latitudeRad) * Math.sin(declinationRad) + 
+                         Math.cos(latitudeRad) * Math.cos(declinationRad) * Math.cos(hourAngleRad);
+      let elevationRad = Math.asin(sinElevation);
+      
+      // Convert to degrees (0 = horizon, 90 = directly overhead)
+      guiControls.sunAngle = elevationRad * radToDeg;
+      
+      // Convert to sun angle format used by the simulation (0 = south, 90 = overhead, 180 = north)
+      guiControls.sunAngle = 90 - guiControls.sunAngle;
     }
     let solarZenithAngleDeg = (guiControls.sunAngle - 90);
     let solarZenithAngle = solarZenithAngleDeg * degToRad; // Solar zenith angle centered around 0. (0 = vertical)
@@ -8043,32 +8880,38 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
             gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
 
             // calc curl
-            gl.useProgram(curlProgram);
-            gl.activeTexture(gl.TEXTURE0);
-            gl.bindTexture(gl.TEXTURE_2D, baseTexture_1);
-            gl.bindFramebuffer(gl.FRAMEBUFFER, curlFrameBuff);
-            gl.drawBuffers([ gl.COLOR_ATTACHMENT0 ]);
-            gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+            if (!guiControls.skipCurlCalculation) {
+              gl.useProgram(curlProgram);
+              gl.activeTexture(gl.TEXTURE0);
+              gl.bindTexture(gl.TEXTURE_2D, baseTexture_1);
+              gl.bindFramebuffer(gl.FRAMEBUFFER, curlFrameBuff);
+              gl.drawBuffers([ gl.COLOR_ATTACHMENT0 ]);
+              gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+            }
 
             // calc CAPE
-            gl.useProgram(capeProgram);
-            gl.activeTexture(gl.TEXTURE0);
-            gl.bindTexture(gl.TEXTURE_2D, baseTexture_1);
-            gl.activeTexture(gl.TEXTURE1);
-            gl.bindTexture(gl.TEXTURE_2D, waterTexture_0);
-            gl.activeTexture(gl.TEXTURE2);
-            gl.bindTexture(gl.TEXTURE_2D, wallTexture_0);
-            gl.bindFramebuffer(gl.FRAMEBUFFER, capeFrameBuff);
-            gl.drawBuffers([ gl.COLOR_ATTACHMENT0 ]);
-            gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+            if (!guiControls.skipCAPECalculation) {
+              gl.useProgram(capeProgram);
+              gl.activeTexture(gl.TEXTURE0);
+              gl.bindTexture(gl.TEXTURE_2D, baseTexture_1);
+              gl.activeTexture(gl.TEXTURE1);
+              gl.bindTexture(gl.TEXTURE_2D, waterTexture_0);
+              gl.activeTexture(gl.TEXTURE2);
+              gl.bindTexture(gl.TEXTURE_2D, wallTexture_0);
+              gl.bindFramebuffer(gl.FRAMEBUFFER, capeFrameBuff);
+              gl.drawBuffers([ gl.COLOR_ATTACHMENT0 ]);
+              gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+            }
 
             // calculate vorticity
-            gl.useProgram(vorticityProgram);
-            gl.activeTexture(gl.TEXTURE0);
-            gl.bindTexture(gl.TEXTURE_2D, curlTexture);
-            gl.bindFramebuffer(gl.FRAMEBUFFER, vortForceFrameBuff);
-            gl.drawBuffers([ gl.COLOR_ATTACHMENT0 ]);
-            gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+            if (!guiControls.skipCurlCalculation) {
+              gl.useProgram(vorticityProgram);
+              gl.activeTexture(gl.TEXTURE0);
+              gl.bindTexture(gl.TEXTURE_2D, curlTexture);
+              gl.bindFramebuffer(gl.FRAMEBUFFER, vortForceFrameBuff);
+              gl.drawBuffers([ gl.COLOR_ATTACHMENT0 ]);
+              gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+            }
 
             // apply vorticity, boundary conditions and user input
             gl.useProgram(boundaryProgram);
@@ -8094,65 +8937,73 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
             gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
 
             // calc and apply advection
-            gl.useProgram(advectionProgram);
-            gl.activeTexture(gl.TEXTURE0);
-            gl.bindTexture(gl.TEXTURE_2D, baseTexture_0);
-            gl.activeTexture(gl.TEXTURE1);
-            gl.bindTexture(gl.TEXTURE_2D, waterTexture_0);
-            gl.activeTexture(gl.TEXTURE2);
-            gl.bindTexture(gl.TEXTURE_2D, wallTexture_0);
-            gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_1);
-            gl.drawBuffers([ gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1, gl.COLOR_ATTACHMENT2 ]);
-            gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+            if (!guiControls.skipAdvection) {
+              gl.useProgram(advectionProgram);
+              gl.activeTexture(gl.TEXTURE0);
+              gl.bindTexture(gl.TEXTURE_2D, baseTexture_0);
+              gl.activeTexture(gl.TEXTURE1);
+              gl.bindTexture(gl.TEXTURE_2D, waterTexture_0);
+              gl.activeTexture(gl.TEXTURE2);
+              gl.bindTexture(gl.TEXTURE_2D, wallTexture_0);
+              gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_1);
+              gl.drawBuffers([ gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1, gl.COLOR_ATTACHMENT2 ]);
+              gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+            }
 
             // capture current temperature state for the temperature-change display
-            gl.bindFramebuffer(gl.READ_FRAMEBUFFER, frameBuff_1);
-            gl.readBuffer(gl.COLOR_ATTACHMENT0);
-            gl.activeTexture(gl.TEXTURE0);
-            gl.bindTexture(gl.TEXTURE_2D, temperatureChangeHistoryTextures[temperatureChangeHistoryIndex]);
-            gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, sim_res_x, sim_res_y);
-            gl.bindFramebuffer(gl.READ_FRAMEBUFFER, null);
-            temperatureChangeHistoryIndex = (temperatureChangeHistoryIndex + 1) % temperatureChangeHistoryTextures.length;
+            if (!guiControls.disableTempChangeHistory) {
+              gl.bindFramebuffer(gl.READ_FRAMEBUFFER, frameBuff_1);
+              gl.readBuffer(gl.COLOR_ATTACHMENT0);
+              gl.activeTexture(gl.TEXTURE0);
+              gl.bindTexture(gl.TEXTURE_2D, temperatureChangeHistoryTextures[temperatureChangeHistoryIndex]);
+              gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, sim_res_x, sim_res_y);
+              gl.bindFramebuffer(gl.READ_FRAMEBUFFER, null);
+              temperatureChangeHistoryIndex = (temperatureChangeHistoryIndex + 1) % temperatureChangeHistoryTextures.length;
+            }
 
             // calc and apply pressure
-            gl.useProgram(pressureProgram);
-            gl.activeTexture(gl.TEXTURE0);
-            gl.bindTexture(gl.TEXTURE_2D, baseTexture_1);
-            gl.activeTexture(gl.TEXTURE1);
-            gl.bindTexture(gl.TEXTURE_2D, wallTexture_1);
-            gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_0);
-            gl.drawBuffers([ gl.COLOR_ATTACHMENT0, gl.NONE, gl.COLOR_ATTACHMENT2 ]);
-            gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+            if (!guiControls.skipPressure) {
+              gl.useProgram(pressureProgram);
+              gl.activeTexture(gl.TEXTURE0);
+              gl.bindTexture(gl.TEXTURE_2D, baseTexture_1);
+              gl.activeTexture(gl.TEXTURE1);
+              gl.bindTexture(gl.TEXTURE_2D, wallTexture_1);
+              gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_0);
+              gl.drawBuffers([ gl.COLOR_ATTACHMENT0, gl.NONE, gl.COLOR_ATTACHMENT2 ]);
+              gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+            }
 
             // calc light
-            gl.useProgram(lightingProgram);
-            gl.activeTexture(gl.TEXTURE0);
-            gl.bindTexture(gl.TEXTURE_2D, baseTexture_1);
-            gl.activeTexture(gl.TEXTURE1);
-            gl.bindTexture(gl.TEXTURE_2D, waterTexture_1);
-            gl.activeTexture(gl.TEXTURE2);
-            gl.bindTexture(gl.TEXTURE_2D, wallTexture_1);
-            gl.activeTexture(gl.TEXTURE3);
+            if (!guiControls.skipLightingCalculation) {
+              gl.useProgram(lightingProgram);
+              gl.activeTexture(gl.TEXTURE0);
+              gl.bindTexture(gl.TEXTURE_2D, baseTexture_1);
+              gl.activeTexture(gl.TEXTURE1);
+              gl.bindTexture(gl.TEXTURE_2D, waterTexture_1);
+              gl.activeTexture(gl.TEXTURE2);
+              gl.bindTexture(gl.TEXTURE_2D, wallTexture_1);
+              gl.activeTexture(gl.TEXTURE3);
 
-            if (even) {
-              gl.bindTexture(gl.TEXTURE_2D, lightTexture_0);
-              gl.bindFramebuffer(gl.FRAMEBUFFER, lightFrameBuff_1);
+              if (even) {
+                gl.bindTexture(gl.TEXTURE_2D, lightTexture_0);
+                gl.bindFramebuffer(gl.FRAMEBUFFER, lightFrameBuff_1);
 
-              srcVAO = precipitationVao_0;
-              destTF = precipitationTF_1;
-              destVAO = precipitationVao_1;
-            } else {
-              gl.bindTexture(gl.TEXTURE_2D, lightTexture_1);
-              gl.bindFramebuffer(gl.FRAMEBUFFER, lightFrameBuff_0);
+                srcVAO = precipitationVao_0;
+                destTF = precipitationTF_1;
+                destVAO = precipitationVao_1;
+              } else {
+                gl.bindTexture(gl.TEXTURE_2D, lightTexture_1);
+                gl.bindFramebuffer(gl.FRAMEBUFFER, lightFrameBuff_0);
 
-              srcVAO = precipitationVao_1;
-              destTF = precipitationTF_0;
-              destVAO = precipitationVao_0;
+                srcVAO = precipitationVao_1;
+                destTF = precipitationTF_0;
+                destVAO = precipitationVao_0;
+              }
+              even = !even;
+
+              gl.drawBuffers([ gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1 ]); // calc light
+              gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
             }
-            even = !even;
-
-            gl.drawBuffers([ gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1 ]); // calc light
-            gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
 
 
             gl.bindFramebuffer(gl.FRAMEBUFFER, precipitationFeedbackFrameBuff);
@@ -8197,7 +9048,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
 
               // Extract lightningLocation from precipitationfeedback
-              if (guiControls.enableLightning) {
+              if (guiControls.enableLightning && !guiControls.skipLightning) {
                 gl.useProgram(lightningLocationProgram);
                 gl.uniform1f(uloc_lightning_iterNum, iterNum);
 
@@ -8221,7 +9072,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
               }
             }
 
-            if (displayWeatherStations && iterNum % 208 == 0) { // ~every 60 in game seconds:  0.00008 *3600 * 208 = 59.9
+            if (displayWeatherStations && iterNum % (guiControls.reducedWeatherStationUpdates ? 416 : 208) == 0) { // ~every 60 in game seconds:  0.00008 *3600 * 208 = 59.9, reduced = every 120 seconds
               for (i = 0; i < weatherStations.length; i++) {
                 weatherStations[i].measure();
               }
@@ -8241,7 +9092,9 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       } // end of simulation part
 
       if (guiControls.showGraph) {
-        soundingGraph.draw(Math.floor(Math.abs(mod(mouseXinSim * sim_res_x, sim_res_x))), Math.floor(mouseYinSim * sim_res_y));
+        const graphX = guiControls.graphFixedPosition ? guiControls.graphFixedX : Math.floor(Math.abs(mod(mouseXinSim * sim_res_x, sim_res_x)));
+        const graphY = guiControls.graphFixedPosition ? guiControls.graphFixedY : Math.floor(mouseYinSim * sim_res_y);
+        soundingGraph.draw(graphX, graphY);
       }
 
     } // END OF NOT SETUP MODE
@@ -8579,6 +9432,8 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         gl.uniform1i(uloc_radar_colorScaleStops, 18);
         gl.activeTexture(gl.TEXTURE4); gl.bindTexture(gl.TEXTURE_2D, precipitationFeedbackTexture);
         gl.uniform1i(uloc_radar_precipFeedbackTex, 4);
+        gl.activeTexture(gl.TEXTURE5); gl.bindTexture(gl.TEXTURE_2D, precipitationDepositionTexture);
+        gl.uniform1i(uloc_radar_precipDepositionTex, 5);
         for (let r = 0; r < radars.length; r++) {
           const radar = radars[r];
           if (!radar.getEnabled()) continue;
@@ -8602,6 +9457,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
           gl.uniform2f(uloc_radar_radarPos, radar.getXpos(), radar.getYpos());
           gl.uniform1f(uloc_radar_radarRange, radar.getRange());
           gl.uniform1f(uloc_radar_radarResolution, radar.getResolution());
+          gl.uniform1f(uloc_radar_sensitivity, radar.getSensitivity());
           gl.uniform1i(uloc_radar_productType, productType);
           gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
         }
@@ -8827,6 +9683,9 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
             gl.activeTexture(gl.TEXTURE4);
             gl.bindTexture(gl.TEXTURE_2D, precipitationFeedbackTexture);
             gl.uniform1i(uloc_radar_precipFeedbackTex, 4);
+            gl.activeTexture(gl.TEXTURE5);
+            gl.bindTexture(gl.TEXTURE_2D, precipitationDepositionTexture);
+            gl.uniform1i(uloc_radar_precipDepositionTex, 5);
 
             gl.enable(gl.BLEND);
             gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
@@ -8856,6 +9715,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
               gl.uniform2f(uloc_radar_radarPos, radar.getXpos(), radar.getYpos());
               gl.uniform1f(uloc_radar_radarRange, radar.getRange());
               gl.uniform1f(uloc_radar_radarResolution, radar.getResolution());
+              gl.uniform1f(uloc_radar_sensitivity, radar.getSensitivity());
               gl.uniform1i(uloc_radar_productType, productType);
 
               gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);

@@ -86,7 +86,7 @@ void main()
     else
       water[TOTAL] = maxWater(realTemp - 20.0);
 
-    water[CLOUD] = max(water[TOTAL] - maxWater(realTemp), 0.0); // calculate cloud water
+    water[CLOUD] = 0.0; // No automatic cloud water - only form via condensation at 100% RH
   }
   wall[VERT_DISTANCE] = 100;                                    // preset height above ground to prevent water being deleted in boundaryshader ln 250*`
 }
