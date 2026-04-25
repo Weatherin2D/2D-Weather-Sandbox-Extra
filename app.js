@@ -412,10 +412,10 @@ const guiControls_default = {
   greenHueEndThreshold : 1.8,
   greenHueStrength : 0.8,
   smoothClouds : false,
-  timeOfDay : 9.9,
+  timeOfDay : 12.0,
   latitude : 45.0,
   month : 6.65, // Northern hemisphere summer solstice
-  sunAngle : 9.9,
+  sunAngle : 90.0,
   dayNightCycle : true,
   accelerateNight : true,
   greenhouseGases : 0.001,
@@ -450,6 +450,8 @@ const guiControls_default = {
   radarOpacity : 0.8,
   radarUpdateFrequency : 60,
   radarOverlay : false,
+  dbzOpacityEnabled : false,
+  dbzOpacityStrength : 0.9,
   riskUpdateFrequency : 30,
   starVisibility : 0.25,
   starLightEmitStrength : 0.15,
@@ -1433,7 +1435,7 @@ class Radar
   #product = 'reflectivity';
   #range = 1000;
   #resolution = 100.0;
-  #sensitivity = 1.0; // 0.05 to 2.5 (5% to 250%)
+  #sensitivity = 1.0; // 0.0 to 10.0 (0% to 1000%)
   #enabled = false;
   #menuDiv;
   #selectBtn;
@@ -1613,8 +1615,8 @@ class Radar
     body.appendChild(sensLabel);
     const sensSlider = document.createElement('input');
     sensSlider.type = 'range';
-    sensSlider.min = '5';
-    sensSlider.max = '250';
+    sensSlider.min = '0';
+    sensSlider.max = '1000';
     sensSlider.value = thisObj.#sensitivity * 100;
     sensSlider.style.cssText = 'width:100%; margin-top:4px; accent-color:#4a90e2;';
     sensSlider.addEventListener('input', function() {
@@ -1675,13 +1677,34 @@ class Radar
   getProduct() { return this.#product; }
   setProduct(product) { this.#product = product; }
   getRange() { return this.#range; }
+  setRange(range) { this.#range = range; }
   getResolution() { return this.#resolution; }
+  setResolution(resolution) { this.#resolution = resolution; }
   getSensitivity() { return this.#sensitivity; }
+  setSensitivity(sensitivity) { this.#sensitivity = sensitivity; }
   getEnabled() { return this.#enabled; }
   setEnabled(val) {
     this.#enabled = val;
     if (this.#selectBtn) this.#selectBtn.style.display = val ? 'none' : 'block';
     if (this.#menuSelectBtn) this.#menuSelectBtn.style.display = val ? 'none' : 'block';
+  }
+  getSettings() {
+    return {
+      name: this.#name,
+      product: this.#product,
+      range: this.#range,
+      resolution: this.#resolution,
+      sensitivity: this.#sensitivity,
+      enabled: this.#enabled
+    };
+  }
+  setSettings(settings) {
+    if (settings.name !== undefined) this.#name = settings.name;
+    if (settings.product !== undefined) this.#product = settings.product;
+    if (settings.range !== undefined) this.#range = settings.range;
+    if (settings.resolution !== undefined) this.#resolution = settings.resolution;
+    if (settings.sensitivity !== undefined) this.#sensitivity = settings.sensitivity;
+    if (settings.enabled !== undefined) this.setEnabled(settings.enabled);
   }
 
   setHidden(hidden)
@@ -1877,9 +1900,46 @@ window.loadData = async function()
 
         sliceStart = sliceEnd;
         let settingsArrayBlob = dataBlob.slice(sliceStart); // until end of file
-
-
-        guiControlsFromSaveFile = await settingsArrayBlob.text();
+        
+        // Try new format first (with guiControls length prefix)
+        try {
+          let tempSliceStart = 0;
+          let tempSliceEnd = 1 * Uint32Array.BYTES_PER_ELEMENT;
+          let guiControlsLengthArrayBlob = settingsArrayBlob.slice(tempSliceStart, tempSliceEnd);
+          let guiControlsLengthBuf = await guiControlsLengthArrayBlob.arrayBuffer();
+          let guiControlsLength = new Uint32Array(guiControlsLengthBuf)[0];
+          
+          // Check if this looks like a reasonable length (not too large)
+          if (guiControlsLength > 0 && guiControlsLength < 1000000) {
+            tempSliceStart = tempSliceEnd;
+            tempSliceEnd += guiControlsLength;
+            let guiControlsArrayBlob = settingsArrayBlob.slice(tempSliceStart, tempSliceEnd);
+            guiControlsFromSaveFile = await guiControlsArrayBlob.text();
+            
+            tempSliceStart = tempSliceEnd;
+            let radarSettingsArrayBlob = settingsArrayBlob.slice(tempSliceStart);
+            let radarSettingsText = await radarSettingsArrayBlob.text();
+            
+            // Load radar settings if available
+            try {
+              const radarSettings = JSON.parse(radarSettingsText);
+              if (Array.isArray(radarSettings) && radarSettings.length === radars.length) {
+                for (i = 0; i < radars.length; i++) {
+                  radars[i].setSettings(radarSettings[i]);
+                }
+                console.log('Loaded radar settings for ' + radars.length + ' radars');
+              }
+            } catch(e) {
+              console.log('No radar settings in save file:', e.message);
+            }
+          } else {
+            throw new Error('Invalid length, using old format');
+          }
+        } catch(e) {
+          // Fall back to old format (no length prefix, just guiControls)
+          console.log('Using old save file format (no guiControls length prefix)');
+          guiControlsFromSaveFile = await settingsArrayBlob.text();
+        }
       } else {
         alert('Save File from older version, settings will not be loaded');
       }
@@ -4518,6 +4578,8 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     radar_folder.add(guiControls, 'radarOpacity', 0.0, 1.0, 0.05).name('Radar Imagery Opacity').listen();
     radar_folder.add(guiControls, 'radarUpdateFrequency', 1, 300, 10).name('Update Frequency (iterations)').listen();
     radar_folder.add(guiControls, 'radarOverlay').name('Overlay on Realistic View').listen();
+    radar_folder.add(guiControls, 'dbzOpacityEnabled').name('dBZ-Based Opacity').listen();
+    radar_folder.add(guiControls, 'dbzOpacityStrength', 0.0, 10.0, 0.05).name('dBZ Opacity Strength').listen();
 
 
     var display_folder = datGui.addFolder('Display');
@@ -7537,46 +7599,46 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       colorScaleValues.cape.push(value);
     }
 
-    // Radar reflectivity: doubled to 36 stops with gradients between key colors (0-85 dBZ, ~2.5 dBZ/stop)
+    // Radar reflectivity: 36 stops with integer dBZ values (0-87 dBZ, 3 dBZ/stop)
     colorScaleData.radarReflectivity = [
       [  4,  4,  4],  //  0 dBZ  ND
-      [  2,120,120],  //  2 dBZ  (gradient)
-      [  0,236,236],  //  5 dBZ  light cyan
-      [  1,198,241],  //  7 dBZ  (gradient)
-      [  1,160,246],  // 10 dBZ  sky blue
-      [  1, 80,246],  // 12 dBZ  (gradient)
-      [  0,  0,246],  // 15 dBZ  blue
-      [  0,128,  0],  // 17 dBZ  (gradient - jump to green family)
-      [  0,255,  0],  // 20 dBZ  green
-      [  0,228,  0],  // 22 dBZ  (gradient)
-      [  0,200,  0],  // 25 dBZ  medium green
-      [  0,172,  0],  // 27 dBZ  (gradient)
-      [  0,144,  0],  // 30 dBZ  dark green
-      [128,200,  0],  // 32 dBZ  (gradient)
-      [255,255,  0],  // 35 dBZ  yellow
-      [243,224,  0],  // 37 dBZ  (gradient)
-      [231,192,  0],  // 40 dBZ  dark yellow
-      [243,168,  0],  // 42 dBZ  (gradient)
-      [255,144,  0],  // 45 dBZ  orange
-      [255, 72,  0],  // 47 dBZ  (gradient)
-      [255,  0,  0],  // 50 dBZ  red
-      [235,  0,  0],  // 52 dBZ  (gradient)
-      [214,  0,  0],  // 55 dBZ  dark red
-      [203,  0,  0],  // 57 dBZ  (gradient)
-      [192,  0,  0],  // 60 dBZ  darker red
-      [224,  0,128],  // 62 dBZ  (gradient)
-      [255,  0,255],  // 65 dBZ  magenta
-      [204, 43,228],  // 67 dBZ  (gradient)
-      [153, 85,201],  // 70 dBZ  purple
-      [194,160,218],  // 72 dBZ  (gradient)
-      [235,235,235],  // 75 dBZ  light grey
-      [245,245,245],  // 77 dBZ  (gradient)
-      [255,255,255],  // 80 dBZ  white
-      [255,255,255],  // 82 dBZ
-      [255,255,255],  // 83 dBZ
-      [255,255,255],  // 85 dBZ
+      [  2,120,120],  //  3 dBZ  (gradient)
+      [  0,236,236],  //  6 dBZ  light cyan
+      [  1,198,241],  //  9 dBZ  (gradient)
+      [  1,160,246],  // 12 dBZ  sky blue
+      [  1, 80,246],  // 15 dBZ  (gradient)
+      [  0,  0,246],  // 18 dBZ  blue
+      [  0,128,  0],  // 21 dBZ  (gradient - jump to green family)
+      [  0,255,  0],  // 24 dBZ  green
+      [  0,228,  0],  // 27 dBZ  (gradient)
+      [  0,200,  0],  // 30 dBZ  medium green
+      [  0,172,  0],  // 33 dBZ  (gradient)
+      [  0,144,  0],  // 36 dBZ  dark green
+      [128,200,  0],  // 39 dBZ  (gradient)
+      [255,255,  0],  // 42 dBZ  yellow
+      [243,224,  0],  // 45 dBZ  (gradient)
+      [231,192,  0],  // 48 dBZ  dark yellow
+      [243,168,  0],  // 51 dBZ  (gradient)
+      [255,144,  0],  // 54 dBZ  orange
+      [255, 72,  0],  // 57 dBZ  (gradient)
+      [255,  0,  0],  // 60 dBZ  red
+      [235,  0,  0],  // 63 dBZ  (gradient)
+      [214,  0,  0],  // 66 dBZ  dark red
+      [203,  0,  0],  // 69 dBZ  (gradient)
+      [192,  0,  0],  // 72 dBZ  darker red
+      [224,  0,128],  // 75 dBZ  (gradient)
+      [255,  0,255],  // 78 dBZ  magenta
+      [204, 43,228],  // 81 dBZ  (gradient)
+      [153, 85,201],  // 84 dBZ  purple
+      [194,160,218],  // 87 dBZ  light grey
+      [245,245,245],  // 90 dBZ  (gradient)
+      [255,255,255],  // 93 dBZ  white
+      [255,255,255],  // 96 dBZ
+      [255,255,255],  // 99 dBZ
+      [255,255,255],  // 102 dBZ
+      [255,255,255],  // 105 dBZ
     ];
-    colorScaleValues.radarReflectivity = Array.from({length: 36}, (_, i) => i * 2.5); // 0-85 dBZ in ~2.5 dBZ steps
+    colorScaleValues.radarReflectivity = Array.from({length: 36}, (_, i) => i * 3); // 0-105 dBZ in 3 dBZ steps
 
     // Radar velocity: 33 stops with gradients (odd number so center is at index 16)
     colorScaleData.radarVelocity = [
@@ -7689,14 +7751,28 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     const ctx2d = offC.getContext('2d');
     COLOR_SCALE_CONFIGS.forEach(cfg => {
       const stops = colorScaleData[cfg.id];
-      // If interpolation is enabled for this scale, interpolate across full texture height
+      const values = colorScaleValues[cfg.id];
+      // If interpolation is enabled for this scale, interpolate across full texture height based on value range
       if (cfg.interpolate) {
+        const minValue = Math.min(...values);
+        const maxValue = Math.max(...values);
+        const valueRange = maxValue - minValue || 1;
         for (let row = 0; row < TEX_H; row++) {
           const t = row / (TEX_H - 1);
-          const idx = t * (stops.length - 1);
-          const idxFloor = Math.floor(idx);
-          const idxCeil = Math.min(Math.ceil(idx), stops.length - 1);
-          const localT = idx - idxFloor;
+          const targetValue = minValue + t * valueRange;
+          
+          // Find the two stops to interpolate between based on targetValue
+          let idxFloor = 0;
+          let idxCeil = stops.length - 1;
+          for (let i = 0; i < values.length - 1; i++) {
+            if (targetValue >= values[i] && targetValue <= values[i + 1]) {
+              idxFloor = i;
+              idxCeil = i + 1;
+              break;
+            }
+          }
+          
+          const localT = valueRange > 0 ? (targetValue - values[idxFloor]) / (values[idxCeil] - values[idxFloor] || 1) : 0;
           const c1 = stops[idxFloor];
           const c2 = stops[idxCeil];
           const r = Math.round(c1[0] + localT * (c2[0] - c1[0]));
@@ -7744,7 +7820,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         grid-template-columns:repeat(6,1fr);gap:6px;margin-bottom:12px;}
       .cse-stop{display:flex;flex-direction:column;align-items:center;gap:4px;}
       .cse-stop-lbl{font-size:10px;color:#666;}
-      .cse-stop-val{width:50px;height:22px;border:1px solid #444;border-radius:3px;
+      .cse-stop-val{width:70px;height:22px;border:1px solid #444;border-radius:3px;
         background:#23233d;color:#ccc;font-size:11px;text-align:center;padding:2px;}
       .cse-stop input[type=color]{width:50px;height:28px;border:1px solid #444;
         border-radius:3px;padding:0;cursor:pointer;}
@@ -7788,6 +7864,19 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         <button class="cse-ctrl-btn remove" id="cse-remove">- Remove Stop</button>
         <button class="cse-ctrl-btn copy" id="cse-copy">Copy Color</button>
         <button class="cse-ctrl-btn paste" id="cse-paste">Paste Color</button>
+        <button class="cse-ctrl-btn" id="cse-update">Update</button>
+      </div>
+      <div class="cse-controls">
+        <button class="cse-ctrl-btn" id="cse-add5">+5 to All</button>
+        <button class="cse-ctrl-btn" id="cse-add10">+10 to All</button>
+        <button class="cse-ctrl-btn" id="cse-add20">+20 to All</button>
+        <button class="cse-ctrl-btn" id="cse-add50">+50 to All</button>
+      </div>
+      <div class="cse-controls">
+        <button class="cse-ctrl-btn" id="cse-sub5">-5 to All</button>
+        <button class="cse-ctrl-btn" id="cse-sub10">-10 to All</button>
+        <button class="cse-ctrl-btn" id="cse-sub20">-20 to All</button>
+        <button class="cse-ctrl-btn" id="cse-sub50">-50 to All</button>
       </div>
       <div class="cse-opt-row">
         <label class="cse-opt-lbl">
@@ -7955,23 +8044,35 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         valInput.value = values[i];
         valInput.title = 'Value for stop ' + i;
         valInput.step = '0.1';
-        valInput.addEventListener('input', () => {
+        valInput.addEventListener('input', (e) => {
+          e.stopPropagation();
           colorScaleValues[cfg.id][i] = parseFloat(valInput.value) || 0;
           refreshGrad(cfg);
           refreshJson(cfg);
-        });
-        valInput.addEventListener('change', () => {
           uploadColorScaleTexture();
+        });
+        valInput.addEventListener('click', (e) => {
+          e.stopPropagation();
+        });
+        valInput.addEventListener('mousedown', (e) => {
+          e.stopPropagation();
         });
         const picker = document.createElement('input');
         picker.type = 'color';
         picker.value = rgb2hex(...color);
         picker.title = 'Stop ' + i;
-        picker.addEventListener('input', () => {
+        picker.addEventListener('input', (e) => {
+          e.stopPropagation();
           colorScaleData[cfg.id][i] = hex2rgb(picker.value);
           refreshGrad(cfg);
           refreshJson(cfg);
           uploadColorScaleTexture();
+        });
+        picker.addEventListener('click', (e) => {
+          e.stopPropagation();
+        });
+        picker.addEventListener('mousedown', (e) => {
+          e.stopPropagation();
         });
         const btns = document.createElement('div');
         btns.className = 'cse-stop-btns';
@@ -8143,6 +8244,108 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         refreshJson(cfg);
         uploadColorScaleTexture();
       }
+    };
+
+    document.getElementById('cse-update').onclick = () => {
+      const cfg = COLOR_SCALE_CONFIGS.find(c => c.id === activeId);
+      uploadColorScaleTexture();
+      refreshJson(cfg);
+    };
+
+    document.getElementById('cse-add5').onclick = () => {
+      const cfg = COLOR_SCALE_CONFIGS.find(c => c.id === activeId);
+      const values = colorScaleValues[cfg.id];
+      for (let i = 0; i < values.length; i++) {
+        values[i] += 5;
+      }
+      renderStops(cfg);
+      refreshGrad(cfg);
+      refreshJson(cfg);
+      uploadColorScaleTexture();
+    };
+
+    document.getElementById('cse-add10').onclick = () => {
+      const cfg = COLOR_SCALE_CONFIGS.find(c => c.id === activeId);
+      const values = colorScaleValues[cfg.id];
+      for (let i = 0; i < values.length; i++) {
+        values[i] += 10;
+      }
+      renderStops(cfg);
+      refreshGrad(cfg);
+      refreshJson(cfg);
+      uploadColorScaleTexture();
+    };
+
+    document.getElementById('cse-add20').onclick = () => {
+      const cfg = COLOR_SCALE_CONFIGS.find(c => c.id === activeId);
+      const values = colorScaleValues[cfg.id];
+      for (let i = 0; i < values.length; i++) {
+        values[i] += 20;
+      }
+      renderStops(cfg);
+      refreshGrad(cfg);
+      refreshJson(cfg);
+      uploadColorScaleTexture();
+    };
+
+    document.getElementById('cse-add50').onclick = () => {
+      const cfg = COLOR_SCALE_CONFIGS.find(c => c.id === activeId);
+      const values = colorScaleValues[cfg.id];
+      for (let i = 0; i < values.length; i++) {
+        values[i] += 50;
+      }
+      renderStops(cfg);
+      refreshGrad(cfg);
+      refreshJson(cfg);
+      uploadColorScaleTexture();
+    };
+
+    document.getElementById('cse-sub5').onclick = () => {
+      const cfg = COLOR_SCALE_CONFIGS.find(c => c.id === activeId);
+      const values = colorScaleValues[cfg.id];
+      for (let i = 0; i < values.length; i++) {
+        values[i] -= 5;
+      }
+      renderStops(cfg);
+      refreshGrad(cfg);
+      refreshJson(cfg);
+      uploadColorScaleTexture();
+    };
+
+    document.getElementById('cse-sub10').onclick = () => {
+      const cfg = COLOR_SCALE_CONFIGS.find(c => c.id === activeId);
+      const values = colorScaleValues[cfg.id];
+      for (let i = 0; i < values.length; i++) {
+        values[i] -= 10;
+      }
+      renderStops(cfg);
+      refreshGrad(cfg);
+      refreshJson(cfg);
+      uploadColorScaleTexture();
+    };
+
+    document.getElementById('cse-sub20').onclick = () => {
+      const cfg = COLOR_SCALE_CONFIGS.find(c => c.id === activeId);
+      const values = colorScaleValues[cfg.id];
+      for (let i = 0; i < values.length; i++) {
+        values[i] -= 20;
+      }
+      renderStops(cfg);
+      refreshGrad(cfg);
+      refreshJson(cfg);
+      uploadColorScaleTexture();
+    };
+
+    document.getElementById('cse-sub50').onclick = () => {
+      const cfg = COLOR_SCALE_CONFIGS.find(c => c.id === activeId);
+      const values = colorScaleValues[cfg.id];
+      for (let i = 0; i < values.length; i++) {
+        values[i] -= 50;
+      }
+      renderStops(cfg);
+      refreshGrad(cfg);
+      refreshJson(cfg);
+      uploadColorScaleTexture();
     };
     document.getElementById('cse-export').onclick = () => {
       navigator.clipboard.writeText(document.getElementById('cse-json').value)
@@ -8549,6 +8752,8 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   const uloc_radar_resolution          = gl.getUniformLocation(radarDisplayProgram, 'resolution');
   const uloc_radar_texelSize           = gl.getUniformLocation(radarDisplayProgram, 'texelSize');
   const uloc_radar_opacity             = gl.getUniformLocation(radarDisplayProgram, 'opacity');
+  const uloc_radar_dbzOpacityEnabled   = gl.getUniformLocation(radarDisplayProgram, 'dbzOpacityEnabled');
+  const uloc_radar_dbzOpacityStrength  = gl.getUniformLocation(radarDisplayProgram, 'dbzOpacityStrength');
   const uloc_radar_colorScaleColumn    = gl.getUniformLocation(radarDisplayProgram, 'colorScaleColumn');
   const uloc_radar_colorScaleStops     = gl.getUniformLocation(radarDisplayProgram, 'colorScaleStops');
   const uloc_radar_radarPos            = gl.getUniformLocation(radarDisplayProgram, 'radarPos');
@@ -8673,11 +8878,8 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       
       // Convert to degrees (0 = horizon, 90 = directly overhead)
       guiControls.sunAngle = elevationRad * radToDeg;
-      
-      // Convert to sun angle format used by the simulation (0 = south, 90 = overhead, 180 = north)
-      guiControls.sunAngle = 90 - guiControls.sunAngle;
     }
-    let solarZenithAngleDeg = (guiControls.sunAngle - 90);
+    let solarZenithAngleDeg = (90 - guiControls.sunAngle);
     let solarZenithAngle = solarZenithAngleDeg * degToRad; // Solar zenith angle centered around 0. (0 = vertical)
     // Calculations visualized: https://www.desmos.com/calculator/kzr76zj5hq
     if (Math.abs(solarZenithAngle) < 85.0 * degToRad) {
@@ -8689,7 +8891,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     //  let sunIntensity = guiControls.sunIntensity *
     // Math.pow(Math.max(Math.sin((90.0 - Math.abs(guiControls.sunAngle)) *
     // degToRad) - 0.1, 0.0) * 1.111, 0.4);
-    let sunIntensity = guiControls.sunIntensity * Math.pow(Math.max(Math.sin((180.0 - guiControls.sunAngle) * degToRad), 0.0), 0.1) * 1300.0; // max 1300 w/m2 at 12 km
+    let sunIntensity = guiControls.sunIntensity * Math.pow(Math.max(Math.sin(guiControls.sunAngle * degToRad), 0.0), 0.1) * 1300.0; // max 1300 w/m2 at 12 km
     // console.log('sunIntensity: ', sunIntensity);
 
     // minShadowLight = clamp(((90 + 10) - Math.abs(solarZenithAngleDeg)) * 0.006, 0.005, 0.040); // decrease until the sun goes 10 deg below the horizon
@@ -9420,6 +9622,8 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         gl.uniform2f(uloc_radar_resolution, sim_res_x, sim_res_y);
         gl.uniform2f(uloc_radar_texelSize, 1.0 / sim_res_x, 1.0 / sim_res_y);
         gl.uniform1f(uloc_radar_opacity, guiControls.radarOpacity);
+        gl.uniform1i(uloc_radar_dbzOpacityEnabled, guiControls.dbzOpacityEnabled);
+        gl.uniform1f(uloc_radar_dbzOpacityStrength, guiControls.dbzOpacityStrength);
         gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, baseTexture_0);
         gl.uniform1i(uloc_radar_baseTexture, 0);
         gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, waterTexture_0);
@@ -9661,6 +9865,8 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
             gl.uniform2f(uloc_radar_resolution, sim_res_x, sim_res_y);
             gl.uniform2f(uloc_radar_texelSize, 1.0 / sim_res_x, 1.0 / sim_res_y);
             gl.uniform1f(uloc_radar_opacity, guiControls.radarOpacity);
+            gl.uniform1i(uloc_radar_dbzOpacityEnabled, guiControls.dbzOpacityEnabled);
+            gl.uniform1f(uloc_radar_dbzOpacityStrength, guiControls.dbzOpacityStrength);
 
             gl.activeTexture(gl.TEXTURE0);
             gl.bindTexture(gl.TEXTURE_2D, baseTexture_0);
@@ -9971,17 +10177,20 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         }
 
         let radarsPositions = new Int16Array(radars.length * 2);
+        let radarsSettings = [];
         for (i = 0; i < radars.length; i++) {
           radarsPositions[i * 2] = radars[i].getXpos();
           radarsPositions[i * 2 + 1] = radars[i].getYpos();
+          radarsSettings.push(radars[i].getSettings());
         }
 
 
         let strGuiControls = JSON.stringify(guiControls);
+        let strRadarSettings = JSON.stringify(radarsSettings);
 
         let saveDataArray = [
           Uint16Array.of(sim_res_x), Uint16Array.of(sim_res_y), baseTextureValues, waterTextureValues, wallTextureValues, precipBufferValues, Uint16Array.of(weatherStations.length),
-          weatherStationsPositions, Uint16Array.of(radars.length), radarsPositions, strGuiControls
+          weatherStationsPositions, Uint16Array.of(radars.length), radarsPositions, Uint32Array.of(strGuiControls.length), strGuiControls, strRadarSettings
         ];
         let blob = new Blob(saveDataArray);        // combine everything into a single blob
         let arrBuff = await blob.arrayBuffer();    // turn into array for pako

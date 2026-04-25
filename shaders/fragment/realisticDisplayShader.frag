@@ -240,7 +240,7 @@ vec4 getAirColor(vec2 fragCoordIn)
     }
     // Plateau: 98% - 98.5% RH -> 0.0025% opacity
     else if (relHum < 0.985) {
-      fogMistOpacity = 0.000025;
+      fogMistOpacity = 0.25;
     }
     // Fog: 98.5% RH -> 0.0025% opacity, 100% RH -> 0.025% opacity (haze only, not cloud)
     else {
@@ -253,7 +253,7 @@ vec4 getAirColor(vec2 fragCoordIn)
 
   vec3 cloudCol = vec3(1.0 / (cloudwater * 0.005 + 1.0)); // 0.10 white to black
 
-  float cloudDensity = max(cloudwater * 23.0, 0.0);
+  float cloudDensity = max(cloudwater * 13.0, 0.0);
 
   float precipDensity = max(water[PRECIPITATION] - 0.05, 0.0) * 0.8;
   float totalDensity = cloudDensity + precipDensity; // visualize precipitation

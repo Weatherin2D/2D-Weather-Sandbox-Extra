@@ -28,6 +28,8 @@ uniform int   colorScaleColumn;
 uniform int   colorScaleStops;
 uniform float radarResolution;
 uniform float sensitivity;
+uniform bool  dbzOpacityEnabled;
+uniform float dbzOpacityStrength;
 
 out vec4 fragmentColor;
 
@@ -105,6 +107,13 @@ void main()
       color = sampleColorScaleStepped(t);
       if (dBZ < 25.0)
         color = mix(vec3(0.45, 0.82, 1.0), color, smoothstep(5.0, 25.0, dBZ));
+    }
+
+    // Apply dBZ-based opacity scaling if enabled
+    if (dbzOpacityEnabled) {
+      float dbzOpacityFactor = smoothstep(0.0, 50.0, dBZ);
+      dbzOpacityFactor = mix(1.0, dbzOpacityFactor, dbzOpacityStrength);
+      pixelOpacity *= dbzOpacityFactor;
     }
 
   } else if (productType == 1) {
