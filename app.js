@@ -1436,6 +1436,9 @@ class Radar
   #range = 1000;
   #resolution = 100.0;
   #sensitivity = 1.0; // 0.0 to 10.0 (0% to 1000%)
+  #updateFrequency = 60; // iterations between updates
+  #lastUpdateIteration = -1; // last iteration when radar was updated
+  #cacheFBO = null; // framebuffer to cache radar display
   #enabled = false;
   #menuDiv;
   #selectBtn;
@@ -1485,10 +1488,19 @@ class Radar
     this.#selectBtn.addEventListener('click', function(event) {
       event.stopPropagation();
       radars.forEach(r => r.setEnabled(false));
-      thisObj2.setEnabled(true);
+      thisObj.setEnabled(true);
     });
     this.#mainDiv.appendChild(this.#selectBtn);
     this.#selectBtn.style.display = this.#enabled ? 'none' : 'block';
+
+    // Initialize cache FBO (will be created when GL context is ready)
+    this.#cacheFBO = null;
+  }
+
+  initCacheFBO()
+  {
+    if (this.#cacheFBO) return; // Already initialized
+    this.#cacheFBO = new FBO(sim_res_x, sim_res_y, gl.RGBA16F, gl.RGBA, gl.HALF_FLOAT, gl.LINEAR);
   }
 
   createMenu()
@@ -1563,6 +1575,14 @@ class Radar
     // Name
     body.appendChild(mkLabel('Name'));
     const nameInput = mkInput('text', this.#name);
+    nameInput.readOnly = true;
+    nameInput.style.cursor = 'default';
+    nameInput.style.userSelect = 'none';
+    nameInput.style.webkitUserSelect = 'none';
+    nameInput.style.mozUserSelect = 'none';
+    nameInput.style.msUserSelect = 'none';
+    nameInput.tabIndex = -1;
+    nameInput.addEventListener('focus', (e) => e.target.blur());
     nameInput.addEventListener('change', function() { thisObj.#name = this.value; hdrTitle.textContent = '📡 ' + thisObj.#name + ' Settings'; });
     body.appendChild(nameInput);
 
@@ -1625,6 +1645,21 @@ class Radar
     });
     body.appendChild(sensSlider);
 
+    // Update Frequency
+    const updateFreqLabel = mkLabel('Update Freq: ' + thisObj.#updateFrequency + ' iter');
+    body.appendChild(updateFreqLabel);
+    const updateFreqSlider = document.createElement('input');
+    updateFreqSlider.type = 'range';
+    updateFreqSlider.min = '1';
+    updateFreqSlider.max = '100';
+    updateFreqSlider.value = thisObj.#updateFrequency;
+    updateFreqSlider.style.cssText = 'width:100%; margin-top:4px; accent-color:#4a90e2;';
+    updateFreqSlider.addEventListener('input', function() {
+      thisObj.#updateFrequency = parseInt(this.value);
+      updateFreqLabel.textContent = 'Update Freq: ' + thisObj.#updateFrequency + ' iter';
+    });
+    body.appendChild(updateFreqSlider);
+
     // Enabled toggle
     body.appendChild(mkLabel('Enabled'));
     const enabledToggle = document.createElement('input');
@@ -1682,6 +1717,12 @@ class Radar
   setResolution(resolution) { this.#resolution = resolution; }
   getSensitivity() { return this.#sensitivity; }
   setSensitivity(sensitivity) { this.#sensitivity = sensitivity; }
+  getUpdateFrequency() { return this.#updateFrequency; }
+  setUpdateFrequency(freq) { this.#updateFrequency = freq; }
+  getLastUpdateIteration() { return this.#lastUpdateIteration; }
+  setLastUpdateIteration(iter) { this.#lastUpdateIteration = iter; }
+  getCacheFBO() { return this.#cacheFBO; }
+  setCacheFBO(fbo) { this.#cacheFBO = fbo; }
   getEnabled() { return this.#enabled; }
   setEnabled(val) {
     this.#enabled = val;
@@ -3060,6 +3101,14 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       this.#targetIASInput.step = '5';
       this.#targetIASInput.value = '220';
       this.#targetIASInput.style = 'width: 150px;';
+      this.#targetIASInput.readOnly = true;
+      this.#targetIASInput.style.cursor = 'default';
+      this.#targetIASInput.style.userSelect = 'none';
+      this.#targetIASInput.style.webkitUserSelect = 'none';
+      this.#targetIASInput.style.mozUserSelect = 'none';
+      this.#targetIASInput.style.msUserSelect = 'none';
+      this.#targetIASInput.tabIndex = -1;
+      this.#targetIASInput.addEventListener('focus', (e) => e.target.blur());
       this.#targetIASInput.addEventListener('wheel', (e) => { e.stopPropagation(); });
       this.#targetIASInput.addEventListener('keydown', (e) => { e.stopPropagation(); });
       speedLabel.appendChild(this.#targetIASInput);
@@ -3099,6 +3148,14 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       this.#targetGlideslopeInput.step = '1';
       this.#targetGlideslopeInput.value = '3';
       this.#targetGlideslopeInput.style.width = '55px';
+      this.#targetGlideslopeInput.readOnly = true;
+      this.#targetGlideslopeInput.style.cursor = 'default';
+      this.#targetGlideslopeInput.style.userSelect = 'none';
+      this.#targetGlideslopeInput.style.webkitUserSelect = 'none';
+      this.#targetGlideslopeInput.style.mozUserSelect = 'none';
+      this.#targetGlideslopeInput.style.msUserSelect = 'none';
+      this.#targetGlideslopeInput.tabIndex = -1;
+      this.#targetGlideslopeInput.addEventListener('focus', (e) => e.target.blur());
       this.#targetGlideslopeInput.addEventListener('wheel', (e) => { e.stopPropagation(); });
       this.#targetGlideslopeInput.addEventListener('keydown', (e) => { e.stopPropagation(); });
       glideSlopeLabel.appendChild(this.#targetGlideslopeInput);
@@ -4247,6 +4304,21 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   {
     datGui = new dat.GUI();
     guiControls = JSON.parse(strGuiControls); // load settings object
+    
+    // Make dat.GUI inputs read-only to prevent unwanted typing
+    setTimeout(() => {
+      const datGuiInputs = document.querySelectorAll('.dg .c input[type="text"], .dg .c input[type="number"]');
+      datGuiInputs.forEach(input => {
+        input.readOnly = true;
+        input.style.cursor = 'default';
+        input.style.userSelect = 'none';
+        input.style.webkitUserSelect = 'none';
+        input.style.mozUserSelect = 'none';
+        input.style.msUserSelect = 'none';
+        input.tabIndex = -1;
+        input.addEventListener('focus', (e) => e.target.blur());
+      });
+    }, 100);
 
     // Ensure new properties have default values if not present in save file
     if (guiControls.starVisibility === undefined) guiControls.starVisibility = 0.25;
@@ -6295,8 +6367,14 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         let simXpos = Math.floor(mouseXinSim * sim_res_x);
         let simYpos = findSimYposAboveSurfaceAtMouseX();
 
-        if (simXpos >= 0 && simXpos < sim_res_x)
-          radars.push(new Radar(simXpos, simYpos)); // add radar
+        if (simXpos >= 0 && simXpos < sim_res_x) {
+          let newRadar = new Radar(simXpos, simYpos);
+          // Only init cache FBO if GL context is ready (simulation is running)
+          if (typeof gl !== 'undefined') {
+            newRadar.initCacheFBO();
+          }
+          radars.push(newRadar); // add radar
+        }
       }
     } else if (e.button == 1) {
       // middle mouse button
@@ -7267,6 +7345,9 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   setupTextures();
 
   createAmbientLightFBOs();
+
+  // Initialize radar cache FBOs
+  radars.forEach(radar => radar.initCacheFBO());
 
   // Set up Framebuffers
 
@@ -8724,6 +8805,9 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   const uloc_bloom_bloomTexture        = gl.getUniformLocation(bloomBlurProgram, 'bloomTexture');
   const uloc_bloom_texelSize           = gl.getUniformLocation(bloomBlurProgram, 'texelSize');
 
+  // passthrough
+  const uloc_passthrough_texture       = gl.getUniformLocation(passthroughProgram, 'tex');
+
   // skyBackground per-frame
   const uloc_sky_aspectRatios          = gl.getUniformLocation(skyBackgroundDisplayProgram, 'aspectRatios');
   const uloc_sky_view                  = gl.getUniformLocation(skyBackgroundDisplayProgram, 'view');
@@ -9641,6 +9725,15 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         for (let r = 0; r < radars.length; r++) {
           const radar = radars[r];
           if (!radar.getEnabled()) continue;
+
+          // Check if this radar should update based on its update frequency
+          let shouldUpdate = (iterNum - radar.getLastUpdateIteration()) >= radar.getUpdateFrequency() || radar.getLastUpdateIteration() === -1;
+
+          if (!shouldUpdate) continue;
+
+          // Update the last update iteration
+          radar.setLastUpdateIteration(iterNum);
+
           let productType = 0;
           if (radar.getProduct() === 'velocity') productType = 1;
           else if (radar.getProduct() === 'correlation') productType = 2;
@@ -9899,6 +9992,15 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
             for (let r = 0; r < radars.length; r++) {
               let radar = radars[r];
               if (!radar.getEnabled()) continue;
+
+              // Check if this radar should update based on its update frequency
+              let shouldUpdate = (iterNum - radar.getLastUpdateIteration()) >= radar.getUpdateFrequency() || radar.getLastUpdateIteration() === -1;
+
+              if (!shouldUpdate) continue;
+
+              // Update the last update iteration
+              radar.setLastUpdateIteration(iterNum);
+
               let productType = 0;
               if (radar.getProduct() === 'velocity') productType = 1;
               else if (radar.getProduct() === 'correlation') productType = 2;
@@ -9947,6 +10049,123 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
       if (guiControls.displayMode != 'DISP_RADAR' && guiControls.displayMode != 'DISP_RISK') {
         gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4); // draw to canvas
+      }
+
+      // Radar display: canvas overlay approach
+      if (guiControls.displayMode === 'DISP_RADAR') {
+        if (!radarOverlayCanvas) {
+          radarOverlayCanvas = document.createElement('canvas');
+          radarOverlayCanvas.style.cssText = 'position:fixed;top:0;left:0;pointer-events:none;z-index:999;';
+          document.body.appendChild(radarOverlayCanvas);
+        }
+        if (radarOverlayCanvas.width !== canvas.width || radarOverlayCanvas.height !== canvas.height) {
+          radarOverlayCanvas.width = canvas.width;
+          radarOverlayCanvas.height = canvas.height;
+        }
+        radarOverlayCanvas.style.display = 'block';
+
+        // Check if any radar needs updating
+        let anyRadarNeedsUpdate = false;
+        for (let r = 0; r < radars.length; r++) {
+          let radar = radars[r];
+          if (radar.getEnabled() && ((iterNum - radar.getLastUpdateIteration()) >= radar.getUpdateFrequency() || radar.getLastUpdateIteration() === -1)) {
+            anyRadarNeedsUpdate = true;
+            break;
+          }
+        }
+
+        if (anyRadarNeedsUpdate) {
+          // Render radars to screen
+          gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+          gl.viewport(0, 0, canvas.width, canvas.height);
+          gl.clearColor(0.0, 0.0, 0.0, 0.0);
+          gl.clear(gl.COLOR_BUFFER_BIT);
+
+          gl.useProgram(radarDisplayProgram);
+          gl.bindVertexArray(fluidVao);
+
+          gl.uniform2f(uloc_radar_aspectRatios, sim_aspect, canvas_aspect);
+          gl.uniform3f(uloc_radar_view, cam.curXpos, cam.curYpos, cam.curZoom);
+          gl.uniform1f(uloc_radar_Xmult, horizontalDisplayMult);
+          gl.uniform2f(uloc_radar_resolution, sim_res_x, sim_res_y);
+          gl.uniform2f(uloc_radar_texelSize, 1.0 / sim_res_x, 1.0 / sim_res_y);
+          gl.uniform1f(uloc_radar_opacity, guiControls.radarOpacity);
+          gl.uniform1i(uloc_radar_dbzOpacityEnabled, guiControls.dbzOpacityEnabled);
+          gl.uniform1f(uloc_radar_dbzOpacityStrength, guiControls.dbzOpacityStrength);
+
+          gl.activeTexture(gl.TEXTURE0);
+          gl.bindTexture(gl.TEXTURE_2D, baseTexture_0);
+          gl.uniform1i(uloc_radar_baseTexture, 0);
+
+          gl.activeTexture(gl.TEXTURE1);
+          gl.bindTexture(gl.TEXTURE_2D, waterTexture_0);
+          gl.uniform1i(uloc_radar_waterTexture, 1);
+
+          gl.activeTexture(gl.TEXTURE2);
+          gl.bindTexture(gl.TEXTURE_2D, wallTexture_0);
+          gl.uniform1i(uloc_radar_wallTexture, 2);
+
+          gl.activeTexture(gl.TEXTURE3);
+          gl.bindTexture(gl.TEXTURE_2D, colorScalesTexture);
+          gl.uniform1i(uloc_radar_colorScalesTex, 3);
+
+          gl.activeTexture(gl.TEXTURE4);
+          gl.bindTexture(gl.TEXTURE_2D, precipitationFeedbackTexture);
+          gl.uniform1i(uloc_radar_precipFeedbackTex, 4);
+
+          gl.activeTexture(gl.TEXTURE5);
+          gl.bindTexture(gl.TEXTURE_2D, precipitationDepositionTexture);
+          gl.uniform1i(uloc_radar_precipDepositionTex, 5);
+
+          gl.enable(gl.BLEND);
+          gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+
+          for (let r = 0; r < radars.length; r++) {
+            let radar = radars[r];
+            if (!radar.getEnabled()) continue;
+
+            // Check if this radar should update
+            let shouldUpdate = (iterNum - radar.getLastUpdateIteration()) >= radar.getUpdateFrequency() || radar.getLastUpdateIteration() === -1;
+            if (!shouldUpdate) continue;
+
+            radar.setLastUpdateIteration(iterNum);
+
+            let productType = 0;
+            if (radar.getProduct() === 'velocity') productType = 1;
+            else if (radar.getProduct() === 'correlation') productType = 2;
+            else if (radar.getProduct() === 'echotops') productType = 3;
+
+            if (productType === 0) {
+              gl.uniform1i(uloc_radar_colorScaleColumn, 18);
+              gl.uniform1i(uloc_radar_colorScaleStops, 36);
+            } else if (productType === 1) {
+              gl.uniform1i(uloc_radar_colorScaleColumn, 19);
+              gl.uniform1i(uloc_radar_colorScaleStops, 33);
+            } else if (productType === 2) {
+              gl.uniform1i(uloc_radar_colorScaleColumn, 20);
+              gl.uniform1i(uloc_radar_colorScaleStops, 22);
+            } else {
+              gl.uniform1i(uloc_radar_colorScaleColumn, 21);
+              gl.uniform1i(uloc_radar_colorScaleStops, 32);
+            }
+
+            gl.uniform2f(uloc_radar_radarPos, radar.getXpos(), radar.getYpos());
+            gl.uniform1f(uloc_radar_radarRange, radar.getRange());
+            gl.uniform1f(uloc_radar_radarResolution, radar.getResolution());
+            gl.uniform1f(uloc_radar_sensitivity, radar.getSensitivity());
+            gl.uniform1i(uloc_radar_productType, productType);
+
+            gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+          }
+
+          gl.disable(gl.BLEND);
+          gl.bindVertexArray(fluidVao);
+
+          // Copy WebGL canvas to overlay canvas
+          const ctx = radarOverlayCanvas.getContext('2d');
+          ctx.clearRect(0, 0, canvas.width, canvas.height);
+          ctx.drawImage(canvas, 0, 0);
+        }
       }
 
       // Risk display: draw per-column risk as colored canvas overlay
