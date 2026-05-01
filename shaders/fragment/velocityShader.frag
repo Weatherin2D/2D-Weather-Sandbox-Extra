@@ -12,6 +12,7 @@ uniform sampler2D baseTex;
 uniform isampler2D wallTex;
 
 uniform float dragMultiplier;
+uniform float pressureInfluence;
 
 uniform float wind;
 
@@ -51,12 +52,22 @@ void main()
     if (wallXpY0[DISTANCE] == 0) {
       base[VX] = 0.0;                                  // Since X velocity is defined at the right of the cell, it has to be done in the cell to the left of the wall
     } else {
-      base[VX] += base[PRESSURE] - baseXpY0[PRESSURE]; // The velocity through the cell changes proportionally to the pressure gradient across the cell. It's basically just newtons 2nd law.
+      float pressureGradX = base[PRESSURE] - baseXpY0[PRESSURE];
+      // Clamp pressure gradient to prevent instability
+      pressureGradX = clamp(pressureGradX, -0.1, 0.1);
+      base[VX] += pressureGradX * pressureInfluence; // The velocity through the cell changes proportionally to the pressure gradient across the cell. It's basically just newtons 2nd law.
       base[VX] *= 1. - dragMultiplier * 0.0002;        // linear drag
+      // Clamp velocity to prevent explosion
+      base[VX] = clamp(base[VX], -0.5, 0.5);
     }
 
-    base[VY] += base[PRESSURE] - baseX0Yp[PRESSURE];
+    float pressureGradY = base[PRESSURE] - baseX0Yp[PRESSURE];
+    // Clamp pressure gradient to prevent instability
+    pressureGradY = clamp(pressureGradY, -0.1, 0.1);
+    base[VY] += pressureGradY * pressureInfluence;
     base[VY] *= 1. - dragMultiplier * 0.0002;
+    // Clamp velocity to prevent explosion
+    base[VY] = clamp(base[VY], -0.5, 0.5);
     // quadratic drag
     // base[VX] -= base[VX] * base[VX] * base[VX] * base[VX] * base[VX] *
     // dragMultiplier; base[VY] -= base[VY] * base[VY] * base[VY] * base[VY] *

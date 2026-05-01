@@ -13,6 +13,7 @@ uniform vec2 resolution;
 uniform vec2 texelSize;
 
 uniform float dryLapse;
+uniform float surfacePressure;
 
 uniform float displayVectorField;
 
@@ -62,6 +63,14 @@ void main()
     int palletteIndex = int(map_range(realTempC, -37.5, 32.5, 0., 70.));
     palletteIndex = clamp(palletteIndex, 0, 70);
     fragmentColor = texelFetch(colorScalesTex, ivec2(0, palletteIndex), 0);
+
+    // Overlay red for high pressure (1020 hPa+)
+    // base[PRESSURE] is dimensionless, scale to hPa
+    float pressureHpa = surfacePressure + base[2] * 20.0;
+    if (pressureHpa >= 1020.0) {
+      float intensity = smoothstep(1020.0, 1040.0, pressureHpa);
+      fragmentColor = mix(fragmentColor, vec4(1.0, 0.0, 0.0, 1.0), intensity * 0.5);
+    }
 
     drawVectorField(base.xy, displayVectorField);
   }

@@ -153,6 +153,15 @@ void main()
 
     base[VY] += gravityForce;
 
+    // Hydrostatic pressure tendency: warm air reduces pressure, cold air increases it.
+    // This is the real mechanism behind thermal lows and highs.
+    // Rate is very small to avoid disrupting the fluid solver, but persistent.
+    // Only apply near the surface where surface pressure is most relevant.
+    if (wall[VERT_DISTANCE] <= 3) {
+      float tempAnomaly = base[TEMPERATURE] - getInitialT(int(fragCoord.y));
+      base[PRESSURE] -= tempAnomaly * 0.000002; // warm = lower pressure, cold = higher pressure
+    }
+
     // base.x += sin(texCoord.x * PI * 2.0 + iterNum * 0.000005) * (1. - texCoord.y) * 0.00015; // phantom force to simulate high and low pressure areas
 
     float snowCover = 0.;

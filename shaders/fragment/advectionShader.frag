@@ -283,6 +283,8 @@ void main()
       } else {
         base.xy += userInputMove * 5.0 * weight * userInputValues[BRUSH_INTENSITY];
       }
+    } else if (userInputType == 5 && wall[DISTANCE] != 0) { // pressure injection
+      base[PRESSURE] += userInputValues[BRUSH_INTENSITY] * weight * 0.01;
     } else if (userInputType >= 10) {               // wall
       if (userInputValues[BRUSH_INTENSITY] > 0.0) { // build wall if positive value else remove wall
 

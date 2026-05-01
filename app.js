@@ -500,6 +500,10 @@ const guiControls_default = {
   disableTempChangeHistory : false,
   skipLightingCalculation : false,
   skipPressure : false,
+  surfacePressure : 1013.25,
+  pressurePersistence : 0.3,
+  thermalPressureCoupling : 0.5,
+  pressureInfluence : 0.5,
   reducedWeatherStationUpdates : false,
   skipAdvection : false,
 };
@@ -2072,7 +2076,7 @@ window.loadData = async function()
       sim_res_x = resArray[0];
       sim_res_y = resArray[1];
 
-      if (!sim_res_x || !sim_res_y || sim_res_x > 10000 || sim_res_y > 10000) {
+      if (!sim_res_x || !sim_res_y || sim_res_x > 16000 || sim_res_y > 10000) {
         alert('Save file has invalid resolution (' + sim_res_x + 'x' + sim_res_y + '). File may be corrupted.');
         document.getElementById('fileInput').value = '';
         return;
@@ -4484,6 +4488,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'waterWeight'), guiControls.waterWeight);
     gl.useProgram(velocityProgram);
     gl.uniform1f(gl.getUniformLocation(velocityProgram, 'dragMultiplier'), guiControls.dragMultiplier);
+    gl.uniform1f(gl.getUniformLocation(velocityProgram, 'pressureInfluence'), guiControls.pressureInfluence);
     gl.uniform1f(gl.getUniformLocation(velocityProgram, 'wind'), guiControls.wind);
     gl.useProgram(lightingProgram);
     gl.uniform1f(gl.getUniformLocation(lightingProgram, 'waterTemperature'), CtoK(guiControls.waterTemperature));
@@ -4525,20 +4530,126 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     datGui = new dat.GUI();
     guiControls = JSON.parse(strGuiControls); // load settings object
     
-    // Make dat.GUI inputs read-only to prevent unwanted typing
+    // Remove read-only restriction to allow manual typing
+    // The previous code that made inputs read-only has been removed
+    
+    // Add tooltip support for GUI controls
     setTimeout(() => {
-      const datGuiInputs = document.querySelectorAll('.dg .c input[type="text"], .dg .c input[type="number"]');
-      datGuiInputs.forEach(input => {
-        input.readOnly = true;
-        input.style.cursor = 'default';
-        input.style.userSelect = 'none';
-        input.style.webkitUserSelect = 'none';
-        input.style.mozUserSelect = 'none';
-        input.style.msUserSelect = 'none';
-        input.tabIndex = -1;
-        input.addEventListener('focus', (e) => e.target.blur());
+      const descriptions = {
+        'Vorticity': 'Controls how much the air rotates. Higher values create more cyclonic motion.',
+        'Drag': 'Air resistance. Higher values slow down wind more quickly.',
+        'Wind': 'Background wind speed. Positive = right, Negative = left.',
+        'Global Drying': 'Rate at which water vapor is removed from the atmosphere.',
+        'Global Heating': 'Rate at which the atmosphere is heated or cooled globally.',
+        'Sounding Forcing': 'How strongly the simulation is forced to match real-world atmospheric soundings.',
+        'Apply above altitude': 'Altitude at which global effects start being applied.',
+        'Apply below altitude': 'Altitude at which global effects stop being applied.',
+        'Tool': 'Select which tool to use with the mouse.',
+        'Brush Diameter': 'Size of the brush for painting tools.',
+        'Whole Width Brush': 'Brush spans the entire horizontal width of the simulation.',
+        'Brush Intensity': 'Strength of the brush effect.',
+        'Allow Caves': 'Allow creating underground air pockets.',
+        'Time of day': 'Time of day in hours (0-24).',
+        'Accelerate Night': 'Speed up time during nighttime hours.',
+        'Latitude': 'Geographic latitude affecting sun angle and heating.',
+        'Month': 'Month of the year affecting sun angle and heating.',
+        'Day/Night Cycle': 'Enable automatic day/night cycle.',
+        'Sun Angle': 'Manual sun angle override.',
+        'IR Multiplier': 'Strength of infrared radiation heating/cooling.',
+        'Lake / Sea Temperature (°C)': 'Temperature of water bodies.',
+        'Land Evaporation': 'Rate of evaporation from land surfaces.',
+        'Water Evaporation': 'Rate of evaporation from water surfaces.',
+        'Water Weight': 'How much water vapor affects air density.',
+        'Precipitation Threshold +°C': 'Temperature above which precipitation falls as rain.',
+        'Precipitation Threshold -°C': 'Temperature below which precipitation falls as snow.',
+        'Condensation Rate': 'Speed at which water vapor condenses into clouds.',
+        'Evaporation Rate': 'Speed at which cloud water evaporates.',
+        'Inactive Droplets': 'Number of precipitation droplets not currently active.',
+        'Radar Imagery Opacity': 'Transparency of radar overlay.',
+        'Update Frequency (iterations)': 'How often radar updates.',
+        'Overlay on Realistic View': 'Show radar on top of realistic view.',
+        'dBZ-Based Opacity': 'Use radar reflectivity for opacity.',
+        'dBZ Opacity Strength': 'Strength of dBZ-based opacity effect.',
+        'Surface Pressure (hPa)': 'Base atmospheric pressure at surface level.',
+        'Pressure Persistence': 'How long pressure systems last before decaying.',
+        'Thermal-Pressure Coupling': 'How strongly temperature affects pressure (warm=low, cold=high).',
+        'Pressure Influence': 'How strongly pressure gradients affect wind speed. Keep below 1.0 for stability.',
+        'Exposure': 'Brightness of the image.',
+        'Saturation': 'Color intensity of the image.',
+        'Contrast': 'Contrast of the image.',
+        'Greenhouse Gases': 'Amount of greenhouse gas warming effect.',
+        'Water Greenhouse Effect': 'Additional warming from water vapor.',
+        'IR Rate': 'Rate of infrared radiation cooling.',
+        'Star Light Emit Strength': 'Brightness of stars in night sky.',
+        'Frequency': 'How often lightning strikes occur.',
+        'Iterations per temperature update': 'How many simulation steps between temperature change calculations.',
+        'Camera Pan Speed': 'Speed of camera movement.',
+        'Enable Precipitation': 'Enable rain and snow simulation.',
+        'Simulation Quality': 'Higher values = better quality but slower performance.',
+        'Fullscreen Res': 'Resolution when in fullscreen mode.',
+        'Skip Curl (Faster)': 'Disable vorticity calculation for performance.',
+        'Skip CAPE (Faster)': 'Disable CAPE calculation for performance.',
+        'Skip Lightning (Faster)': 'Disable lightning calculation for performance.',
+        'Skip Lighting (Major boost)': 'Disable lighting calculation for major performance boost.',
+        'Skip Pressure (Faster)': 'Disable pressure calculation for performance.',
+        'Skip Advection (No fluid)': 'Disable fluid dynamics entirely.',
+        'Sounding Mode': 'Force simulation to match atmospheric sounding data.',
+        'Real Dew Point': 'Use real dew point values from soundings.',
+        'Reset all settings': 'Reset all GUI controls to default values.',
+        'Risk Update Freq': 'How often storm risk values are updated.',
+        'Readout Cursor': 'Show cursor position in readout.',
+        'Paused': 'Pause the simulation.',
+        'Save Simulation to File': 'Download current simulation state to a file.'
+      };
+      
+      // Add tooltips to property names
+      const propertyNames = document.querySelectorAll('.dg .property-name');
+      propertyNames.forEach(el => {
+        const text = el.textContent.trim();
+        if (descriptions[text]) {
+          el.style.cursor = 'help';
+          el.title = descriptions[text];
+          
+          // Add custom tooltip behavior
+          el.addEventListener('mouseenter', (e) => {
+            const tooltip = document.createElement('div');
+            tooltip.id = 'gui-tooltip';
+            tooltip.textContent = descriptions[text];
+            tooltip.style.cssText = `
+              position: fixed;
+              background: rgba(0, 0, 0, 0.9);
+              color: white;
+              padding: 8px 12px;
+              border-radius: 4px;
+              font-size: 12px;
+              max-width: 300px;
+              z-index: 10000;
+              pointer-events: none;
+              box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+            `;
+            document.body.appendChild(tooltip);
+            
+            const updateTooltipPos = (e) => {
+              tooltip.style.left = (e.clientX + 15) + 'px';
+              tooltip.style.top = (e.clientY + 15) + 'px';
+            };
+            
+            updateTooltipPos(e);
+            el.addEventListener('mousemove', updateTooltipPos);
+            el._tooltipUpdate = updateTooltipPos;
+          });
+          
+          el.addEventListener('mouseleave', () => {
+            const tooltip = document.getElementById('gui-tooltip');
+            if (tooltip) tooltip.remove();
+            if (el._tooltipUpdate) {
+              el.removeEventListener('mousemove', el._tooltipUpdate);
+              el._tooltipUpdate = null;
+            }
+          });
+        }
       });
-    }, 100);
+    }, 200);
 
     // Ensure new properties have default values if not present in save file
     if (guiControls.starVisibility === undefined) guiControls.starVisibility = 0.25;
@@ -4665,6 +4776,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         'Vegetation' : 'TOOL_VEGETATION',
         'Snow' : 'TOOL_WALL_SNOW',
         'Wind' : 'TOOL_WIND',
+        'Pressure' : 'TOOL_PRESSURE',
         'Weather Station' : 'TOOL_STATION',
         'Radar' : 'TOOL_RADAR',
         'Marker' : 'TOOL_MARKER'
@@ -4877,6 +4989,19 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
     var display_folder = datGui.addFolder('Display');
 
+    fluidParams_folder.add(guiControls, 'surfacePressure', 900.0, 1100.0, 0.1)
+      .name('Surface Pressure (hPa)');
+    fluidParams_folder.add(guiControls, 'pressurePersistence', 0.0, 1.0, 0.01)
+      .name('Pressure Persistence');
+    fluidParams_folder.add(guiControls, 'thermalPressureCoupling', 0.0, 5.0, 0.1)
+      .name('Thermal-Pressure Coupling');
+    fluidParams_folder.add(guiControls, 'pressureInfluence', 0.0, 2.0, 0.05)
+      .onChange(function() {
+        gl.useProgram(velocityProgram);
+        gl.uniform1f(gl.getUniformLocation(velocityProgram, 'pressureInfluence'), guiControls.pressureInfluence);
+      })
+      .name('Pressure Influence');
+
     display_folder
       .add(guiControls, 'displayMode', {
         '1 Temperature -26°C to 30°C' : 'DISP_TEMPERATURE',
@@ -4888,6 +5013,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         '7 IR Down -60°C to 26°C' : 'DISP_IRDOWNTEMP',
         '8 IR Up -26°C to 30°C' : 'DISP_IRUPTEMP',
         'J Temperature Change' : 'DISP_TEMPERATURE_CHANGE',
+        'Pressure (hPa)' : 'DISP_PRESSURE',
         '9 Precipitation Mass' : 'DISP_PRECIPFEEDBACK_MASS',
         'Precipitation Heating/Cooling' : 'DISP_PRECIPFEEDBACK_HEAT',
         'Precipitation Condensation/Evaporation' : 'DISP_PRECIPFEEDBACK_VAPOR',
@@ -5767,6 +5893,19 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       const risk = getRisk(muCape, shear6km, stp);
 
       const altStr = (m) => isNaN(m) || m == null ? 'N/A' : printAltitude(Math.round(m));
+      // Barometric pressure from altitude: ISA formula, default surface = 1013.25 hPa
+      const altToHpa = (alt_m) => guiControls.surfacePressure * Math.pow(1.0 - 2.25577e-5 * alt_m, 5.25588);
+      // Compute column-integrated pressure perturbation from fluid pressure field
+      // Sum base[PRESSURE] from top down to each level (hydrostatic: surface pressure = integral of density*g*dz)
+      // The fluid pressure field represents divergence-based perturbations; summing gives column pressure anomaly
+      let columnPressure = new Float32Array(sim_res_y); // hPa perturbation at each level
+      let cumPressAnomaly = 0.0;
+      for (let y = sim_res_y - 1; y >= 0; y--) {
+        if (wallTextureValues[4 * y + 1] !== 0) { // fluid cell
+          cumPressAnomaly += baseTextureValues[4 * y + 2] * 20.0; // scale fluid pressure to hPa
+        }
+        columnPressure[y] = cumPressAnomaly;
+      }
 
       const infoBoxWidth = 310;
       const infoBoxX = graphCanvas.width - infoBoxWidth - 75;
@@ -5800,6 +5939,13 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       row('LCL:', altStr(muLcl), muLcl != null && muLcl < 1000 ? '#FF8800' : 'white');
       row('LFC:', altStr(muLfc));
       row('EL:', altStr(muEl));
+      // Surface pressure and pressure at cursor altitude
+      const sfcAlt_m = surfaceLevel * dz;
+      const curAlt_m = simYpos * dz;
+      const sfcPressISA = guiControls.surfacePressure * Math.pow(1.0 - 2.25577e-5 * sfcAlt_m, 5.25588);
+      const curPressISA = guiControls.surfacePressure * Math.pow(1.0 - 2.25577e-5 * curAlt_m, 5.25588);
+      row('Sfc Pres:', (sfcPressISA + columnPressure[surfaceLevel]).toFixed(1) + ' hPa', '#AADDFF');
+      row('Cur Pres:', (curPressISA + columnPressure[simYpos]).toFixed(1) + ' hPa', '#AADDFF');
       row('0-1km SRH:', Math.round(srh1km) + ' m²/s²', srh1km > 150 ? '#FF4400' : srh1km > 100 ? '#FFAA00' : 'white');
       row('0-3km SRH:', Math.round(srh3km) + ' m²/s²', srh3km > 400 ? '#FF4400' : srh3km > 250 ? '#FFAA00' : 'white');
       row('0-3km Shear:', printVelocity(shear3km));
@@ -6879,6 +7025,8 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       guiControls.displayMode = 'DISP_PRECIPFEEDBACK_MASS';
     } else if (event.key == 0) {
       guiControls.displayMode = 'DISP_PRECIPFEEDBACK_HEAT';
+    } else if (event.key == '`') {
+      guiControls.displayMode = 'DISP_PRESSURE';
     } else if (event.code == 'KeyK') {
       guiControls.displayMode = 'DISP_AIRQUALITY';
     } else if (event.key == 'ArrowLeft') {
@@ -6926,6 +7074,8 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       guiControls.tool = 'TOOL_WALL_SNOW';
     } else if (event.code == 'KeyP') {
       guiControls.tool = 'TOOL_WIND';
+    } else if (event.code == 'KeyK') {
+      guiControls.tool = 'TOOL_PRESSURE';
     } else if (event.code == 'BracketLeft') {
       guiControls.tool = 'TOOL_WALL_URBAN';
     } else if (event.code == 'BracketRight') {
@@ -7792,6 +7942,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     { id: 'radarVelocity',     name: 'Radar Velocity',     col: 19, stops: 33, interpolate: false },
     { id: 'radarCorrelation',  name: 'Radar Correlation',  col:20, stops: 22, interpolate: false },
     { id: 'radarEchoTops',     name: 'Radar Echo Tops',    col:21, stops: 32, interpolate: false },
+    { id: 'pressure',          name: 'Pressure',           col:22, stops: 33, interpolate: true  },
   ];
 
   const DEFAULT_IR_PALETTE = [
@@ -8086,6 +8237,21 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       [140,  0,180],
     ];
     colorScaleValues.radarEchoTops = Array.from({length: 32}, (_, i) => i * 2); // 0-60 kft in ~2 kft steps
+
+    // Pressure: blue (low) → white (neutral) → red (high), bipolar 33 stops
+    const pressureScale = [];
+    for (let i = 0; i <= 32; i++) {
+      const t = i / 32; // 0=low, 0.5=neutral, 1=high
+      if (t < 0.5) {
+        const f = t / 0.5;
+        pressureScale.push([Math.round(f * 255), Math.round(f * 255), 255]); // blue → white
+      } else {
+        const f = (t - 0.5) / 0.5;
+        pressureScale.push([255, Math.round((1 - f) * 255), Math.round((1 - f) * 255)]); // white → red
+      }
+    }
+    colorScaleData.pressure = pressureScale;
+    colorScaleValues.pressure = Array.from({length: 33}, (_, i) => i);
   }
 
   function uploadColorScaleTexture() {
@@ -8841,6 +9007,8 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   gl.uniform1i(gl.getUniformLocation(pressureProgram, 'baseTex'), 0);
   gl.uniform1i(gl.getUniformLocation(pressureProgram, 'wallTex'), 1);
   gl.uniform2f(gl.getUniformLocation(pressureProgram, 'texelSize'), texelSizeX, texelSizeY);
+  gl.uniform1f(gl.getUniformLocation(pressureProgram, 'pressurePersistence'), guiControls.pressurePersistence);
+  gl.uniform1f(gl.getUniformLocation(pressureProgram, 'thermalPressureCoupling'), guiControls.thermalPressureCoupling);
 
   gl.useProgram(velocityProgram);
   gl.uniform1i(gl.getUniformLocation(velocityProgram, 'baseTex'), 0);
@@ -9118,6 +9286,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   const uloc_temp_cursor               = gl.getUniformLocation(temperatureDisplayProgram, 'cursor');
   const uloc_temp_Xmult                = gl.getUniformLocation(temperatureDisplayProgram, 'Xmult');
   const uloc_temp_displayVectorField   = gl.getUniformLocation(temperatureDisplayProgram, 'displayVectorField');
+  const uloc_temp_surfacePressure      = gl.getUniformLocation(temperatureDisplayProgram, 'surfacePressure');
 
   // temperatureChange display per-frame
   const uloc_tempChg_aspectRatios      = gl.getUniformLocation(temperatureChangeDisplayProgram, 'aspectRatios');
@@ -9344,6 +9513,8 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
           inputType = 3;
         else if (guiControls.tool == 'TOOL_WIND')
           inputType = 4;
+        else if (guiControls.tool == 'TOOL_PRESSURE')
+          inputType = 5;
         else if (guiControls.tool == 'TOOL_WALL')
           inputType = 10;
         else if (guiControls.tool == 'TOOL_WALL_LAND')
@@ -9516,6 +9687,8 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
             // calc and apply pressure
             if (!guiControls.skipPressure) {
               gl.useProgram(pressureProgram);
+              gl.uniform1f(gl.getUniformLocation(pressureProgram, 'pressurePersistence'), guiControls.pressurePersistence);
+              gl.uniform1f(gl.getUniformLocation(pressureProgram, 'thermalPressureCoupling'), guiControls.thermalPressureCoupling);
               gl.activeTexture(gl.TEXTURE0);
               gl.bindTexture(gl.TEXTURE_2D, baseTexture_1);
               gl.activeTexture(gl.TEXTURE1);
@@ -10057,6 +10230,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         gl.uniform3f(uloc_temp_view, cam.curXpos, cam.curYpos, cam.curZoom);
         gl.uniform4f(uloc_temp_cursor, mouseXinSim, mouseYinSim, guiControls.brushSize * 0.5, cursorType);
         gl.uniform1f(uloc_temp_Xmult, horizontalDisplayMult);
+        gl.uniform1f(uloc_temp_surfacePressure, guiControls.surfacePressure);
 
         // Don't display vectors when zoomed out because you would just see
         // noise
@@ -10219,6 +10393,15 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
           gl.uniform1f(uloc_univ_dispMultiplier, 0.02);
           gl.uniform1i(uloc_univ_colorScaleColumn, 14);
           gl.uniform1i(uloc_univ_useUnipolarScale, 1);
+          colorScaleStops = 33;
+          break;
+        case 'DISP_PRESSURE':
+          // base[PRESSURE] is dimensionless fluid pressure, typically ±0.01 range
+          // multiplier of 50 maps ±0.02 to ±1.0 for the bipolar color scale
+          gl.uniform1i(uloc_univ_quantityIndex, 2);
+          gl.uniform1f(uloc_univ_dispMultiplier, 50.0);
+          gl.uniform1i(uloc_univ_colorScaleColumn, 22);
+          gl.uniform1i(uloc_univ_useUnipolarScale, 0);
           colorScaleStops = 33;
           break;
         case 'DISP_CURL':
@@ -10578,8 +10761,138 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   } // end of display mode else block
 
   // Always hide risk canvas when not in DISP_RISK
-  if (guiControls.displayMode !== 'DISP_RISK' && riskCanvas) {
+  if (guiControls.displayMode !== 'DISP_RISK' && guiControls.displayMode !== 'DISP_PRESSURE' && riskCanvas) {
     riskCanvas.style.display = 'none';
+  }
+
+  // Draw H/L pressure labels when in pressure display mode
+  if (guiControls.displayMode === 'DISP_PRESSURE') {
+    if (!riskCanvas) {
+      riskCanvas = document.createElement('canvas');
+      riskCanvas.style.cssText = 'position:fixed;top:0;left:0;pointer-events:none;z-index:1;';
+      document.body.appendChild(riskCanvas);
+    }
+    if (riskCanvas.width !== canvas.width || riskCanvas.height !== canvas.height) {
+      riskCanvas.width = canvas.width;
+      riskCanvas.height = canvas.height;
+    }
+    riskCanvas.style.display = 'block';
+
+    if (iterNum % 30 === 0) {
+      gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_1);
+      gl.readBuffer(gl.COLOR_ATTACHMENT2);
+      const wallRow = new Int8Array(4 * sim_res_x);
+      let sfcRow = 1;
+      for (let y = 1; y < sim_res_y; y++) {
+        gl.readPixels(0, y, sim_res_x, 1, gl.RGBA_INTEGER, gl.BYTE, wallRow);
+        let allAir = true;
+        for (let x = 0; x < sim_res_x; x++) {
+          if (wallRow[x * 4 + 1] === 0) { allAir = false; break; }
+        }
+        if (allAir) { sfcRow = y; break; }
+      }
+      gl.readBuffer(gl.COLOR_ATTACHMENT0);
+      const pressRow = new Float32Array(4 * sim_res_x);
+      gl.readPixels(0, Math.min(sfcRow + 2, sim_res_y - 1), sim_res_x, 1, gl.RGBA, gl.FLOAT, pressRow);
+
+      const minSep = Math.max(8, Math.floor(sim_res_x / 20));
+      riskData = [];
+      for (let x = 0; x < sim_res_x; x++) {
+        const p = pressRow[x * 4 + 2];
+        if (Math.abs(p) < 0.002) continue;
+        let isMax = true, isMin = true;
+        for (let dx = -minSep; dx <= minSep; dx++) {
+          if (dx === 0) continue;
+          const np = pressRow[((x + dx + sim_res_x) % sim_res_x) * 4 + 2];
+          if (np >= p) isMax = false;
+          if (np <= p) isMin = false;
+        }
+        if (isMax) riskData.push({x, sfcY: sfcRow + 2, type: 'H'});
+        if (isMin) riskData.push({x, sfcY: sfcRow + 2, type: 'L'});
+      }
+    }
+
+    const rc = riskCanvas.getContext('2d');
+    rc.clearRect(0, 0, riskCanvas.width, riskCanvas.height);
+    rc.font = 'bold 22px monospace';
+    rc.textAlign = 'center';
+    rc.textBaseline = 'middle';
+    for (const lbl of riskData) {
+      const sx = simToScreenX(lbl.x);
+      const sy = simToScreenY(lbl.sfcY + 3);
+      rc.fillStyle = lbl.type === 'H' ? '#FF4444' : '#4488FF';
+      rc.strokeStyle = '#000000';
+      rc.lineWidth = 3;
+      rc.strokeText(lbl.type, sx, sy);
+      rc.fillText(lbl.type, sx, sy);
+    }
+  }
+
+  // Draw H/L pressure labels when in pressure display mode
+  if (guiControls.displayMode === 'DISP_PRESSURE') {
+    if (!riskCanvas) {
+      riskCanvas = document.createElement('canvas');
+      riskCanvas.style.cssText = 'position:fixed;top:0;left:0;pointer-events:none;z-index:1;';
+      document.body.appendChild(riskCanvas);
+    }
+    if (riskCanvas.width !== canvas.width || riskCanvas.height !== canvas.height) {
+      riskCanvas.width = canvas.width;
+      riskCanvas.height = canvas.height;
+    }
+    riskCanvas.style.display = 'block';
+
+    if (iterNum % 30 === 0) { // update every 30 iterations
+      gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_1);
+      gl.readBuffer(gl.COLOR_ATTACHMENT0);
+      gl.readBuffer(gl.COLOR_ATTACHMENT2);
+      const wallRow = new Int8Array(4 * sim_res_x);
+      // find surface row (first non-wall row from bottom)
+      let sfcRow = 1;
+      for (let y = 1; y < sim_res_y; y++) {
+        gl.readPixels(0, y, sim_res_x, 1, gl.RGBA_INTEGER, gl.BYTE, wallRow);
+        let allAir = true;
+        for (let x = 0; x < sim_res_x; x++) {
+          if (wallRow[x * 4 + 1] === 0) { allAir = false; break; }
+        }
+        if (allAir) { sfcRow = y; break; }
+      }
+      // read pressure at surface+1
+      gl.readBuffer(gl.COLOR_ATTACHMENT0);
+      const pressRow = new Float32Array(4 * sim_res_x);
+      gl.readPixels(0, sfcRow + 1, sim_res_x, 1, gl.RGBA, gl.FLOAT, pressRow);
+
+      // find local maxima (H) and minima (L) with minimum separation
+      const minSep = Math.max(10, Math.floor(sim_res_x / 20));
+      const hlLabels = [];
+      for (let x = minSep; x < sim_res_x - minSep; x++) {
+        const p = pressRow[x * 4 + 2];
+        let isMax = true, isMin = true;
+        for (let dx = -minSep; dx <= minSep; dx++) {
+          if (dx === 0) continue;
+          const nx = (x + dx + sim_res_x) % sim_res_x;
+          const np = pressRow[nx * 4 + 2];
+          if (np >= p) isMax = false;
+          if (np <= p) isMin = false;
+        }
+        if (isMax && Math.abs(p) > 0.002) hlLabels.push({x, type: 'H', p});
+        if (isMin && Math.abs(p) > 0.002) hlLabels.push({x, type: 'L', p});
+      }
+
+      const rc = riskCanvas.getContext('2d');
+      rc.clearRect(0, 0, riskCanvas.width, riskCanvas.height);
+      rc.font = 'bold 22px monospace';
+      rc.textAlign = 'center';
+      rc.textBaseline = 'middle';
+      for (const lbl of hlLabels) {
+        const sx = simToScreenX(lbl.x);
+        const sy = simToScreenY(sfcRow + 4);
+        rc.fillStyle = lbl.type === 'H' ? '#FF4444' : '#4488FF';
+        rc.strokeStyle = '#000';
+        rc.lineWidth = 3;
+        rc.strokeText(lbl.type, sx, sy);
+        rc.fillText(lbl.type, sx, sy);
+      }
+    }
   }
 
   if (guiControls.displayMode !== 'DISP_RADAR' && radarOverlayCanvas) {
