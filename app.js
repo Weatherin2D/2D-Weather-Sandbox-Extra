@@ -25,6 +25,32 @@ function updateSetupSliders()
   document.getElementById('simResShowX').value = simResX;
   document.getElementById('simResShowY').value = simResY
   document.getElementById('simHeightShow').value = simHeight + ' m';
+  
+  // Sync text input values with slider values
+  document.getElementById('simResInputX').value = simResX;
+  document.getElementById('simResInputY').value = simResY;
+  document.getElementById('simHeightInput').value = simHeight;
+}
+
+function updateFromTextInput(inputId, sliderId)
+{
+  let input = document.getElementById(inputId);
+  let slider = document.getElementById(sliderId);
+  let min = parseInt(input.min);
+  let max = parseInt(input.max);
+  let step = parseInt(input.step);
+  let value = parseInt(input.value);
+  
+  // Clamp value to min/max
+  if (value < min) value = min;
+  if (value > max) value = max;
+  
+  // Round to nearest step
+  value = Math.round(value / step) * step;
+  
+  input.value = value;
+  slider.value = value;
+  updateSetupSliders();
 }
 
 var FPS = 60.0;
@@ -347,6 +373,11 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('simResSelX').addEventListener('input', updateSetupSliders);
   document.getElementById('simResSelY').addEventListener('input', updateSetupSliders);
   document.getElementById('simHeightSel').addEventListener('input', updateSetupSliders);
+  
+  // Add event listeners for the text inputs
+  document.getElementById('simResInputX').addEventListener('input', function() { updateFromTextInput('simResInputX', 'simResSelX'); });
+  document.getElementById('simResInputY').addEventListener('input', function() { updateFromTextInput('simResInputY', 'simResSelY'); });
+  document.getElementById('simHeightInput').addEventListener('input', function() { updateFromTextInput('simHeightInput', 'simHeightSel'); });
 });
 
 
@@ -412,6 +443,7 @@ const guiControls_default = {
   greenHueEndThreshold : 1.8,
   greenHueStrength : 0.8,
   smoothClouds : false,
+  enableRHFog : true,
   timeOfDay : 12.0,
   latitude : 45.0,
   month : 6.65, // Northern hemisphere summer solstice
@@ -511,7 +543,8 @@ var frameNum = 0;
 var lastFrameNum = 0;
 
 var iterNum = 0;
-var lastRadarIterNum = -1;
+var lastRadarOverlayIterNum = -1;
+var lastRadarDisplayIterNum = -1;
 
 // global framebuffers for measurements
 var frameBuff_0;
@@ -1645,21 +1678,6 @@ class Radar
     });
     body.appendChild(sensSlider);
 
-    // Update Frequency
-    const updateFreqLabel = mkLabel('Update Freq: ' + thisObj.#updateFrequency + ' iter');
-    body.appendChild(updateFreqLabel);
-    const updateFreqSlider = document.createElement('input');
-    updateFreqSlider.type = 'range';
-    updateFreqSlider.min = '1';
-    updateFreqSlider.max = '100';
-    updateFreqSlider.value = thisObj.#updateFrequency;
-    updateFreqSlider.style.cssText = 'width:100%; margin-top:4px; accent-color:#4a90e2;';
-    updateFreqSlider.addEventListener('input', function() {
-      thisObj.#updateFrequency = parseInt(this.value);
-      updateFreqLabel.textContent = 'Update Freq: ' + thisObj.#updateFrequency + ' iter';
-    });
-    body.appendChild(updateFreqSlider);
-
     // Enabled toggle
     body.appendChild(mkLabel('Enabled'));
     const enabledToggle = document.createElement('input');
@@ -1701,7 +1719,9 @@ class Radar
   destroy()
   {
     this.#menuDiv.remove();
+    this.#selectBtn.remove();
     this.#canvas.parentElement.removeChild(this.#canvas);
+    this.#mainDiv.remove();
     let index = radars.indexOf(this);
     radars.splice(index, 1);
   }
@@ -1818,6 +1838,206 @@ function cycleRadarProducts(direction)
 
 let weatherStations = []; // array holding all weather stations
 let radars = []; // array holding all radars
+let markers = []; // array holding all markers
+
+class Marker
+{
+  #width = 60;
+  #height = 60;
+  #mainDiv;
+  #canvas;
+  #c; // 2d canvas context
+  #x; // position in simulation
+  #y;
+  #name = 'Marker';
+  #color = '#FF0000';
+  #menuDiv;
+
+  constructor(xIn, yIn)
+  {
+    this.#x = Math.floor(xIn);
+    this.#y = Math.floor(yIn);
+    this.#mainDiv = document.createElement('div');
+    this.#canvas = document.createElement('canvas');
+    this.#mainDiv.appendChild(this.#canvas);
+    document.body.appendChild(this.#mainDiv);
+    this.#canvas.height = this.#height;
+    this.#canvas.width = this.#width;
+
+    this.#mainDiv.style.position = 'absolute';
+    this.#mainDiv.style.width = '0px';
+    this.#mainDiv.style.height = '0px';
+
+    this.#c = this.#canvas.getContext('2d');
+
+    this.#canvas.style.position = 'absolute';
+    this.#canvas.style.zIndex = 1;
+
+    let thisObj = this;
+    this.#canvas.addEventListener('mousedown', function(event) {
+      if (event.button == 0) { // left mouse button
+        if (guiControls.tool == 'TOOL_MARKER') {
+          thisObj.destroy();
+          event.stopPropagation();
+        } else {
+          thisObj.toggleMenu();
+        }
+      }
+    });
+
+    this.#canvas.addEventListener('contextmenu', function(event) { event.preventDefault(); });
+
+    this.createMenu();
+  }
+
+  createMenu()
+  {
+    this.#menuDiv = document.createElement('div');
+    this.#menuDiv.style.cssText = `
+      position: absolute;
+      display: none;
+      z-index: 1000;
+      background: #1a1a2e;
+      border: 1px solid #3a3a5c;
+      border-radius: 10px;
+      padding: 0;
+      color: white;
+      font-family: Arial, sans-serif;
+      font-size: 13px;
+      min-width: 240px;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.6);
+      overflow: hidden;
+    `;
+
+    let thisObj = this;
+
+    // Header bar
+    const hdr = document.createElement('div');
+    hdr.style.cssText = 'display:flex; justify-content:space-between; align-items:center; padding:10px 14px; background:#12122a; border-bottom:1px solid #3a3a5c; cursor:move;';
+    // Drag to move
+    let dragOffX = 0, dragOffY = 0, dragging = false;
+    hdr.addEventListener('mousedown', (e) => {
+      if (e.target === closeBtn) return;
+      dragging = true;
+      dragOffX = e.clientX - thisObj.#menuDiv.getBoundingClientRect().left;
+      dragOffY = e.clientY - thisObj.#menuDiv.getBoundingClientRect().top;
+      e.preventDefault();
+    });
+    document.addEventListener('mousemove', (e) => {
+      if (!dragging) return;
+      thisObj.#menuDiv.style.left = (e.clientX - dragOffX) + 'px';
+      thisObj.#menuDiv.style.top  = (e.clientY - dragOffY) + 'px';
+    });
+    document.addEventListener('mouseup', () => { dragging = false; });
+    const hdrTitle = document.createElement('span');
+    hdrTitle.textContent = '📍 ' + this.#name + ' Settings';
+    hdrTitle.style.fontWeight = 'bold';
+    const closeBtn = document.createElement('button');
+    closeBtn.textContent = '✕';
+    closeBtn.style.cssText = 'background:none; border:none; color:#aaa; font-size:16px; cursor:pointer; padding:0 4px; line-height:1;';
+    closeBtn.addEventListener('click', () => { thisObj.#menuDiv.style.display = 'none'; });
+    hdr.appendChild(hdrTitle);
+    hdr.appendChild(closeBtn);
+    this.#menuDiv.appendChild(hdr);
+
+    // Body
+    const body = document.createElement('div');
+    body.style.cssText = 'padding: 14px;';
+
+    const mkLabel = (text) => {
+      const l = document.createElement('div');
+      l.textContent = text;
+      l.style.cssText = 'color:#aaa; font-size:11px; text-transform:uppercase; letter-spacing:1px; margin-bottom:5px; margin-top:10px;';
+      return l;
+    };
+
+    const mkInput = (type, val) => {
+      const i = document.createElement('input');
+      i.type = type;
+      i.value = val;
+      i.style.cssText = 'width:100%; box-sizing:border-box; background:#0d0d1a; border:1px solid #3a3a5c; border-radius:5px; color:white; padding:6px 8px; font-size:13px;';
+      return i;
+    };
+
+    // Name
+    body.appendChild(mkLabel('Name'));
+    const nameInput = mkInput('text', this.#name);
+    nameInput.addEventListener('change', function() { thisObj.#name = this.value; hdrTitle.textContent = '📍 ' + thisObj.#name + ' Settings'; });
+    body.appendChild(nameInput);
+
+    // Color
+    body.appendChild(mkLabel('Color'));
+    const colorInput = document.createElement('input');
+    colorInput.type = 'color';
+    colorInput.value = this.#color;
+    colorInput.style.cssText = 'width:100%; height:40px; box-sizing:border-box; background:#0d0d1a; border:1px solid #3a3a5c; border-radius:5px; cursor:pointer;';
+    colorInput.addEventListener('change', function() { thisObj.#color = this.value; });
+    body.appendChild(colorInput);
+
+    this.#menuDiv.appendChild(body);
+    document.body.appendChild(this.#menuDiv);
+  }
+
+  toggleMenu()
+  {
+    const screenX = simToScreenX(this.#x);
+    const screenY = simToScreenY(this.#y);
+    this.#menuDiv.style.left = screenX + 'px';
+    this.#menuDiv.style.top = (screenY - 200) + 'px';
+    this.#menuDiv.style.display = (this.#menuDiv.style.display == 'none') ? 'block' : 'none';
+  }
+
+  updateCanvas()
+  {
+    let screenX = simToScreenX(this.#x) - this.#width / 2;
+    let screenY = simToScreenY(this.#y) - this.#height / 2;
+
+    this.#mainDiv.style.left = screenX + 'px';
+    this.#mainDiv.style.top = screenY + 'px';
+
+    let c = this.#c;
+    c.clearRect(0, 0, this.#width, this.#height);
+
+    // Draw marker icon (pin shape)
+    c.fillStyle = this.#color;
+    c.beginPath();
+    c.moveTo(this.#width / 2, 5);
+    c.quadraticCurveTo(this.#width - 5, 5, this.#width - 5, this.#height / 2);
+    c.quadraticCurveTo(this.#width - 5, this.#height - 10, this.#width / 2, this.#height - 5);
+    c.quadraticCurveTo(5, this.#height - 10, 5, this.#height / 2);
+    c.quadraticCurveTo(5, 5, this.#width / 2, 5);
+    c.fill();
+
+    // Draw inner circle
+    c.fillStyle = '#FFFFFF';
+    c.beginPath();
+    c.arc(this.#width / 2, this.#height / 2 - 5, 8, 0, Math.PI * 2);
+    c.fill();
+
+    // Draw marker name below
+    c.fillStyle = '#FFFFFF';
+    c.font = '12px Arial';
+    c.textAlign = 'center';
+    c.fillText(this.#name, this.#width / 2, this.#height + 15);
+  }
+
+  destroy()
+  {
+    this.#mainDiv.remove();
+    this.#menuDiv.remove();
+    let index = markers.indexOf(this);
+    if (index > -1) {
+      markers.splice(index, 1);
+    }
+  }
+
+  getXpos() { return this.#x; }
+  getYpos() { return this.#y; }
+  getName() { return this.#name; }
+  getColor() { return this.#color; }
+  setName(name) { this.#name = name; }
+  setColor(color) { this.#color = color; }
+}
 
 
 window.loadData = async function()
@@ -2550,7 +2770,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       this.mix.gain.value = 170.0 / dist;
     }
 
-    mute() { this.mix.gain.value = 0.; }
+    mute() { if (this.mix && this.mix.gain) this.mix.gain.value = 0.; }
 
     stop()
     {
@@ -4446,7 +4666,8 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         'Snow' : 'TOOL_WALL_SNOW',
         'Wind' : 'TOOL_WIND',
         'Weather Station' : 'TOOL_STATION',
-        'Radar' : 'TOOL_RADAR'
+        'Radar' : 'TOOL_RADAR',
+        'Marker' : 'TOOL_MARKER'
       })
       .name('Tool')
       .listen();
@@ -4648,7 +4869,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     var radar_folder = datGui.addFolder('Radar');
 
     radar_folder.add(guiControls, 'radarOpacity', 0.0, 1.0, 0.05).name('Radar Imagery Opacity').listen();
-    radar_folder.add(guiControls, 'radarUpdateFrequency', 1, 300, 10).name('Update Frequency (iterations)').listen();
+    radar_folder.add(guiControls, 'radarUpdateFrequency', 1, 300, 1).name('Update Frequency (iterations)').listen();
     radar_folder.add(guiControls, 'radarOverlay').name('Overlay on Realistic View').listen();
     radar_folder.add(guiControls, 'dbzOpacityEnabled').name('dBZ-Based Opacity').listen();
     radar_folder.add(guiControls, 'dbzOpacityStrength', 0.0, 10.0, 0.05).name('dBZ Opacity Strength').listen();
@@ -4856,6 +5077,13 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         gl.uniform1f(realDisp_smoothClouds_loc, guiControls.smoothClouds ? 1.0 : 0.0);
       })
       .name('Smooth Clouds');
+
+    advanced_folder.add(guiControls, 'enableRHFog')
+      .onChange(function() {
+        gl.useProgram(realisticDisplayProgram);
+        gl.uniform1f(realDisp_enableRHFog_loc, guiControls.enableRHFog ? 1.0 : 0.0);
+      })
+      .name('RH Fog');
 
     advanced_folder.add(guiControls, 'displayWeatherStations')
       .onChange(function() {
@@ -5372,13 +5600,25 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         if (m.cape > muCape) { muCape = m.cape; muCinh = m.cinh; muLcl = m.lclAlt; muLfc = m.lfcAlt; muEl = m.elAlt; }
       }
 
-      // 3CAPE: CAPE for parcel lifted from 3km AGL
+      // 3CAPE: CAPE in the first 3km of the atmosphere (surface-based parcel, integrate buoyancy to 3km)
       let cape3km = 0;
       const y3km = surfaceLevel + Math.round(3000 / dz);
-      if (y3km < sim_res_y && wallTextureValues[4 * y3km + 1] !== 0) {
-        const pp3km = computeParcelProfile(envTempsC[y3km], envDewC[y3km], y3km);
-        const m3km = computeCAPE(envTempsC, envDewC, pp3km, y3km);
-        cape3km = m3km.cape;
+      if (y3km < sim_res_y && wallTextureValues[4 * surfaceLevel + 1] !== 0) {
+        const ppSurface = computeParcelProfile(envTempsC[surfaceLevel], envDewC[surfaceLevel], surfaceLevel);
+        // Compute buoyancy array for surface parcel
+        const buoy = new Float32Array(sim_res_y);
+        for (let y = surfaceLevel; y < sim_res_y; y++) {
+          const envTk = CtoK(envTempsC[y]);
+          const parcelTk = CtoK(ppSurface[y]);
+          buoy[y] = 9.81 * (parcelTk - envTk) / envTk;
+        }
+        // Integrate positive buoyancy only from surface to 3km
+        let prevBuoy = buoy[surfaceLevel];
+        for (let y = surfaceLevel + 1; y <= y3km && y < sim_res_y; y++) {
+          const seg = integrateSegment(buoy[y - 1], buoy[y], dz);
+          cape3km += Math.max(0, seg.pos);
+          prevBuoy = buoy[y];
+        }
       }
 
       // Lifted Index: difference between parcel temp and env temp at 500mb (~5.5km)
@@ -5476,7 +5716,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       const mlLcl_m = meanLayerMetrics.lclAlt || 0;
       const mlCape = meanLayerMetrics.cape;
       const mlCinh = meanLayerMetrics.cinh;
-      const esrh_approx = shear3km * 50; // rough proxy
+      const esrh_approx = Math.max(0, shear3km * 50); // rough proxy, prevent negative
       const stpLcl = Math.max(0, (2000 - mlLcl_m) / 1000);
       const stpCinh = Math.min(1, (mlCinh + 200) / 150);
       const stp = (mlCape / 1500) * (esrh_approx / 150) * stpLcl * stpCinh;
@@ -5596,8 +5836,6 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
           }
           prevBuoy = buoy;
         }
-        // Clamp to realistic range (DCAPE rarely exceeds 1500 J/kg)
-        dcape = Math.min(dcape, 2000);
       }
 
       row('STP:', stp.toFixed(2), stp >= 1 ? '#FF8800' : 'white');
@@ -5616,8 +5854,8 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         const highShear3 = shear3km >= 15;
         const lowLCL = (muLcl || 9999) < 1000;
         const veryLowLCL = (muLcl || 9999) < 500;
-        const highPwat = pwat_mm >= 40;
-        const extremePwat = pwat_mm >= 55;
+        const highPwat = pwat_mm >= 30;
+        const extremePwat = pwat_mm >= 45;
         const steepLapse = !isNaN(lapse03) && lapse03 >= 7.5;
         const extremeLapse = !isNaN(lapse03) && lapse03 >= 9.0;
 
@@ -5625,9 +5863,9 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
           hazard = 'None'; hazardColor = '#888888';
         } else if (vtp >= 8 && extremeCAPE && extremeShear6 && veryLowLCL) {
           hazard = 'PDS Tornado'; hazardColor = '#FF00FF';
-        } else if (vtp >= 5 || (stp >= 10 && lowLCL && highShear6)) {
+        } else if (vtp >= 6 || (stp >= 10 && lowLCL && highShear6)) {
           hazard = 'Tornado'; hazardColor = '#FF0066';
-        } else if (stp >= 2 && lowLCL) {
+        } else if (stp >= 4 && lowLCL && highShear3) {
           hazard = 'Slight Tornado'; hazardColor = '#FF6699';
         } else if (hasCAPE && highShear6) {
           hazard = 'Supercell'; hazardColor = '#FF4400';
@@ -6375,6 +6613,12 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
           }
           radars.push(newRadar); // add radar
         }
+      } else if (guiControls.tool == 'TOOL_MARKER') {
+        let simXpos = Math.floor(mouseXinSim * sim_res_x);
+        let simYpos = findSimYposAboveSurfaceAtMouseX();
+
+        if (simXpos >= 0 && simXpos < sim_res_x)
+          markers.push(new Marker(simXpos, simYpos)); // add marker
       }
     } else if (e.button == 1) {
       // middle mouse button
@@ -6463,7 +6707,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
   function handlePause()
   {
-    if (guiControls.paused) {
+    if (guiControls.paused && soundSystem) {
       soundSystem.mute();
     }
   }
@@ -6700,6 +6944,8 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       for (i = 0; i < weatherStations.length; i++) {
         weatherStations[i].setHidden(false);
       }
+    } else if (event.code == 'KeyN') {
+      guiControls.tool = 'TOOL_MARKER';
     } else if (event.code == 'Slash') {
       airplane.toggleEngine();
     } else if (event.code == 'KeyL') {
@@ -7253,6 +7499,13 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   const lightningDataTexture = gl.createTexture(); // single pixel texture holding location and timing of current lightning strike
   const radarTexture = gl.createTexture();
 
+  // Cache textures for radar display (to freeze all input textures)
+  const cachedBaseTexture = gl.createTexture();
+  const cachedWaterTexture = gl.createTexture();
+  const cachedWallTexture = gl.createTexture();
+  const cachedPrecipFeedbackTexture = gl.createTexture();
+  const cachedPrecipDepositionTexture = gl.createTexture();
+
   // Static texures:
   const noiseTexture = gl.createTexture();
   const A380Texture = gl.createTexture();
@@ -7436,6 +7689,17 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
   gl.bindFramebuffer(gl.FRAMEBUFFER, radarFrameBuff);
   gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, radarTexture, 0);
+
+  // Initialize cache textures for precipitation
+  gl.bindTexture(gl.TEXTURE_2D, cachedPrecipFeedbackTexture);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, sim_res_x, sim_res_y, 0, gl.RGBA, gl.FLOAT, null);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+
+  gl.bindTexture(gl.TEXTURE_2D, cachedPrecipDepositionTexture);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RG32F, sim_res_x, sim_res_y, 0, gl.RG, gl.FLOAT, null);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
 
   gl.bindTexture(gl.TEXTURE_2D, lightningDataTexture);
   gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, 1, 1, 0, gl.RGBA, gl.FLOAT, null);
@@ -8704,6 +8968,8 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'cellHeight'), cellHeight);
   const realDisp_smoothClouds_loc = gl.getUniformLocation(realisticDisplayProgram, 'smoothClouds');
   gl.uniform1f(realDisp_smoothClouds_loc, 0.0);
+  const realDisp_enableRHFog_loc = gl.getUniformLocation(realisticDisplayProgram, 'enableRHFog');
+  gl.uniform1f(realDisp_enableRHFog_loc, 1.0);
 
   gl.useProgram(precipitationProgram);
   gl.uniform1i(gl.getUniformLocation(precipitationProgram, 'baseTex'), 0);
@@ -9389,7 +9655,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     let cursorType = 1.0; // normal circular brush
     if (guiControls.wholeWidth) {
       cursorType = 2.0;   // cursor whole width brush
-    } else if (SETUP_MODE || (inputType <= 0 && !bPressed && (guiControls.tool == 'TOOL_NONE' || guiControls.tool == 'TOOL_STATION' || guiControls.tool == 'TOOL_RADAR'))) {
+    } else if (SETUP_MODE || (inputType <= 0 && !bPressed && (guiControls.tool == 'TOOL_NONE' || guiControls.tool == 'TOOL_STATION' || guiControls.tool == 'TOOL_RADAR' || guiControls.tool == 'TOOL_MARKER'))) {
       cursorType = 0;     // cursor off sig
     }
 
@@ -9697,6 +9963,31 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
       // Radar overlay on realistic view
       if (guiControls.radarOverlay && radars.length > 0) {
+        // Update global cache at the global radar update frequency
+        let updateFreq = guiControls.radarUpdateFrequency || 60;
+        let shouldUpdateCache = (iterNum - lastRadarOverlayIterNum) >= updateFreq || lastRadarOverlayIterNum === -1;
+        
+        // Also update cache if paused and cache hasn't been initialized yet
+        if (guiControls.paused && lastRadarOverlayIterNum === -1) {
+          shouldUpdateCache = true;
+        }
+        
+        if (iterNum % 60 === 0) {
+          console.log('Radar overlay cache check: iterNum=' + iterNum + ', lastRadarOverlayIterNum=' + lastRadarOverlayIterNum + ', updateFreq=' + updateFreq + ', shouldUpdate=' + shouldUpdateCache);
+        }
+        
+        if (shouldUpdateCache) {
+          gl.bindFramebuffer(gl.FRAMEBUFFER, precipitationFeedbackFrameBuff);
+          gl.readBuffer(gl.COLOR_ATTACHMENT0);
+          gl.bindTexture(gl.TEXTURE_2D, cachedPrecipFeedbackTexture);
+          gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, sim_res_x, sim_res_y);
+          gl.readBuffer(gl.COLOR_ATTACHMENT1);
+          gl.bindTexture(gl.TEXTURE_2D, cachedPrecipDepositionTexture);
+          gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, sim_res_x, sim_res_y);
+          gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+          lastRadarOverlayIterNum = iterNum;
+        }
+
         gl.enable(gl.BLEND);
         gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
         gl.useProgram(radarDisplayProgram);
@@ -9718,21 +10009,14 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         gl.uniform1i(uloc_radar_colorScalesTex, 3);
         gl.uniform1i(uloc_radar_colorScaleColumn, 18);
         gl.uniform1i(uloc_radar_colorScaleStops, 18);
-        gl.activeTexture(gl.TEXTURE4); gl.bindTexture(gl.TEXTURE_2D, precipitationFeedbackTexture);
+        gl.activeTexture(gl.TEXTURE4); gl.bindTexture(gl.TEXTURE_2D, cachedPrecipFeedbackTexture);
         gl.uniform1i(uloc_radar_precipFeedbackTex, 4);
-        gl.activeTexture(gl.TEXTURE5); gl.bindTexture(gl.TEXTURE_2D, precipitationDepositionTexture);
+        gl.activeTexture(gl.TEXTURE5); gl.bindTexture(gl.TEXTURE_2D, cachedPrecipDepositionTexture);
         gl.uniform1i(uloc_radar_precipDepositionTex, 5);
+        
         for (let r = 0; r < radars.length; r++) {
           const radar = radars[r];
           if (!radar.getEnabled()) continue;
-
-          // Check if this radar should update based on its update frequency
-          let shouldUpdate = (iterNum - radar.getLastUpdateIteration()) >= radar.getUpdateFrequency() || radar.getLastUpdateIteration() === -1;
-
-          if (!shouldUpdate) continue;
-
-          // Update the last update iteration
-          radar.setLastUpdateIteration(iterNum);
 
           let productType = 0;
           if (radar.getProduct() === 'velocity') productType = 1;
@@ -9845,6 +10129,9 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         gl.uniform3f(uloc_univ_view, cam.curXpos, cam.curYpos, cam.curZoom);
         gl.uniform4f(uloc_univ_cursor, mouseXinSim, mouseYinSim, guiControls.brushSize * 0.5, cursorType);
         gl.uniform1f(uloc_univ_Xmult, horizontalDisplayMult);
+        gl.activeTexture(gl.TEXTURE9);
+        gl.bindTexture(gl.TEXTURE_2D, colorScalesTexture);
+        gl.uniform1i(gl.getUniformLocation(universalDisplayProgram, 'colorScalesTex'), 9);
         gl.uniform1i(uloc_univ_colorScaleColumn, 4);
         gl.uniform1i(uloc_univ_useUnipolarScale, 0);
 
@@ -9993,13 +10280,8 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
               let radar = radars[r];
               if (!radar.getEnabled()) continue;
 
-              // Check if this radar should update based on its update frequency
-              let shouldUpdate = (iterNum - radar.getLastUpdateIteration()) >= radar.getUpdateFrequency() || radar.getLastUpdateIteration() === -1;
-
-              if (!shouldUpdate) continue;
-
-              // Update the last update iteration
-              radar.setLastUpdateIteration(iterNum);
+              // Always render radar using live textures (remove update frequency check for display)
+              // The update frequency slider now only affects performance, not visibility
 
               let productType = 0;
               if (radar.getProduct() === 'velocity') productType = 1;
@@ -10051,121 +10333,117 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4); // draw to canvas
       }
 
-      // Radar display: canvas overlay approach
+      // Radar display: render every frame with cached precipitation textures
       if (guiControls.displayMode === 'DISP_RADAR') {
-        if (!radarOverlayCanvas) {
-          radarOverlayCanvas = document.createElement('canvas');
-          radarOverlayCanvas.style.cssText = 'position:fixed;top:0;left:0;pointer-events:none;z-index:999;';
-          document.body.appendChild(radarOverlayCanvas);
+        // Hide overlay canvas if it exists
+        if (radarOverlayCanvas) {
+          radarOverlayCanvas.style.display = 'none';
         }
-        if (radarOverlayCanvas.width !== canvas.width || radarOverlayCanvas.height !== canvas.height) {
-          radarOverlayCanvas.width = canvas.width;
-          radarOverlayCanvas.height = canvas.height;
-        }
-        radarOverlayCanvas.style.display = 'block';
 
-        // Check if any radar needs updating
-        let anyRadarNeedsUpdate = false;
+        // Update global cache at the global radar update frequency
+        let updateFreq = guiControls.radarUpdateFrequency || 60;
+        let shouldUpdateCache = (iterNum - lastRadarDisplayIterNum) >= updateFreq || lastRadarDisplayIterNum === -1;
+        
+        // Also update cache if paused and cache hasn't been initialized yet
+        if (guiControls.paused && lastRadarDisplayIterNum === -1) {
+          shouldUpdateCache = true;
+        }
+        
+        if (iterNum % 60 === 0) {
+          console.log('Radar display cache check: iterNum=' + iterNum + ', lastRadarDisplayIterNum=' + lastRadarDisplayIterNum + ', updateFreq=' + updateFreq + ', shouldUpdate=' + shouldUpdateCache);
+        }
+        
+        if (shouldUpdateCache) {
+          gl.bindFramebuffer(gl.FRAMEBUFFER, precipitationFeedbackFrameBuff);
+          gl.readBuffer(gl.COLOR_ATTACHMENT0);
+          gl.bindTexture(gl.TEXTURE_2D, cachedPrecipFeedbackTexture);
+          gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, sim_res_x, sim_res_y);
+          gl.readBuffer(gl.COLOR_ATTACHMENT1);
+          gl.bindTexture(gl.TEXTURE_2D, cachedPrecipDepositionTexture);
+          gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, sim_res_x, sim_res_y);
+          gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+          lastRadarDisplayIterNum = iterNum;
+        }
+
+        // Render radars to screen every frame using cached precipitation textures
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+        gl.viewport(0, 0, canvas.width, canvas.height);
+        gl.clearColor(0.0, 0.0, 0.0, 0.0);
+        gl.clear(gl.COLOR_BUFFER_BIT);
+
+        gl.useProgram(radarDisplayProgram);
+        gl.bindVertexArray(fluidVao);
+
+        gl.uniform2f(uloc_radar_aspectRatios, sim_aspect, canvas_aspect);
+        gl.uniform3f(uloc_radar_view, cam.curXpos, cam.curYpos, cam.curZoom);
+        gl.uniform1f(uloc_radar_Xmult, horizontalDisplayMult);
+        gl.uniform2f(uloc_radar_resolution, sim_res_x, sim_res_y);
+        gl.uniform2f(uloc_radar_texelSize, 1.0 / sim_res_x, 1.0 / sim_res_y);
+        gl.uniform1f(uloc_radar_opacity, guiControls.radarOpacity);
+        gl.uniform1i(uloc_radar_dbzOpacityEnabled, guiControls.dbzOpacityEnabled);
+        gl.uniform1f(uloc_radar_dbzOpacityStrength, guiControls.dbzOpacityStrength);
+
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, baseTexture_0);
+        gl.uniform1i(uloc_radar_baseTexture, 0);
+
+        gl.activeTexture(gl.TEXTURE1);
+        gl.bindTexture(gl.TEXTURE_2D, waterTexture_0);
+        gl.uniform1i(uloc_radar_waterTexture, 1);
+
+        gl.activeTexture(gl.TEXTURE2);
+        gl.bindTexture(gl.TEXTURE_2D, wallTexture_0);
+        gl.uniform1i(uloc_radar_wallTexture, 2);
+
+        gl.activeTexture(gl.TEXTURE3);
+        gl.bindTexture(gl.TEXTURE_2D, colorScalesTexture);
+        gl.uniform1i(uloc_radar_colorScalesTex, 3);
+
+        gl.activeTexture(gl.TEXTURE4);
+        gl.bindTexture(gl.TEXTURE_2D, cachedPrecipFeedbackTexture);
+        gl.uniform1i(uloc_radar_precipFeedbackTex, 4);
+
+        gl.activeTexture(gl.TEXTURE5);
+        gl.bindTexture(gl.TEXTURE_2D, cachedPrecipDepositionTexture);
+        gl.uniform1i(uloc_radar_precipDepositionTex, 5);
+
+        gl.enable(gl.BLEND);
+        gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+
         for (let r = 0; r < radars.length; r++) {
           let radar = radars[r];
-          if (radar.getEnabled() && ((iterNum - radar.getLastUpdateIteration()) >= radar.getUpdateFrequency() || radar.getLastUpdateIteration() === -1)) {
-            anyRadarNeedsUpdate = true;
-            break;
-          }
-        }
+          if (!radar.getEnabled()) continue;
 
-        if (anyRadarNeedsUpdate) {
-          // Render radars to screen
-          gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-          gl.viewport(0, 0, canvas.width, canvas.height);
-          gl.clearColor(0.0, 0.0, 0.0, 0.0);
-          gl.clear(gl.COLOR_BUFFER_BIT);
+          let productType = 0;
+          if (radar.getProduct() === 'velocity') productType = 1;
+          else if (radar.getProduct() === 'correlation') productType = 2;
+          else if (radar.getProduct() === 'echotops') productType = 3;
 
-          gl.useProgram(radarDisplayProgram);
-          gl.bindVertexArray(fluidVao);
-
-          gl.uniform2f(uloc_radar_aspectRatios, sim_aspect, canvas_aspect);
-          gl.uniform3f(uloc_radar_view, cam.curXpos, cam.curYpos, cam.curZoom);
-          gl.uniform1f(uloc_radar_Xmult, horizontalDisplayMult);
-          gl.uniform2f(uloc_radar_resolution, sim_res_x, sim_res_y);
-          gl.uniform2f(uloc_radar_texelSize, 1.0 / sim_res_x, 1.0 / sim_res_y);
-          gl.uniform1f(uloc_radar_opacity, guiControls.radarOpacity);
-          gl.uniform1i(uloc_radar_dbzOpacityEnabled, guiControls.dbzOpacityEnabled);
-          gl.uniform1f(uloc_radar_dbzOpacityStrength, guiControls.dbzOpacityStrength);
-
-          gl.activeTexture(gl.TEXTURE0);
-          gl.bindTexture(gl.TEXTURE_2D, baseTexture_0);
-          gl.uniform1i(uloc_radar_baseTexture, 0);
-
-          gl.activeTexture(gl.TEXTURE1);
-          gl.bindTexture(gl.TEXTURE_2D, waterTexture_0);
-          gl.uniform1i(uloc_radar_waterTexture, 1);
-
-          gl.activeTexture(gl.TEXTURE2);
-          gl.bindTexture(gl.TEXTURE_2D, wallTexture_0);
-          gl.uniform1i(uloc_radar_wallTexture, 2);
-
-          gl.activeTexture(gl.TEXTURE3);
-          gl.bindTexture(gl.TEXTURE_2D, colorScalesTexture);
-          gl.uniform1i(uloc_radar_colorScalesTex, 3);
-
-          gl.activeTexture(gl.TEXTURE4);
-          gl.bindTexture(gl.TEXTURE_2D, precipitationFeedbackTexture);
-          gl.uniform1i(uloc_radar_precipFeedbackTex, 4);
-
-          gl.activeTexture(gl.TEXTURE5);
-          gl.bindTexture(gl.TEXTURE_2D, precipitationDepositionTexture);
-          gl.uniform1i(uloc_radar_precipDepositionTex, 5);
-
-          gl.enable(gl.BLEND);
-          gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
-
-          for (let r = 0; r < radars.length; r++) {
-            let radar = radars[r];
-            if (!radar.getEnabled()) continue;
-
-            // Check if this radar should update
-            let shouldUpdate = (iterNum - radar.getLastUpdateIteration()) >= radar.getUpdateFrequency() || radar.getLastUpdateIteration() === -1;
-            if (!shouldUpdate) continue;
-
-            radar.setLastUpdateIteration(iterNum);
-
-            let productType = 0;
-            if (radar.getProduct() === 'velocity') productType = 1;
-            else if (radar.getProduct() === 'correlation') productType = 2;
-            else if (radar.getProduct() === 'echotops') productType = 3;
-
-            if (productType === 0) {
-              gl.uniform1i(uloc_radar_colorScaleColumn, 18);
-              gl.uniform1i(uloc_radar_colorScaleStops, 36);
-            } else if (productType === 1) {
-              gl.uniform1i(uloc_radar_colorScaleColumn, 19);
-              gl.uniform1i(uloc_radar_colorScaleStops, 33);
-            } else if (productType === 2) {
-              gl.uniform1i(uloc_radar_colorScaleColumn, 20);
-              gl.uniform1i(uloc_radar_colorScaleStops, 22);
-            } else {
-              gl.uniform1i(uloc_radar_colorScaleColumn, 21);
-              gl.uniform1i(uloc_radar_colorScaleStops, 32);
-            }
-
-            gl.uniform2f(uloc_radar_radarPos, radar.getXpos(), radar.getYpos());
-            gl.uniform1f(uloc_radar_radarRange, radar.getRange());
-            gl.uniform1f(uloc_radar_radarResolution, radar.getResolution());
-            gl.uniform1f(uloc_radar_sensitivity, radar.getSensitivity());
-            gl.uniform1i(uloc_radar_productType, productType);
-
-            gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+          if (productType === 0) {
+            gl.uniform1i(uloc_radar_colorScaleColumn, 18);
+            gl.uniform1i(uloc_radar_colorScaleStops, 36);
+          } else if (productType === 1) {
+            gl.uniform1i(uloc_radar_colorScaleColumn, 19);
+            gl.uniform1i(uloc_radar_colorScaleStops, 33);
+          } else if (productType === 2) {
+            gl.uniform1i(uloc_radar_colorScaleColumn, 20);
+            gl.uniform1i(uloc_radar_colorScaleStops, 22);
+          } else {
+            gl.uniform1i(uloc_radar_colorScaleColumn, 21);
+            gl.uniform1i(uloc_radar_colorScaleStops, 32);
           }
 
-          gl.disable(gl.BLEND);
-          gl.bindVertexArray(fluidVao);
+          gl.uniform2f(uloc_radar_radarPos, radar.getXpos(), radar.getYpos());
+          gl.uniform1f(uloc_radar_radarRange, radar.getRange());
+          gl.uniform1f(uloc_radar_radarResolution, radar.getResolution());
+          gl.uniform1f(uloc_radar_sensitivity, radar.getSensitivity());
+          gl.uniform1i(uloc_radar_productType, productType);
 
-          // Copy WebGL canvas to overlay canvas
-          const ctx = radarOverlayCanvas.getContext('2d');
-          ctx.clearRect(0, 0, canvas.width, canvas.height);
-          ctx.drawImage(canvas, 0, 0);
+          gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
         }
+
+        gl.disable(gl.BLEND);
+        gl.bindVertexArray(fluidVao);
       }
 
       // Risk display: draw per-column risk as colored canvas overlay
@@ -10324,6 +10602,14 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       if (sx > -200 && sx < canvas.width + 200 && sy > -200 && sy < canvas.height + 200)
         radars[i].updateCanvas();
     }
+  }
+
+  // Update markers
+  for (i = 0; i < markers.length; i++) {
+    const sx = simToScreenX(markers[i].getXpos());
+    const sy = simToScreenY(markers[i].getYpos());
+    if (sx > -200 && sx < canvas.width + 200 && sy > -200 && sy < canvas.height + 200)
+      markers[i].updateCanvas();
   }
 
   frameNum++;

@@ -55,6 +55,7 @@ uniform float displayVectorField;
 uniform float iterNum;
 
 uniform float smoothClouds;
+uniform float enableRHFog;
 
 out vec4 fragmentColor;
 
@@ -232,8 +233,8 @@ vec4 getAirColor(vec2 fragCoordIn)
   float relHum = water[TOTAL] / maxWater(realTemp);
   float fogMistOpacity = 0.0;
 
-  // Only apply fog if relative humidity is strictly above 95% and maxWater is valid
-  if (relHum > 0.95 && maxWater(realTemp) > 0.001) {
+  // Only apply fog if relative humidity is strictly above 95% and maxWater is valid and fog is enabled
+  if (enableRHFog > 0.5 && relHum > 0.95 && maxWater(realTemp) > 0.001) {
     // Mist: 95% RH -> 0.00025% opacity, 98% RH -> 0.0025% opacity
     if (relHum < 0.98) {
       fogMistOpacity = mix(0.0000025, 0.000025, (relHum - 0.95) / (0.98 - 0.95));

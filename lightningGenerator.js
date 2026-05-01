@@ -59,6 +59,12 @@ function generateLightningBolt(width, height)
       ctx.moveTo(nextX, nextY); // move back to last position after drawing branch
       ctx.lineWidth = lineWidth;
     }
+    
+    // Ensure lightning reaches the bottom
+    if (startY >= height - 1) {
+      ctx.lineTo(startX, height);
+      break;
+    }
   }
   ctx.strokeStyle = genLightningColor(lineWidth);
   ctx.stroke();
@@ -106,6 +112,12 @@ function generateLightningBolt(width, height)
         ctx.beginPath();
         ctx.moveTo(nextX, nextY); // move back to last position after drawing branch
         ctx.lineWidth = line_width;
+      }
+      
+      // Ensure branch reaches the bottom
+      if (startY >= height - 1) {
+        ctx.lineTo(startX, height);
+        break;
       }
     }
     ctx.strokeStyle = genLightningColor(line_width);
