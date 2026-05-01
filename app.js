@@ -506,6 +506,11 @@ const guiControls_default = {
   pressureInfluence : 0.5,
   reducedWeatherStationUpdates : false,
   skipAdvection : false,
+  // Menu styling
+  menuBackgroundColor : '#222222',
+  menuTextColor : '#ffffff',
+  menuAccentColor : '#2196F3',
+  menuWidth : 400,
 };
 
 var horizontalDisplayMult = 3.0; // 3.0 to cover srceen while zoomed out
@@ -4525,6 +4530,39 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     gl.uniform1f(postProc_contrast_loc, guiControls.contrast);
   }
 
+  function updateMenuStyle()
+  {
+    // Apply menu width
+    datGui.width = guiControls.menuWidth;
+    
+    // Apply background color
+    const guiElement = datGui.domElement;
+    guiElement.style.backgroundColor = guiControls.menuBackgroundColor;
+    
+    // Apply text color to all elements
+    const allTextElements = guiElement.querySelectorAll('*');
+    allTextElements.forEach(el => {
+      if (el.classList.contains('property-name') || 
+          el.classList.contains('c') || 
+          el.tagName === 'LABEL' ||
+          el.tagName === 'SPAN') {
+        el.style.color = guiControls.menuTextColor;
+      }
+    });
+    
+    // Apply accent color to sliders only
+    const sliders = guiElement.querySelectorAll('.slider-fg');
+    sliders.forEach(slider => {
+      slider.style.backgroundColor = guiControls.menuAccentColor;
+    });
+    
+    // Keep folder titles white (not accent color)
+    const folders = guiElement.querySelectorAll('.title');
+    folders.forEach(folder => {
+      folder.style.color = guiControls.menuTextColor;
+    });
+  }
+
   function setupDatGui(strGuiControls)
   {
     datGui = new dat.GUI();
@@ -5303,6 +5341,25 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       .name('Disable Temp History');
     disableTempHistCtrl.__li.querySelector('.property-name').style.color = '#ff4444';
 
+    // Menu styling options
+    let menuStyleFolder = advanced_folder.addFolder('Menu Style');
+    
+    menuStyleFolder.addColor(guiControls, 'menuBackgroundColor')
+      .name('Background Color')
+      .onChange(updateMenuStyle);
+    
+    menuStyleFolder.addColor(guiControls, 'menuTextColor')
+      .name('Text Color')
+      .onChange(updateMenuStyle);
+    
+    menuStyleFolder.addColor(guiControls, 'menuAccentColor')
+      .name('Accent Color')
+      .onChange(updateMenuStyle);
+    
+    menuStyleFolder.add(guiControls, 'menuWidth', 200, 800, 10)
+      .name('Menu Width')
+      .onChange(updateMenuStyle);
+
     advanced_folder.add(guiControls, 'resetSettings').name('Reset all settings');
     advanced_folder.add(guiControls, 'riskUpdateFrequency', 1, 50, 1).name('Risk Update Freq').listen();
     advanced_folder.add(guiControls, 'readoutCursor').name('Readout Cursor');
@@ -5310,7 +5367,10 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     datGui.add(guiControls, 'paused').onChange(handlePause).name('Paused').listen();
     datGui.add(guiControls, 'download').name('Save Simulation to File');
 
-    datGui.width = 400;
+    datGui.width = guiControls.menuWidth;
+    
+    // Apply initial menu styling
+    setTimeout(updateMenuStyle, 100);
   }
 
   // guiControls.paused = true; // pause before first iteration for debugging
