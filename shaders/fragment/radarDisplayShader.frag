@@ -8,6 +8,9 @@ in vec2 fragCoord;
 
 uniform vec2 resolution;
 uniform vec2 texelSize;
+
+const float dryLapse = 0.; // definition needed for common.glsl
+#include "common.glsl"
 uniform vec3 view;
 uniform vec4 cursor;
 uniform vec2 aspectRatios;
@@ -162,62 +165,112 @@ void main()
     pixelOpacity *= smoothstep(0.01, 0.05, echoTopFrac);
 
   } else {
-    // CC is high for uniform particles (pure rain or pure snow),
-    // low for mixed phase, large hail, or non-meteorological targets.
+    // Correlation Coefficient (CC or ρhv) based on particle properties:
+    // - Size (horizontal/vertical dimensions)
+    // - Ice content
+    // - Aspect ratio (spherical vs oblate/irregular)
+
     float precip = totalReflectiveMass;
     if (precip < 0.0001) discard;
 
-    // Use actual droplet properties from precipitation system
-    float totalMass = precipFeedback[0]; // Total mass from feedback
-    float rainDeposition = precipDeposition.x; // Rain deposition
-    float snowDeposition = precipDeposition.y; // Snow/ice deposition
+    // Get precipitation properties
+    float inAirPrecip = waterData[PRECIPITATION];
+    float dustSmoke = waterData[SMOKE];
 
-    // Calculate actual ice mass fraction based on deposition
+    // Particle size from mass score: massScore = totalMass * sizeFactor
+    // where sizeFactor = pow(totalMass, 1/3), so massScore = pow(totalMass, 4/3)
+    float massScore = precipFeedback[MASS];
+
+    // Estimate particle size (normalized 0-1) with gentler scaling
+    // Small drizzle: massScore ~0.01 → size ~0.1
+    // Medium rain: massScore ~0.1 → size ~0.4
+    // Large rain: massScore ~0.5 → size ~0.7
+    // Hail: massScore >1.0 → size approaches 1.0
+    float particleSize = clamp(pow(massScore, 0.6) * 0.8, 0.0, 1.0);
+
+    // Estimate ice fraction from surface deposition
+    float rainDeposition = precipDeposition.x;
+    float snowDeposition = precipDeposition.y;
     float totalDeposition = rainDeposition + snowDeposition;
     float iceFrac = (totalDeposition > 0.0001) ? (snowDeposition / totalDeposition) : 0.0;
 
-    // Droplet size factor: larger droplets have lower correlation coefficient
-    // Use total mass as proxy for droplet size (larger mass = larger droplets)
-    float dropletSize = totalMass;
-    float sizeFactor = clamp(dropletSize * 10.0, 0.0, 1.0); // Scale factor for size effect
-
-    // Base correlation coefficient: high for uniform particles
-    float cc = 1.0;
-
-    // Mixed phase penalty: CC drops when rain and ice are mixed
-    // Pure rain (iceFrac ~ 0) or pure ice (iceFrac ~ 1) have high CC
-    float mixedPhase = 1.0 - abs(iceFrac - 0.5) * 2.0; // peaks at 50% mixed
-    cc -= mixedPhase * 0.35;
-
-    // Droplet size penalty: larger droplets have lower CC
-    // This accounts for the user's request to show different values based on droplet size
-    cc -= sizeFactor * 0.2;
-
-    // Ice mass effect: very high ice mass (solid ice) has different CC than liquid
-    // Solid ice particles (high ice mass) have higher CC than mixed
-    if (iceFrac > 0.8) {
-      cc += 0.05; // Bonus for pure ice
+    // For precipitation aloft without surface deposition, estimate from height and mass
+    if (totalDeposition < 0.0001) {
+      // Higher precipitation and higher altitude suggests more ice
+      float heightFactor = snappedCell.y / resolution.y;
+      iceFrac = clamp(heightFactor * 1.2 - 0.2, 0.0, 1.0) * clamp(inAirPrecip * 10.0, 0.0, 1.0);
     }
 
-    // Position-based variation: use x and y position to add spatial variation
-    // This accounts for the user's request to include y and x axis
-    float posX = snappedCell.x / resolution.x;
-    float posY = snappedCell.y / resolution.y;
-    float positionFactor = (sin(posX * 10.0) + cos(posY * 10.0)) * 0.02;
-    cc += positionFactor;
+    // --- CC Calculation based on particle physics ---
 
-    // Non-met / very light precip → lower CC
-    cc -= clamp(1.0 - precip * 500.0, 0.0, 0.2);
+    // Base CC: small spherical particles (drizzle, small rain) have highest CC
+    float cc = 0.98;
 
-    cc = clamp(cc, 0.2, 1.05);
+    // Size penalty: larger particles have lower CC
+    // Small drizzle: minimal penalty
+    // Large rain: moderate penalty
+    // Hail: significant penalty
+    float sizePenalty = particleSize * 0.06;
+    cc -= sizePenalty;
 
-    // Map 0.2–1.05 → 0–1 for color scale
-    float t = clamp((cc - 0.2) / 0.85, 0.0, 1.0);
-    float tSmooth = smoothstep(0.0, 1.0, t);
-    color = sampleColorScaleStepped(tSmooth);
+    // Aspect ratio penalty: large raindrops become oblate (flattened)
+    // This reduces CC compared to spherical particles
+    // Only applies to liquid phase (ice particles stay more spherical)
+    float oblateFactor = particleSize * (1.0 - iceFrac) * 0.05;
+    cc -= oblateFactor;
+
+    // Ice content effects:
+    // Pure ice crystals (snow): High CC (~0.98-1.0) - spherical/plate-like but uniform
+    // Pure rain: High CC but reduced by size/oblate factors above
+    // Mixed phase (melting): Lower CC (~0.85-0.95) - mixture of ice and water
+
+    // Mixed phase penalty: maximum at ~50% ice (melting layer)
+    float mixedPhase = 1.0 - abs(iceFrac - 0.5) * 2.0;
+    float mixedPenalty = mixedPhase * 0.12 * clamp(particleSize * 2.0, 0.5, 1.0);
+    cc -= mixedPenalty;
+
+    // Hail detection: very large particles with mixed ice content
+    // Hail stones are large (>5mm) and have irregular shapes + mixed internal structure
+    float hailIndicator = particleSize * mixedPhase;
+    float hailPenalty = hailIndicator * 0.25; // Strong reduction for hail
+    cc -= hailPenalty;
+
+    // Graupel (small soft hail): medium size with high ice content, reduced CC
+    float graupelIndicator = (1.0 - particleSize) * iceFrac * clamp(inAirPrecip * 5.0, 0.0, 1.0);
+    float graupelPenalty = graupelIndicator * 0.08;
+    cc -= graupelPenalty;
+
+    // Pure phase bonuses
+    if (iceFrac > 0.9 && particleSize < 0.3) {
+      // Small pure ice crystals (snow): very high CC
+      cc = min(cc + 0.015, 1.0);
+    } else if (iceFrac < 0.1 && particleSize < 0.2) {
+      // Small pure liquid droplets (drizzle): very high CC
+      cc = min(cc + 0.01, 1.0);
+    }
+
+    // Non-meteorological: dust/smoke contamination significantly reduces CC
+    float contamination = clamp(dustSmoke * 3.0, 0.0, 1.0);
+    cc -= contamination * 0.5;
+
+    // Weak signal: lower confidence
+    float signalStrength = clamp(precip * 500.0, 0.0, 1.0);
+    cc -= (1.0 - signalStrength) * 0.1;
+
+    // Final clamp
+    cc = clamp(cc, 0.2, 1.0);
+
+    // Map CC to color scale: spread 0.75-1.0 across full range for better discrimination
+    // CC < 0.75 (dust, artifacts): dark colors
+    // CC 0.75-0.90 (hail, mixed): red-orange
+    // CC 0.90-0.97 (melting): yellow-green
+    // CC 0.97-1.0 (uniform): cyan-white
+    float t = (cc - 0.75) / 0.25; // 0.75→0.0, 1.0→1.0
+    t = clamp(t, 0.0, 1.0);
+    color = sampleColorScaleStepped(t);
     pixelOpacity *= min(totalReflectiveMass * 300.0, 1.0);
   }
 
-  float edgeFade = pow(max(1.0 - distFrac, 0.0), 0.3);
+  float edgeFade = distFrac < 1.0 ? 1.0 : 0.0;
   fragmentColor  = vec4(color, pixelOpacity * edgeFade);
 }

@@ -92,6 +92,21 @@ precision highp isampler2D;
 #define START_ITERNUM 2
 #define INTENSITY 3
 
+// Lightning Types
+#define LIGHTNING_CG 0      // Cloud-to-Ground (standard)
+#define LIGHTNING_CC 1      // Cloud-to-Cloud (horizontal)
+#define LIGHTNING_SPIDER 2  // Spider lightning (crawls along cloud base)
+#define LIGHTNING_SPRITE 3  // Upper atmospheric sprite (above storm)
+#define LIGHTNING_BOLT_BLUE 4 // Bolt from the blue (distant anvil CG)
+
+// Extended lightning data (packed into vec4)
+// We reuse the same channels but interpret based on type:
+// x: normalized X position (0-1)
+// y: normalized Y position (0-1) - for sprites, this is altitude above storm
+// z: start iteration number (packed with type info in w component)
+// w: intensity (0-4+) and type info
+#define LIGHTNING_TYPE_OFFSET 100.0  // Add this to iterNum to encode type
+
 // Precipitation deposition
 #define RAIN_DEPOSITION 0
 #define SNOW_DEPOSITION 1

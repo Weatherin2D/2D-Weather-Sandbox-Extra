@@ -423,7 +423,12 @@ const guiControls_default = {
   inactiveDroplets : 0,
   aboveZeroThreshold : 1.0, // PRECIPITATION
   subZeroThreshold : 0.005, // 0.01
-  lightningFrequency : 1.0,
+  // Individual lightning type frequencies (0-500, relative weight)
+  cgFrequency : 1.0,
+  ccFrequency : 0.5,
+  spiderFrequency : 0.3,
+  spriteFrequency : 0.1,
+  boltBlueFrequency : 0.2,
   spawnChance : 0.00005,    // 30. 10 to 50
   snowDensity : 0.2,        // 0.3
   fallSpeed : 0.0003,
@@ -442,7 +447,7 @@ const guiControls_default = {
   greenHueStartThreshold : 0.8,
   greenHueEndThreshold : 1.8,
   greenHueStrength : 0.8,
-  smoothClouds : false,
+  enhancedLooks : false,
   enableRHFog : true,
   timeOfDay : 12.0,
   latitude : 45.0,
@@ -472,6 +477,12 @@ const guiControls_default = {
   enableLightning : true,
   enableBloom : true,
   enableVectorField : false,
+  // Individual lightning type toggles
+  enableCG : true,
+  enableCloudCloudLightning : true,
+  enableSpiderLightning : true,
+  enableSprites : true,
+  enableBoltsFromBlue : true,
   dryLapseRate : 10.0,     // Real: 9.8 degrees / km
   simHeight : 12000,       // meters
   twelveHourClock : false, // only for display.  false = metric
@@ -503,6 +514,9 @@ const guiControls_default = {
   surfacePressure : 1013.25,
   pressurePersistence : 0.3,
   thermalPressureCoupling : 0.5,
+  motionPressureCoupling : 0.3,  // rising motion lowers pressure, sinking raises it (keep low for stability)
+  asymmetricPressure : 0.2,  // 0.0 = symmetric, 1.0 = low pressure causes rising only (keep low)
+  forceIntensityMultiplier : 0.3,  // overall multiplier for all pressure forces (keep low for stability)
   pressureInfluence : 0.5,
   reducedWeatherStationUpdates : false,
   skipAdvection : false,
@@ -1641,6 +1655,42 @@ class Radar
     });
     productSelect.addEventListener('change', function() { thisObj.#product = this.value; });
     body.appendChild(productSelect);
+
+    // Radar Type Preset
+    body.appendChild(mkLabel('Radar Type Preset'));
+    const presetSelect = document.createElement('select');
+    presetSelect.style.cssText = nameInput.style.cssText;
+    const presets = [
+      { value: 'custom', name: 'Custom', range: 1000, resolution: 100.0, sensitivity: 1.0 },
+      { value: 'L', name: 'L-Band (1-2 GHz) - Long Range', range: 8000, resolution: 20.0, sensitivity: 0.6 },
+      { value: 'S', name: 'S-Band (2-4 GHz) - Weather Radar', range: 6000, resolution: 35.0, sensitivity: 0.8 },
+      { value: 'C', name: 'C-Band (4-8 GHz) - General Purpose', range: 4000, resolution: 55.0, sensitivity: 1.0 },
+      { value: 'X', name: 'X-Band (8-12 GHz) - High Resolution', range: 2000, resolution: 80.0, sensitivity: 1.3 },
+      { value: 'Ku', name: 'Ku-Band (12-18 GHz) - Very High Res', range: 800, resolution: 150.0, sensitivity: 1.6 },
+      { value: 'Ka', name: 'Ka-Band (27-40 GHz) - Extreme Res', range: 400, resolution: 250.0, sensitivity: 2.0 }
+    ];
+    presets.forEach(preset => {
+      const opt = document.createElement('option');
+      opt.value = preset.value;
+      opt.textContent = preset.name;
+      if (preset.value === 'custom') opt.selected = true;
+      presetSelect.appendChild(opt);
+    });
+    presetSelect.addEventListener('change', function() {
+      const preset = presets.find(p => p.value === this.value);
+      if (preset && preset.value !== 'custom') {
+        thisObj.#range = preset.range;
+        thisObj.#resolution = preset.resolution;
+        thisObj.#sensitivity = preset.sensitivity;
+        rangeSlider.value = preset.range;
+        rangeLabel.textContent = 'Range: ' + preset.range;
+        resSlider.value = preset.resolution;
+        resLabel.textContent = 'Resolution: ' + preset.resolution.toFixed(1) + 'x';
+        sensSlider.value = preset.sensitivity * 100;
+        sensLabel.textContent = 'Sensitivity: ' + Math.round(preset.sensitivity * 100) + '%';
+      }
+    });
+    body.appendChild(presetSelect);
 
     // Range
     const rangeLabel = mkLabel('Range: ' + this.#range);
@@ -4515,7 +4565,6 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'meltingHeat'), guiControls.meltingHeat);
     gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'aboveZeroThreshold'), guiControls.aboveZeroThreshold);
     gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'subZeroThreshold'), guiControls.subZeroThreshold);
-    gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'lightningFrequency'), guiControls.lightningFrequency);
     gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'spawnChanceMult'), guiControls.spawnChance);
     gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'snowDensity'), guiControls.snowDensity);
     gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'fallSpeed'), guiControls.fallSpeed);
@@ -4524,6 +4573,18 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'freezingRate'), guiControls.freezingRate);
     gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'meltingRate'), guiControls.meltingRate);
     gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'evapRate'), guiControls.evapRate);
+    // Lightning type controls - toggles
+    gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'enableCG'), guiControls.enableCG ? 1.0 : 0.0);
+    gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'enableCCLightning'), guiControls.enableCloudCloudLightning ? 1.0 : 0.0);
+    gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'enableSpiderLightning'), guiControls.enableSpiderLightning ? 1.0 : 0.0);
+    gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'enableSprites'), guiControls.enableSprites ? 1.0 : 0.0);
+    gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'enableBoltsFromBlue'), guiControls.enableBoltsFromBlue ? 1.0 : 0.0);
+    // Lightning type controls - individual frequencies
+    gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'cgFrequency'), guiControls.cgFrequency);
+    gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'ccFrequency'), guiControls.ccFrequency);
+    gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'spiderFrequency'), guiControls.spiderFrequency);
+    gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'spriteFrequency'), guiControls.spriteFrequency);
+    gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'boltBlueFrequency'), guiControls.boltBlueFrequency);
     gl.useProgram(postProcessingProgram);
     gl.uniform1f(postProc_exposure_loc, guiControls.exposure);
     gl.uniform1f(postProc_saturation_loc, guiControls.saturation);
@@ -4598,11 +4659,22 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         'Land Evaporation': 'Rate of evaporation from land surfaces.',
         'Water Evaporation': 'Rate of evaporation from water surfaces.',
         'Water Weight': 'How much water vapor affects air density.',
+        'Dynamic Water Temperature': 'Enable water temperature to change based on air temperature and heating.',
+        'Lake / Sea Evaporation': 'Rate of evaporation specifically from lake and sea water bodies.',
+        'Evaporation Heat': 'Amount of heat energy consumed when water evaporates (latent heat of vaporization).',
+        'Melting Heat': 'Amount of heat energy consumed when ice melts (latent heat of fusion).',
         'Precipitation Threshold +°C': 'Temperature above which precipitation falls as rain.',
         'Precipitation Threshold -°C': 'Temperature below which precipitation falls as snow.',
         'Condensation Rate': 'Speed at which water vapor condenses into clouds.',
         'Evaporation Rate': 'Speed at which cloud water evaporates.',
         'Inactive Droplets': 'Number of precipitation droplets not currently active.',
+        'Spawn Rate': 'Probability of new precipitation droplets forming in saturated air.',
+        'Snow Density': 'Density of snow relative to rain. Higher values mean heavier, faster-falling snow.',
+        'Fall Speed': 'Base falling speed of precipitation droplets.',
+        'Growth Rate 0°C': 'Rate at which precipitation particles grow at 0°C (freezing level).',
+        'Growth Rate -30°C': 'Rate at which precipitation particles grow at -30°C (very cold clouds).',
+        'Freezing Rate': 'Speed at which raindrops freeze into ice in cold air.',
+        'Melting Rate': 'Speed at which ice melts into rain in warm air.',
         'Radar Imagery Opacity': 'Transparency of radar overlay.',
         'Update Frequency (iterations)': 'How often radar updates.',
         'Overlay on Realistic View': 'Show radar on top of realistic view.',
@@ -4612,32 +4684,62 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         'Pressure Persistence': 'How long pressure systems last before decaying.',
         'Thermal-Pressure Coupling': 'How strongly temperature affects pressure (warm=low, cold=high).',
         'Pressure Influence': 'How strongly pressure gradients affect wind speed. Keep below 1.0 for stability.',
+        'Pressure Gradient Radius': 'Radius over which pressure gradients are calculated. Larger values create broader pressure systems.',
+        'Asymmetric Pressure Effect': 'Makes low pressure cause rising motion more than high pressure causes sinking. 0.0 = symmetric, 1.0 = full asymmetry.',
+        'Force Intensity Multiplier': 'Overall multiplier for all pressure-related forces. Increase for stronger weather systems.',
         'Exposure': 'Brightness of the image.',
         'Saturation': 'Color intensity of the image.',
         'Contrast': 'Contrast of the image.',
         'Greenhouse Gases': 'Amount of greenhouse gas warming effect.',
         'Water Greenhouse Effect': 'Additional warming from water vapor.',
+        'Sun Intensity': 'Brightness and heating power of the sun. Higher values increase global temperatures.',
         'IR Rate': 'Rate of infrared radiation cooling.',
         'Star Light Emit Strength': 'Brightness of stars in night sky.',
-        'Frequency': 'How often lightning strikes occur.',
+        '☁ CG (Cloud-to-Ground)': 'Enable standard cloud-to-ground lightning strikes.',
+        '  CG Frequency': 'Relative frequency of cloud-to-ground lightning strikes.',
+        '☁☁ CC (Cloud-Cloud)': 'Enable horizontal cloud-to-cloud lightning discharges.',
+        '  CC Frequency': 'Relative frequency of cloud-to-cloud lightning.',
+        '🕷️ Spider Lightning': 'Enable spider lightning - horizontal crawling discharges along cloud base.',
+        '  Spider Frequency': 'Relative frequency of spider lightning.',
+        '👽 Sprites': 'Enable sprites - reddish-orange upper atmospheric discharges above storms.',
+        '  Sprite Frequency': 'Relative frequency of atmospheric sprites.',
+        '🔵 Bolts from Blue': 'Enable "bolts from the blue" - distant positive lightning from storm anvils.',
+        '  Bolt-from-Blue Freq': 'Relative frequency of bolts from the blue.',
         'Iterations per temperature update': 'How many simulation steps between temperature change calculations.',
         'Camera Pan Speed': 'Speed of camera movement.',
-        'Enable Precipitation': 'Enable rain and snow simulation.',
-        'Simulation Quality': 'Higher values = better quality but slower performance.',
+        'Sim Quality (High=Fast)': 'Higher values = better quality but slower performance.',
         'Fullscreen Res': 'Resolution when in fullscreen mode.',
-        'Skip Curl (Faster)': 'Disable vorticity calculation for performance.',
-        'Skip CAPE (Faster)': 'Disable CAPE calculation for performance.',
-        'Skip Lightning (Faster)': 'Disable lightning calculation for performance.',
-        'Skip Lighting (Major boost)': 'Disable lighting calculation for major performance boost.',
-        'Skip Pressure (Faster)': 'Disable pressure calculation for performance.',
-        'Skip Advection (No fluid)': 'Disable fluid dynamics entirely.',
+        'Enable Precipitation': 'Enable rain and snow simulation. Disable for better performance.',
+        'Enable Lightning': 'Enable lightning strikes during thunderstorms.',
+        'Enable Bloom': 'Enable bloom/glow effect for bright areas.',
+        'Vector Field': 'Show wind vector field overlay on the simulation.',
+        'Iterations/Frame': 'Number of simulation steps per frame. Higher = more accurate but slower.',
+        'Auto Adjust Iters': 'Automatically adjust iterations per frame to maintain performance.',
+        'Enable Sound': 'Enable thunder and environmental sound effects.',
+        'Smooth Clouds': 'Make storms look more intimidating with darker, dramatic clouds and ominous lighting.',
+        'RH Fog': 'Enable relative humidity-based fog rendering.',
+        'Weather Stations': 'Show/hide weather station markers on the map.',
+        'Radars': 'Show/hide radar coverage circles on the map.',
+        'Airplane Mode': 'Enable airplane flight simulation mode.',
+        'Skip Curl (Faster)': 'Disable vorticity/curl calculation for performance boost.',
+        'Skip CAPE (Faster)': 'Disable CAPE (Convective Available Potential Energy) calculation.',
+        'Skip Lightning': 'Disable lightning calculation for better performance.',
+        'Skip Lighting (Major boost)': 'Disable lighting/shadow calculations for major performance boost.',
+        'Skip Pressure (Faster)': 'Disable pressure system calculations for better performance.',
+        'Skip Advection (No fluid)': 'Disable fluid advection entirely - no wind movement.',
+        'Reduce Station Updates': 'Update weather stations less frequently for better performance.',
+        'Reduce Precipitation': 'Reduce number of precipitation particles for better performance.',
+        'Disable Temp History': 'Disable temperature change history tracking for better performance.',
         'Sounding Mode': 'Force simulation to match atmospheric sounding data.',
-        'Real Dew Point': 'Use real dew point values from soundings.',
         'Reset all settings': 'Reset all GUI controls to default values.',
         'Risk Update Freq': 'How often storm risk values are updated.',
         'Readout Cursor': 'Show cursor position in readout.',
         'Paused': 'Pause the simulation.',
-        'Save Simulation to File': 'Download current simulation state to a file.'
+        'Save Simulation to File': 'Download current simulation state to a file.',
+        'Background Color': 'Background color of the menu panel.',
+        'Text Color': 'Color of all text in the menu.',
+        'Accent Color': 'Color for sliders, checkboxes, and active elements.',
+        'Menu Width': 'Width of the menu panel in pixels.'
       };
       
       // Add tooltips to property names
@@ -4814,9 +4916,9 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         'Vegetation' : 'TOOL_VEGETATION',
         'Snow' : 'TOOL_WALL_SNOW',
         'Wind' : 'TOOL_WIND',
-        'Pressure' : 'TOOL_PRESSURE',
+        'Air Pressure' : 'TOOL_PRESSURE',
         'Weather Station' : 'TOOL_STATION',
-        'Radar' : 'TOOL_RADAR',
+        'Radar Tower' : 'TOOL_RADAR',
         'Marker' : 'TOOL_MARKER'
       })
       .name('Tool')
@@ -5033,12 +5135,32 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       .name('Pressure Persistence');
     fluidParams_folder.add(guiControls, 'thermalPressureCoupling', 0.0, 5.0, 0.1)
       .name('Thermal-Pressure Coupling');
+    // Note: Motion-Pressure coupling disabled in shader due to instability
+    fluidParams_folder.add(guiControls, 'motionPressureCoupling', 0.0, 2.0, 0.1)
+      .onChange(function() {
+        gl.useProgram(pressureProgram);
+        gl.uniform1f(gl.getUniformLocation(pressureProgram, 'motionPressureCoupling'), guiControls.motionPressureCoupling);
+      })
+      .name('Motion-Pressure Coupling (Disabled)');
     fluidParams_folder.add(guiControls, 'pressureInfluence', 0.0, 2.0, 0.05)
       .onChange(function() {
         gl.useProgram(velocityProgram);
         gl.uniform1f(gl.getUniformLocation(velocityProgram, 'pressureInfluence'), guiControls.pressureInfluence);
       })
       .name('Pressure Influence');
+    fluidParams_folder.add(guiControls, 'asymmetricPressure', 0.0, 1.0, 0.05)
+      .onChange(function() {
+        gl.useProgram(velocityProgram);
+        gl.uniform1f(gl.getUniformLocation(velocityProgram, 'asymmetricPressure'), guiControls.asymmetricPressure);
+      })
+      .name('Asymmetric Pressure Effect');
+    // Note: forceIntensityMultiplier currently disabled - motion-pressure coupling removed for stability
+    fluidParams_folder.add(guiControls, 'forceIntensityMultiplier', 0.0, 1.5, 0.05)
+      .onChange(function() {
+        gl.useProgram(pressureProgram);
+        gl.uniform1f(gl.getUniformLocation(pressureProgram, 'forceIntensityMultiplier'), guiControls.forceIntensityMultiplier);
+      })
+      .name('Force Intensity Multiplier (Disabled)');
 
     display_folder
       .add(guiControls, 'displayMode', {
@@ -5126,12 +5248,76 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       .name('Star Light Emit Strength');
 
     var lightning_folder = datGui.addFolder('Lightning');
-    lightning_folder.add(guiControls, 'lightningFrequency', 0.0, 500.0, 0.1)
+
+    // Cloud-to-Ground (standard) lightning
+    lightning_folder.add(guiControls, 'enableCG')
+      .name('☁ CG (Cloud-to-Ground)')
       .onChange(function() {
         gl.useProgram(precipitationProgram);
-        gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'lightningFrequency'), guiControls.lightningFrequency);
+        gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'enableCG'), guiControls.enableCG ? 1.0 : 0.0);
+      });
+    lightning_folder.add(guiControls, 'cgFrequency', 0.0, 500.0, 0.1)
+      .onChange(function() {
+        gl.useProgram(precipitationProgram);
+        gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'cgFrequency'), guiControls.cgFrequency);
       })
-      .name('Frequency');
+      .name('  CG Frequency');
+
+    // Cloud-to-Cloud lightning
+    lightning_folder.add(guiControls, 'enableCloudCloudLightning')
+      .name('☁☁ CC (Cloud-Cloud)')
+      .onChange(function() {
+        gl.useProgram(precipitationProgram);
+        gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'enableCCLightning'), guiControls.enableCloudCloudLightning ? 1.0 : 0.0);
+      });
+    lightning_folder.add(guiControls, 'ccFrequency', 0.0, 500.0, 0.1)
+      .onChange(function() {
+        gl.useProgram(precipitationProgram);
+        gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'ccFrequency'), guiControls.ccFrequency);
+      })
+      .name('  CC Frequency');
+
+    // Spider lightning
+    lightning_folder.add(guiControls, 'enableSpiderLightning')
+      .name('🕷️ Spider Lightning')
+      .onChange(function() {
+        gl.useProgram(precipitationProgram);
+        gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'enableSpiderLightning'), guiControls.enableSpiderLightning ? 1.0 : 0.0);
+      });
+    lightning_folder.add(guiControls, 'spiderFrequency', 0.0, 500.0, 0.1)
+      .onChange(function() {
+        gl.useProgram(precipitationProgram);
+        gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'spiderFrequency'), guiControls.spiderFrequency);
+      })
+      .name('  Spider Frequency');
+
+    // Atmospheric sprites
+    lightning_folder.add(guiControls, 'enableSprites')
+      .name('👽 Sprites')
+      .onChange(function() {
+        gl.useProgram(precipitationProgram);
+        gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'enableSprites'), guiControls.enableSprites ? 1.0 : 0.0);
+      });
+    lightning_folder.add(guiControls, 'spriteFrequency', 0.0, 500.0, 0.1)
+      .onChange(function() {
+        gl.useProgram(precipitationProgram);
+        gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'spriteFrequency'), guiControls.spriteFrequency);
+      })
+      .name('  Sprite Frequency');
+
+    // Bolts from the blue
+    lightning_folder.add(guiControls, 'enableBoltsFromBlue')
+      .name('🔵 Bolts from Blue')
+      .onChange(function() {
+        gl.useProgram(precipitationProgram);
+        gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'enableBoltsFromBlue'), guiControls.enableBoltsFromBlue ? 1.0 : 0.0);
+      });
+    lightning_folder.add(guiControls, 'boltBlueFrequency', 0.0, 500.0, 0.1)
+      .onChange(function() {
+        gl.useProgram(precipitationProgram);
+        gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'boltBlueFrequency'), guiControls.boltBlueFrequency);
+      })
+      .name('  Bolt-from-Blue Freq');
 
     var colorScale_folder = datGui.addFolder('Color Scale');
     colorScale_folder.add({
@@ -5235,10 +5421,10 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         }
       });
 
-    advanced_folder.add(guiControls, 'smoothClouds')
+    advanced_folder.add(guiControls, 'enhancedLooks')
       .onChange(function() {
         gl.useProgram(realisticDisplayProgram);
-        gl.uniform1f(realDisp_smoothClouds_loc, guiControls.smoothClouds ? 1.0 : 0.0);
+        gl.uniform1f(realDisp_enhancedLooks_loc, guiControls.enhancedLooks ? 1.0 : 0.0);
       })
       .name('Smooth Clouds');
 
@@ -5973,7 +6159,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       const lineHeight = 19;
       const textX = infoBoxX + 8;
       let textY = infoBoxY + 8;
-      const numLines = 21;
+      const numLines = 24;
 
       c.fillStyle = 'rgba(0, 0, 0, 0.60)';
       c.fillRect(infoBoxX, infoBoxY, infoBoxWidth, lineHeight * numLines + 16);
@@ -8967,15 +9153,37 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   }
 
 
+  // Define lightning types to generate - more CGs, fewer special types
+  const lightningTypes = ['CG', 'CG', 'CG', 'CG', 'CC', 'CC', 'SPIDER', 'SPIDER', 'SPRITE', 'CG'];
+
   for (let i = 0; i < numLightningTextures; i++) {
     const lightningGeneratorWorker = new Worker('./lightningGenerator.js');
+    const boltType = lightningTypes[i % lightningTypes.length];
+
     lightningGeneratorWorker.onmessage = (imgElement) => {
       // downloadImageData(imgElement.data); // for debugging
-
       generateLightningTexture(i, imgElement.data);
     };
 
-    lightningGeneratorWorker.postMessage({width : 2500, height : 5000}); // 10000 5000
+    // Generate different sizes based on type
+    let boltWidth = 2500;
+    let boltHeight = 5000;
+
+    if (boltType === 'CC') {
+      // CC bolts are wider, shorter (horizontal)
+      boltWidth = 4000;
+      boltHeight = 2000;
+    } else if (boltType === 'SPIDER') {
+      // Spider lightning is very wide and flat
+      boltWidth = 5000;
+      boltHeight = 1500;
+    } else if (boltType === 'SPRITE') {
+      // Sprites are compact glow patterns
+      boltWidth = 2000;
+      boltHeight = 2000;
+    }
+
+    lightningGeneratorWorker.postMessage({width: boltWidth, height: boltHeight, type: boltType});
   }
 
   await loadingBar.set(90, 'Setting up FBO`s');
@@ -9069,11 +9277,14 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   gl.uniform2f(gl.getUniformLocation(pressureProgram, 'texelSize'), texelSizeX, texelSizeY);
   gl.uniform1f(gl.getUniformLocation(pressureProgram, 'pressurePersistence'), guiControls.pressurePersistence);
   gl.uniform1f(gl.getUniformLocation(pressureProgram, 'thermalPressureCoupling'), guiControls.thermalPressureCoupling);
+  gl.uniform1f(gl.getUniformLocation(pressureProgram, 'motionPressureCoupling'), guiControls.motionPressureCoupling);
+  gl.uniform1f(gl.getUniformLocation(pressureProgram, 'forceIntensityMultiplier'), guiControls.forceIntensityMultiplier);
 
   gl.useProgram(velocityProgram);
   gl.uniform1i(gl.getUniformLocation(velocityProgram, 'baseTex'), 0);
   gl.uniform1i(gl.getUniformLocation(velocityProgram, 'wallTex'), 1);
   gl.uniform2f(gl.getUniformLocation(velocityProgram, 'texelSize'), texelSizeX, texelSizeY);
+  gl.uniform1f(gl.getUniformLocation(velocityProgram, 'asymmetricPressure'), guiControls.asymmetricPressure);
 
   // gl.uniform1fv(gl.getUniformLocation(velocityProgram, 'initial_T'), initial_T);
   gl.uniform4fv(gl.getUniformLocation(velocityProgram, 'initial_Tv'), initial_T);
@@ -9194,10 +9405,10 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   gl.uniform1i(gl.getUniformLocation(realisticDisplayProgram, 'ambientLightTex'), 9);
   gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'dryLapse'), dryLapse);
   gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'cellHeight'), cellHeight);
-  const realDisp_smoothClouds_loc = gl.getUniformLocation(realisticDisplayProgram, 'smoothClouds');
-  gl.uniform1f(realDisp_smoothClouds_loc, 0.0);
   const realDisp_enableRHFog_loc = gl.getUniformLocation(realisticDisplayProgram, 'enableRHFog');
   gl.uniform1f(realDisp_enableRHFog_loc, 1.0);
+  const realDisp_enhancedLooks_loc = gl.getUniformLocation(realisticDisplayProgram, 'enhancedLooks');
+  gl.uniform1f(realDisp_enhancedLooks_loc, 0.0);
 
   gl.useProgram(precipitationProgram);
   gl.uniform1i(gl.getUniformLocation(precipitationProgram, 'baseTex'), 0);
@@ -9749,6 +9960,8 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
               gl.useProgram(pressureProgram);
               gl.uniform1f(gl.getUniformLocation(pressureProgram, 'pressurePersistence'), guiControls.pressurePersistence);
               gl.uniform1f(gl.getUniformLocation(pressureProgram, 'thermalPressureCoupling'), guiControls.thermalPressureCoupling);
+              gl.uniform1f(gl.getUniformLocation(pressureProgram, 'motionPressureCoupling'), guiControls.motionPressureCoupling);
+              gl.uniform1f(gl.getUniformLocation(pressureProgram, 'forceIntensityMultiplier'), guiControls.forceIntensityMultiplier);
               gl.activeTexture(gl.TEXTURE0);
               gl.bindTexture(gl.TEXTURE_2D, baseTexture_1);
               gl.activeTexture(gl.TEXTURE1);
@@ -10456,10 +10669,10 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
           colorScaleStops = 33;
           break;
         case 'DISP_PRESSURE':
-          // base[PRESSURE] is dimensionless fluid pressure, typically ±0.01 range
-          // multiplier of 50 maps ±0.02 to ±1.0 for the bipolar color scale
+          // base[PRESSURE] is dimensionless fluid pressure, now clamped to ±1.0
+          // multiplier of 1.0 maps ±1.0 to ±1.0 for the full bipolar color scale (blue to red)
           gl.uniform1i(uloc_univ_quantityIndex, 2);
-          gl.uniform1f(uloc_univ_dispMultiplier, 50.0);
+          gl.uniform1f(uloc_univ_dispMultiplier, 1.0);
           gl.uniform1i(uloc_univ_colorScaleColumn, 22);
           gl.uniform1i(uloc_univ_useUnipolarScale, 0);
           colorScaleStops = 33;

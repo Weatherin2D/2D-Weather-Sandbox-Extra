@@ -55,6 +55,7 @@ uniform float displayVectorField;
 uniform float iterNum;
 
 uniform float smoothClouds;
+uniform float enhancedLooks;
 uniform float enableRHFog;
 
 out vec4 fragmentColor;
@@ -186,6 +187,116 @@ vec3 displayLightning(vec2 pos, float lightningTime, float currentLightningInten
   return outputColor;
 }
 
+// Cloud-to-cloud lightning: horizontal discharge between cloud layers
+vec3 displayCloudToCloudLightning(vec2 pos, float lightningTime, float currentLightningIntensity)
+{
+  // CC lightning travels horizontally between cloud layers
+  vec2 texOffset = texCoord - pos;
+  texOffset.x *= aspectRatios[0];
+
+  // Create branching horizontal pattern using noise
+  float branchPattern = abs(fract(sin(texOffset.x * 20.0 + pos.y * 10.0) * 43758.5453));
+  branchPattern = pow(branchPattern, 3.0);
+
+  // Combine distance and pattern
+  float distFromBolt = length(vec2(texOffset.x, texOffset.y * 3.0 + branchPattern * 0.1));
+
+  // Leader phase shows channel, return stroke shows bright flash
+  float boltBrightness;
+  if (lightningTime < 1.0) {
+    // Leader: dimmer, shows path
+    boltBrightness = max(0.0, 1.0 - distFromBolt * 50.0) * 0.3;
+  } else {
+    // Return stroke: bright flash
+    boltBrightness = max(0.0, 1.0 - distFromBolt * 30.0) * 1.0;
+  }
+
+  // Fade over time
+  float timeFade = max(0.0, 1.0 - (lightningTime - 1.0) * 2.0);
+  boltBrightness *= timeFade * currentLightningIntensity;
+
+  // CC lightning is more purple/blue
+  vec3 ccColor = vec3(0.60, 0.65, 1.0);
+
+  vec3 result = boltBrightness * ccColor * 50000.0;
+
+  return result;
+}
+
+// Spider lightning: crawls horizontally along the cloud base
+vec3 displaySpiderLightning(vec2 pos, float lightningTime, float currentLightningIntensity)
+{
+  // Spider lightning crawls along the bottom of the anvil
+  vec2 texOffset = texCoord - pos;
+  texOffset.x *= aspectRatios[0];
+
+  // Multiple tendrils spreading outward
+  float numTendrils = 5.0;
+  float tendrilPattern = 0.0;
+
+  for (float i = 0.0; i < numTendrils; i++) {
+    float tendrilDir = (i / numTendrils - 0.5) * 2.0; // -1 to 1 spread
+    float tendrilX = texOffset.x - tendrilDir * 0.15;
+    float tendrilDist = abs(tendrilX) * (1.0 + abs(tendrilDir) * 2.0);
+    tendrilPattern += exp(-tendrilDist * 20.0) * (1.0 - abs(tendrilDir) * 0.3);
+  }
+
+  // Very narrow vertical spread - stays at cloud base
+  float verticalSpread = exp(-abs(texOffset.y) * 80.0);
+
+  float spiderIntensity = tendrilPattern * verticalSpread;
+
+  // Fade over time - spider lightning can last longer
+  float timeFade;
+  if (lightningTime < 1.0) {
+    timeFade = lightningTime; // ramp up
+  } else {
+    timeFade = max(0.0, 1.0 - (lightningTime - 1.0) * 0.5); // slow fade
+  }
+
+  spiderIntensity *= timeFade * currentLightningIntensity;
+
+  // Spider lightning has slight reddish tint
+  vec3 spiderColor = vec3(0.75, 0.62, 0.95);
+
+  vec3 result = spiderIntensity * spiderColor * 40000.0;
+
+  return result;
+}
+
+// Sprite: upper atmospheric discharge above thunderstorms
+vec3 displaySprite(vec2 pos, float lightningTime, float currentLightningIntensity)
+{
+  // Sprites appear high above the storm (above simulation bounds)
+  // We render them at the top of the visible area with a distinctive appearance
+
+  // Position is high above the storm
+  vec2 texOffset = texCoord - vec2(pos.x, 1.0); // Position at top of screen
+  texOffset.x *= aspectRatios[0];
+
+  // Sprite appears as a red-orange glow with tendrils reaching upward
+  float distFromCenter = length(texOffset * vec2(1.0, 3.0)); // Elongated vertically
+
+  // Carrot/column shape reaching upward
+  float upwardTendrils = max(0.0, -texOffset.y) * 3.0; // Only above center
+  float columnShape = exp(-distFromCenter * 15.0) * (1.0 + upwardTendrils);
+
+  // Halo ring at base
+  float ringDist = abs(distFromCenter - 0.08);
+  float ringShape = exp(-ringDist * 50.0) * 0.5;
+
+  float spriteIntensity = (columnShape + ringShape) * 0.5;
+
+  // Very brief duration - sprites last only milliseconds
+  float timeFade = exp(-lightningTime * 3.0);
+  spriteIntensity *= timeFade * currentLightningIntensity;
+
+  // Sprites are reddish-orange
+  vec3 spriteColor = vec3(1.0, 0.35, 0.15);
+
+  return spriteIntensity * spriteColor * 30000.0;
+}
+
 
 float saturate(float x) { return min(1.0, max(0.0, x)); }
 vec3 saturate(vec3 x) { return min(vec3(1., 1., 1.), max(vec3(0., 0., 0.), x)); }
@@ -214,7 +325,7 @@ vec4 getAirColor(vec2 fragCoordIn)
   vec2 bndFragCoord = vec2(fragCoordIn.x, clamp(fragCoordIn.y, 0., resolution.y)); // bound y within range
   base = smoothBilerpWallVis(baseTex, wallTex, bndFragCoord);
   wall = texture(wallTex, bndFragCoord * texelSize);                               // texCoord
-  water = smoothClouds > 0.5
+  water = (smoothClouds > 0.5 || enhancedLooks > 0.5)
     ? smoothBilerpWallVis(waterTex, wallTex, bndFragCoord)
     : bilerpWallVis(waterTex, wallTex, bndFragCoord);
   lightIntensity = texture(lightTex, bndFragCoord * texelSize)[0] / standardSunBrightness;
@@ -234,7 +345,8 @@ vec4 getAirColor(vec2 fragCoordIn)
   float fogMistOpacity = 0.0;
 
   // Only apply fog if relative humidity is strictly above 95% and maxWater is valid and fog is enabled
-  if (enableRHFog > 0.5 && relHum > 0.95 && maxWater(realTemp) > 0.001) {
+  // Disable RH fog when Enhanced Looks is enabled to prevent pixelation with dark storm clouds
+  if (enableRHFog > 0.5 && enhancedLooks < 0.5 && relHum > 0.95 && maxWater(realTemp) > 0.001) {
     // Mist: 95% RH -> 0.00025% opacity, 98% RH -> 0.0025% opacity
     if (relHum < 0.98) {
       fogMistOpacity = mix(0.0000025, 0.000025, (relHum - 0.95) / (0.98 - 0.95));
@@ -252,14 +364,57 @@ vec4 getAirColor(vec2 fragCoordIn)
 
   float cloudwater = water[CLOUD];
 
-  vec3 cloudCol = vec3(1.0 / (cloudwater * 0.005 + 1.0)); // 0.10 white to black
-
   float cloudDensity = max(cloudwater * 13.0, 0.0);
-
-  float precipDensity = max(water[PRECIPITATION] - 0.05, 0.0) * 0.8;
+  // Lower precipitation threshold when enhancedLooks is on so rain shafts appear with lighter rainfall
+  float precipThreshold = enhancedLooks > 0.5 ? 0.01 : 0.05;
+  float precipDensity = max(water[PRECIPITATION] - precipThreshold, 0.0) * 0.8;
   float totalDensity = cloudDensity + precipDensity; // visualize precipitation
 
-  float cloudOpacity = clamp(1.0 - (1.0 / (1. + totalDensity)), 0.0, 1.0);
+  // Enhanced looks: more ominous, darker storm clouds
+  vec3 cloudCol;
+  if (enhancedLooks > 0.5) {
+    // Create smooth gradient from dark storm -> gray -> white
+    // This inverts the traditional approach for dramatic effect
+    float t = clamp(totalDensity * 0.4, 0.0, 1.0); // Normalized density factor
+    
+    vec3 darkStormCol = vec3(0.08, 0.10, 0.14);  // Very dark blue-black for core
+    vec3 stormCol = vec3(0.15, 0.18, 0.22);       // Dark storm blue-gray
+    vec3 grayCol = vec3(0.45, 0.48, 0.52);        // Medium gray
+    vec3 whiteCol = vec3(0.85, 0.87, 0.90);       // Off-white edges
+    
+    if (t < 0.4) {
+      // Very dark center (0.0 to 0.4)
+      float localT = t / 0.4;
+      cloudCol = mix(darkStormCol, stormCol, smoothstep(0.0, 1.0, localT));
+    } else if (t < 0.7) {
+      // Dark storm to gray (0.4 to 0.7)
+      float localT = (t - 0.4) / 0.3;
+      cloudCol = mix(stormCol, grayCol, smoothstep(0.0, 1.0, localT));
+    } else {
+      // Gray to light edges (0.7 to 1.0)
+      float localT = (t - 0.7) / 0.3;
+      cloudCol = mix(grayCol, whiteCol, smoothstep(0.0, 1.0, localT));
+    }
+  } else {
+    // Original calculation
+    cloudCol = vec3(1.0 / (cloudwater * 0.005 + 1.0)); // 0.10 white to black
+  }
+
+  float cloudOpacity;
+  if (enhancedLooks > 0.5) {
+    // For enhanced looks: smooth transition from light to dark clouds
+    // Use smoothstep for gradual transition instead of hard cutoff
+    float densityThreshold = 1.0; // Start transition at this density
+    float densityMax = 2.5;       // Full opacity reached at this density
+    float transitionFactor = smoothstep(densityThreshold, densityMax, totalDensity);
+    
+    // Calculate opacity with higher contrast for dramatic effect
+    float enhancedDensity = totalDensity * transitionFactor;
+    cloudOpacity = clamp(1.0 - (1.0 / (1. + enhancedDensity * 1.5)), 0.0, 1.0);
+  } else {
+    // Original opacity calculation
+    cloudOpacity = clamp(1.0 - (1.0 / (1. + totalDensity)), 0.0, 1.0);
+  }
 
   const vec3 smokeThinCol = vec3(0.8, 0.51, 0.26);
   const vec3 smokeThickCol = vec3(0., 0., 0.);
@@ -284,16 +439,60 @@ vec4 getAirColor(vec2 fragCoordIn)
 
 
   vec4 lightningData = texture(lightningDataTex, vec2(0.5));
-  vec2 lightningPos = lightningData.xy;
+  vec2 lightningPosRaw = lightningData.xy;
+
+  // Decode lightning type from position signs and intensity packing
+  int lightningType = LIGHTNING_CG; // default
+  vec2 lightningPos = lightningPosRaw;
+  float rawIntensity = lightningData[INTENSITY];
+
+  // Unpack type from intensity (type encoded as multiples of 10 added to base intensity)
+  if (rawIntensity > 10.0) {
+    lightningType = int(rawIntensity / 10.0);
+    rawIntensity = mod(rawIntensity, 10.0);
+  }
+
+  // Decode position encoding
+  if (lightningPos.y < -0.5) {
+    // Spider lightning
+    lightningType = LIGHTNING_SPIDER;
+    lightningPos.y = (-lightningPos.y - 1.0);
+  } else if (lightningPos.y < 0.0) {
+    // Cloud-to-cloud
+    lightningType = LIGHTNING_CC;
+    lightningPos.y = -lightningPos.y;
+  } else if (lightningPos.x < 0.0) {
+    // Bolt from the blue
+    lightningType = LIGHTNING_BOLT_BLUE;
+    lightningPos.x = -lightningPos.x;
+  }
+
   float lightningStartIterNum = lightningData[START_ITERNUM];
-
   float lightningTime = calcLightningTime(lightningStartIterNum);
-  float currentLightningIntensity = lightningIntensityOverTime(lightningTime, lightningPos, lightningData[INTENSITY]);
+  float currentLightningIntensity = lightningIntensityOverTime(lightningTime, lightningPos, rawIntensity);
 
-
-  if (lightningData[INTENSITY] > 1.0) { // CG
-    emittedLight += displayLightning(lightningPos, lightningTime, currentLightningIntensity);
-    emittedLight /= 1. + cloudDensity * 100.0;
+  // Render different lightning types
+  if (rawIntensity > 0.01) {
+    if (lightningType == LIGHTNING_CG || lightningType == LIGHTNING_BOLT_BLUE) {
+      // Standard CG or Bolt from Blue - both go to ground
+      emittedLight += displayLightning(lightningPos, lightningTime, currentLightningIntensity);
+      emittedLight /= 1. + cloudDensity * 100.0;
+    }
+    else if (lightningType == LIGHTNING_CC) {
+      // Cloud-to-cloud: horizontal lightning between cloud layers
+      vec3 ccLight = displayCloudToCloudLightning(lightningPos, lightningTime, currentLightningIntensity);
+      emittedLight += ccLight;
+    }
+    else if (lightningType == LIGHTNING_SPIDER) {
+      // Spider lightning: crawls horizontally along cloud base
+      vec3 spiderLight = displaySpiderLightning(lightningPos, lightningTime, currentLightningIntensity);
+      emittedLight += spiderLight;
+    }
+    else if (lightningType == LIGHTNING_SPRITE) {
+      // Sprite: upper atmospheric discharge
+      vec3 spriteLight = displaySprite(lightningPos, lightningTime, currentLightningIntensity);
+      emittedLight += spriteLight;
+    }
   }
 
 #define lightningOnLightBrightness 0.004 // 0.002
@@ -314,7 +513,7 @@ void main()
   vec2 bndFragCoord = vec2(fragCoord.x, clamp(fragCoord.y, 0., resolution.y)); // bound y within range
   base = smoothBilerpWallVis(baseTex, wallTex, bndFragCoord);
   wall = texture(wallTex, bndFragCoord * texelSize);                           // texCoord
-  water = smoothClouds > 0.5
+  water = (smoothClouds > 0.5 || enhancedLooks > 0.5)
     ? smoothBilerpWallVis(waterTex, wallTex, bndFragCoord)
     : bilerpWallVis(waterTex, wallTex, bndFragCoord);
   lightIntensity = texture(lightTex, bndFragCoord * texelSize)[0] / standardSunBrightness;
@@ -685,7 +884,15 @@ void main()
 
   float scatering = clamp(map_range(abs(sunAngle), 75. * deg2rad, 90. * deg2rad, 0., 1.), 0., 1.); // how red the sunlight is
 
-  vec3 finalLight = sunColor(scatering) * lightIntensity;
+  // Enhanced looks: darker shadows by reducing light intensity more in shadow areas
+  float adjustedLightIntensity = lightIntensity;
+  if (enhancedLooks > 0.5) {
+    // When in shadow (low light intensity), make it even darker for dramatic effect
+    // Use smooth curve to darken shadows while preserving highlights
+    adjustedLightIntensity = pow(lightIntensity, 1.5) * 0.85 + lightIntensity * 0.15;
+  }
+
+  vec3 finalLight = sunColor(scatering) * adjustedLightIntensity;
 
 
   if (fract(cursor.w) > 0.5) {                                               // enable flashlight

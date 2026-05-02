@@ -32,7 +32,19 @@ uniform float iterNum;          // used as seed for random function
 uniform float numDroplets;      // total number of droplets
 uniform float inactiveDroplets; // used to maintain constant spawnrate
 
-uniform float lightningFrequency;
+// Lightning type enable flags (1.0 = enabled, 0.0 = disabled)
+uniform float enableCG;
+uniform float enableCCLightning;
+uniform float enableSpiderLightning;
+uniform float enableSprites;
+uniform float enableBoltsFromBlue;
+
+// Individual lightning type frequencies
+uniform float cgFrequency;
+uniform float ccFrequency;
+uniform float spiderFrequency;
+uniform float spriteFrequency;
+uniform float boltBlueFrequency;
 
 uniform float evapHeat;
 uniform float meltingHeat;
@@ -122,23 +134,97 @@ void main()
 
           vec4 lightningData = texture(lightningDataTex, vec2(0.5)); // data from last lightning bolt
 
-          const float lightningCloudDensityThreshold = 2.5;          // 3.0
-          float lightningChanceMultiplier = 0.0033 * lightningFrequency; // 0.0011
-
           float cloudPlusPrecipDensity = water[CLOUD] + water[PRECIPITATION];
+          const float lightningCloudDensityThreshold = 2.5;
 
+          // Calculate total frequency from all enabled types
+          float totalFrequency = 0.0;
+          if (enableCG > 0.5) totalFrequency += cgFrequency;
+          if (enableBoltsFromBlue > 0.5) totalFrequency += boltBlueFrequency;
+          if (enableCCLightning > 0.5) totalFrequency += ccFrequency;
+          if (enableSpiderLightning > 0.5) totalFrequency += spiderFrequency;
+          if (enableSprites > 0.5 && texCoord.y > 0.8) totalFrequency += spriteFrequency; // Sprites only at high altitude
+
+          float lightningChanceMultiplier = 0.0033 * totalFrequency;
           float lightningSpawnChance = max((cloudPlusPrecipDensity - lightningCloudDensityThreshold) * lightningChanceMultiplier, 0.);
 
-          float minIterationsSinceLastLightningBolt = max(5.0, 30.0 - lightningFrequency * 0.05);
+          float minIterationsSinceLastLightningBolt = max(5.0, 30.0 - totalFrequency * 0.05);
 
           if (lightningData[START_ITERNUM] < iterNum - minIterationsSinceLastLightningBolt && random2d(vec2(base[TEMPERATURE] * 0.2324, water[TOTAL] * 7.7)) < lightningSpawnChance) { // Spawn lightning
             lightningSpawned = true;
             isActive = false;
             gl_PointSize = 1.0;
-            feedback.xy = texCoord;
+
+            float intensityBase = clamp(cloudPlusPrecipDensity / 10.0 + (random2d(texCoord) - 0.5), 0.01, 4.0);
+
+            // Determine lightning type using weighted random selection based on individual frequencies
+            float randType = random2d(vec2(iterNum * 0.5, texCoord.x * 3.14159));
+
+            // Calculate cumulative weights for each enabled type
+            float cgWeight = (enableCG > 0.5) ? cgFrequency : 0.0;
+            float boltBlueWeight = (enableBoltsFromBlue > 0.5 && abs(texCoord.x - 0.5) > 0.3 && water[PRECIPITATION] < 0.5) ? boltBlueFrequency : 0.0;
+            float ccWeight = (enableCCLightning > 0.5 && water[CLOUD] > 3.0 && abs(base[VY]) > 0.01) ? ccFrequency : 0.0;
+            float spiderWeight = (enableSpiderLightning > 0.5 && texCoord.y > 0.4 && texCoord.y < 0.7 && water[CLOUD] > 2.0) ? spiderFrequency : 0.0;
+            float spriteWeight = (enableSprites > 0.5 && texCoord.y > 0.8) ? spriteFrequency : 0.0;
+
+            // Normalize weights
+            float totalWeight = cgWeight + boltBlueWeight + ccWeight + spiderWeight + spriteWeight;
+
+            int lightningType = LIGHTNING_CG; // default fallback
+
+            if (totalWeight > 0.0) {
+              float normalizedRand = randType * totalWeight;
+
+              // Select type based on weighted probability
+              float cumulative = 0.0;
+
+              cumulative += cgWeight;
+              if (normalizedRand < cumulative && cgWeight > 0.0) {
+                lightningType = LIGHTNING_CG;
+              }
+
+              cumulative += boltBlueWeight;
+              if (normalizedRand < cumulative && boltBlueWeight > 0.0) {
+                lightningType = LIGHTNING_BOLT_BLUE;
+                intensityBase *= 1.5; // Stronger
+              }
+
+              cumulative += ccWeight;
+              if (normalizedRand < cumulative && ccWeight > 0.0) {
+                lightningType = LIGHTNING_CC;
+                intensityBase *= 0.7; // Less bright
+              }
+
+              cumulative += spiderWeight;
+              if (normalizedRand < cumulative && spiderWeight > 0.0) {
+                lightningType = LIGHTNING_SPIDER;
+                intensityBase *= 0.8;
+              }
+
+              cumulative += spriteWeight;
+              if (normalizedRand < cumulative && spriteWeight > 0.0) {
+                lightningType = LIGHTNING_SPRITE;
+                intensityBase *= 0.6; // Dimmer, high altitude
+              }
+            }
+
+            // Encode lightning type in the Y coordinate (negative values for special types)
+            vec2 lightningPos = texCoord;
+            if (lightningType == LIGHTNING_CC) {
+              lightningPos.y = -lightningPos.y; // negative Y signals CC
+            } else if (lightningType == LIGHTNING_SPIDER) {
+              lightningPos.y = -lightningPos.y - 1.0; // more negative for spider
+            } else if (lightningType == LIGHTNING_BOLT_BLUE) {
+              lightningPos.x = -lightningPos.x; // negative X signals bolt from blue
+            } else if (lightningType == LIGHTNING_SPRITE) {
+              lightningPos.y = lightningPos.y + 10.0; // offset for sprites (high altitude)
+            }
+
+            feedback.xy = lightningPos;
             feedback[START_ITERNUM] = iterNum;
-            feedback[INTENSITY] = clamp(cloudPlusPrecipDensity / 10.0 + (random2d(texCoord) - 0.5), 0.01, 4.0);
-            gl_Position = vec4(vec2(-1. + texelSize.x * 3., -1. + texelSize.y), 0.0, 1.0); // render to bottem left corner (1, 0)
+            feedback[INTENSITY] = intensityBase + float(lightningType) * 10.0;
+
+            gl_Position = vec4(vec2(-1. + texelSize.x * 3., -1. + texelSize.y), 0.0, 1.0);
           }
         } else {
           newMass[WATER] = initalMass; // rain

@@ -84,7 +84,9 @@ void main()
   ivec4 wallXmY0 = texture(wallTex, texCoordXmY0);
   ivec4 wallX0Ym = texture(wallTex, texCoordX0Ym);
   ivec4 wallXpY0 = texture(wallTex, texCoordXpY0);
-  ivec4 wallX0Yp = texture(wallTex, texCoordX0Yp);
+  // Clamp top boundary to prevent sampling outside valid range
+  vec2 clampedTexCoordX0Yp = vec2(texCoordX0Yp.x, min(texCoordX0Yp.y, 1.0 - texelSize.y * 0.5));
+  ivec4 wallX0Yp = texture(wallTex, clampedTexCoordX0Yp);
 
   vec4 light = texture(lightTex, texCoord);
 
@@ -137,7 +139,7 @@ void main()
 
     // GRAVITY
     // temperature is calculated for Vy location
-    vec4 baseX0Yp = texture(baseTex, texCoordX0Yp);
+    vec4 baseX0Yp = texture(baseTex, clampedTexCoordX0Yp);
 
 #define gravMult 0.0001 // 0.0001 0.0005
 
@@ -160,6 +162,7 @@ void main()
     if (wall[VERT_DISTANCE] <= 3) {
       float tempAnomaly = base[TEMPERATURE] - getInitialT(int(fragCoord.y));
       base[PRESSURE] -= tempAnomaly * 0.000002; // warm = lower pressure, cold = higher pressure
+      base[PRESSURE] = clamp(base[PRESSURE], -0.2, 0.2); // clamp to match pressure shader
     }
 
     // base.x += sin(texCoord.x * PI * 2.0 + iterNum * 0.000005) * (1. - texCoord.y) * 0.00015; // phantom force to simulate high and low pressure areas
@@ -300,7 +303,7 @@ void main()
       // Smoothing near surface
 
       if (/*wallX0Yp[VERT_DISTANCE] != 0 && */ wallX0Yp[VERT_DISTANCE] <= surfaceWindSmootingDist) { // above
-        exchangeWith(texCoordX0Yp);
+        exchangeWith(clampedTexCoordX0Yp);
       }
 
       if (wallX0Ym[VERT_DISTANCE] > 0 /* && wallX0Ym[1] <= wallManhattanInfluence*/) { // below
@@ -392,7 +395,7 @@ void main()
     wall[VERT_DISTANCE] = wallX0Yp[VERT_DISTANCE] - 1;                     // height below ground is counted
 
     if (wall[VERT_DISTANCE] < 0) {                                         // below surface
-      water.ba = texture(waterTex, texCoordX0Yp).ba;                       // soil moisture and snow is copied from above
+      water.ba = texture(waterTex, clampedTexCoordX0Yp).ba;                       // soil moisture and snow is copied from above
       wall[VEGETATION] = wallX0Yp[VEGETATION];                             // vegetation is copied from above
 
       if (wallX0Yp[DISTANCE] == 0) {                                       // if above is wall
@@ -400,17 +403,17 @@ void main()
           wall[TYPE] = wallX0Yp[TYPE];                                     // copy walltype from above
         } else if (wall[TYPE] == WALLTYPE_WATER) {                         // this is water
                                                                            //   wall[TYPE] = wallX0Yp[TYPE];                                     // land can't be over water. copy walltype from above
-          base[TEMPERATURE] = texture(baseTex, texCoordX0Yp)[TEMPERATURE]; // copy water temperature from above
+          base[TEMPERATURE] = texture(baseTex, clampedTexCoordX0Yp)[TEMPERATURE]; // copy water temperature from above
         }
       }
 
     } else if (wall[VERT_DISTANCE] == 0) { // at/in surface layer
 
-      vec4 waterX0Yp = texture(waterTex, texCoordX0Yp);
+      vec4 waterX0Yp = texture(waterTex, clampedTexCoordX0Yp);
 
       vec2 precipDeposition = texture(precipDepositionTex, texCoord).xy;
 
-      vec4 lightAboveSurface = texture(lightTex, texCoordX0Yp); // sample cell above surface
+      vec4 lightAboveSurface = texture(lightTex, clampedTexCoordX0Yp); // sample cell above surface
 
       switch (wall[TYPE]) {
       case WALLTYPE_INDUSTRIAL:
@@ -434,10 +437,10 @@ void main()
         water[SNOW] = clamp(water[SNOW] + precipDeposition[SNOW_DEPOSITION] * snowMassToHeight, 0.0, 4000.0);      // snow accumulation in cm
 
 
-        vec4 baseAboveSurface = texture(baseTex, texCoordX0Yp);
-        vec4 waterAboveSurface = texture(waterTex, texCoordX0Yp);
+        vec4 baseAboveSurface = texture(baseTex, clampedTexCoordX0Yp);
+        vec4 waterAboveSurface = texture(waterTex, clampedTexCoordX0Yp);
 
-        float realTempAboveSurface = potentialToRealT(baseAboveSurface[TEMPERATURE], texCoordX0Yp.y);
+        float realTempAboveSurface = potentialToRealT(baseAboveSurface[TEMPERATURE], clampedTexCoordX0Yp.y);
 
         float evaporation = calcEvaporation(realTempAboveSurface, waterAboveSurface[TOTAL], float(wall[VEGETATION]), water[SOIL_MOISTURE]) * 0.10;
 
@@ -484,7 +487,7 @@ void main()
           int subInterval = int(iterNum) / 100;
 
           if (subInterval % (int(water[SOIL_MOISTURE] * 0.1 + water[SNOW] * 0.5) + 10) == 0 && wall[VEGETATION] >= minimalFireVegetation &&
-              (wallXmY0[TYPE] == WALLTYPE_FIRE || wallXpY0[TYPE] == WALLTYPE_FIRE || texture(waterTex, texCoordX0Yp)[SMOKE] > 4.5)) { // if left or right is on fire or fire is blowing over
+              (wallXmY0[TYPE] == WALLTYPE_FIRE || wallXpY0[TYPE] == WALLTYPE_FIRE || texture(waterTex, clampedTexCoordX0Yp)[SMOKE] > 4.5)) { // if left or right is on fire or fire is blowing over
             wall[TYPE] = WALLTYPE_FIRE;                                                                                               // spread fire
           }
           //}
@@ -516,7 +519,7 @@ void main()
             base[TEMPERATURE] = CtoK(25.0);
           }
 
-          float airTemperature = potentialToRealT(texture(baseTex, texCoordX0Yp)[TEMPERATURE], texCoordX0Yp.y);
+          float airTemperature = potentialToRealT(texture(baseTex, clampedTexCoordX0Yp)[TEMPERATURE], clampedTexCoordX0Yp.y);
 
           float netWaterHeating = 0.0;
           netWaterHeating += (airTemperature - base[TEMPERATURE]) * waterHeatExchangeRate; // water heated or cooled by the air above

@@ -13,6 +13,7 @@ uniform isampler2D wallTex;
 
 uniform float dragMultiplier;
 uniform float pressureInfluence;
+uniform float asymmetricPressure; // 0.0 = symmetric, 1.0 = low pressure causes rising only
 
 uniform float wind;
 
@@ -34,10 +35,13 @@ void main()
 {
   base = texture(baseTex, texCoord);
   vec4 baseXpY0 = texture(baseTex, texCoordXpY0);
-  vec4 baseX0Yp = texture(baseTex, texCoordX0Yp);
+  
+  // Clamp top boundary sampling to prevent reading outside valid range
+  vec2 clampedTexCoordX0Yp = vec2(texCoordX0Yp.x, min(texCoordX0Yp.y, 1.0 - texelSize.y * 0.5));
+  vec4 baseX0Yp = texture(baseTex, clampedTexCoordX0Yp);
 
   wall = texture(wallTex, texCoord);
-  ivec4 wallX0Yp = texture(wallTex, texCoordX0Yp);
+  ivec4 wallX0Yp = texture(wallTex, clampedTexCoordX0Yp);
   ivec4 wallXpY0 = texture(wallTex, texCoordXpY0);
 
 
@@ -54,20 +58,37 @@ void main()
     } else {
       float pressureGradX = base[PRESSURE] - baseXpY0[PRESSURE];
       // Clamp pressure gradient to prevent instability
-      pressureGradX = clamp(pressureGradX, -0.1, 0.1);
-      base[VX] += pressureGradX * pressureInfluence; // The velocity through the cell changes proportionally to the pressure gradient across the cell. It's basically just newtons 2nd law.
+      pressureGradX = clamp(pressureGradX, -0.03, 0.03);
+      base[VX] += pressureGradX * pressureInfluence;
       base[VX] *= 1. - dragMultiplier * 0.0002;        // linear drag
-      // Clamp velocity to prevent explosion
-      base[VX] = clamp(base[VX], -0.5, 0.5);
+      // Clamp velocity to prevent explosion - tighter clamp for stability
+      base[VX] = clamp(base[VX], -0.3, 0.3);
     }
 
+    // Pressure gradient for Y velocity with asymmetric pressure effect
+    // baseX0Yp is already clamped at top boundary in main()
     float pressureGradY = base[PRESSURE] - baseX0Yp[PRESSURE];
-    // Clamp pressure gradient to prevent instability
-    pressureGradY = clamp(pressureGradY, -0.1, 0.1);
-    base[VY] += pressureGradY * pressureInfluence;
+    
+    // Clamp pressure gradient to prevent instability - tighter clamp for Y
+    pressureGradY = clamp(pressureGradY, -0.03, 0.03);
+    
+    // Asymmetric pressure effect: low pressure induces rising motion (negative pressure = rising)
+    // but high pressure has reduced or no effect on sinking
+    float pressureEffectY = pressureGradY;
+    if (asymmetricPressure > 0.0) {
+      // pressureGradY > 0 means this cell has higher pressure than above (should rise - negative for VY update)
+      // pressureGradY < 0 means this cell has lower pressure than above (would sink - positive for VY update)
+      // For asymmetric: only allow rising from low pressure, suppress sinking from high pressure
+      // Very tight thresholds to prevent strong winds
+      float lowPressureBoost = smoothstep(0.0, 0.01, pressureGradY); // gradual rising when pressureGradY > 0
+      float highPressureSuppression = 1.0 - asymmetricPressure * (1.0 - smoothstep(-0.01, 0.0, pressureGradY)); // reduce sinking
+      pressureEffectY = pressureGradY * (lowPressureBoost + highPressureSuppression * (1.0 - lowPressureBoost));
+    }
+    
+    base[VY] += pressureEffectY * pressureInfluence;
     base[VY] *= 1. - dragMultiplier * 0.0002;
-    // Clamp velocity to prevent explosion
-    base[VY] = clamp(base[VY], -0.5, 0.5);
+    // Clamp velocity to prevent explosion - tighter clamp for vertical
+    base[VY] = clamp(base[VY], -0.3, 0.3);
     // quadratic drag
     // base[VX] -= base[VX] * base[VX] * base[VX] * base[VX] * base[VX] *
     // dragMultiplier; base[VY] -= base[VY] * base[VY] * base[VY] * base[VY] *
