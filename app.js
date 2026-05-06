@@ -423,12 +423,6 @@ const guiControls_default = {
   inactiveDroplets : 0,
   aboveZeroThreshold : 1.0, // PRECIPITATION
   subZeroThreshold : 0.005, // 0.01
-  // Individual lightning type frequencies (0-500, relative weight)
-  cgFrequency : 1.0,
-  ccFrequency : 0.5,
-  spiderFrequency : 0.3,
-  spriteFrequency : 0.1,
-  boltBlueFrequency : 0.2,
   spawnChance : 0.00005,    // 30. 10 to 50
   snowDensity : 0.2,        // 0.3
   fallSpeed : 0.0003,
@@ -474,15 +468,16 @@ const guiControls_default = {
   IterPerFrame : 10,
   auto_IterPerFrame : true,
   sound : true,
-  enableLightning : true,
   enableBloom : true,
+  enableCloudLightning : true,
+  cloudLightningIntensity : 2.0,
+  cloudLightningThreshold : 0.3,
+  cloudLightningFrequency : 0.8,
+  enableCloudGroundLightning : true,
+  cloudGroundLightningIntensity : 2.0,
+  cloudGroundLightningThreshold : 0.3,
+  cloudGroundLightningFrequency : 0.8,
   enableVectorField : false,
-  // Individual lightning type toggles
-  enableCG : true,
-  enableCloudCloudLightning : true,
-  enableSpiderLightning : true,
-  enableSprites : true,
-  enableBoltsFromBlue : true,
   dryLapseRate : 10.0,     // Real: 9.8 degrees / km
   simHeight : 12000,       // meters
   twelveHourClock : false, // only for display.  false = metric
@@ -506,7 +501,6 @@ const guiControls_default = {
   skipCurlCalculation : false,
   skipCAPECalculation : false,
   simulationQuality : 1.0,
-  skipLightning : false,
   reducedPrecipitation : false,
   disableTempChangeHistory : false,
   skipLightingCalculation : false,
@@ -4573,18 +4567,6 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'freezingRate'), guiControls.freezingRate);
     gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'meltingRate'), guiControls.meltingRate);
     gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'evapRate'), guiControls.evapRate);
-    // Lightning type controls - toggles
-    gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'enableCG'), guiControls.enableCG ? 1.0 : 0.0);
-    gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'enableCCLightning'), guiControls.enableCloudCloudLightning ? 1.0 : 0.0);
-    gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'enableSpiderLightning'), guiControls.enableSpiderLightning ? 1.0 : 0.0);
-    gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'enableSprites'), guiControls.enableSprites ? 1.0 : 0.0);
-    gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'enableBoltsFromBlue'), guiControls.enableBoltsFromBlue ? 1.0 : 0.0);
-    // Lightning type controls - individual frequencies
-    gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'cgFrequency'), guiControls.cgFrequency);
-    gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'ccFrequency'), guiControls.ccFrequency);
-    gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'spiderFrequency'), guiControls.spiderFrequency);
-    gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'spriteFrequency'), guiControls.spriteFrequency);
-    gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'boltBlueFrequency'), guiControls.boltBlueFrequency);
     gl.useProgram(postProcessingProgram);
     gl.uniform1f(postProc_exposure_loc, guiControls.exposure);
     gl.uniform1f(postProc_saturation_loc, guiControls.saturation);
@@ -4695,22 +4677,11 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         'Sun Intensity': 'Brightness and heating power of the sun. Higher values increase global temperatures.',
         'IR Rate': 'Rate of infrared radiation cooling.',
         'Star Light Emit Strength': 'Brightness of stars in night sky.',
-        '☁ CG (Cloud-to-Ground)': 'Enable standard cloud-to-ground lightning strikes.',
-        '  CG Frequency': 'Relative frequency of cloud-to-ground lightning strikes.',
-        '☁☁ CC (Cloud-Cloud)': 'Enable horizontal cloud-to-cloud lightning discharges.',
-        '  CC Frequency': 'Relative frequency of cloud-to-cloud lightning.',
-        '🕷️ Spider Lightning': 'Enable spider lightning - horizontal crawling discharges along cloud base.',
-        '  Spider Frequency': 'Relative frequency of spider lightning.',
-        '👽 Sprites': 'Enable sprites - reddish-orange upper atmospheric discharges above storms.',
-        '  Sprite Frequency': 'Relative frequency of atmospheric sprites.',
-        '🔵 Bolts from Blue': 'Enable "bolts from the blue" - distant positive lightning from storm anvils.',
-        '  Bolt-from-Blue Freq': 'Relative frequency of bolts from the blue.',
         'Iterations per temperature update': 'How many simulation steps between temperature change calculations.',
         'Camera Pan Speed': 'Speed of camera movement.',
         'Sim Quality (High=Fast)': 'Higher values = better quality but slower performance.',
         'Fullscreen Res': 'Resolution when in fullscreen mode.',
         'Enable Precipitation': 'Enable rain and snow simulation. Disable for better performance.',
-        'Enable Lightning': 'Enable lightning strikes during thunderstorms.',
         'Enable Bloom': 'Enable bloom/glow effect for bright areas.',
         'Vector Field': 'Show wind vector field overlay on the simulation.',
         'Iterations/Frame': 'Number of simulation steps per frame. Higher = more accurate but slower.',
@@ -4723,26 +4694,8 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         'Airplane Mode': 'Enable airplane flight simulation mode.',
         'Skip Curl (Faster)': 'Disable vorticity/curl calculation for performance boost.',
         'Skip CAPE (Faster)': 'Disable CAPE (Convective Available Potential Energy) calculation.',
-        'Skip Lightning': 'Disable lightning calculation for better performance.',
-        'Skip Lighting (Major boost)': 'Disable lighting/shadow calculations for major performance boost.',
-        'Skip Pressure (Faster)': 'Disable pressure system calculations for better performance.',
-        'Skip Advection (No fluid)': 'Disable fluid advection entirely - no wind movement.',
-        'Reduce Station Updates': 'Update weather stations less frequently for better performance.',
-        'Reduce Precipitation': 'Reduce number of precipitation particles for better performance.',
-        'Disable Temp History': 'Disable temperature change history tracking for better performance.',
-        'Sounding Mode': 'Force simulation to match atmospheric sounding data.',
-        'Reset all settings': 'Reset all GUI controls to default values.',
-        'Risk Update Freq': 'How often storm risk values are updated.',
-        'Readout Cursor': 'Show cursor position in readout.',
-        'Paused': 'Pause the simulation.',
-        'Save Simulation to File': 'Download current simulation state to a file.',
-        'Background Color': 'Background color of the menu panel.',
-        'Text Color': 'Color of all text in the menu.',
-        'Accent Color': 'Color for sliders, checkboxes, and active elements.',
-        'Menu Width': 'Width of the menu panel in pixels.'
+        'Skip Lighting (Major boost)': 'Disable lighting/shadow calculations for major performance boost.'
       };
-      
-      // Add tooltips to property names
       const propertyNames = document.querySelectorAll('.dg .property-name');
       propertyNames.forEach(el => {
         const text = el.textContent.trim();
@@ -4824,7 +4777,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       }
     };
 
-    var fluidParams_folder = datGui.addFolder('Fluid');
+    var fluidParams_folder = datGui.addFolder('💨 Fluid');
 
     fluidParams_folder.add(guiControls, 'vorticity', 0.0, 0.010, 0.001)
       .onChange(function() {
@@ -4897,7 +4850,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       .name('Apply above altitude');
 
 
-    var UI_folder = datGui.addFolder('User Interaction');
+    var UI_folder = datGui.addFolder('🖱️ User Interaction');
 
     UI_folder
       .add(guiControls, 'tool', {
@@ -4933,7 +4886,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       })
       .name('Allow Caves');
 
-    var radiation_folder = datGui.addFolder('Radiation');
+    var radiation_folder = datGui.addFolder('☀️ Radiation');
 
     radiation_folder.add(guiControls, 'timeOfDay', 0.0, 23.96, 0.01).onChange(onUpdateTimeOfDaySlider).name('Time of day').listen();
 
@@ -4979,7 +4932,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       .name('IR Multiplier');
 
 
-    var water_folder = datGui.addFolder('Water');
+    var water_folder = datGui.addFolder('💧 Water');
 
     water_folder.add(guiControls, 'waterTemperature', 0.0, 50.0, 0.1)
       .onChange(function() {
@@ -5041,7 +4994,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       })
       .name('Water Weight');
 
-    var precipitation_folder = datGui.addFolder('Precipitation');
+    var precipitation_folder = datGui.addFolder('🌧️ Precipitation');
 
     precipitation_folder.add(guiControls, 'aboveZeroThreshold', 0.1, 2.0, 0.001)
       .onChange(function() {
@@ -5118,7 +5071,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
     precipitation_folder.add(guiControls, 'inactiveDroplets', 0, NUM_DROPLETS).listen().name('Inactive Droplets');
 
-    var radar_folder = datGui.addFolder('Radar');
+    var radar_folder = datGui.addFolder('📡 Radar');
 
     radar_folder.add(guiControls, 'radarOpacity', 0.0, 1.0, 0.05).name('Radar Imagery Opacity').listen();
     radar_folder.add(guiControls, 'radarUpdateFrequency', 1, 300, 1).name('Update Frequency (iterations)').listen();
@@ -5127,7 +5080,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     radar_folder.add(guiControls, 'dbzOpacityStrength', 0.0, 10.0, 0.05).name('dBZ Opacity Strength').listen();
 
 
-    var display_folder = datGui.addFolder('Display');
+    var display_folder = datGui.addFolder('📺 Display');
 
     fluidParams_folder.add(guiControls, 'surfacePressure', 900.0, 1100.0, 0.1)
       .name('Surface Pressure (hPa)');
@@ -5194,7 +5147,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       .listen();
     display_folder.add(guiControls, 'camSpeed', 0.001, 0.050, 0.001).name('Camera Pan Speed');
 
-    var image_folder = datGui.addFolder('Image');
+    var image_folder = datGui.addFolder('📷 Image');
     image_folder.add(guiControls, 'exposure', 0.1, 5.0, 0.01)
       .onChange(function() {
         gl.useProgram(postProcessingProgram);
@@ -5247,79 +5200,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       })
       .name('Star Light Emit Strength');
 
-    var lightning_folder = datGui.addFolder('Lightning');
-
-    // Cloud-to-Ground (standard) lightning
-    lightning_folder.add(guiControls, 'enableCG')
-      .name('☁ CG (Cloud-to-Ground)')
-      .onChange(function() {
-        gl.useProgram(precipitationProgram);
-        gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'enableCG'), guiControls.enableCG ? 1.0 : 0.0);
-      });
-    lightning_folder.add(guiControls, 'cgFrequency', 0.0, 500.0, 0.1)
-      .onChange(function() {
-        gl.useProgram(precipitationProgram);
-        gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'cgFrequency'), guiControls.cgFrequency);
-      })
-      .name('  CG Frequency');
-
-    // Cloud-to-Cloud lightning
-    lightning_folder.add(guiControls, 'enableCloudCloudLightning')
-      .name('☁☁ CC (Cloud-Cloud)')
-      .onChange(function() {
-        gl.useProgram(precipitationProgram);
-        gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'enableCCLightning'), guiControls.enableCloudCloudLightning ? 1.0 : 0.0);
-      });
-    lightning_folder.add(guiControls, 'ccFrequency', 0.0, 500.0, 0.1)
-      .onChange(function() {
-        gl.useProgram(precipitationProgram);
-        gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'ccFrequency'), guiControls.ccFrequency);
-      })
-      .name('  CC Frequency');
-
-    // Spider lightning
-    lightning_folder.add(guiControls, 'enableSpiderLightning')
-      .name('🕷️ Spider Lightning')
-      .onChange(function() {
-        gl.useProgram(precipitationProgram);
-        gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'enableSpiderLightning'), guiControls.enableSpiderLightning ? 1.0 : 0.0);
-      });
-    lightning_folder.add(guiControls, 'spiderFrequency', 0.0, 500.0, 0.1)
-      .onChange(function() {
-        gl.useProgram(precipitationProgram);
-        gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'spiderFrequency'), guiControls.spiderFrequency);
-      })
-      .name('  Spider Frequency');
-
-    // Atmospheric sprites
-    lightning_folder.add(guiControls, 'enableSprites')
-      .name('👽 Sprites')
-      .onChange(function() {
-        gl.useProgram(precipitationProgram);
-        gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'enableSprites'), guiControls.enableSprites ? 1.0 : 0.0);
-      });
-    lightning_folder.add(guiControls, 'spriteFrequency', 0.0, 500.0, 0.1)
-      .onChange(function() {
-        gl.useProgram(precipitationProgram);
-        gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'spriteFrequency'), guiControls.spriteFrequency);
-      })
-      .name('  Sprite Frequency');
-
-    // Bolts from the blue
-    lightning_folder.add(guiControls, 'enableBoltsFromBlue')
-      .name('🔵 Bolts from Blue')
-      .onChange(function() {
-        gl.useProgram(precipitationProgram);
-        gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'enableBoltsFromBlue'), guiControls.enableBoltsFromBlue ? 1.0 : 0.0);
-      });
-    lightning_folder.add(guiControls, 'boltBlueFrequency', 0.0, 500.0, 0.1)
-      .onChange(function() {
-        gl.useProgram(precipitationProgram);
-        gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'boltBlueFrequency'), guiControls.boltBlueFrequency);
-      })
-      .name('  Bolt-from-Blue Freq');
-
-    var colorScale_folder = datGui.addFolder('Color Scale');
+    var colorScale_folder = datGui.addFolder('🎨 Color Scale');
     colorScale_folder.add({
       openEditor : function() {
         const p = document.getElementById('colorScalePanel');
@@ -5385,7 +5266,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       });
 
 
-    var advanced_folder = datGui.addFolder('Advanced');
+    var advanced_folder = datGui.addFolder('⚙️ Advanced');
 
     // Performance optimizations moved to Advanced
     advanced_folder.add(guiControls, 'enablePrecipitation')
@@ -5396,11 +5277,27 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       })
       .name('Enable Precipitation');
 
-    advanced_folder.add(guiControls, 'enableLightning')
-      .name('Enable Lightning');
-
     advanced_folder.add(guiControls, 'enableBloom')
       .name('Enable Bloom');
+
+    // Lightning folder
+    var lightning_folder = datGui.addFolder('⚡ Lightning');
+    lightning_folder.add(guiControls, 'enableCloudLightning')
+      .name('☁☁ Cloud Lightning');
+    lightning_folder.add(guiControls, 'cloudLightningFrequency', 0.0, 1.0, 0.01)
+      .name('Cloud Flash Frequency');
+    lightning_folder.add(guiControls, 'cloudLightningIntensity', 0.0, 10.0, 0.1)
+      .name('Cloud Flash Intensity');
+    lightning_folder.add(guiControls, 'cloudLightningThreshold', 0.0, 1.0, 0.01)
+      .name('Cloud Density Threshold');
+    lightning_folder.add(guiControls, 'enableCloudGroundLightning')
+      .name('☁⬇ Cloud-Ground Lightning');
+    lightning_folder.add(guiControls, 'cloudGroundLightningFrequency', 0.0, 1.0, 0.01)
+      .name('CG Flash Frequency');
+    lightning_folder.add(guiControls, 'cloudGroundLightningIntensity', 0.0, 10.0, 0.1)
+      .name('CG Flash Intensity');
+    lightning_folder.add(guiControls, 'cloudGroundLightningThreshold', 0.0, 1.0, 0.01)
+      .name('CG Density Threshold');
 
     advanced_folder.add(guiControls, 'enableVectorField')
       .name('Vector Field');
@@ -5493,11 +5390,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     let simQualityCtrl = advanced_folder.add(guiControls, 'simulationQuality', 0.1, 25.0, 0.1)
       .name('Sim Quality (High=Fast)');
     simQualityCtrl.__li.querySelector('.property-name').style.color = '#ff4444';
-    
-    let skipLightningCtrl = advanced_folder.add(guiControls, 'skipLightning')
-      .name('Skip Lightning');
-    skipLightningCtrl.__li.querySelector('.property-name').style.color = '#ff4444';
-    
+
     let skipLightingCalcCtrl = advanced_folder.add(guiControls, 'skipLightingCalculation')
       .name('Skip Lighting (Major boost)');
     skipLightingCalcCtrl.__li.querySelector('.property-name').style.color = '#ff4444';
@@ -6596,8 +6489,10 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     createHdrFBO();    // recreate hdr framebuffer
 
     // Recreate radar cache texture at new screen size
-    gl.bindTexture(gl.TEXTURE_2D, radarTexture);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, canvas.width, canvas.height, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    if (typeof radarTexture !== 'undefined' && radarTexture) {
+      gl.bindTexture(gl.TEXTURE_2D, radarTexture);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, canvas.width, canvas.height, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    }
   });
 
   function logSample()
@@ -7149,9 +7044,11 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
           createHdrFBO();
           
           // Recreate radar cache texture at new screen size
-          gl.bindTexture(gl.TEXTURE_2D, radarTexture);
-          gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, canvas.width, canvas.height, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
-          
+          if (typeof radarTexture !== 'undefined' && radarTexture) {
+            gl.bindTexture(gl.TEXTURE_2D, radarTexture);
+            gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, canvas.width, canvas.height, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+          }
+
           // Ensure dat.GUI menu remains visible
           if (datGui) {
             datGui.show();
@@ -7168,9 +7065,11 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       canvas_aspect = canvas.width / canvas.height;
       createBloomFBOs();
       createHdrFBO();
-      gl.bindTexture(gl.TEXTURE_2D, radarTexture);
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, canvas.width, canvas.height, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
-      
+      if (typeof radarTexture !== 'undefined' && radarTexture) {
+        gl.bindTexture(gl.TEXTURE_2D, radarTexture);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, canvas.width, canvas.height, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+      }
+
       // Ensure dat.GUI menu remains visible
       if (datGui) {
         datGui.show();
@@ -7433,8 +7332,6 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
   const lightingShader = await loadShader('lightingShader.frag');
 
-  const lightningLocationShader = await loadShader('lightningLocationShader.frag');
-
   const setupShader = await loadShader('setupShader.frag');
 
   const temperatureDisplayShader = await loadShader('temperatureDisplayShader.frag');
@@ -7461,8 +7358,6 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   const boundaryProgram = createProgram(simVertexShader, boundaryShader);
 
   const lightingProgram = createProgram(simVertexShader, lightingShader);
-
-  const lightningLocationProgram = createProgram(simVertexShader, lightningLocationShader);
 
   const setupProgram = createProgram(simVertexShader, setupShader);
 
@@ -7892,7 +7787,6 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   const lightTexture_1 = gl.createTexture();
   const precipitationFeedbackTexture = gl.createTexture();
   const precipitationDepositionTexture = gl.createTexture();
-  const lightningDataTexture = gl.createTexture(); // single pixel texture holding location and timing of current lightning strike
   const radarTexture = gl.createTexture();
 
   // Cache textures for radar display (to freeze all input textures)
@@ -7920,10 +7814,6 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   ];
   let temperatureChangeHistoryIndex = 0;
 
-  const lightningTextures = [];
-  const numLightningTextures = 10;
-
-
   frameBuff_0 = gl.createFramebuffer(); // global for weather stations
   const frameBuff_1 = gl.createFramebuffer();
 
@@ -7934,7 +7824,6 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   lightFrameBuff_0 = gl.createFramebuffer();
   const lightFrameBuff_1 = gl.createFramebuffer();
   const precipitationFeedbackFrameBuff = gl.createFramebuffer();
-  const lightningDataFrameBuff = gl.createFramebuffer();
   const radarFrameBuff = gl.createFramebuffer();
 
   // Set up Textures
@@ -8096,14 +7985,6 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   gl.texImage2D(gl.TEXTURE_2D, 0, gl.RG32F, sim_res_x, sim_res_y, 0, gl.RG, gl.FLOAT, null);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-
-  gl.bindTexture(gl.TEXTURE_2D, lightningDataTexture);
-  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, 1, 1, 0, gl.RGBA, gl.FLOAT, null);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-
-  gl.bindFramebuffer(gl.FRAMEBUFFER, lightningDataFrameBuff);
-  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, lightningDataTexture, 0);
 
   // load images
   imgElement = await loadImage('resources/img/noise_texture.jpg');
@@ -9123,69 +9004,6 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   uploadColorScaleTexture();
 
 
-  function downloadImageData(imgData)
-  {
-    var canvas = document.createElement('canvas');
-    var ctx = canvas.getContext('2d');
-    canvas.width = imgData.width;
-    canvas.height = imgData.height
-    ctx.putImageData(imgData, 0, 0);
-    var dataUrl = canvas.toDataURL('image/png');
-    var link = document.createElement('a');
-    link.href = dataUrl;
-    link.download = 'Lightning_image.png';
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-  }
-
-
-  function generateLightningTexture(i, imgData)
-  {
-    lightningTextures[i] = gl.createTexture();
-    gl.bindTexture(gl.TEXTURE_2D, lightningTextures[i]);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.LUMINANCE, imgData.width, imgData.height, 0, gl.LUMINANCE, gl.UNSIGNED_BYTE, imgData);
-    // gl.generateMipmap(gl.TEXTURE_2D);                                                // optional
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); // LINEAR_MIPMAP_LINEAR
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-  }
-
-
-  // Define lightning types to generate - more CGs, fewer special types
-  const lightningTypes = ['CG', 'CG', 'CG', 'CG', 'CC', 'CC', 'SPIDER', 'SPIDER', 'SPRITE', 'CG'];
-
-  for (let i = 0; i < numLightningTextures; i++) {
-    const lightningGeneratorWorker = new Worker('./lightningGenerator.js');
-    const boltType = lightningTypes[i % lightningTypes.length];
-
-    lightningGeneratorWorker.onmessage = (imgElement) => {
-      // downloadImageData(imgElement.data); // for debugging
-      generateLightningTexture(i, imgElement.data);
-    };
-
-    // Generate different sizes based on type
-    let boltWidth = 2500;
-    let boltHeight = 5000;
-
-    if (boltType === 'CC') {
-      // CC bolts are wider, shorter (horizontal)
-      boltWidth = 4000;
-      boltHeight = 2000;
-    } else if (boltType === 'SPIDER') {
-      // Spider lightning is very wide and flat
-      boltWidth = 5000;
-      boltHeight = 1500;
-    } else if (boltType === 'SPRITE') {
-      // Sprites are compact glow patterns
-      boltWidth = 2000;
-      boltHeight = 2000;
-    }
-
-    lightningGeneratorWorker.postMessage({width: boltWidth, height: boltHeight, type: boltType});
-  }
-
   await loadingBar.set(90, 'Setting up FBO`s');
 
   createHdrFBO();
@@ -9400,20 +9218,24 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   gl.uniform1i(gl.getUniformLocation(realisticDisplayProgram, 'noiseTex'), 4);
   gl.uniform1i(gl.getUniformLocation(realisticDisplayProgram, 'surfaceTextureMap'), 5);
   gl.uniform1i(gl.getUniformLocation(realisticDisplayProgram, 'curlTex'), 6);
-  gl.uniform1i(gl.getUniformLocation(realisticDisplayProgram, 'lightningTex'), 7);
-  gl.uniform1i(gl.getUniformLocation(realisticDisplayProgram, 'lightningDataTex'), 8);
-  gl.uniform1i(gl.getUniformLocation(realisticDisplayProgram, 'ambientLightTex'), 9);
+  gl.uniform1i(gl.getUniformLocation(realisticDisplayProgram, 'ambientLightTex'), 7);
   gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'dryLapse'), dryLapse);
   gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'cellHeight'), cellHeight);
   const realDisp_enableRHFog_loc = gl.getUniformLocation(realisticDisplayProgram, 'enableRHFog');
   gl.uniform1f(realDisp_enableRHFog_loc, 1.0);
   const realDisp_enhancedLooks_loc = gl.getUniformLocation(realisticDisplayProgram, 'enhancedLooks');
   gl.uniform1f(realDisp_enhancedLooks_loc, 0.0);
+  const realDisp_enableCloudLightning_loc = gl.getUniformLocation(realisticDisplayProgram, 'enableCloudLightning');
+  gl.uniform1f(realDisp_enableCloudLightning_loc, 0.0);
+  const realDisp_cloudLightningIntensity_loc = gl.getUniformLocation(realisticDisplayProgram, 'cloudLightningIntensity');
+  gl.uniform1f(realDisp_cloudLightningIntensity_loc, 2.0);
+  const realDisp_cloudLightningThreshold_loc = gl.getUniformLocation(realisticDisplayProgram, 'cloudLightningThreshold');
+  gl.uniform1f(realDisp_cloudLightningThreshold_loc, 0.5);
+  const realDisp_iterNum_loc = gl.getUniformLocation(realisticDisplayProgram, 'iterNum');
 
   gl.useProgram(precipitationProgram);
   gl.uniform1i(gl.getUniformLocation(precipitationProgram, 'baseTex'), 0);
   gl.uniform1i(gl.getUniformLocation(precipitationProgram, 'waterTex'), 1);
-  gl.uniform1i(gl.getUniformLocation(precipitationProgram, 'lightningDataTex'), 2);
   gl.uniform2f(gl.getUniformLocation(precipitationProgram, 'resolution'), sim_res_x, sim_res_y);
   gl.uniform2f(gl.getUniformLocation(precipitationProgram, 'texelSize'), texelSizeX, texelSizeY);
   gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'dryLapse'), dryLapse);
@@ -9434,12 +9256,6 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
   gl.useProgram(isolateBrightPartsProgram);
   gl.uniform1i(gl.getUniformLocation(isolateBrightPartsProgram, 'hdrTex'), 0);
-
-  gl.useProgram(lightningLocationProgram);
-  gl.uniform1i(gl.getUniformLocation(lightningLocationProgram, 'precipFeedbackTex'), 0);
-  gl.uniform2f(gl.getUniformLocation(lightningLocationProgram, 'resolution'), sim_res_x, sim_res_y);
-  gl.uniform2f(gl.getUniformLocation(lightningLocationProgram, 'texelSize'), texelSizeX, texelSizeY);
-
 
   // console.time('Set uniforms');
   setGuiUniforms(); // all uniforms changed by gui
@@ -9473,7 +9289,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     soundSystem = new SoundSystem();
   }
 
-  await loadingBar.set(95, 'Loading sounds and generating lightning textures'); // loading complete
+  await loadingBar.set(95, 'Loading sounds'); // loading complete
   await loadingBar.remove();
 
   var srcVAO;
@@ -9504,7 +9320,6 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   // per-frame precipitation
   const uloc_precip_iterNum            = gl.getUniformLocation(precipitationProgram,     'iterNum');
   const uloc_precip_inactiveDroplets   = gl.getUniformLocation(precipitationProgram,     'inactiveDroplets');
-  const uloc_lightning_iterNum         = gl.getUniformLocation(lightningLocationProgram, 'iterNum');
 
   // bloom blur
   const uloc_bloom_bloomTexture        = gl.getUniformLocation(bloomBlurProgram, 'bloomTexture');
@@ -9529,6 +9344,14 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   const uloc_real_greenHueEnd          = gl.getUniformLocation(realisticDisplayProgram, 'greenHueEndThreshold');
   const uloc_real_greenHueStrength     = gl.getUniformLocation(realisticDisplayProgram, 'greenHueStrength');
   const uloc_real_displayVectorField   = gl.getUniformLocation(realisticDisplayProgram, 'displayVectorField');
+  const uloc_real_enableCloudLightning = gl.getUniformLocation(realisticDisplayProgram, 'enableCloudLightning');
+  const uloc_real_cloudLightningIntensity = gl.getUniformLocation(realisticDisplayProgram, 'cloudLightningIntensity');
+  const uloc_real_cloudLightningThreshold = gl.getUniformLocation(realisticDisplayProgram, 'cloudLightningThreshold');
+  const uloc_real_cloudLightningFrequency = gl.getUniformLocation(realisticDisplayProgram, 'cloudLightningFrequency');
+  const uloc_real_enableCloudGroundLightning = gl.getUniformLocation(realisticDisplayProgram, 'enableCloudGroundLightning');
+  const uloc_real_cloudGroundLightningIntensity = gl.getUniformLocation(realisticDisplayProgram, 'cloudGroundLightningIntensity');
+  const uloc_real_cloudGroundLightningThreshold = gl.getUniformLocation(realisticDisplayProgram, 'cloudGroundLightningThreshold');
+  const uloc_real_cloudGroundLightningFrequency = gl.getUniformLocation(realisticDisplayProgram, 'cloudGroundLightningFrequency');
 
   // precipDisplay per-frame
   const uloc_precipDisp_aspectRatios   = gl.getUniformLocation(precipDisplayProgram, 'aspectRatios');
@@ -10017,8 +9840,6 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
               gl.bindTexture(gl.TEXTURE_2D, baseTexture_1);
               gl.activeTexture(gl.TEXTURE1);
               gl.bindTexture(gl.TEXTURE_2D, waterTexture_1);
-              gl.activeTexture(gl.TEXTURE2);
-              gl.bindTexture(gl.TEXTURE_2D, lightningDataTexture);
 
               gl.bindVertexArray(srcVAO);
               gl.bindTransformFeedback(gl.TRANSFORM_FEEDBACK, destTF);
@@ -10045,29 +9866,6 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
               gl.bindVertexArray(fluidVao); // set screenfilling rect again
 
 
-              // Extract lightningLocation from precipitationfeedback
-              if (guiControls.enableLightning && !guiControls.skipLightning) {
-                gl.useProgram(lightningLocationProgram);
-                gl.uniform1f(uloc_lightning_iterNum, iterNum);
-
-                gl.activeTexture(gl.TEXTURE0);
-                gl.bindTexture(gl.TEXTURE_2D, precipitationFeedbackTexture);
-
-                gl.bindFramebuffer(gl.FRAMEBUFFER, lightningDataFrameBuff);
-                gl.drawBuffers([ gl.COLOR_ATTACHMENT0 ]);
-                gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
-
-                if (guiControls.sound) {
-                  gl.readBuffer(gl.COLOR_ATTACHMENT0);
-                var lightningDataValues = new Float32Array(4);
-                gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.FLOAT, lightningDataValues);
-                // console.log('lightningDataValues: ', lightningDataValues[0], lightningDataValues[1], lightningDataValues[2], iterNum, lightningDataValues[3]);
-
-                if (Math.round(lightningDataValues[2]) == iterNum) {
-                  soundSystem.soundThunder(lightningDataValues[0], lightningDataValues[1], Math.pow(lightningDataValues[3], 2.0));
-                }
-              }
-              }
             }
 
             if (displayWeatherStations && iterNum % (guiControls.reducedWeatherStationUpdates ? 416 : 208) == 0) { // ~every 60 in game seconds:  0.00008 *3600 * 208 = 59.9, reduced = every 120 seconds
@@ -10082,7 +9880,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         }
 
         if (airplaneMode) {
-          iterNum++; // make sure iterNum increases every frame for nice lightning
+          iterNum++;
           airplane.takeUserInput();
           airplane.move();
         }
@@ -10287,16 +10085,19 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         gl.uniform1f(uloc_real_displayVectorField, 0.0);
       }
 
-
-      let lightningTexNum = Math.floor(iterNum / 400) % numLightningTextures;
-      // console.log(lightningTexNum)
+      // Cloud-CC Lightning uniforms
+      gl.uniform1f(uloc_real_enableCloudLightning, guiControls.enableCloudLightning ? 1.0 : 0.0);
+      gl.uniform1f(uloc_real_cloudLightningIntensity, guiControls.cloudLightningIntensity);
+      gl.uniform1f(uloc_real_cloudLightningThreshold, guiControls.cloudLightningThreshold);
+      gl.uniform1f(uloc_real_cloudLightningFrequency, guiControls.cloudLightningFrequency);
+      // Cloud-Ground Lightning uniforms
+      gl.uniform1f(uloc_real_enableCloudGroundLightning, guiControls.enableCloudGroundLightning ? 1.0 : 0.0);
+      gl.uniform1f(uloc_real_cloudGroundLightningIntensity, guiControls.cloudGroundLightningIntensity);
+      gl.uniform1f(uloc_real_cloudGroundLightningThreshold, guiControls.cloudGroundLightningThreshold);
+      gl.uniform1f(uloc_real_cloudGroundLightningFrequency, guiControls.cloudGroundLightningFrequency);
+      gl.uniform1f(uloc_real_iterNum, iterNum);
 
       gl.activeTexture(gl.TEXTURE7);
-      gl.bindTexture(gl.TEXTURE_2D, lightningTextures[lightningTexNum]);
-      gl.activeTexture(gl.TEXTURE8);
-      gl.bindTexture(gl.TEXTURE_2D, lightningDataTexture);
-
-      gl.activeTexture(gl.TEXTURE9);
       gl.bindTexture(gl.TEXTURE_2D, ambientLightFBOs[0].texture);
 
 
