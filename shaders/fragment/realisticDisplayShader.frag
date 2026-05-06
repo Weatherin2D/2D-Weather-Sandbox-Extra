@@ -150,91 +150,74 @@ vec3 spectral_zucconi(float w)
 
 float rand(float n) { return fract(sin(n) * 43758.5453123); }
 
-// Helper function to calculate bolt glow with jaggedness
-float calculateBoltGlow(vec2 fragCoord, vec2 start, vec2 end, float seed, int isBranch) {
-  // Calculate distance from pixel to bolt line
-  vec2 boltDir = normalize(end - start);
-  vec2 boltPerp = vec2(-boltDir.y, boltDir.x);
-  vec2 toPixel = fragCoord - start;
-  float alongBolt = dot(toPixel, boltDir);
-  float perpDist = abs(dot(toPixel, boltPerp));
-  
-  // Bolt thickness varies along length
-  float boltLength = length(end - start);
-  float t = clamp(alongBolt / boltLength, 0.0, 1.0);
-  float thickness = isBranch == 1 ? 1.0 + t * 1.5 : 2.0 + t * 3.0; // Thinner for branches
-  
-  // Add jaggedness to bolt
-  float jaggedness = rand(floor(alongBolt * 0.1) + seed * 10.0) * (isBranch == 1 ? 5.0 : 10.0);
-  perpDist += jaggedness * (1.0 - t);
-  
-  // Create bolt glow
-  float boltGlow = 1.0 - smoothstep(0.0, thickness, perpDist);
-  boltGlow *= smoothstep(-20.0, 0.0, alongBolt) * smoothstep(boltLength + 20.0, boltLength, alongBolt);
-  
-  return boltGlow;
+// ── CG Lightning: segmented fractal bolt renderer ──────────────────────────
+//
+// Bolts are split into N segments whose endpoints are displaced perpendicular
+// to the main axis with exponential damping.  Per-pixel glow is the smooth
+// falloff from the minimum distance to any segment.  Branches reuse the same
+// logic from junction points on the main trunk.
+
+float segDist(vec2 p, vec2 a, vec2 b) {
+  vec2 ab = b - a;
+  float lenSq = dot(ab, ab);
+  if (lenSq < 0.0001) return length(p - a);
+  float t = clamp(dot(p - a, ab) / lenSq, 0.0, 1.0);
+  return length(p - (a + t * ab));
 }
 
-// Helper function to calculate animated bolt glow with tip position
-float calculateAnimatedBoltGlow(vec2 fragCoord, vec2 start, vec2 end, vec2 tip, float seed, int isBranch, float progress) {
-  // Calculate distance from pixel to bolt line
-  vec2 boltDir = normalize(end - start);
-  vec2 boltPerp = vec2(-boltDir.y, boltDir.x);
-  vec2 toPixel = fragCoord - start;
-  float alongBolt = dot(toPixel, boltDir);
-  float perpDist = abs(dot(toPixel, boltPerp));
-  
-  // Bolt thickness varies along length
-  float boltLength = length(end - start);
-  float t = clamp(alongBolt / boltLength, 0.0, 1.0);
-  float thickness = isBranch == 1 ? 1.0 + t * 1.5 : 2.0 + t * 3.0; // Thinner for branches
-  
-  // Add jaggedness to bolt
-  float jaggedness = rand(floor(alongBolt * 0.1) + seed * 10.0) * (isBranch == 1 ? 5.0 : 10.0);
-  perpDist += jaggedness * (1.0 - t);
-  
-  // Create bolt glow - only render up to tip position
-  float boltGlow = 1.0 - smoothstep(0.0, thickness, perpDist);
-  boltGlow *= smoothstep(-20.0, 0.0, alongBolt) * smoothstep(length(tip - start) + 20.0, length(tip - start), alongBolt);
-  
-  return boltGlow;
-}
+// Displaced bolt position at parameter targetT in [0,1].
+// Uses the same deterministic rand() chain as cgBoltGlow() so positions agree.
+vec2 boltPosAtT(vec2 bStart, vec2 bEnd, float seed, float targetT, float dispStr) {
+  vec2 dir  = bEnd - bStart;
+  float len = length(dir);
+  if (len < 0.001) return bStart;
+  vec2 perp = vec2(-dir.y, dir.x) / len;
 
-// Procedural lightning bolt - extremely simplified
-vec3 drawLightningBolt(vec2 fragCoord, vec2 start, vec2 end, vec2 tip, float seed, float intensity, float taperStart, float taperEnd) {
-  vec2 boltDir = normalize(end - start);
-  vec2 boltPerp = vec2(-boltDir.y, boltDir.x);
-  vec2 toPixel = fragCoord - start;
-  float alongBolt = dot(toPixel, boltDir);
-  float perpDist = abs(dot(toPixel, boltPerp));
-  
-  float boltLength = length(end - start);
-  float currentLength = length(tip - start);
-  
-  // Only render if pixel is within the animated portion
-  if (alongBolt < 0.0 || alongBolt > currentLength) {
-    return vec3(0.0);
+  const int N = 14;
+  float accumDisp = 0.0;
+  for (int i = 1; i <= N; i++) {
+    float prevT    = float(i - 1) / float(N);
+    float currT    = float(i)     / float(N);
+    float prevAcc  = accumDisp;
+    float kick     = (rand(seed + float(i) * 17.31) - 0.5) * dispStr;
+    accumDisp      = (accumDisp + kick) * 0.78;
+    if (targetT <= currT) {
+      float localT = (currT > prevT) ? (targetT - prevT) / (currT - prevT) : 1.0;
+      return mix(bStart, bEnd, targetT) + perp * mix(prevAcc, accumDisp, localT);
+    }
   }
-  
-  // Add jaggedness based on position along bolt
-  float jaggedOffset = sin(alongBolt * 0.2 + seed) * 3.0 + sin(alongBolt * 0.5 + seed * 2.0) * 2.0;
-  perpDist -= jaggedOffset;
-  
-  // Smoothstep falloff to eliminate streaks
-  float dist = perpDist;
-  float core = 1.0 - smoothstep(0.0, 0.5, dist);
-  
-  // Taper along bolt length
-  float t = clamp(alongBolt / boltLength, 0.0, 1.0);
-  float taper = mix(taperStart, taperEnd, t);
-  
-  // Lightning color from reference
-  const vec3 lightningCol = vec3(0.70, 0.57, 1.0);
-  
-  // Clamped brightness to prevent overflow with taper
-  float brightness = clamp(core * intensity * taper, 0.0, 10.0);
-  
-  return lightningCol * brightness;
+  return bEnd;
+}
+
+// Minimum-distance glow for a multi-segment bolt (sharp core + soft halo).
+// maxT ∈ [0,1]: render only the first maxT fraction of the bolt (for animation).
+float cgBoltGlow(vec2 p, vec2 bStart, vec2 bEnd, float seed,
+                 float coreThick, float dispStr, float maxT) {
+  vec2 dir  = bEnd - bStart;
+  float len = length(dir);
+  if (len < 0.01) return 0.0;
+  vec2 perp = vec2(-dir.y, dir.x) / len;
+
+  const int N = 14;
+  float accumDisp = 0.0;
+  float minDist   = 1.0e6;
+  vec2  prevPt    = bStart;
+
+  for (int i = 1; i <= N; i++) {
+    float segFrac = float(i) / float(N);
+    float kick    = (rand(seed + float(i) * 17.31) - 0.5) * dispStr;
+    accumDisp     = (accumDisp + kick) * 0.78;
+    // Clamp the last segment's endpoint to the animated tip
+    float usedFrac = min(segFrac, maxT);
+    vec2  currPt   = mix(bStart, bEnd, usedFrac) + perp * accumDisp;
+    minDist = min(minDist, segDist(p, prevPt, currPt));
+    prevPt  = currPt;
+    if (segFrac >= maxT) break; // stop once we've reached the tip
+  }
+
+  float core = 1.0 - smoothstep(0.0, coreThick,       minDist);
+  float halo = 1.0 - smoothstep(0.0, coreThick * 2.0, minDist);
+  return core + halo * 0.12;
 }
 
 vec4 getAirColor(vec2 fragCoordIn)
@@ -554,60 +537,108 @@ void main()
       }
     }
 
-    // Cloud-Ground Lightning: bolt from cloud to ground
-    if (enableCloudGroundLightning > 0.5 && opacity > cloudGroundLightningThreshold) {
-      // Simple flash timing
+    // Cloud-Ground Lightning: fractal segmented bolt, visible in cloud AND clear air.
+    // The opacity gate is intentionally absent so the bolt renders in every air pixel
+    // it passes through — including clear air between cloud base and ground.
+    if (enableCloudGroundLightning > 0.5) {
       float flashInterval = max(15.0, 50.0 / (cloudGroundLightningFrequency + 0.01));
-      float flashPhase = mod(iterNum + flashInterval * 0.5, flashInterval);
-      float shouldFlash = step(flashInterval - 3.0, flashPhase); // Flash for last 3 frames
-      
-      // Higher density = higher chance of lightning
-      float densityFactor = (opacity - cloudGroundLightningThreshold) / (1.0 - cloudGroundLightningThreshold);
-      float densityChance = densityFactor * 0.8; // Max 80% chance at full density
-      float randomCheck = rand(iterNum * 0.5 + fragCoord.x * 0.1 + fragCoord.y * 0.1);
-      
-      if (shouldFlash > 0.5 && randomCheck < densityChance) {
-        // Generate bolt start point (in cloud) and end point (ground)
+      float flashPhase    = mod(iterNum + flashInterval * 0.5, flashInterval);
+      float flashAge      = flashPhase - (flashInterval - 6.0); // 0→6 during flash
+      float shouldFlash   = step(flashInterval - 6.0, flashPhase);
+
+      if (shouldFlash > 0.5) {
+        // Stable seed per flash — identical for every pixel so the bolt is spatially coherent
         float seed = floor((iterNum + flashInterval * 0.5) / flashInterval) * 0.7;
-        vec2 boltStart = vec2(rand(seed), rand(seed + 100.0)) * resolution;
-        boltStart.y = max(boltStart.y, resolution.y * 0.5); // Start in upper half (clouds)
-        vec2 boltEnd = vec2(boltStart.x + (rand(seed + 200.0) - 0.5) * 50.0, 0.0); // End at ground with slight x offset
-        
-        // Temporal brightness variation
-        float temporalNoise = rand(iterNum * 0.5);
-        float intensity = min(cloudGroundLightningIntensity * 2.0, 4.0) * (0.7 + temporalNoise * 0.3);
-        
-        // Draw main bolt (no taper)
-        vec3 mainBolt = drawLightningBolt(fragCoord, boltStart, boltEnd, boltEnd, seed, intensity, 1.0, 1.0);
-        
-        // Generate branches
-        vec3 branchBolt = vec3(0.0);
-        int numBranches = int(rand(seed + 300.0) * 4.0) + 2; // 2-5 branches
-        
-        for (int i = 0; i < 5; i++) {
-          if (i >= numBranches) break;
-          
-          float branchSeed = seed + float(i) * 100.0 + 400.0;
-          float branchT = rand(branchSeed); // Position along main bolt
-          vec2 branchStart = mix(boltStart, boltEnd, branchT);
-          
-          // Branch direction (biased downward towards ground)
-          float branchAngle = (rand(branchSeed + 50.0) - 0.5) * 1.0 + 0.5; // 0.0 to 1.5 radians (downward bias)
-          vec2 branchDir = normalize(vec2(sin(branchAngle), cos(branchAngle)));
-          float branchLength = (rand(branchSeed + 60.0) * 0.3 + 0.1) * length(boltEnd - boltStart);
-          vec2 branchEnd = branchStart + branchDir * branchLength;
-          
-          // Branch intensity tapers from 0.7 at start to 0.2 at end
-          branchBolt += drawLightningBolt(fragCoord, branchStart, branchEnd, branchEnd, branchSeed, intensity, 0.7, 0.2);
-        }
-        
-        vec3 totalBolt = max(mainBolt, branchBolt);
-        
-        if (length(totalBolt) > 0.01) {
-          // Add to emitted light (pure light like lightning)
-          emittedLight += totalBolt;
-          // Also add to onLight to light up surroundings
-          onLight += totalBolt * 0.5;
+
+        // Bolt origin (cloud base) and ground strike point
+        float boltX      = (rand(seed + 10.0) * 0.7 + 0.15) * resolution.x;
+        float boltStartY = (rand(seed + 20.0) * 0.20 + 0.55) * resolution.y;
+        vec2  boltStart  = vec2(boltX, boltStartY);
+        vec2  boltEnd    = vec2(boltX + (rand(seed + 30.0) - 0.5) * resolution.x * 0.08, 0.0);
+
+        // ── Cloud-gate ───────────────────────────────────────────────────────
+        // Sample the water texture at the bolt origin to verify a cloud exists there.
+        // This gates the flash on actual storm presence while still allowing the bolt
+        // to render in clear-air pixels below the cloud (no per-pixel opacity check).
+        float boltCloudWater   = texture(waterTex, clamp(boltStart * texelSize, vec2(0.0), vec2(1.0)))[CLOUD];
+        float boltCloudDensity = max(boltCloudWater * 13.0, 0.0);
+        float boltOpacity      = clamp(1.0 - 1.0 / (1.0 + boltCloudDensity), 0.0, 1.0);
+
+        if (boltOpacity > cloudGroundLightningThreshold) {
+
+          float boltLen   = length(boltEnd - boltStart);
+          float dispStr   = boltLen * 0.07;
+          float coreThick = boltLen * 0.007; // thin core relative to bolt length
+
+          // Animation: tip travels cloud→ground in first 4 iters, holds for 2 then fades
+          float progress = clamp(flashAge / 4.0, 0.0, 1.0);
+          float fadeMult = (flashAge < 4.0) ? 1.0 : max(0.0, 1.0 - (flashAge - 4.0) * 0.5);
+          float flicker  = 0.85 + 0.15 * rand(iterNum * 2.3 + seed);
+          float bright   = cloudGroundLightningIntensity * 0.55 * flicker * fadeMult;
+
+          vec2 mainDir  = normalize(boltEnd - boltStart);
+          vec2 mainPerp = vec2(-mainDir.y, mainDir.x);
+
+          // ── Main trunk ──────────────────────────────────────────────────────
+          float mainG = cgBoltGlow(fragCoord, boltStart, boltEnd, seed,
+                                   coreThick, dispStr, progress);
+
+          // ── Branches ────────────────────────────────────────────────────────
+          // Each branch starts growing the moment the trunk tip passes its junction
+          // and finishes at the same time as the trunk (progress == 1.0).
+          // This keeps all tips spatially connected to the visible stroke front.
+          float b1T = 0.28, b2T = 0.48, b3T = 0.65, b4T = 0.80;
+          float b1P = clamp((progress - b1T) / (1.0 - b1T), 0.0, 1.0);
+          float b2P = clamp((progress - b2T) / (1.0 - b2T), 0.0, 1.0);
+          float b3P = clamp((progress - b3T) / (1.0 - b3T), 0.0, 1.0);
+          float b4P = clamp((progress - b4T) / (1.0 - b4T), 0.0, 1.0);
+
+          float b1G = 0.0, b2G = 0.0, b3G = 0.0, b4G = 0.0;
+
+          if (b1P > 0.0) {
+            vec2  b1Orig = boltPosAtT(boltStart, boltEnd, seed, b1T, dispStr);
+            float b1Side = (rand(seed + 301.0) > 0.5) ? 1.0 : -1.0;
+            vec2  b1Dir  = normalize(mainDir + mainPerp * b1Side * (0.25 + rand(seed+302.0)*0.35));
+            float b1Len  = boltLen * (0.15 + rand(seed + 303.0) * 0.18);
+            b1G = cgBoltGlow(fragCoord, b1Orig, b1Orig + b1Dir * b1Len,
+                             seed + 1000.0, coreThick * 0.60, b1Len * 0.08, b1P);
+          }
+          if (b2P > 0.0) {
+            vec2  b2Orig = boltPosAtT(boltStart, boltEnd, seed, b2T, dispStr);
+            float b2Side = (rand(seed + 301.0) > 0.5) ? -1.0 : 1.0;
+            vec2  b2Dir  = normalize(mainDir + mainPerp * b2Side * (0.22 + rand(seed+402.0)*0.30));
+            float b2Len  = boltLen * (0.12 + rand(seed + 403.0) * 0.15);
+            b2G = cgBoltGlow(fragCoord, b2Orig, b2Orig + b2Dir * b2Len,
+                             seed + 2000.0, coreThick * 0.50, b2Len * 0.08, b2P);
+          }
+          if (b3P > 0.0) {
+            vec2  b3Orig = boltPosAtT(boltStart, boltEnd, seed, b3T, dispStr);
+            float b3Side = (rand(seed + 501.0) > 0.5) ? 1.0 : -1.0;
+            vec2  b3Dir  = normalize(mainDir + mainPerp * b3Side * (0.20 + rand(seed+502.0)*0.28));
+            float b3Len  = boltLen * (0.09 + rand(seed + 503.0) * 0.12);
+            b3G = cgBoltGlow(fragCoord, b3Orig, b3Orig + b3Dir * b3Len,
+                             seed + 3000.0, coreThick * 0.40, b3Len * 0.08, b3P);
+          }
+          if (b4P > 0.0) {
+            vec2  b4Orig = boltPosAtT(boltStart, boltEnd, seed, b4T, dispStr);
+            float b4Side = (rand(seed + 501.0) > 0.5) ? -1.0 : 1.0;
+            vec2  b4Dir  = normalize(mainDir + mainPerp * b4Side * (0.18 + rand(seed+602.0)*0.25));
+            float b4Len  = boltLen * (0.07 + rand(seed + 603.0) * 0.09);
+            b4G = cgBoltGlow(fragCoord, b4Orig, b4Orig + b4Dir * b4Len,
+                             seed + 4000.0, coreThick * 0.30, b4Len * 0.08, b4P);
+          }
+
+          float totalG = max(mainG,
+                        max(b1G * 0.70,
+                        max(b2G * 0.62,
+                        max(b3G * 0.52,
+                            b4G * 0.42))));
+
+          if (totalG > 0.005) {
+            vec3 boltCol = vec3(0.90, 0.95, 1.0) * bright * totalG;
+            emittedLight += boltCol;
+            onLight      += boltCol * 0.35;
+          }
         }
       }
     }

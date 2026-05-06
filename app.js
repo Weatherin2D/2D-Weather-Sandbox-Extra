@@ -1000,6 +1000,7 @@ class Weatherstation
   #snowHeight = 0;   // cm
   #airQuality = 0;   // AQI
   #waterTemperature = 0;
+  
 
   #netIRpow = 0;
   #solarPower = 0;

@@ -24,7 +24,7 @@ uniform vec4 userInputValues; // xpos    Ypos     intensity     Brush Size
 #define BRUSH_SIZE 3
 
 uniform vec2 userInputMove;  // moveX  moveY
-uniform int userInputType;   // 0 = nothing 	1 = temp ...
+uniform int userInputType;   // 0 = nothing     1 = temp ...
 
 uniform vec4 airplaneValues; // xpos   Ypos   throttle   fire
 
@@ -262,15 +262,24 @@ void main()
         base[3] = clamp(base[TEMPERATURE], CtoK(0.0), CtoK(maxWaterTemp)); // limit water temperature range
     } else if (userInputType == 2) {                                       // water
 
-
-      //     if ()
-
       float cloudWaterChange = userInputValues[BRUSH_INTENSITY]; // positive intensity
 
-      // Always add water as vapor (TOTAL), never directly as cloud water
-      // Cloud water only forms through condensation at 100% RH
       water[TOTAL] += cloudWaterChange;
       water[TOTAL] = max(water[TOTAL], 0.0);
+
+      if (cloudWaterChange > 0.0) {
+        // Pre-apply the latent heat COST of adding vapour.
+        // When this vapour later condenses it releases an equal amount of heat,
+        // so the net temperature effect of painting in vapour is near zero.
+        base[TEMPERATURE] -= cloudWaterChange * evapHeat;
+        realTemp         -= cloudWaterChange * evapHeat;
+      } else {
+        // When removing vapour, also pull cloud water down so it never
+        // exceeds total water.  Without this the evaporation latent-heat
+        // path fires every iteration and causes a spurious temperature drop.
+        water[CLOUD] = min(water[CLOUD], water[TOTAL]);
+        water[CLOUD] = max(water[CLOUD], 0.0);
+      }
 
     } else if (userInputType == 3 && wall[DISTANCE] != 0) { // smoke, only apply if not wall
       water[SMOKE] += userInputValues[BRUSH_INTENSITY];
