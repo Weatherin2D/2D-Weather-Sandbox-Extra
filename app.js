@@ -1572,15 +1572,15 @@ class Radar
       position: absolute;
       display: none;
       z-index: 1000;
-      background: #1a1a2e;
-      border: 1px solid #3a3a5c;
-      border-radius: 10px;
+      background: #13131f;
+      border: 1px solid #252540;
+      border-radius: 12px;
       padding: 0;
       color: white;
       font-family: Arial, sans-serif;
       font-size: 13px;
-      min-width: 240px;
-      box-shadow: 0 4px 20px rgba(0,0,0,0.6);
+      min-width: 266px;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.75);
       overflow: hidden;
     `;
 
@@ -1588,8 +1588,8 @@ class Radar
 
     // Header bar
     const hdr = document.createElement('div');
-    hdr.style.cssText = 'display:flex; justify-content:space-between; align-items:center; padding:10px 14px; background:#12122a; border-bottom:1px solid #3a3a5c; cursor:move;';
-    // Drag to move
+    hdr.style.cssText = 'display:flex;justify-content:space-between;align-items:center;padding:11px 14px;background:linear-gradient(135deg,#191930,#0e0e22);border-bottom:1px solid #252540;cursor:move;user-select:none;gap:8px;';
+
     let dragOffX = 0, dragOffY = 0, dragging = false;
     hdr.addEventListener('mousedown', (e) => {
       if (e.target === closeBtn) return;
@@ -1604,12 +1604,20 @@ class Radar
       thisObj.#menuDiv.style.top  = (e.clientY - dragOffY) + 'px';
     });
     document.addEventListener('mouseup', () => { dragging = false; });
+
     const hdrTitle = document.createElement('span');
-    hdrTitle.textContent = '📡 ' + this.#name + ' Settings';
-    hdrTitle.style.fontWeight = 'bold';
+    hdrTitle.style.cssText = 'font-weight:700;font-size:13px;display:flex;align-items:center;gap:6px;flex:1;min-width:0;';
+    hdrTitle.innerHTML = '<span style="flex-shrink:0">📡</span>';
+    const hdrText = document.createElement('span');
+    hdrText.textContent = this.#name;
+    hdrText.style.cssText = 'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
+    hdrTitle.appendChild(hdrText);
+
     const closeBtn = document.createElement('button');
-    closeBtn.textContent = '✕';
-    closeBtn.style.cssText = 'background:none; border:none; color:#aaa; font-size:16px; cursor:pointer; padding:0 4px; line-height:1;';
+    closeBtn.innerHTML = '&#x2715;';
+    closeBtn.style.cssText = 'background:rgba(255,255,255,0.07);border:none;color:#777;font-size:12px;cursor:pointer;padding:3px 8px;border-radius:5px;line-height:1;flex-shrink:0;';
+    closeBtn.addEventListener('mouseover', () => { closeBtn.style.background='rgba(220,60,60,0.35)'; closeBtn.style.color='#fff'; });
+    closeBtn.addEventListener('mouseout',  () => { closeBtn.style.background='rgba(255,255,255,0.07)'; closeBtn.style.color='#777'; });
     closeBtn.addEventListener('click', () => { thisObj.#menuDiv.style.display = 'none'; });
     hdr.appendChild(hdrTitle);
     hdr.appendChild(closeBtn);
@@ -1617,146 +1625,168 @@ class Radar
 
     // Body
     const body = document.createElement('div');
-    body.style.cssText = 'padding: 14px;';
+    body.style.cssText = 'padding:14px 15px 16px;';
 
-    const mkLabel = (text) => {
+    // Helper: section label
+    const mkSectionLabel = (text) => {
       const l = document.createElement('div');
       l.textContent = text;
-      l.style.cssText = 'color:#aaa; font-size:11px; text-transform:uppercase; letter-spacing:1px; margin-bottom:5px; margin-top:10px;';
+      l.style.cssText = 'color:#4a5060;font-size:10px;text-transform:uppercase;letter-spacing:1.2px;font-weight:600;margin-bottom:6px;margin-top:14px;';
       return l;
     };
 
-    const mkInput = (type, val) => {
-      const i = document.createElement('input');
-      i.type = type;
-      i.value = val;
-      i.style.cssText = 'width:100%; box-sizing:border-box; background:#0d0d1a; border:1px solid #3a3a5c; border-radius:5px; color:white; padding:6px 8px; font-size:13px;';
-      return i;
+    // Helper: styled select
+    const mkSelect = (optList, currentVal, onChange) => {
+      const sel = document.createElement('select');
+      sel.style.cssText = 'width:100%;box-sizing:border-box;background:#0b0b17;border:1px solid #252540;border-radius:6px;color:#d0d0e0;padding:7px 10px;font-size:12px;cursor:pointer;outline:none;';
+      optList.forEach(({value, text}) => {
+        const opt = document.createElement('option');
+        opt.value = value;
+        opt.textContent = text;
+        if (value === currentVal) opt.selected = true;
+        sel.appendChild(opt);
+      });
+      sel.addEventListener('change', function() { onChange(this.value); });
+      return sel;
     };
 
-    // Name
-    body.appendChild(mkLabel('Name'));
-    const nameInput = mkInput('text', this.#name);
-    nameInput.readOnly = true;
-    nameInput.style.cursor = 'default';
-    nameInput.style.userSelect = 'none';
-    nameInput.style.webkitUserSelect = 'none';
-    nameInput.style.mozUserSelect = 'none';
-    nameInput.style.msUserSelect = 'none';
-    nameInput.tabIndex = -1;
-    nameInput.addEventListener('focus', (e) => e.target.blur());
-    nameInput.addEventListener('change', function() { thisObj.#name = this.value; hdrTitle.textContent = '📡 ' + thisObj.#name + ' Settings'; });
-    body.appendChild(nameInput);
+    // Helper: slider group (section header with live value badge + slider)
+    let rangeSlider, rangeValBadge, resSlider, resValBadge, sensSlider, sensValBadge;
 
-    // Product
-    body.appendChild(mkLabel('Product'));
-    const productSelect = document.createElement('select');
-    productSelect.style.cssText = nameInput.style.cssText;
-    ['reflectivity', 'velocity', 'correlation', 'echotops'].forEach(prod => {
-      const opt = document.createElement('option');
-      opt.value = prod;
-      opt.textContent = prod.charAt(0).toUpperCase() + prod.slice(1);
-      if (prod === this.#product) opt.selected = true;
-      productSelect.appendChild(opt);
-    });
-    productSelect.addEventListener('change', function() { thisObj.#product = this.value; });
+    const mkSliderGroup = (text, initVal, unit, min, max, step, onChange) => {
+      const hd = document.createElement('div');
+      hd.style.cssText = 'display:flex;justify-content:space-between;align-items:center;margin-bottom:5px;margin-top:13px;';
+      const lb = document.createElement('span');
+      lb.textContent = text;
+      lb.style.cssText = 'color:#4a5060;font-size:10px;text-transform:uppercase;letter-spacing:1.2px;font-weight:600;';
+      const badge = document.createElement('span');
+      badge.textContent = initVal + unit;
+      badge.style.cssText = 'color:#4a90e2;font-size:11px;font-weight:700;background:rgba(74,144,226,0.13);padding:1px 8px;border-radius:10px;';
+      hd.appendChild(lb);
+      hd.appendChild(badge);
+      const sl = document.createElement('input');
+      sl.type = 'range';
+      sl.min = min; sl.max = max; sl.step = step;
+      sl.value = initVal;
+      sl.style.cssText = 'width:100%;accent-color:#4a90e2;cursor:pointer;margin-top:2px;';
+      sl.addEventListener('input', function() {
+        badge.textContent = onChange(this.value) + unit;
+      });
+      return { hd, sl, badge };
+    };
+
+    // Helper: divider line
+    const mkDivider = () => {
+      const d = document.createElement('div');
+      d.style.cssText = 'border-top:1px solid #1c1c30;margin:10px -15px;';
+      return d;
+    };
+
+    // ── Product ─────────────────────────────────────────────────────
+    body.appendChild(mkSectionLabel('Product'));
+    const productSelect = mkSelect(
+      ['reflectivity','velocity','correlation','echotops'].map(p => ({value:p, text:p.charAt(0).toUpperCase()+p.slice(1)})),
+      this.#product,
+      (v) => { thisObj.#product = v; }
+    );
     body.appendChild(productSelect);
+    body.appendChild(mkDivider());
 
-    // Radar Type Preset
-    body.appendChild(mkLabel('Radar Type Preset'));
-    const presetSelect = document.createElement('select');
-    presetSelect.style.cssText = nameInput.style.cssText;
+    // ── Radar Type Preset ────────────────────────────────────────────
+    body.appendChild(mkSectionLabel('Radar Type Preset'));
     const presets = [
-      { value: 'custom', name: 'Custom', range: 1000, resolution: 100.0, sensitivity: 1.0 },
-      { value: 'L', name: 'L-Band (1-2 GHz) - Long Range', range: 8000, resolution: 20.0, sensitivity: 0.6 },
-      { value: 'S', name: 'S-Band (2-4 GHz) - Weather Radar', range: 6000, resolution: 35.0, sensitivity: 0.8 },
-      { value: 'C', name: 'C-Band (4-8 GHz) - General Purpose', range: 4000, resolution: 55.0, sensitivity: 1.0 },
-      { value: 'X', name: 'X-Band (8-12 GHz) - High Resolution', range: 2000, resolution: 80.0, sensitivity: 1.3 },
-      { value: 'Ku', name: 'Ku-Band (12-18 GHz) - Very High Res', range: 800, resolution: 150.0, sensitivity: 1.6 },
-      { value: 'Ka', name: 'Ka-Band (27-40 GHz) - Extreme Res', range: 400, resolution: 250.0, sensitivity: 2.0 }
+      { value: 'custom', name: 'Custom',                            range: 1000, resolution: 100.0, sensitivity: 1.0 },
+      { value: 'L',      name: 'L-Band (1-2 GHz) — Long Range',    range: 8000, resolution: 20.0,  sensitivity: 0.6 },
+      { value: 'S',      name: 'S-Band (2-4 GHz) — Weather',       range: 6000, resolution: 35.0,  sensitivity: 0.8 },
+      { value: 'C',      name: 'C-Band (4-8 GHz) — General',       range: 4000, resolution: 55.0,  sensitivity: 1.0 },
+      { value: 'X',      name: 'X-Band (8-12 GHz) — High Res',     range: 2000, resolution: 80.0,  sensitivity: 1.3 },
+      { value: 'Ku',     name: 'Ku-Band (12-18 GHz) — Very High',  range: 800,  resolution: 150.0, sensitivity: 1.6 },
+      { value: 'Ka',     name: 'Ka-Band (27-40 GHz) — Extreme',    range: 400,  resolution: 250.0, sensitivity: 2.0 }
     ];
-    presets.forEach(preset => {
-      const opt = document.createElement('option');
-      opt.value = preset.value;
-      opt.textContent = preset.name;
-      if (preset.value === 'custom') opt.selected = true;
-      presetSelect.appendChild(opt);
-    });
-    presetSelect.addEventListener('change', function() {
-      const preset = presets.find(p => p.value === this.value);
-      if (preset && preset.value !== 'custom') {
-        thisObj.#range = preset.range;
-        thisObj.#resolution = preset.resolution;
-        thisObj.#sensitivity = preset.sensitivity;
-        rangeSlider.value = preset.range;
-        rangeLabel.textContent = 'Range: ' + preset.range;
-        resSlider.value = preset.resolution;
-        resLabel.textContent = 'Resolution: ' + preset.resolution.toFixed(1) + 'x';
-        sensSlider.value = preset.sensitivity * 100;
-        sensLabel.textContent = 'Sensitivity: ' + Math.round(preset.sensitivity * 100) + '%';
+    const presetSelect = mkSelect(
+      presets.map(p => ({value:p.value, text:p.name})),
+      'custom',
+      (v) => {
+        const preset = presets.find(p => p.value === v);
+        if (preset && preset.value !== 'custom') {
+          thisObj.#range = preset.range;
+          thisObj.#resolution = preset.resolution;
+          thisObj.#sensitivity = preset.sensitivity;
+          rangeSlider.value = preset.range;
+          rangeValBadge.textContent = preset.range + ' km';
+          resSlider.value = preset.resolution;
+          resValBadge.textContent = preset.resolution.toFixed(1) + 'x';
+          sensSlider.value = preset.sensitivity * 100;
+          sensValBadge.textContent = Math.round(preset.sensitivity * 100) + '%';
+        }
       }
-    });
+    );
     body.appendChild(presetSelect);
+    body.appendChild(mkDivider());
 
-    // Range
-    const rangeLabel = mkLabel('Range: ' + this.#range);
-    body.appendChild(rangeLabel);
-    const rangeSlider = document.createElement('input');
-    rangeSlider.type = 'range';
-    rangeSlider.min = '10';
-    rangeSlider.max = '10000';
-    rangeSlider.value = this.#range;
-    rangeSlider.style.cssText = 'width:100%; margin-top:4px; accent-color:#4a90e2;';
-    rangeSlider.addEventListener('input', function() {
-      thisObj.#range = parseInt(this.value);
-      rangeLabel.textContent = 'Range: ' + thisObj.#range;
-    });
-    body.appendChild(rangeSlider);
+    // ── Parameters ───────────────────────────────────────────────────
+    body.appendChild(mkSectionLabel('Parameters'));
 
-    const resLabel = mkLabel('Resolution: ' + thisObj.#resolution.toFixed(1) + 'x');
-    body.appendChild(resLabel);
-    const resSlider = document.createElement('input');
-    resSlider.type = 'range';
-    resSlider.min = '0.3';
-    resSlider.max = '100.0';
-    resSlider.step = '0.1';
-    resSlider.value = thisObj.#resolution;
-    resSlider.style.cssText = 'width:100%; margin-top:4px; accent-color:#4a90e2;';
-    resSlider.addEventListener('input', function() {
-      thisObj.#resolution = parseFloat(this.value);
-      resLabel.textContent = 'Resolution: ' + thisObj.#resolution.toFixed(1) + 'x';
-    });
-    body.appendChild(resSlider);
+    const { hd: rangeHd, sl: _rs, badge: _rb } = mkSliderGroup(
+      'Range', this.#range, ' km', 10, 10000, 1,
+      (v) => { thisObj.#range = parseInt(v); return parseInt(v); }
+    );
+    rangeSlider = _rs; rangeValBadge = _rb;
+    body.appendChild(rangeHd); body.appendChild(rangeSlider);
 
-    // Sensitivity
-    const sensLabel = mkLabel('Sensitivity: ' + Math.round(thisObj.#sensitivity * 100) + '%');
-    body.appendChild(sensLabel);
-    const sensSlider = document.createElement('input');
-    sensSlider.type = 'range';
-    sensSlider.min = '0';
-    sensSlider.max = '1000';
-    sensSlider.value = thisObj.#sensitivity * 100;
-    sensSlider.style.cssText = 'width:100%; margin-top:4px; accent-color:#4a90e2;';
-    sensSlider.addEventListener('input', function() {
-      thisObj.#sensitivity = parseInt(this.value) / 100;
-      sensLabel.textContent = 'Sensitivity: ' + Math.round(thisObj.#sensitivity * 100) + '%';
-    });
-    body.appendChild(sensSlider);
+    const { hd: resHd, sl: _rss, badge: _rsb } = mkSliderGroup(
+      'Resolution', this.#resolution.toFixed(1), 'x', 0.3, 100.0, 0.1,
+      (v) => { thisObj.#resolution = parseFloat(v); return parseFloat(v).toFixed(1); }
+    );
+    resSlider = _rss; resValBadge = _rsb;
+    body.appendChild(resHd); body.appendChild(resSlider);
 
-    // Enabled toggle
-    body.appendChild(mkLabel('Enabled'));
+    const { hd: sensHd, sl: _ss, badge: _sb } = mkSliderGroup(
+      'Sensitivity', Math.round(thisObj.#sensitivity * 100), '%', 0, 1000, 1,
+      (v) => { thisObj.#sensitivity = parseInt(v) / 100; return Math.round(parseInt(v)); }
+    );
+    sensSlider = _ss; sensValBadge = _sb;
+    body.appendChild(sensHd); body.appendChild(sensSlider);
+    body.appendChild(mkDivider());
+
+    // ── Enabled toggle switch ────────────────────────────────────────
+    const enabledRow = document.createElement('div');
+    enabledRow.style.cssText = 'display:flex;justify-content:space-between;align-items:center;margin-bottom:13px;';
+    const enabledLbl = document.createElement('span');
+    enabledLbl.textContent = 'Enabled';
+    enabledLbl.style.cssText = 'color:#aaa;font-size:12px;';
+
+    const toggleLabel = document.createElement('label');
+    toggleLabel.style.cssText = 'position:relative;display:inline-block;width:44px;height:24px;cursor:pointer;flex-shrink:0;';
     const enabledToggle = document.createElement('input');
     enabledToggle.type = 'checkbox';
     enabledToggle.checked = this.#enabled;
-    enabledToggle.style.cssText = 'width:18px; height:18px; cursor:pointer; accent-color:#4a90e2;';
-    enabledToggle.addEventListener('change', function() { thisObj.setEnabled(this.checked); });
-    body.appendChild(enabledToggle);
+    enabledToggle.style.cssText = 'opacity:0;width:0;height:0;position:absolute;';
+    const isOn = this.#enabled;
+    const toggleTrack = document.createElement('span');
+    toggleTrack.style.cssText = `position:absolute;top:0;left:0;right:0;bottom:0;background:${isOn ? '#3a7ad4' : '#252540'};border-radius:24px;transition:background 0.2s;`;
+    const toggleKnob = document.createElement('span');
+    toggleKnob.style.cssText = `position:absolute;height:18px;width:18px;left:${isOn ? '23px' : '3px'};bottom:3px;background:#fff;border-radius:50%;transition:left 0.2s;box-shadow:0 1px 4px rgba(0,0,0,0.5);`;
+    toggleTrack.appendChild(toggleKnob);
+    toggleLabel.appendChild(enabledToggle);
+    toggleLabel.appendChild(toggleTrack);
 
-    // Select button inside menu
-    body.appendChild(mkLabel(''));
+    enabledToggle.addEventListener('change', function() {
+      thisObj.setEnabled(this.checked);
+      toggleTrack.style.background = this.checked ? '#3a7ad4' : '#252540';
+      toggleKnob.style.left = this.checked ? '23px' : '3px';
+    });
+
+    enabledRow.appendChild(enabledLbl);
+    enabledRow.appendChild(toggleLabel);
+    body.appendChild(enabledRow);
+
+    // ── Select button ────────────────────────────────────────────────
     this.#menuSelectBtn = document.createElement('button');
-    this.#menuSelectBtn.textContent = 'Select';
-    this.#menuSelectBtn.style.cssText = 'width:100%;padding:7px;cursor:pointer;background:#1a1a2e;color:#4a90e2;border:2px solid #4a90e2;border-radius:5px;font-size:13px;font-weight:bold;';
+    this.#menuSelectBtn.textContent = 'Select This Radar';
+    this.#menuSelectBtn.style.cssText = 'width:100%;padding:9px;cursor:pointer;background:linear-gradient(135deg,#1a5535,#1e7045);color:#b0f0c8;border:1px solid #2a9050;border-radius:7px;font-size:13px;font-weight:700;transition:filter 0.15s;';
+    this.#menuSelectBtn.addEventListener('mouseover', () => { thisObj.#menuSelectBtn.style.filter='brightness(1.2)'; });
+    this.#menuSelectBtn.addEventListener('mouseout',  () => { thisObj.#menuSelectBtn.style.filter='brightness(1)'; });
     this.#menuSelectBtn.addEventListener('click', function(event) {
       event.stopPropagation();
       radars.forEach(r => r.setEnabled(false));
@@ -4854,6 +4884,34 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
           });
         }
       });
+
+    // Inject CSS improvements for dat.GUI readability
+    const guiStyle = document.createElement('style');
+    guiStyle.textContent = `
+      .dg.main { border-radius:0 0 6px 6px !important; overflow:hidden; }
+      .dg.main .close-button { height:22px !important; line-height:22px !important;
+        font-size:10px !important; letter-spacing:1.5px !important; }
+      .dg li { border-bottom:1px solid rgba(255,255,255,0.025) !important; }
+      .dg li:not(.folder) { height:27px !important; line-height:27px !important; }
+      .dg .property-name { font-size:11px !important; line-height:27px !important; }
+      .dg .c { line-height:27px !important; }
+      .dg .c input[type=text] { height:17px !important; border-radius:3px !important;
+        font-size:11px !important; }
+      .dg .title { font-size:11px !important; height:24px !important;
+        line-height:24px !important; letter-spacing:0.5px !important;
+        padding:0 8px !important; }
+      .dg .folder > .title { background:rgba(0,0,0,0.25) !important; }
+      .dg .slider { border-radius:3px !important; height:5px !important;
+        margin-top:11px !important; }
+      .dg .slider-fg { border-radius:3px !important; }
+      .dg select { font-size:11px !important; border-radius:3px !important;
+        height:19px !important; }
+      .dg.main::-webkit-scrollbar { width:4px !important; }
+      .dg.main::-webkit-scrollbar-thumb { background:#3a3a5c !important;
+        border-radius:2px !important; }
+      .dg.main::-webkit-scrollbar-track { background:#1a1a2e !important; }
+    `;
+    document.head.appendChild(guiStyle);
     }, 200);
 
     // Ensure new properties have default values if not present in save file
@@ -6242,16 +6300,68 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         columnPressure[y] = cumPressAnomaly;
       }
 
-      const infoBoxWidth = 310;
-      const infoBoxX = graphCanvas.width - infoBoxWidth - 75;
-      const infoBoxY = 12;
       const lineHeight = 19;
+      const infoBoxY = 12;
+
+      // Pre-compute DCAPE for hazard scoring
+      let dcape = 0;
+      {
+        const y4km = surfaceLevel + Math.round(4000 / dz);
+        const y8km = Math.min(surfaceLevel + Math.round(8000 / dz), sim_res_y - 1);
+        let minThetaE = Infinity, dcapeStartY = y4km;
+        for (let y = y4km; y <= y8km; y++) {
+          const tK  = CtoK(envTempsC[y]);
+          const thetaE = tK + 2500 * Math.max(waterTextureValues[4*y], 0) / 1004;
+          if (thetaE < minThetaE) { minThetaE = thetaE; dcapeStartY = y; }
+        }
+        const startTk = CtoK(envTempsC[dcapeStartY]);
+        let parcelTk  = startTk;
+        let prevBuoy2 = 0;
+        for (let y = dcapeStartY - 1; y >= surfaceLevel; y--) {
+          const envTk = CtoK(envTempsC[y]);
+          parcelTk += 9.8 * dz / 1000.0;
+          const buoy = 9.81 * (envTk - parcelTk) / parcelTk;
+          if (buoy < 0) {
+            const avgBuoy = (Math.abs(buoy) + Math.abs(prevBuoy2)) / 2;
+            dcape += avgBuoy * dz;
+          }
+          prevBuoy2 = buoy;
+        }
+      }
+
+      // Pre-compute hazards so we can size the box dynamically
+      const hazards = [];
+      {
+        const _add = (label, color, score) => {
+          if (score > 1) hazards.push({ label, color, pct: Math.min(100, Math.round(score)) });
+        };
+        { let s = 0; if (vtp >= 4) s += map_range(vtp, 4, 10, 20, 60); if (stp >= 6) s += map_range(stp, 6, 15, 10, 30); if ((muLcl || 9999) < 500) s += 10; if (muCape >= 3000) s += map_range(muCape, 3000, 6000, 0, 20); _add('PDS Tornado', '#FF00FF', s); }
+        { let s = 0; if (vtp >= 2) s += map_range(vtp, 2, 8, 15, 50); if (stp >= 2) s += map_range(stp, 2, 10, 15, 40); if ((muLcl || 9999) < 1000) s += 10; if (shear3km >= 10) s += map_range(shear3km, 10, 25, 5, 20); _add('Tornado', '#FF0066', s); }
+        { let s = 0; if (muCape >= 500 && shear6km >= 15) { s += map_range(muCape, 500, 3000, 10, 40); s += map_range(shear6km, 15, 35, 10, 40); if (srh3km > 150) s += map_range(srh3km, 150, 500, 5, 20); } _add('Supercell', '#FF4400', s); }
+        { let s = 0; if (!isNaN(lapse03) && lapse03 >= 8.0 && muCape >= 1500 && shear6km >= 20) { s += map_range(lapse03, 8.0, 10.0, 20, 50); s += map_range(muCape, 1500, 5000, 10, 30); s += map_range(shear6km, 20, 40, 5, 20); } _add('Giant Hail', '#AA00FF', s); }
+        { let s = 0; if (!isNaN(lapse03) && lapse03 >= 7.0 && muCape >= 1000) { s += map_range(lapse03, 7.0, 9.5, 15, 45); s += map_range(muCape, 1000, 4000, 10, 30); if (shear6km >= 15) s += map_range(shear6km, 15, 30, 5, 20); } _add('Large Hail', '#FF8800', s); }
+        { let s = 0; if (!isNaN(lapse03) && lapse03 >= 6.5 && muCape >= 300) { s += map_range(lapse03, 6.5, 9.0, 10, 35); s += map_range(muCape, 300, 2000, 5, 25); } _add('Hail', '#FFCC00', s); }
+        { let s = 0; if (dcape >= 600) s += map_range(dcape, 600, 1500, 15, 55); if (shear6km >= 15) s += map_range(shear6km, 15, 35, 5, 25); if (muCape >= 500) s += map_range(muCape, 500, 3000, 5, 20); _add('Destructive Winds', '#FF4400', s); }
+        { let s = 0; if (dcape >= 300) s += map_range(dcape, 300, 900, 10, 40); if (shear6km >= 10 && muCape >= 300) s += map_range(shear6km, 10, 25, 5, 25); _add('Damaging Winds', '#FF8800', s); }
+        { let s = 0; if (pwat_mm >= 20 && muCape >= 200) { s += map_range(pwat_mm, 20, 55, 10, 55); s += map_range(muCape, 200, 2000, 5, 25); if (shear6km < 15) s += 15; } _add('Flooding/Heavy Rain', '#0088FF', s); }
+        { let s = 0; if (muCape >= 100) s += map_range(muCape, 100, 1000, 10, 50); _add('General Thunderstorm', '#AAAAAA', s); }
+        hazards.sort((a, b) => b.pct - a.pct);
+      }
+
+      // Dynamic box height: fixed rows + hazard section + padding
+      const numFixedRows = 24; // 21 data rows + "Hazards:" header + "Risk:" + "Fire Risk:"
+      const hazardItemsH = hazards.length === 0
+        ? lineHeight
+        : hazards.length * (lineHeight + 4) + 2;
+      const infoBoxHeight = 16 + numFixedRows * lineHeight + hazardItemsH;
+
+      const infoBoxWidth = 320;
+      const infoBoxX = graphCanvas.width - infoBoxWidth - 75;
       const textX = infoBoxX + 8;
       let textY = infoBoxY + 8;
-      const numLines = 32;
 
       c.fillStyle = 'rgba(0, 0, 0, 0.60)';
-      c.fillRect(infoBoxX, infoBoxY, infoBoxWidth, lineHeight * numLines + 16);
+      c.fillRect(infoBoxX, infoBoxY, infoBoxWidth, infoBoxHeight);
 
       c.font = '13px monospace';
       c.textAlign = 'left';
@@ -6288,144 +6398,13 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       row('0-8km Shear:', printVelocity(shear8km));
       row('Lapse 0-3km:', isNaN(lapse03) ? 'N/A' : lapse03.toFixed(1) + ' °C/km', lapse03 > 8 ? '#FF8800' : 'white');
       row('Lapse 3-6km:', isNaN(lapse36) ? 'N/A' : lapse36.toFixed(1) + ' °C/km');
-      // DCAPE: downdraft CAPE - descend a parcel from level of min thetaE in 4-8km layer
-      let dcape = 0;
-      {
-        // Find level of minimum equivalent potential temperature between 4-8km AGL
-        const y4km = surfaceLevel + Math.round(4000 / dz);
-        const y8km = Math.min(surfaceLevel + Math.round(8000 / dz), sim_res_y - 1);
-        let minThetaE = Infinity, dcapeStartY = y4km;
-        for (let y = y4km; y <= y8km; y++) {
-          const tK  = CtoK(envTempsC[y]);
-          // Equivalent potential temperature proxy: T + Lv/cp * w  (simplified)
-          const thetaE = tK + 2500 * Math.max(waterTextureValues[4*y], 0) / 1004;
-          if (thetaE < minThetaE) { minThetaE = thetaE; dcapeStartY = y; }
-        }
-        // Descend parcel dry-adiabatically to surface
-        const startTk = CtoK(envTempsC[dcapeStartY]);
-        let parcelTk  = startTk;
-        let prevBuoy = 0;
-        for (let y = dcapeStartY - 1; y >= surfaceLevel; y--) {
-          const envTk = CtoK(envTempsC[y]);
-          parcelTk += 9.8 * dz / 1000.0; // dry adiabatic descent (warming as it descends)
-          const buoy = 9.81 * (envTk - parcelTk) / parcelTk; // negative = parcel colder than environment = downdraft energy
-          
-          // Integrate using trapezoidal rule for better accuracy
-          if (buoy < 0) {
-            const avgBuoy = (Math.abs(buoy) + Math.abs(prevBuoy)) / 2;
-            dcape += avgBuoy * dz;
-          }
-          prevBuoy = buoy;
-        }
-      }
-
+      // dcape already pre-computed above for dynamic box sizing
       row('STP:', stp.toFixed(2), stp >= 1 ? '#FF8800' : 'white');
       row('VTP:', vtp.toFixed(2), vtp >= 1 ? '#FF4400' : 'white');
       row('DCAPE:', Math.round(dcape) + ' J/kg', dcape > 1000 ? '#FF4400' : dcape > 500 ? '#FFAA00' : 'white');
 
-      // Hazard probability list — score each hazard independently and show all
-      (function() {
-        // Each hazard gets a 0–100% score based on how well conditions match.
-        // Scores are independent so multiple hazards can show simultaneously.
-        const hazards = [];
-
-        function addHazard(label, color, score) {
-          if (score > 1) hazards.push({ label, color, pct: Math.min(100, Math.round(score)) });
-        }
-
-        // PDS Tornado
-        {
-          let s = 0;
-          if (vtp >= 4)  s += map_range(vtp, 4, 10, 20, 60);
-          if (stp >= 6)  s += map_range(stp, 6, 15, 10, 30);
-          if ((muLcl || 9999) < 500) s += 10;
-          if (muCape >= 3000) s += map_range(muCape, 3000, 6000, 0, 20);
-          addHazard('PDS Tornado', '#FF00FF', s);
-        }
-        // Tornado
-        {
-          let s = 0;
-          if (vtp >= 2)  s += map_range(vtp, 2, 8, 15, 50);
-          if (stp >= 2)  s += map_range(stp, 2, 10, 15, 40);
-          if ((muLcl || 9999) < 1000) s += 10;
-          if (shear3km >= 10) s += map_range(shear3km, 10, 25, 5, 20);
-          addHazard('Tornado', '#FF0066', s);
-        }
-        // Supercell
-        {
-          let s = 0;
-          if (muCape >= 500 && shear6km >= 15) {
-            s += map_range(muCape, 500, 3000, 10, 40);
-            s += map_range(shear6km, 15, 35, 10, 40);
-            if (srh3km > 150) s += map_range(srh3km, 150, 500, 5, 20);
-          }
-          addHazard('Supercell', '#FF4400', s);
-        }
-        // Giant Hail
-        {
-          let s = 0;
-          if (!isNaN(lapse03) && lapse03 >= 8.0 && muCape >= 1500 && shear6km >= 20) {
-            s += map_range(lapse03, 8.0, 10.0, 20, 50);
-            s += map_range(muCape, 1500, 5000, 10, 30);
-            s += map_range(shear6km, 20, 40, 5, 20);
-          }
-          addHazard('Giant Hail', '#AA00FF', s);
-        }
-        // Large Hail
-        {
-          let s = 0;
-          if (!isNaN(lapse03) && lapse03 >= 7.0 && muCape >= 1000) {
-            s += map_range(lapse03, 7.0, 9.5, 15, 45);
-            s += map_range(muCape, 1000, 4000, 10, 30);
-            if (shear6km >= 15) s += map_range(shear6km, 15, 30, 5, 20);
-          }
-          addHazard('Large Hail', '#FF8800', s);
-        }
-        // Hail
-        {
-          let s = 0;
-          if (!isNaN(lapse03) && lapse03 >= 6.5 && muCape >= 300) {
-            s += map_range(lapse03, 6.5, 9.0, 10, 35);
-            s += map_range(muCape, 300, 2000, 5, 25);
-          }
-          addHazard('Hail', '#FFCC00', s);
-        }
-        // Destructive Winds
-        {
-          let s = 0;
-          if (dcape >= 600) s += map_range(dcape, 600, 1500, 15, 55);
-          if (shear6km >= 15) s += map_range(shear6km, 15, 35, 5, 25);
-          if (muCape >= 500) s += map_range(muCape, 500, 3000, 5, 20);
-          addHazard('Destructive Winds', '#FF4400', s);
-        }
-        // Damaging Winds
-        {
-          let s = 0;
-          if (dcape >= 300) s += map_range(dcape, 300, 900, 10, 40);
-          if (shear6km >= 10 && muCape >= 300) s += map_range(shear6km, 10, 25, 5, 25);
-          addHazard('Damaging Winds', '#FF8800', s);
-        }
-        // Flooding / Heavy Rainfall
-        {
-          let s = 0;
-          if (pwat_mm >= 20 && muCape >= 200) {
-            s += map_range(pwat_mm, 20, 55, 10, 55);
-            s += map_range(muCape, 200, 2000, 5, 25);
-            if (shear6km < 15) s += 15; // slow-moving storms flood more
-          }
-          addHazard('Flooding/Heavy Rain', '#0088FF', s);
-        }
-        // General Thunderstorm (always shown if any CAPE)
-        {
-          let s = 0;
-          if (muCape >= 100) s += map_range(muCape, 100, 1000, 10, 50);
-          addHazard('General Thunderstorm', '#AAAAAA', s);
-        }
-
-        // Sort by score descending
-        hazards.sort((a, b) => b.pct - a.pct);
-
-        // Draw header
+      // Hazard probability list — draw using pre-computed hazards array
+      {
         c.fillStyle = '#AAAAAA';
         c.font = '12px monospace';
         c.fillText('Hazards:', textX, textY);
@@ -6437,21 +6416,16 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
           c.fillText('  None', textX, textY);
           textY += lineHeight;
         } else {
-          // Draw each hazard with a mini bar
           const barMaxW = 80;
           hazards.forEach(h => {
-            // Bar background (drawn first at bottom)
             c.fillStyle = '#333333';
             c.fillRect(textX + 4, textY + 8, barMaxW, 5);
-            // Bar fill
             c.fillStyle = h.color;
             c.fillRect(textX + 4, textY + 8, Math.round(barMaxW * h.pct / 100), 5);
-            // Percentage text (drawn above bar)
             const pctStr = h.pct + '%';
             c.fillStyle = '#cccccc';
             c.font = '10px monospace';
             c.fillText(pctStr, textX + 4, textY);
-            // Label (drawn after percentage)
             c.fillStyle = h.color;
             c.font = '10px monospace';
             c.fillText(h.label, textX + 4 + barMaxW + 4, textY);
@@ -6459,7 +6433,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
           });
           textY += 2;
         }
-      })();
+      }
 
       // Risk row with colored label
       c.fillStyle = '#AAAAAA';
@@ -8782,105 +8756,168 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   function buildColorScaleEditor() {
     const styleEl = document.createElement('style');
     styleEl.textContent = `
-      #colorScalePanel{display:none;position:fixed;top:50px;right:420px;width:500px;
-        background:#16162a;border:1px solid #4a4a7a;border-radius:8px;padding:15px;
-        z-index:10000;font-family:Arial,sans-serif;color:#eee;max-height:90vh;
-        overflow-y:auto;box-shadow:0 4px 24px rgba(0,0,0,.65);}
-      .cse-hdr{display:flex;align-items:center;margin-bottom:12px;}
-      .cse-hdr span{font-size:16px;font-weight:700;flex:1;}
-      .cse-close{background:transparent;border:none;color:#888;cursor:pointer;font-size:20px;padding:0;}
-      .cse-close:hover{color:#fff;}
-      .cse-tabs{display:flex;gap:4px;flex-wrap:wrap;margin-bottom:10px;}
-      .cse-tab{padding:6px 12px;border:1px solid #555;border-radius:4px;background:#23233d;
-        color:#aaa;cursor:pointer;font-size:12px;}
-      .cse-tab.active{background:#2a4a9a;color:#fff;border-color:#5070cc;}
-      .cse-grad{height:24px;border-radius:4px;margin-bottom:10px;border:1px solid #444;}
-      .cse-stops{max-height:350px;overflow-y:auto;display:grid;
-        grid-template-columns:repeat(6,1fr);gap:6px;margin-bottom:12px;}
-      .cse-stop{display:flex;flex-direction:column;align-items:center;gap:4px;}
-      .cse-stop-lbl{font-size:10px;color:#666;}
-      .cse-stop-val{width:70px;height:22px;border:1px solid #444;border-radius:3px;
-        background:#23233d;color:#ccc;font-size:11px;text-align:center;padding:2px;}
-      .cse-stop input[type=color]{width:50px;height:28px;border:1px solid #444;
-        border-radius:3px;padding:0;cursor:pointer;}
-      .cse-stop-btns{display:flex;gap:2px;}
-      .cse-btn-sm{padding:2px 6px;border:1px solid #555;border-radius:2px;background:#23233d;
-        color:#aaa;cursor:pointer;font-size:9px;}
-      .cse-btn-sm:hover{background:#2a4a9a;color:#fff;}
-      .cse-io-lbl{font-size:11px;color:#888;margin-bottom:4px;}
+      #colorScalePanel{display:none;position:fixed;top:50px;right:420px;width:520px;
+        background:#13131f;border:1px solid #252540;border-radius:10px;
+        z-index:10000;font-family:Arial,sans-serif;color:#eee;max-height:92vh;
+        overflow:hidden;box-shadow:0 8px 32px rgba(0,0,0,0.75);}
+      .cse-hdr{display:flex;align-items:center;gap:8px;padding:11px 15px;
+        background:linear-gradient(135deg,#191930,#0e0e22);
+        border-bottom:1px solid #252540;cursor:move;user-select:none;flex-shrink:0;}
+      .cse-hdr span{font-size:14px;font-weight:700;flex:1;}
+      .cse-close{background:rgba(255,255,255,0.07);border:none;color:#777;cursor:pointer;
+        font-size:12px;padding:3px 8px;border-radius:5px;line-height:1;flex-shrink:0;}
+      .cse-close:hover{background:rgba(220,60,60,0.35);color:#fff;}
+      .cse-body{padding:14px 15px 16px;overflow-y:auto;max-height:calc(92vh - 46px);
+        scrollbar-width:thin;scrollbar-color:#252540 #0d0d18;}
+      .cse-body::-webkit-scrollbar{width:4px;}
+      .cse-body::-webkit-scrollbar-thumb{background:#252540;border-radius:2px;}
+      .cse-tabs{display:flex;gap:3px;flex-wrap:wrap;margin-bottom:12px;}
+      .cse-tab{padding:5px 11px;border:1px solid #252540;border-radius:20px;
+        background:#13131f;color:#5a6070;cursor:pointer;font-size:11px;
+        font-weight:600;transition:all 0.15s;}
+      .cse-tab:hover{background:#1e1e38;color:#aaa;border-color:#3a3a60;}
+      .cse-tab.active{background:#1e3080;color:#a0c0ff;border-color:#3050c0;}
+      .cse-grad{height:32px;border-radius:6px;margin-bottom:12px;border:1px solid #252540;}
+      .cse-stops{display:flex;flex-direction:column;gap:2px;margin-bottom:12px;
+        max-height:240px;overflow-y:auto;
+        scrollbar-width:thin;scrollbar-color:#252540 #0d0d18;}
+      .cse-stops::-webkit-scrollbar{width:4px;}
+      .cse-stops::-webkit-scrollbar-thumb{background:#252540;border-radius:2px;}
+      .cse-stop{display:flex;align-items:center;gap:6px;padding:3px 6px;
+        border-radius:5px;cursor:pointer;border:1px solid transparent;}
+      .cse-stop:hover{background:#191930;}
+      .cse-stop.selected{background:#121c40;border-color:#2a3a80;}
+      .cse-stop-idx{width:22px;font-size:10px;color:#3a3a60;text-align:right;
+        flex-shrink:0;font-weight:600;}
+      .cse-stop input[type=color]{width:38px;height:24px;border:1px solid #252540;
+        border-radius:4px;padding:1px;cursor:pointer;flex-shrink:0;background:#0d0d18;}
+      .cse-stop-val{flex:1;height:24px;border:1px solid #252540;border-radius:4px;
+        background:#0d0d18;color:#c0c0d0;font-size:11px;text-align:right;
+        padding:2px 7px;min-width:0;box-sizing:border-box;}
+      .cse-stop-val:focus{outline:none;border-color:#3050c0;}
+      .cse-stop-btns{display:flex;gap:3px;flex-shrink:0;}
+      .cse-btn-sm{padding:2px 8px;border:1px solid #252540;border-radius:4px;
+        background:#181828;color:#666;cursor:pointer;font-size:10px;
+        font-weight:600;transition:all 0.12s;}
+      .cse-btn-sm:hover{background:#1e3080;color:#a0c0ff;border-color:#3050c0;}
+      .cse-btn-sm.active{background:#1e3080;color:#a0c0ff;border-color:#3050c0;}
+      .cse-controls{display:flex;gap:6px;margin-bottom:8px;}
+      .cse-ctrl-btn{flex:1;padding:7px 4px;border:1px solid #252540;border-radius:5px;
+        background:#181828;color:#777;cursor:pointer;font-size:11px;font-weight:600;
+        transition:all 0.12s;text-align:center;}
+      .cse-ctrl-btn:hover{background:#1e3080;color:#a0c0ff;border-color:#3050c0;}
+      .cse-ctrl-btn.add{background:#1a4030;border-color:#2a6040;color:#70c090;}
+      .cse-ctrl-btn.add:hover{background:#1e5038;color:#90e0b0;}
+      .cse-ctrl-btn.remove{background:#401828;border-color:#602030;color:#c06070;}
+      .cse-ctrl-btn.remove:hover{background:#501830;color:#e08090;}
+      .cse-ctrl-btn.copy{background:#182840;border-color:#203860;color:#6090c0;}
+      .cse-ctrl-btn.copy:hover{background:#203050;color:#80b0e0;}
+      .cse-ctrl-btn.paste{background:#282040;border-color:#382860;color:#8070c0;}
+      .cse-ctrl-btn.paste:hover{background:#302850;color:#a090e0;}
+      .cse-offset-row{display:flex;gap:4px;margin-bottom:8px;align-items:center;}
+      .cse-offset-lbl{font-size:10px;color:#4a5060;text-transform:uppercase;
+        letter-spacing:1px;font-weight:600;flex-shrink:0;margin-right:2px;}
+      .cse-offset-btn{flex:1;padding:5px 2px;border:1px solid #252540;border-radius:4px;
+        background:#181828;color:#666;cursor:pointer;font-size:10px;font-weight:700;
+        text-align:center;transition:all 0.12s;}
+      .cse-offset-btn:hover{background:#1e3080;color:#a0c0ff;border-color:#3050c0;}
+      .cse-offset-btn.neg{color:#c06070;}
+      .cse-offset-btn.neg:hover{background:#401828;color:#e08090;border-color:#602030;}
+      .cse-divider{border-top:1px solid #1c1c30;margin:10px -15px 12px;}
+      .cse-opt-row{display:flex;align-items:center;margin-bottom:10px;padding:8px 10px;
+        background:#0e0e1a;border:1px solid #1e1e38;border-radius:6px;}
+      .cse-opt-lbl{display:flex;align-items:center;gap:8px;color:#888;font-size:12px;cursor:pointer;}
+      .cse-opt-lbl input[type=checkbox]{width:15px;height:15px;cursor:pointer;accent-color:#4a90e2;}
+      .cse-io-lbl{font-size:10px;color:#4a5060;text-transform:uppercase;
+        letter-spacing:1.2px;font-weight:600;margin-bottom:6px;}
       .cse-format-row{display:flex;gap:8px;margin-bottom:8px;align-items:center;}
-      .cse-format-sel{flex:1;padding:6px;border:1px solid #444;border-radius:4px;
-        background:#23233d;color:#ccc;font-size:11px;}
-      .cse-json{width:100%;height:120px;background:#111;color:#ccc;border:1px solid #444;
-        border-radius:4px;padding:6px;font-size:11px;resize:vertical;box-sizing:border-box;}
+      .cse-format-sel{flex:1;padding:6px 9px;border:1px solid #252540;border-radius:5px;
+        background:#0b0b17;color:#c0c0d0;font-size:11px;outline:none;}
+      .cse-json{width:100%;height:110px;background:#080812;color:#b0c0b0;
+        border:1px solid #252540;border-radius:5px;padding:7px;font-size:11px;
+        resize:vertical;box-sizing:border-box;font-family:monospace;}
+      .cse-json:focus{outline:none;border-color:#3050c0;}
       .cse-btns{display:flex;gap:8px;margin-top:8px;}
-      .cse-btn{flex:1;padding:8px;border:none;border-radius:4px;cursor:pointer;font-size:12px;color:#fff;}
-      .cse-btn-imp{background:#2a7a4a;} .cse-btn-exp{background:#2a4a8a;}
-      .cse-controls{display:flex;gap:8px;margin-bottom:10px;}
-      .cse-ctrl-btn{flex:1;padding:8px;border:1px solid #555;border-radius:4px;background:#23233d;
-        color:#aaa;cursor:pointer;font-size:12px;}
-      .cse-ctrl-btn:hover{background:#2a4a9a;color:#fff;}
-      .cse-ctrl-btn.add{background:#2a7a4a;border-color:#3a9a5a;color:#fff;}
-      .cse-ctrl-btn.remove{background:#7a2a4a;border-color:#9a3a5a;color:#fff;}
-      .cse-ctrl-btn.copy{background:#2a5a7a;border-color:#4a7a9a;color:#fff;}
-      .cse-ctrl-btn.paste{background:#5a7a2a;border-color:#7a9a4a;color:#fff;}
-      .cse-opt-row{display:flex;align-items:center;margin-bottom:10px;padding:8px;
-        background:#1a1a2e;border:1px solid #333;border-radius:4px;}
-      .cse-opt-lbl{display:flex;align-items:center;gap:8px;color:#aaa;font-size:12px;cursor:pointer;}
-      .cse-opt-lbl input[type=checkbox]{width:16px;height:16px;cursor:pointer;}
+      .cse-btn{flex:1;padding:8px;border:none;border-radius:5px;cursor:pointer;
+        font-size:12px;font-weight:700;color:#fff;transition:filter 0.12s;}
+      .cse-btn:hover{filter:brightness(1.2);}
+      .cse-btn-imp{background:#1a5030;} .cse-btn-exp{background:#182040;}
     `;
     document.head.appendChild(styleEl);
 
     const panel = document.createElement('div');
     panel.id = 'colorScalePanel';
     panel.innerHTML = `
-      <div class="cse-hdr"><span>Color Scale Editor</span>
+      <div class="cse-hdr"><span>🎨 Color Scale Editor</span>
         <button class="cse-close" title="Close">✕</button></div>
-      <div class="cse-tabs" id="cse-tabs"></div>
-      <div class="cse-grad" id="cse-grad"></div>
-      <div class="cse-controls">
-        <button class="cse-ctrl-btn add" id="cse-add">+ Add Stop</button>
-        <button class="cse-ctrl-btn remove" id="cse-remove">- Remove Stop</button>
-        <button class="cse-ctrl-btn copy" id="cse-copy">Copy Color</button>
-        <button class="cse-ctrl-btn paste" id="cse-paste">Paste Color</button>
-        <button class="cse-ctrl-btn" id="cse-update">Update</button>
-      </div>
-      <div class="cse-controls">
-        <button class="cse-ctrl-btn" id="cse-add5">+5 to All</button>
-        <button class="cse-ctrl-btn" id="cse-add10">+10 to All</button>
-        <button class="cse-ctrl-btn" id="cse-add20">+20 to All</button>
-        <button class="cse-ctrl-btn" id="cse-add50">+50 to All</button>
-      </div>
-      <div class="cse-controls">
-        <button class="cse-ctrl-btn" id="cse-sub5">-5 to All</button>
-        <button class="cse-ctrl-btn" id="cse-sub10">-10 to All</button>
-        <button class="cse-ctrl-btn" id="cse-sub20">-20 to All</button>
-        <button class="cse-ctrl-btn" id="cse-sub50">-50 to All</button>
-      </div>
-      <div class="cse-opt-row">
-        <label class="cse-opt-lbl">
-          <input type="checkbox" id="cse-interpolate"> Enable smooth interpolation
-        </label>
-      </div>
-      <div class="cse-stops" id="cse-stops"></div>
-      <div class="cse-io-lbl">Import / Export</div>
-      <div class="cse-format-row">
-        <span class="cse-io-lbl">Format:</span>
-        <select class="cse-format-sel" id="cse-format">
-          <option value="json">JSON hex array (Current)</option>
-          <option value="windy">Windy format</option>
-          <option value="radarscope">RadarScope format</option>
-          <option value="wxtools">wxtools.org / GR2 format</option>
-        </select>
-      </div>
-      <textarea class="cse-json" id="cse-json"></textarea>
-      <div class="cse-btns">
-        <button class="cse-btn cse-btn-imp" id="cse-import">Import</button>
-        <button class="cse-btn cse-btn-exp" id="cse-export">Copy to Clipboard</button>
-      </div>
+      <div class="cse-body">
+        <div class="cse-tabs" id="cse-tabs"></div>
+        <div class="cse-grad" id="cse-grad"></div>
+        <div class="cse-controls">
+          <button class="cse-ctrl-btn add" id="cse-add">+ Add</button>
+          <button class="cse-ctrl-btn remove" id="cse-remove">− Remove</button>
+          <button class="cse-ctrl-btn copy" id="cse-copy">Copy</button>
+          <button class="cse-ctrl-btn paste" id="cse-paste">Paste</button>
+          <button class="cse-ctrl-btn" id="cse-update">↺ Apply</button>
+        </div>
+        <div class="cse-offset-row">
+          <span class="cse-offset-lbl">Offset:</span>
+          <button class="cse-offset-btn neg" id="cse-sub50">−50</button>
+          <button class="cse-offset-btn neg" id="cse-sub20">−20</button>
+          <button class="cse-offset-btn neg" id="cse-sub10">−10</button>
+          <button class="cse-offset-btn neg" id="cse-sub5">−5</button>
+          <button class="cse-offset-btn" id="cse-add5">+5</button>
+          <button class="cse-offset-btn" id="cse-add10">+10</button>
+          <button class="cse-offset-btn" id="cse-add20">+20</button>
+          <button class="cse-offset-btn" id="cse-add50">+50</button>
+        </div>
+        <div class="cse-opt-row">
+          <label class="cse-opt-lbl">
+            <input type="checkbox" id="cse-interpolate"> Smooth interpolation
+          </label>
+        </div>
+        <div class="cse-stops" id="cse-stops"></div>
+        <div class="cse-divider"></div>
+        <div class="cse-io-lbl">Import / Export</div>
+        <div class="cse-format-row">
+          <span class="cse-io-lbl" style="margin-bottom:0;white-space:nowrap">Format:</span>
+          <select class="cse-format-sel" id="cse-format">
+            <option value="json">JSON hex array</option>
+            <option value="windy">Windy format</option>
+            <option value="radarscope">RadarScope format</option>
+            <option value="wxtools">wxtools.org / GR2 format</option>
+          </select>
+        </div>
+        <textarea class="cse-json" id="cse-json"></textarea>
+        <div class="cse-btns">
+          <button class="cse-btn cse-btn-imp" id="cse-import">↓ Import</button>
+          <button class="cse-btn cse-btn-exp" id="cse-export">⎘ Copy to Clipboard</button>
+        </div>
       </div>`;
     document.body.appendChild(panel);
     panel.querySelector('.cse-close').onclick = () => { panel.style.display = 'none'; };
+
+    // Drag support for CSE panel
+    {
+      let cseDragX = 0, cseDragY = 0, cseDragging = false;
+      const cseHdr = panel.querySelector('.cse-hdr');
+      cseHdr.addEventListener('mousedown', (e) => {
+        if (e.target.classList.contains('cse-close')) return;
+        cseDragging = true;
+        const r = panel.getBoundingClientRect();
+        cseDragX = e.clientX - r.left;
+        cseDragY = e.clientY - r.top;
+        e.preventDefault();
+      });
+      document.addEventListener('mousemove', (e) => {
+        if (!cseDragging) return;
+        panel.style.right = 'auto';
+        panel.style.bottom = 'auto';
+        panel.style.left = (e.clientX - cseDragX) + 'px';
+        panel.style.top  = (e.clientY - cseDragY) + 'px';
+      });
+      document.addEventListener('mouseup', () => { cseDragging = false; });
+    }
 
     let activeId = 'temperature';
     const rgb2hex = (r, g, b) => '#' + [r, g, b].map(v => v.toString(16).padStart(2, '0')).join('');
@@ -9008,38 +9045,19 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       const values = colorScaleValues[cfg.id];
       colors.forEach((color, i) => {
         const item = document.createElement('div');
-        item.className = 'cse-stop';
-        if (i === selectedStopIndex) {
-          item.style.border = '2px solid #5070cc';
-          item.style.borderRadius = '4px';
-          item.style.padding = '2px';
-        }
-        const lbl = document.createElement('div');
-        lbl.className = 'cse-stop-lbl';
-        lbl.textContent = i;
-        const valInput = document.createElement('input');
-        valInput.type = 'number';
-        valInput.className = 'cse-stop-val';
-        valInput.value = values[i];
-        valInput.title = 'Value for stop ' + i;
-        valInput.step = '0.1';
-        valInput.addEventListener('input', (e) => {
-          e.stopPropagation();
-          colorScaleValues[cfg.id][i] = parseFloat(valInput.value) || 0;
-          refreshGrad(cfg);
-          refreshJson(cfg);
-          uploadColorScaleTexture();
-        });
-        valInput.addEventListener('click', (e) => {
-          e.stopPropagation();
-        });
-        valInput.addEventListener('mousedown', (e) => {
-          e.stopPropagation();
-        });
+        item.className = 'cse-stop' + (i === selectedStopIndex ? ' selected' : '');
+        item.onclick = () => { selectedStopIndex = i; renderStops(cfg); };
+
+        // Index badge
+        const idx = document.createElement('span');
+        idx.className = 'cse-stop-idx';
+        idx.textContent = i;
+
+        // Color picker
         const picker = document.createElement('input');
         picker.type = 'color';
         picker.value = rgb2hex(...color);
-        picker.title = 'Stop ' + i;
+        picker.title = 'Stop ' + i + ' color';
         picker.addEventListener('input', (e) => {
           e.stopPropagation();
           colorScaleData[cfg.id][i] = hex2rgb(picker.value);
@@ -9047,14 +9065,30 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
           refreshJson(cfg);
           uploadColorScaleTexture();
         });
-        picker.addEventListener('click', (e) => {
+        picker.addEventListener('click', (e) => e.stopPropagation());
+        picker.addEventListener('mousedown', (e) => e.stopPropagation());
+
+        // Value input
+        const valInput = document.createElement('input');
+        valInput.type = 'number';
+        valInput.className = 'cse-stop-val';
+        valInput.value = values[i];
+        valInput.step = '0.1';
+        valInput.title = 'Value for stop ' + i;
+        valInput.addEventListener('input', (e) => {
           e.stopPropagation();
+          colorScaleValues[cfg.id][i] = parseFloat(valInput.value) || 0;
+          refreshGrad(cfg);
+          refreshJson(cfg);
+          uploadColorScaleTexture();
         });
-        picker.addEventListener('mousedown', (e) => {
-          e.stopPropagation();
-        });
+        valInput.addEventListener('click', (e) => e.stopPropagation());
+        valInput.addEventListener('mousedown', (e) => e.stopPropagation());
+
+        // Action buttons
         const btns = document.createElement('div');
         btns.className = 'cse-stop-btns';
+
         const copyBtn = document.createElement('button');
         copyBtn.className = 'cse-btn-sm';
         copyBtn.textContent = 'Copy';
@@ -9064,6 +9098,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
           copyBtn.textContent = '✓';
           setTimeout(() => copyBtn.textContent = 'Copy', 1000);
         };
+
         const pasteBtn = document.createElement('button');
         pasteBtn.className = 'cse-btn-sm';
         pasteBtn.textContent = 'Paste';
@@ -9077,25 +9112,24 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
             uploadColorScaleTexture();
           }
         };
-        const selectBtn = document.createElement('button');
-        selectBtn.className = 'cse-btn-sm';
-        selectBtn.textContent = 'Sel';
-        selectBtn.onclick = (e) => {
+
+        const selBtn = document.createElement('button');
+        selBtn.className = 'cse-btn-sm' + (i === selectedStopIndex ? ' active' : '');
+        selBtn.textContent = 'Sel';
+        selBtn.onclick = (e) => {
           e.stopPropagation();
           selectedStopIndex = i;
           renderStops(cfg);
         };
+
         btns.appendChild(copyBtn);
         btns.appendChild(pasteBtn);
-        btns.appendChild(selectBtn);
-        item.appendChild(lbl);
-        item.appendChild(valInput);
+        btns.appendChild(selBtn);
+
+        item.appendChild(idx);
         item.appendChild(picker);
+        item.appendChild(valInput);
         item.appendChild(btns);
-        item.onclick = () => {
-          selectedStopIndex = i;
-          renderStops(cfg);
-        };
         container.appendChild(item);
       });
     }

@@ -108,10 +108,8 @@ void main()
 
     water[CLOUD] = max(water[CLOUD] - precipCoalescence, 0.0); // clamp to prevent negative
 
-    // Limit water removal to prevent unrealistic dew points (e.g., -100°C)
-    // Minimum water corresponds to dew point of -80°C
-    float minWaterForTemp = maxWater(max(realTemp - 80.0, CtoK(-80.0)));
-    water[TOTAL] = max(water[TOTAL] - precipCoalescence, minWaterForTemp);
+    // Remove precipitation coalescence, clamped to zero (no artificial moisture floor)
+    water[TOTAL] = max(water[TOTAL] - precipCoalescence, 0.0);
 
     float precipEvaporation = max(precipFeedback[VAPOR], 0.);
 
@@ -160,16 +158,11 @@ void main()
 
     base[VY] += gravityForce;
 
-    // ── Top sponge layer: nudge temperature and velocity back to initial profile ──
-    // Without this, hot air rising to the top boundary has nowhere to go and
-    // accumulates heat indefinitely (the clamped texCoordX0Yp samples itself,
-    // so there is no cooling flux out of the top row).
-    // Apply a progressively stronger nudge in the top 5% of the domain.
+    // ── Top sponge layer: damp velocities at the top boundary to prevent reflection ──
+    // Temperature nudging removed so global heating effects propagate freely
+    // without being counteracted by a fixed-profile restoring force.
     float topSponge = smoothstep(0.95, 1.0, texCoord.y);
     if (topSponge > 0.0) {
-      float targetT = getInitialT(int(fragCoord.y));
-      base[TEMPERATURE] = mix(base[TEMPERATURE], targetT, topSponge * 0.05);
-      // Also damp vertical velocity at the top to prevent reflection
       base[VY] *= 1.0 - topSponge * 0.3;
       base[VX] *= 1.0 - topSponge * 0.1;
     }
