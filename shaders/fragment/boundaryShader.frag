@@ -153,7 +153,26 @@ void main()
 
     gravityForce -= precipFeedback[MASS] * gravMult * waterWeight; // precipitation weigth added to gravity force
 
+    // Clamp buoyancy force to prevent runaway updrafts at high surface temperatures.
+    // Without this, a 30°C+ surface produces a ~15K anomaly that accumulates into
+    // unrealistic 200 km/h vertical winds. Cap matches ~50 m/s terminal updraft speed.
+    gravityForce = clamp(gravityForce, -0.0005, 0.0005);
+
     base[VY] += gravityForce;
+
+    // ── Top sponge layer: nudge temperature and velocity back to initial profile ──
+    // Without this, hot air rising to the top boundary has nowhere to go and
+    // accumulates heat indefinitely (the clamped texCoordX0Yp samples itself,
+    // so there is no cooling flux out of the top row).
+    // Apply a progressively stronger nudge in the top 5% of the domain.
+    float topSponge = smoothstep(0.95, 1.0, texCoord.y);
+    if (topSponge > 0.0) {
+      float targetT = getInitialT(int(fragCoord.y));
+      base[TEMPERATURE] = mix(base[TEMPERATURE], targetT, topSponge * 0.05);
+      // Also damp vertical velocity at the top to prevent reflection
+      base[VY] *= 1.0 - topSponge * 0.3;
+      base[VX] *= 1.0 - topSponge * 0.1;
+    }
 
     // Hydrostatic pressure tendency: warm air reduces pressure, cold air increases it.
     // This is the real mechanism behind thermal lows and highs.
@@ -161,6 +180,9 @@ void main()
     // Only apply near the surface where surface pressure is most relevant.
     if (wall[VERT_DISTANCE] <= 3) {
       float tempAnomaly = base[TEMPERATURE] - getInitialT(int(fragCoord.y));
+      // Clamp the anomaly contribution to prevent large surface temps (30°C+) from
+      // building a runaway low-pressure column that feeds back into vertical velocity.
+      tempAnomaly = clamp(tempAnomaly, -5.0, 5.0);
       base[PRESSURE] -= tempAnomaly * 0.000002; // warm = lower pressure, cold = higher pressure
       base[PRESSURE] = clamp(base[PRESSURE], -0.2, 0.2); // clamp to match pressure shader
     }

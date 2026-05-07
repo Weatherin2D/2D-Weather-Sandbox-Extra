@@ -23,6 +23,10 @@ uniform sampler2D curlTex;
 
 uniform sampler2D ambientLightTex;
 
+// Charge texture: R=air charge (±1.0), G=ground charge (±1.0)
+// Used to drive physics-based lightning instead of random timing
+uniform sampler2D chargeTex;
+
 uniform vec2 aspectRatios; // [0] Sim       [1] canvas
 
 #define URBAN 0
@@ -60,6 +64,10 @@ uniform float enableCloudGroundLightning;
 uniform float cloudGroundLightningIntensity;
 uniform float cloudGroundLightningThreshold;
 uniform float cloudGroundLightningFrequency;
+
+// Repeat & cross-trigger
+uniform int lightningRepeat;       // 1 = allow repeat strikes driven by charge
+uniform int lightningCrossTrigger; // 1 = CG can trigger CC crawlers and vice versa
 
 uniform float iterNum;
 
@@ -485,163 +493,234 @@ void main()
     opacity = airColor.a;
     color = airColor.rgb;
 
-    // Cloud-Cloud Lightning: simple flash based on cloud density
-    if (enableCloudLightning > 0.5 && opacity > cloudLightningThreshold) {
-      // Consistent flash timing - flash every N frames
-      float flashInterval = max(10.0, 40.0 / (cloudLightningFrequency + 0.01));
-      float flashPhase = mod(iterNum, flashInterval);
-      float shouldFlash = step(flashInterval - 1.0, flashPhase); // flash on last frame of interval
-      
-      // Only flash in dense areas
-      float densityFactor = (opacity - cloudLightningThreshold) / (1.0 - cloudLightningThreshold);
-      
-      if (shouldFlash > 0.5 && densityFactor > 0.0) {
-        // Generate random flash centers based on iteration
-        float seed1 = iterNum * 0.1;
-        float seed2 = iterNum * 0.2;
-        float seed3 = iterNum * 0.3;
-        
-        vec2 flashCenter1 = vec2(rand(seed1), rand(seed1 + 100.0)) * resolution;
-        vec2 flashCenter2 = vec2(rand(seed2), rand(seed2 + 100.0)) * resolution;
-        vec2 flashCenter3 = vec2(rand(seed3), rand(seed3 + 100.0)) * resolution;
-        
-        // Calculate distances to flash centers
-        float dist1 = length(fragCoord - flashCenter1);
-        float dist2 = length(fragCoord - flashCenter2);
-        float dist3 = length(fragCoord - flashCenter3);
-        
-        // Create radial glows with more size variation
-        float sizeVar1 = 40.0 + rand(seed1 + 200.0) * 40.0; // 40-80 pixels
-        float sizeVar2 = 30.0 + rand(seed2 + 200.0) * 50.0; // 30-80 pixels
-        float sizeVar3 = 50.0 + rand(seed3 + 200.0) * 50.0; // 50-100 pixels
-        
-        float glow1 = 1.0 - smoothstep(0.0, sizeVar1, dist1);
-        float glow2 = 1.0 - smoothstep(0.0, sizeVar2, dist2);
-        float glow3 = 1.0 - smoothstep(0.0, sizeVar3, dist3);
-        
-        // Temporal brightness variation
-        float temporalNoise = rand(iterNum * 0.5);
-        
-        // Combine glows
-        float totalGlow = max(glow1, max(glow2, glow3));
-        
-        if (totalGlow > 0.01) {
-          // Flash intensity with variation (reduced brightness)
-          float flashIntensity = min(cloudLightningIntensity * 0.5, 1.5) * totalGlow * (0.4 + temporalNoise * 0.6);
+    // ── Shared charge values (used by all lightning types) ───────────────────
+    float localCharge = texture(chargeTex, texCoord).r;
+    float chargeMag   = abs(localCharge);
+    float chargePos   = max( localCharge, 0.0); // positive (upper cloud / ice crystals)
+    float chargeNeg   = max(-localCharge, 0.0); // negative (lower cloud / graupel / CG driver)
 
-          // Add to emitted light (pure light like lightning)
-          emittedLight += vec3(flashIntensity);
-          // Also add to onLight to light up surroundings
-          onLight += vec3(flashIntensity * 0.5);
+    // ── CC Lightning: horizontal crawler bolt + cloud flash ──────────────────
+    // Bolt origin is sampled once per flash event (stable seed).
+    // The bolt renders in ALL air pixels (no per-pixel cloud gate on the bolt).
+    // The flash is a simple uniform cloud brightening — no distance-based glow
+    // centers which cause pixel specks at cloud edges.
+    if (enableCloudLightning > 0.5) {
+      float ccInterval = max(10.0, 40.0 / (cloudLightningFrequency + 0.01));
+      // Only repeat when charge is high — prevents 3x brightness stacking
+      float ccChargeAtPixel = abs(texture(chargeTex, texCoord).r);
+      int   numSlots   = (lightningRepeat == 1 && ccChargeAtPixel > 0.5) ? 2 : 1;
+
+      for (int slot = 0; slot < numSlots; slot++) {
+        float slotOff    = float(slot) * 4.0;
+        float flashWindow = 12.0;  // longer window so lightning is visible longer
+        float slotPhase  = mod(iterNum + slotOff, ccInterval);
+        float flashAge   = slotPhase - (ccInterval - flashWindow);
+        float doFlash    = step(ccInterval - flashWindow, slotPhase);
+        float repFade    = pow(0.70, float(slot));
+
+        if (doFlash > 0.5) {
+          // Large stable seed — same value for every pixel this frame
+          float seed = floor((iterNum + slotOff) / ccInterval) * 137.0
+                     + float(slot) * 53.0 + 1000.0;
+
+          // Bolt geometry — determined entirely by seed, not per-pixel.
+          // Length is a fraction of the sim width, capped so bolts stay within
+          // the cloud layer. 8-18% of width gives visible but contained crawlers.
+          float crawlX = (rand(seed + 10.0) * 0.6 + 0.2) * resolution.x;
+          float crawlY = (rand(seed + 20.0) * 0.20 + 0.58) * resolution.y;
+          vec2  cStart = vec2(crawlX, crawlY);
+          float cSign  = (rand(seed + 50.0) > 0.5) ? 1.0 : -1.0;
+          float cAngle = (rand(seed + 30.0) - 0.5) * 0.18; // tight vertical drift
+          float cLen   = resolution.x * (0.08 + rand(seed + 40.0) * 0.10); // 8-18% of width
+          vec2  cDir   = normalize(vec2(cSign, cAngle));
+          vec2  cEnd   = cStart + cDir * cLen;
+
+          // Gate: sample cloud density at bolt origin only
+          vec2  originUV     = clamp(cStart * texelSize, vec2(0.0), vec2(1.0));
+          float originCloud  = texture(waterTex, originUV)[CLOUD];
+          float originCharge = abs(texture(chargeTex, originUV).r);
+          float cloudGate    = clamp(1.0 - 1.0 / (1.0 + originCloud * 13.0), 0.0, 1.0);
+          float chargeBoost  = 1.0 + originCharge * 2.0;
+          if (cloudGate > cloudLightningThreshold * 0.4) {
+
+            float boltProg = clamp(flashAge / 4.0, 0.0, 1.0); // tip grows over first 4 frames
+            float boltFade = (flashAge < 8.0) ? 1.0            // hold for 8 frames
+                           : max(0.0, 1.0 - (flashAge - 8.0) / 4.0); // fade over last 4
+            // Flash: peaks at frame 2, slow fade
+            float flashFade = (flashAge < 2.0) ? flashAge * 0.5
+                            : max(0.0, 1.0 - (flashAge - 2.0) / (flashWindow - 2.0));
+
+            // ── Crawler bolt (all air pixels) ────────────────────────────────
+            float cThick = cLen * 0.012;  // slightly thicker relative to shorter length
+            float cDisp  = cLen * 0.06;
+            vec2  cPerp  = vec2(-cDir.y, cDir.x);
+
+            float mG = cgBoltGlow(fragCoord, cStart, cEnd, seed, cThick, cDisp, boltProg);
+            float b1T = 0.3, b2T = 0.6;
+            float b1P = clamp((boltProg - b1T) / (1.0 - b1T), 0.0, 1.0);
+            float b2P = clamp((boltProg - b2T) / (1.0 - b2T), 0.0, 1.0);
+            float b1G = 0.0, b2G = 0.0;
+            if (b1P > 0.0) {
+              vec2  b1O = boltPosAtT(cStart, cEnd, seed, b1T, cDisp);
+              float b1S = (rand(seed + 301.0) > 0.5) ? 1.0 : -1.0;
+              vec2  b1D = normalize(cDir + cPerp * b1S * (0.15 + rand(seed + 302.0) * 0.25));
+              float b1L = cLen * (0.2 + rand(seed + 303.0) * 0.2);
+              b1G = cgBoltGlow(fragCoord, b1O, b1O + b1D * b1L,
+                               seed + 1000.0, cThick * 0.55, b1L * 0.07, b1P);
+            }
+            if (b2P > 0.0) {
+              vec2  b2O = boltPosAtT(cStart, cEnd, seed, b2T, cDisp);
+              float b2S = (rand(seed + 401.0) > 0.5) ? -1.0 : 1.0;
+              vec2  b2D = normalize(cDir + cPerp * b2S * (0.12 + rand(seed + 402.0) * 0.20));
+              float b2L = cLen * (0.15 + rand(seed + 403.0) * 0.15);
+              b2G = cgBoltGlow(fragCoord, b2O, b2O + b2D * b2L,
+                               seed + 2000.0, cThick * 0.40, b2L * 0.07, b2P);
+            }
+            float tG = max(mG, max(b1G * 0.65, b2G * 0.50));
+            if (tG > 0.005) {
+              float flick  = 0.85 + 0.15 * rand(iterNum * 1.7 + seed);
+              // Hard fade outside cloud — bolt is only visible inside cloud density.
+              // smoothstep gives a sharp falloff: below threshold = invisible,
+              // at 2x threshold = full brightness. No 30% floor outside cloud.
+              float localCloudFade = smoothstep(cloudLightningThreshold * 0.5,
+                                               cloudLightningThreshold * 1.5, opacity);
+              float bright = cloudLightningIntensity * 0.40 * flick * boltFade
+                           * repFade * localCloudFade;
+              vec3 col = vec3(0.85, 0.92, 1.0) * bright * tG;
+              emittedLight += col;
+              onLight      += col * 0.3;
+            }
+
+            // ── Ambient flash: uniform cloud brightening ─────────────────────
+            if (opacity > cloudLightningThreshold && flashFade > 0.0) {
+              // Cap chargeBoost and keep flash subtle — bloom handles the rest
+              float cb = min(chargeBoost, 1.5);
+              float flashBright = cloudLightningIntensity * 0.15 * flashFade
+                                * cb * repFade * opacity;
+              emittedLight += vec3(flashBright);
+              onLight      += vec3(flashBright * 0.4);
+            }
+          }
         }
       }
-    }
+    } // end CC
 
-    // Cloud-Ground Lightning: fractal segmented bolt, visible in cloud AND clear air.
-    // The opacity gate is intentionally absent so the bolt renders in every air pixel
-    // it passes through — including clear air between cloud base and ground.
+    // ── CG Lightning (with repeat return strokes + cross-trigger) ────────────
     if (enableCloudGroundLightning > 0.5) {
-      float flashInterval = max(15.0, 50.0 / (cloudGroundLightningFrequency + 0.01));
-      float flashPhase    = mod(iterNum + flashInterval * 0.5, flashInterval);
-      float flashAge      = flashPhase - (flashInterval - 6.0); // 0→6 during flash
-      float shouldFlash   = step(flashInterval - 6.0, flashPhase);
+      float cgInterval = max(15.0, 50.0 / (cloudGroundLightningFrequency + 0.01));
+      // Repeat: up to 3 return strokes when charge is high (real CG has 2-4)
+      int cgSlots = (lightningRepeat == 1 && chargeNeg > 0.4) ? 3 : 1;
 
-      if (shouldFlash > 0.5) {
-        // Stable seed per flash — identical for every pixel so the bolt is spatially coherent
-        float seed = floor((iterNum + flashInterval * 0.5) / flashInterval) * 0.7;
+      for (int slot = 0; slot < cgSlots; slot++) {
+        float slotOff  = float(slot) * (2.0 + rand(float(slot)*5.77)*2.0);
+        float cgPhase  = mod(iterNum + cgInterval*0.5 + slotOff, cgInterval);
+        float cgAge    = cgPhase - (cgInterval - 6.0);
+        float doFlash  = step(cgInterval - 6.0, cgPhase);
+        float repFade  = pow(0.65, float(slot));
 
-        // Bolt origin (cloud base) and ground strike point
-        float boltX      = (rand(seed + 10.0) * 0.7 + 0.15) * resolution.x;
-        float boltStartY = (rand(seed + 20.0) * 0.20 + 0.55) * resolution.y;
-        vec2  boltStart  = vec2(boltX, boltStartY);
-        vec2  boltEnd    = vec2(boltX + (rand(seed + 30.0) - 0.5) * resolution.x * 0.08, 0.0);
+        if (doFlash > 0.5) {
+          float seed = floor((iterNum + cgInterval*0.5 + slotOff) / cgInterval) * 137.0
+                     + float(slot) * 53.0 + 2000.0;
 
-        // ── Cloud-gate ───────────────────────────────────────────────────────
-        // Sample the water texture at the bolt origin to verify a cloud exists there.
-        // This gates the flash on actual storm presence while still allowing the bolt
-        // to render in clear-air pixels below the cloud (no per-pixel opacity check).
-        float boltCloudWater   = texture(waterTex, clamp(boltStart * texelSize, vec2(0.0), vec2(1.0)))[CLOUD];
-        float boltCloudDensity = max(boltCloudWater * 13.0, 0.0);
-        float boltOpacity      = clamp(1.0 - 1.0 / (1.0 + boltCloudDensity), 0.0, 1.0);
+          float bX  = (rand(seed+10.0)*0.7+0.15) * resolution.x;
+          float bSY = (rand(seed+20.0)*0.20+0.55) * resolution.y;
+          vec2  bS  = vec2(bX, bSY);
+          vec2  bE  = vec2(bX + (rand(seed+30.0)-0.5)*resolution.x*0.08, 0.0);
 
-        if (boltOpacity > cloudGroundLightningThreshold) {
+          float bCW  = texture(waterTex, clamp(bS*texelSize, vec2(0.0), vec2(1.0)))[CLOUD];
+          float bOp  = clamp(1.0 - 1.0/(1.0 + bCW*13.0), 0.0, 1.0);
+          float bAC  = texture(chargeTex, clamp(bS*texelSize, vec2(0.0), vec2(1.0))).r;
+          float cgCS = max(-bAC, 0.0);
+          float gate = (cgCS > 0.01)
+            ? bOp * smoothstep(cloudGroundLightningThreshold*0.5, cloudGroundLightningThreshold, cgCS)
+            : bOp;
 
-          float boltLen   = length(boltEnd - boltStart);
-          float dispStr   = boltLen * 0.07;
-          float coreThick = boltLen * 0.007; // thin core relative to bolt length
+          if (gate > cloudGroundLightningThreshold) {
+            float bLen  = length(bE - bS);
+            float disp  = bLen * 0.07;
+            float thick = bLen * 0.007;
+            float prog  = clamp(cgAge/4.0, 0.0, 1.0);
+            float fade  = (cgAge < 4.0) ? 1.0 : max(0.0, 1.0-(cgAge-4.0)*0.5);
+            float flick = 0.85 + 0.15*rand(iterNum*2.3+seed);
+            float bright = cloudGroundLightningIntensity*0.55*flick*fade*(1.0+cgCS*0.5)*repFade;
 
-          // Animation: tip travels cloud→ground in first 4 iters, holds for 2 then fades
-          float progress = clamp(flashAge / 4.0, 0.0, 1.0);
-          float fadeMult = (flashAge < 4.0) ? 1.0 : max(0.0, 1.0 - (flashAge - 4.0) * 0.5);
-          float flicker  = 0.85 + 0.15 * rand(iterNum * 2.3 + seed);
-          float bright   = cloudGroundLightningIntensity * 0.55 * flicker * fadeMult;
+            vec2 mDir = normalize(bE - bS);
+            vec2 mPerp = vec2(-mDir.y, mDir.x);
+            float mG = cgBoltGlow(fragCoord, bS, bE, seed, thick, disp, prog);
 
-          vec2 mainDir  = normalize(boltEnd - boltStart);
-          vec2 mainPerp = vec2(-mainDir.y, mainDir.x);
+            float b1T=0.28,b2T=0.48,b3T=0.65,b4T=0.80;
+            float b1P=clamp((prog-b1T)/(1.0-b1T),0.0,1.0);
+            float b2P=clamp((prog-b2T)/(1.0-b2T),0.0,1.0);
+            float b3P=clamp((prog-b3T)/(1.0-b3T),0.0,1.0);
+            float b4P=clamp((prog-b4T)/(1.0-b4T),0.0,1.0);
+            float b1G=0.0,b2G=0.0,b3G=0.0,b4G=0.0;
+            if(b1P>0.0){vec2 o=boltPosAtT(bS,bE,seed,b1T,disp);float s=(rand(seed+301.0)>0.5)?1.0:-1.0;vec2 d=normalize(mDir+mPerp*s*(0.25+rand(seed+302.0)*0.35));float l=bLen*(0.15+rand(seed+303.0)*0.18);b1G=cgBoltGlow(fragCoord,o,o+d*l,seed+1000.0,thick*0.60,l*0.08,b1P);}
+            if(b2P>0.0){vec2 o=boltPosAtT(bS,bE,seed,b2T,disp);float s=(rand(seed+301.0)>0.5)?-1.0:1.0;vec2 d=normalize(mDir+mPerp*s*(0.22+rand(seed+402.0)*0.30));float l=bLen*(0.12+rand(seed+403.0)*0.15);b2G=cgBoltGlow(fragCoord,o,o+d*l,seed+2000.0,thick*0.50,l*0.08,b2P);}
+            if(b3P>0.0){vec2 o=boltPosAtT(bS,bE,seed,b3T,disp);float s=(rand(seed+501.0)>0.5)?1.0:-1.0;vec2 d=normalize(mDir+mPerp*s*(0.20+rand(seed+502.0)*0.28));float l=bLen*(0.09+rand(seed+503.0)*0.12);b3G=cgBoltGlow(fragCoord,o,o+d*l,seed+3000.0,thick*0.40,l*0.08,b3P);}
+            if(b4P>0.0){vec2 o=boltPosAtT(bS,bE,seed,b4T,disp);float s=(rand(seed+501.0)>0.5)?-1.0:1.0;vec2 d=normalize(mDir+mPerp*s*(0.18+rand(seed+602.0)*0.25));float l=bLen*(0.07+rand(seed+603.0)*0.09);b4G=cgBoltGlow(fragCoord,o,o+d*l,seed+4000.0,thick*0.30,l*0.08,b4P);}
 
-          // ── Main trunk ──────────────────────────────────────────────────────
-          float mainG = cgBoltGlow(fragCoord, boltStart, boltEnd, seed,
-                                   coreThick, dispStr, progress);
+            float tG = max(mG,max(b1G*0.70,max(b2G*0.62,max(b3G*0.52,b4G*0.42))));
+            if (tG > 0.005) {
+              vec3 col = vec3(0.90,0.95,1.0) * bright * tG;
+              emittedLight += col;
+              onLight      += col * 0.35;
+            }
 
-          // ── Branches ────────────────────────────────────────────────────────
-          // Each branch starts growing the moment the trunk tip passes its junction
-          // and finishes at the same time as the trunk (progress == 1.0).
-          // This keeps all tips spatially connected to the visible stroke front.
-          float b1T = 0.28, b2T = 0.48, b3T = 0.65, b4T = 0.80;
-          float b1P = clamp((progress - b1T) / (1.0 - b1T), 0.0, 1.0);
-          float b2P = clamp((progress - b2T) / (1.0 - b2T), 0.0, 1.0);
-          float b3P = clamp((progress - b3T) / (1.0 - b3T), 0.0, 1.0);
-          float b4P = clamp((progress - b4T) / (1.0 - b4T), 0.0, 1.0);
-
-          float b1G = 0.0, b2G = 0.0, b3G = 0.0, b4G = 0.0;
-
-          if (b1P > 0.0) {
-            vec2  b1Orig = boltPosAtT(boltStart, boltEnd, seed, b1T, dispStr);
-            float b1Side = (rand(seed + 301.0) > 0.5) ? 1.0 : -1.0;
-            vec2  b1Dir  = normalize(mainDir + mainPerp * b1Side * (0.25 + rand(seed+302.0)*0.35));
-            float b1Len  = boltLen * (0.15 + rand(seed + 303.0) * 0.18);
-            b1G = cgBoltGlow(fragCoord, b1Orig, b1Orig + b1Dir * b1Len,
-                             seed + 1000.0, coreThick * 0.60, b1Len * 0.08, b1P);
-          }
-          if (b2P > 0.0) {
-            vec2  b2Orig = boltPosAtT(boltStart, boltEnd, seed, b2T, dispStr);
-            float b2Side = (rand(seed + 301.0) > 0.5) ? -1.0 : 1.0;
-            vec2  b2Dir  = normalize(mainDir + mainPerp * b2Side * (0.22 + rand(seed+402.0)*0.30));
-            float b2Len  = boltLen * (0.12 + rand(seed + 403.0) * 0.15);
-            b2G = cgBoltGlow(fragCoord, b2Orig, b2Orig + b2Dir * b2Len,
-                             seed + 2000.0, coreThick * 0.50, b2Len * 0.08, b2P);
-          }
-          if (b3P > 0.0) {
-            vec2  b3Orig = boltPosAtT(boltStart, boltEnd, seed, b3T, dispStr);
-            float b3Side = (rand(seed + 501.0) > 0.5) ? 1.0 : -1.0;
-            vec2  b3Dir  = normalize(mainDir + mainPerp * b3Side * (0.20 + rand(seed+502.0)*0.28));
-            float b3Len  = boltLen * (0.09 + rand(seed + 503.0) * 0.12);
-            b3G = cgBoltGlow(fragCoord, b3Orig, b3Orig + b3Dir * b3Len,
-                             seed + 3000.0, coreThick * 0.40, b3Len * 0.08, b3P);
-          }
-          if (b4P > 0.0) {
-            vec2  b4Orig = boltPosAtT(boltStart, boltEnd, seed, b4T, dispStr);
-            float b4Side = (rand(seed + 501.0) > 0.5) ? -1.0 : 1.0;
-            vec2  b4Dir  = normalize(mainDir + mainPerp * b4Side * (0.18 + rand(seed+602.0)*0.25));
-            float b4Len  = boltLen * (0.07 + rand(seed + 603.0) * 0.09);
-            b4G = cgBoltGlow(fragCoord, b4Orig, b4Orig + b4Dir * b4Len,
-                             seed + 4000.0, coreThick * 0.30, b4Len * 0.08, b4P);
-          }
-
-          float totalG = max(mainG,
-                        max(b1G * 0.70,
-                        max(b2G * 0.62,
-                        max(b3G * 0.52,
-                            b4G * 0.42))));
-
-          if (totalG > 0.005) {
-            vec3 boltCol = vec3(0.90, 0.95, 1.0) * bright * totalG;
-            emittedLight += boltCol;
-            onLight      += boltCol * 0.35;
+            // Cross-trigger: CG fires a CC crawler ~2 frames later (slot 0 only)
+            if (lightningCrossTrigger == 1 && chargePos > 0.3 && slot == 0) {
+              float ctPhase = mod(iterNum + cgInterval*0.5 + 2.0, cgInterval);
+              float ctAge   = ctPhase - (cgInterval - 5.0);
+              if (ctAge >= 0.0 && ctAge < 5.0) {
+                float ctS    = seed + 500.0;
+                float ctX    = bX + (rand(ctS+1.0)-0.5)*resolution.x*0.15;
+                float ctY    = bSY + resolution.y*(0.05+rand(ctS+2.0)*0.10);
+                vec2  ctSt   = vec2(ctX, ctY);
+                float ctLen  = resolution.x*(0.10+rand(ctS+3.0)*0.15);
+                float ctSign = (rand(ctS+4.0)>0.5)?1.0:-1.0;
+                vec2  ctDir  = normalize(vec2(ctSign,(rand(ctS+5.0)-0.5)*0.3));
+                float ctProg = clamp(ctAge/4.0,0.0,1.0);
+                float ctFade = (ctAge<4.0)?1.0:max(0.0,1.0-(ctAge-4.0));
+                float ctG    = cgBoltGlow(fragCoord,ctSt,ctSt+ctDir*ctLen,ctS,ctLen*0.005,ctLen*0.06,ctProg);
+                if (ctG > 0.005) {
+                  vec3 ctCol = vec3(0.80,0.90,1.0)*cloudLightningIntensity*0.30*ctG*ctFade*chargePos;
+                  emittedLight += ctCol;
+                  onLight      += ctCol * 0.25;
+                }
+              }
+            }
           }
         }
       }
-    }
+    } // end CG
+
+    // Cross-trigger: CC crawler fires a CG bolt ~3 frames later
+    if (enableCloudLightning > 0.5 && enableCloudGroundLightning > 0.5
+        && lightningCrossTrigger == 1
+        && opacity > cloudLightningThreshold && chargeNeg > 0.35) {
+      float ccInt   = max(10.0, 40.0/(cloudLightningFrequency+0.01));
+      float ctPhase = mod(iterNum + 3.0, ccInt);
+      float ctAge   = ctPhase - (ccInt - 6.0);
+      if (ctAge >= 0.0 && ctAge < 6.0) {
+        float ctS  = floor((iterNum+3.0)/ccInt) * 137.0 + 3000.0;
+        float ctX  = (rand(ctS+10.0)*0.7+0.15)*resolution.x;
+        float ctSY = (rand(ctS+20.0)*0.20+0.55)*resolution.y;
+        vec2  ctSt = vec2(ctX, ctSY);
+        vec2  ctEn = vec2(ctX+(rand(ctS+30.0)-0.5)*resolution.x*0.06, 0.0);
+        float ctCW = texture(waterTex, clamp(ctSt*texelSize,vec2(0.0),vec2(1.0)))[CLOUD];
+        float ctOp = clamp(1.0-1.0/(1.0+ctCW*13.0),0.0,1.0);
+        if (ctOp > cloudGroundLightningThreshold*0.7) {
+          float ctLen  = length(ctEn-ctSt);
+          float ctProg = clamp(ctAge/4.0,0.0,1.0);
+          float ctFade = (ctAge<4.0)?1.0:max(0.0,1.0-(ctAge-4.0)*0.5);
+          float ctG    = cgBoltGlow(fragCoord,ctSt,ctEn,ctS,ctLen*0.006,ctLen*0.07,ctProg);
+          if (ctG > 0.005) {
+            vec3 ctCol = vec3(0.88,0.93,1.0)*cloudGroundLightningIntensity*0.40*ctFade*chargeNeg*ctG;
+            emittedLight += ctCol;
+            onLight      += ctCol * 0.30;
+          }
+        }
+      }
+    } // end cross-trigger CC→CG
 
 
     vec2 rainbowCenter = vec2(0.0, -1.5 + abs(sunAngle) * 0.60);

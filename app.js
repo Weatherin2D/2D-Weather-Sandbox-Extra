@@ -400,7 +400,7 @@ const radToDeg = 57.2957795;
 const kmToMil = 0.62137;
 const mToFt = 3.28084;
 
-const saveFileVersionID = 263574036; // Uint32 id to check if save file is compatible
+const saveFileVersionID = 263574037; // Uint32 id to check if save file is compatible (incremented to include NUM_DROPLETS in save format)
 
 const guiControls_default = {
   vorticity : 0.01,
@@ -448,6 +448,7 @@ const guiControls_default = {
   month : 6.65, // Northern hemisphere summer solstice
   sunAngle : 90.0,
   dayNightCycle : true,
+  realtimeMode : false,  // sync sun position to real wall-clock time
   accelerateNight : true,
   greenhouseGases : 0.001,
   waterGreenHouseEffect : 0.0015,
@@ -469,14 +470,24 @@ const guiControls_default = {
   auto_IterPerFrame : true,
   sound : true,
   enableBloom : true,
+  // Sound volume controls
+  soundVolumeWind    : 1.0,
+  soundVolumeRain    : 1.0,
+  soundVolumeAmbient : 1.0,  // forest / beach / urban
+  soundVolumeThunder : 1.0,
+  soundWindEnabled    : true,
+  soundRainEnabled    : true,
+  soundAmbientEnabled : true,
+  soundThunderEnabled : true,
   enableCloudLightning : true,
   cloudLightningIntensity : 2.0,
   cloudLightningThreshold : 0.3,
   cloudLightningFrequency : 0.8,
-  enableCloudGroundLightning : true,
-  cloudGroundLightningIntensity : 2.0,
+  enableCloudGroundLightning : true,  cloudGroundLightningIntensity : 2.0,
   cloudGroundLightningThreshold : 0.3,
   cloudGroundLightningFrequency : 0.8,
+  lightningRepeat : true,          // allow repeat strikes driven by charge
+  lightningCrossTrigger : true,    // CG can trigger CC crawlers and vice versa
   enableVectorField : false,
   dryLapseRate : 10.0,     // Real: 9.8 degrees / km
   simHeight : 12000,       // meters
@@ -509,7 +520,7 @@ const guiControls_default = {
   pressurePersistence : 0.3,
   thermalPressureCoupling : 0.5,
   motionPressureCoupling : 0.3,  // rising motion lowers pressure, sinking raises it (keep low for stability)
-  asymmetricPressure : 0.2,  // 0.0 = symmetric, 1.0 = low pressure causes rising only (keep low)
+  asymmetricPressure : 0.0,  // 0.0 = symmetric, 1.0 = low pressure causes rising only (keep at 0 - non-zero creates one-way ratchet that amplifies updrafts)
   forceIntensityMultiplier : 0.3,  // overall multiplier for all pressure forces (keep low for stability)
   pressureInfluence : 0.5,
   reducedWeatherStationUpdates : false,
@@ -2103,7 +2114,7 @@ window.loadData = async function()
     let versionBuf = await versionBlob.arrayBuffer();
     let version = new Uint32Array(versionBuf)[0];                // convert to Uint32
 
-    if (version == saveFileVersionID || version == 1939327491) { // also allow previous version, settings will not be loaded
+    if (version == saveFileVersionID || version == 263574036 || version == 1939327491) { // allow current, previous, and older version
       // check version id, only proceed if file has the right version id
       let fileArrBuf = await file.slice(4).arrayBuffer();
       let fileUint8Arr = new Uint8Array(fileArrBuf);
@@ -2148,115 +2159,205 @@ window.loadData = async function()
       console.log('File versionID: ' + version);
       console.log('sim_res_x: ' + sim_res_x);
       console.log('sim_res_y: ' + sim_res_y);
+      console.log('Total decompressed size:', decompressed.byteLength);
 
 
       sliceStart = sliceEnd;
       sliceEnd += sim_res_x * sim_res_y * 4 * 4;
+      console.log('baseTex slice:', sliceStart, 'to', sliceEnd, 'size:', sliceEnd - sliceStart);
       let baseTexBlob = dataBlob.slice(sliceStart, sliceEnd);
       let baseTexBuf = await baseTexBlob.arrayBuffer();
       let baseTexF32 = new Float32Array(baseTexBuf);
 
       sliceStart = sliceEnd;
       sliceEnd += sim_res_x * sim_res_y * 4 * 4; // 4 * float
+      console.log('waterTex slice:', sliceStart, 'to', sliceEnd, 'size:', sliceEnd - sliceStart);
       let waterTexBlob = dataBlob.slice(sliceStart, sliceEnd);
       let waterTexBuf = await waterTexBlob.arrayBuffer();
       let waterTexF32 = new Float32Array(waterTexBuf);
 
       sliceStart = sliceEnd;
       sliceEnd += sim_res_x * sim_res_y * 4 * 1; // 4 * byte
+      console.log('wallTex slice:', sliceStart, 'to', sliceEnd, 'size:', sliceEnd - sliceStart);
       let wallTexBlob = dataBlob.slice(sliceStart, sliceEnd);
       let wallTexBuf = await wallTexBlob.arrayBuffer();
       let wallTexI8 = new Int8Array(wallTexBuf);
 
-      sliceStart = sliceEnd;
-      sliceEnd += NUM_DROPLETS * Float32Array.BYTES_PER_ELEMENT * 5;
-      let precipArrayBlob = dataBlob.slice(sliceStart, sliceEnd);
-      let precipArrayBuf = await precipArrayBlob.arrayBuffer();
-      let precipArray = new Float32Array(precipArrayBuf);
-
-      if (version == saveFileVersionID) {             // only load settings and weather stations from save file if it's the newest version with all the settings included
+      // Read saved NUM_DROPLETS if present in new format (version >= 263574037)
+      if (version == 263574037) {
         sliceStart = sliceEnd;
-        sliceEnd += 1 * Int16Array.BYTES_PER_ELEMENT; // one 16 bit int indicates number of weather stations
-        let numWeatherStationsArrayBlob = dataBlob.slice(sliceStart, sliceEnd);
-        let numWeatherStationsBuf = await numWeatherStationsArrayBlob.arrayBuffer();
-        let numWeatherStations = new Int16Array(numWeatherStationsBuf)[0];
+        sliceEnd += 1 * Uint32Array.BYTES_PER_ELEMENT;
+        let numDropletsBlob = dataBlob.slice(sliceStart, sliceEnd);
+        let numDropletsBuf = await numDropletsBlob.arrayBuffer();
+        let savedNumDroplets = new Uint32Array(numDropletsBuf)[0];
+        NUM_DROPLETS = savedNumDroplets;
+        console.log('Loaded saved NUM_DROPLETS:', NUM_DROPLETS);
+
+        sliceStart = sliceEnd;
+        sliceEnd += NUM_DROPLETS * Float32Array.BYTES_PER_ELEMENT * 5;
+        console.log('precipArray slice:', sliceStart, 'to', sliceEnd, 'size:', sliceEnd - sliceStart);
+        
+        if (sliceEnd > decompressed.byteLength) {
+          console.error('ERROR: precipArray slice extends past end of file!');
+          alert('Save file appears to be corrupted.');
+          document.getElementById('fileInput').value = '';
+          return;
+        }
+        
+        let precipArrayBlob = dataBlob.slice(sliceStart, sliceEnd);
+        let precipArrayBuf = await precipArrayBlob.arrayBuffer();
+        precipArray = new Float32Array(precipArrayBuf);
+        console.log('precipArray actual length:', precipArray.length, 'expected:', NUM_DROPLETS * 5);
+      } else {
+        // Old save file format - skip loading precipitation array to prevent data corruption
+        // The NUM_DROPLETS value is unknown and misalignment would corrupt subsequent data
+        console.log('Skipping precipitation array load for old version to prevent data corruption');
+        precipArray = null; // Will trigger default initialization in mainScript
+        // Recalculate NUM_DROPLETS for default initialization
+        NUM_DROPLETS = (sim_res_x * sim_res_y) / NUM_DROPLETS_DEVIDER;
+        NUM_DROPLETS = Math.min(NUM_DROPLETS, 120000);
+        console.log('Using default NUM_DROPLETS:', NUM_DROPLETS);
+      }
+
+      if (version == saveFileVersionID) {             // only load settings and weather stations from save file if it's the newest version with NUM_DROPLETS saved
+        console.log('Loading weather stations, radars, and settings for new version');
+        
+        // Helper: safely read a slice — returns null if not enough bytes remain
+        const totalBytes = decompressed.byteLength;
+        function safeSlice(start, end) {
+          if (start >= totalBytes) return null;
+          return dataBlob.slice(start, Math.min(end, totalBytes));
+        }
+
+        try { // wrap entire optional section — any parse error falls back to defaults
+
+        sliceStart = sliceEnd;
+        sliceEnd += 1 * Int16Array.BYTES_PER_ELEMENT;
+        const numWSBlob = safeSlice(sliceStart, sliceEnd);
+        let numWeatherStations = 0;
+        if (numWSBlob) {
+          let numWeatherStationsBuf = await numWSBlob.arrayBuffer();
+          if (numWeatherStationsBuf.byteLength >= Int16Array.BYTES_PER_ELEMENT) {
+            numWeatherStations = new Int16Array(numWeatherStationsBuf)[0];
+          }
+        }
 
         console.log('numWeatherStations', numWeatherStations);
 
-        sliceStart = sliceEnd;
-        sliceEnd += numWeatherStations * 2 * Int16Array.BYTES_PER_ELEMENT;
-        let weatherStationArrayBlob = dataBlob.slice(sliceStart, sliceEnd);
-        let weatherStationBuf = await weatherStationArrayBlob.arrayBuffer();
-        let weatherStationArray = new Int16Array(weatherStationBuf);
-
-
-        for (i = 0; i < numWeatherStations; i++) {
-          weatherStations.push(new Weatherstation(weatherStationArray[i * 2], weatherStationArray[i * 2 + 1]));
+        if (numWeatherStations > 0 && numWeatherStations < 10000) {
+          sliceStart = sliceEnd;
+          sliceEnd += numWeatherStations * 2 * Int16Array.BYTES_PER_ELEMENT;
+          const wsBlob = safeSlice(sliceStart, sliceEnd);
+          if (wsBlob) {
+            let weatherStationBuf = await wsBlob.arrayBuffer();
+            const safeLen = Math.floor(weatherStationBuf.byteLength / Int16Array.BYTES_PER_ELEMENT) * Int16Array.BYTES_PER_ELEMENT;
+            if (safeLen >= 2 * Int16Array.BYTES_PER_ELEMENT) {
+              let weatherStationArray = new Int16Array(weatherStationBuf, 0, safeLen / Int16Array.BYTES_PER_ELEMENT);
+              const count = Math.floor(weatherStationArray.length / 2);
+              for (i = 0; i < count; i++) {
+                weatherStations.push(new Weatherstation(weatherStationArray[i * 2], weatherStationArray[i * 2 + 1]));
+              }
+            }
+          }
+        } else {
+          sliceEnd = sliceStart + numWeatherStations * 2 * Int16Array.BYTES_PER_ELEMENT;
         }
 
         // Load radars
         sliceStart = sliceEnd;
-        sliceEnd += 1 * Int16Array.BYTES_PER_ELEMENT; // one 16 bit int indicates number of radars
-        let numRadarsArrayBlob = dataBlob.slice(sliceStart, sliceEnd);
-        let numRadarsBuf = await numRadarsArrayBlob.arrayBuffer();
-        let numRadars = new Int16Array(numRadarsBuf)[0];
+        sliceEnd += 1 * Int16Array.BYTES_PER_ELEMENT;
+        const numRadarsBlob = safeSlice(sliceStart, sliceEnd);
+        let numRadars = 0;
+        if (numRadarsBlob) {
+          let numRadarsBuf = await numRadarsBlob.arrayBuffer();
+          if (numRadarsBuf.byteLength >= Int16Array.BYTES_PER_ELEMENT) {
+            numRadars = new Int16Array(numRadarsBuf)[0];
+          }
+        }
 
         console.log('numRadars', numRadars);
 
-        sliceStart = sliceEnd;
-        sliceEnd += numRadars * 2 * Int16Array.BYTES_PER_ELEMENT;
-        let radarArrayBlob = dataBlob.slice(sliceStart, sliceEnd);
-        let radarBuf = await radarArrayBlob.arrayBuffer();
-        let radarArray = new Int16Array(radarBuf);
-
-        for (i = 0; i < numRadars; i++) {
-          radars.push(new Radar(radarArray[i * 2], radarArray[i * 2 + 1]));
+        if (numRadars > 0 && numRadars < 10000) {
+          sliceStart = sliceEnd;
+          sliceEnd += numRadars * 2 * Int16Array.BYTES_PER_ELEMENT;
+          const radarBlob = safeSlice(sliceStart, sliceEnd);
+          if (radarBlob) {
+            let radarBuf = await radarBlob.arrayBuffer();
+            // Round down to nearest multiple of Int16Array element size before constructing
+            const safeLen = Math.floor(radarBuf.byteLength / Int16Array.BYTES_PER_ELEMENT) * Int16Array.BYTES_PER_ELEMENT;
+            if (safeLen >= 2 * Int16Array.BYTES_PER_ELEMENT) {
+              let radarArray = new Int16Array(radarBuf, 0, safeLen / Int16Array.BYTES_PER_ELEMENT);
+              const count = Math.floor(radarArray.length / 2);
+              for (i = 0; i < count; i++) {
+                radars.push(new Radar(radarArray[i * 2], radarArray[i * 2 + 1]));
+              }
+            }
+          }
+        } else {
+          sliceEnd = sliceStart + numRadars * 2 * Int16Array.BYTES_PER_ELEMENT;
         }
 
         sliceStart = sliceEnd;
-        let settingsArrayBlob = dataBlob.slice(sliceStart); // until end of file
-        
-        // Try new format first (with guiControls length prefix)
-        try {
-          let tempSliceStart = 0;
-          let tempSliceEnd = 1 * Uint32Array.BYTES_PER_ELEMENT;
-          let guiControlsLengthArrayBlob = settingsArrayBlob.slice(tempSliceStart, tempSliceEnd);
-          let guiControlsLengthBuf = await guiControlsLengthArrayBlob.arrayBuffer();
-          let guiControlsLength = new Uint32Array(guiControlsLengthBuf)[0];
+        if (sliceStart < totalBytes) {
+          let settingsArrayBlob = dataBlob.slice(sliceStart); // until end of file
           
-          // Check if this looks like a reasonable length (not too large)
-          if (guiControlsLength > 0 && guiControlsLength < 1000000) {
-            tempSliceStart = tempSliceEnd;
-            tempSliceEnd += guiControlsLength;
-            let guiControlsArrayBlob = settingsArrayBlob.slice(tempSliceStart, tempSliceEnd);
-            guiControlsFromSaveFile = await guiControlsArrayBlob.text();
+          // Try new format first (with guiControls length prefix)
+          try {
+            let tempSliceStart = 0;
+            let tempSliceEnd = 1 * Uint32Array.BYTES_PER_ELEMENT;
+            let guiControlsLengthArrayBlob = settingsArrayBlob.slice(tempSliceStart, tempSliceEnd);
+            let guiControlsLengthBuf = await guiControlsLengthArrayBlob.arrayBuffer();
+            if (guiControlsLengthBuf.byteLength < Uint32Array.BYTES_PER_ELEMENT) throw new Error('Too short');
+            let guiControlsLength = new Uint32Array(guiControlsLengthBuf)[0];
             
-            tempSliceStart = tempSliceEnd;
-            let radarSettingsArrayBlob = settingsArrayBlob.slice(tempSliceStart);
-            let radarSettingsText = await radarSettingsArrayBlob.text();
-            
-            // Load radar settings if available
-            try {
-              const radarSettings = JSON.parse(radarSettingsText);
-              if (Array.isArray(radarSettings) && radarSettings.length === radars.length) {
-                for (i = 0; i < radars.length; i++) {
-                  radars[i].setSettings(radarSettings[i]);
+            // Check if this looks like a reasonable length (not too large)
+            if (guiControlsLength > 0 && guiControlsLength < 1000000) {
+              tempSliceStart = tempSliceEnd;
+              tempSliceEnd += guiControlsLength;
+              let guiControlsArrayBlob = settingsArrayBlob.slice(tempSliceStart, tempSliceEnd);
+              guiControlsFromSaveFile = await guiControlsArrayBlob.text();
+              
+              tempSliceStart = tempSliceEnd;
+              let radarSettingsArrayBlob = settingsArrayBlob.slice(tempSliceStart);
+              let radarSettingsText = await radarSettingsArrayBlob.text();
+              
+              // Load radar settings if available
+              try {
+                const radarSettings = JSON.parse(radarSettingsText);
+                if (Array.isArray(radarSettings) && radarSettings.length === radars.length) {
+                  for (i = 0; i < radars.length; i++) {
+                    radars[i].setSettings(radarSettings[i]);
+                  }
+                  console.log('Loaded radar settings for ' + radars.length + ' radars');
                 }
-                console.log('Loaded radar settings for ' + radars.length + ' radars');
+              } catch(e) {
+                console.log('No radar settings in save file:', e.message);
               }
-            } catch(e) {
-              console.log('No radar settings in save file:', e.message);
+            } else {
+              throw new Error('Invalid length, using old format');
             }
-          } else {
-            throw new Error('Invalid length, using old format');
+          } catch(e) {
+            // Fall back to old format (no length prefix, just guiControls)
+            console.log('Using old save file format (no guiControls length prefix)');
+            guiControlsFromSaveFile = await settingsArrayBlob.text();
           }
+        } else {
+          console.log('Save file has no settings section — using defaults');
+        }
         } catch(e) {
-          // Fall back to old format (no length prefix, just guiControls)
-          console.log('Using old save file format (no guiControls length prefix)');
-          guiControlsFromSaveFile = await settingsArrayBlob.text();
+          // Older file with same version ID but missing/truncated optional sections
+          console.warn('Could not load optional save data (weather stations, radars, settings) — using defaults. Reason:', e.message);
         }
       } else {
-        alert('Save File from older version, settings will not be loaded');
+        // For old versions, completely skip loading any data after textures
+        // This ensures no misalignment issues affect the simulation state
+        console.log('Skipping all post-texture data for old version to prevent corruption');
+        // Reset weather stations, radars to empty arrays
+        weatherStations = [];
+        radars = [];
+        // Call mainScript with only texture data and null precipArray
+        mainScript(baseTexF32, waterTexF32, wallTexI8, null);
+        return; // Skip the rest of the loading code
       }
 
       mainScript(baseTexF32, waterTexF32, wallTexI8, precipArray);
@@ -2907,7 +3008,8 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
       let soundArray = intensity > 1.0 ? this.thunderCGSounds : this.thunderCCSounds;
       let randomThunderSound = soundArray[Math.floor(Math.random() * soundArray.length)];
-      this.playOnce(randomThunderSound, intensity / (distance * 0.001), leftRightBalance, soundDelay);
+      if (!guiControls.soundThunderEnabled) return;
+      this.playOnce(randomThunderSound, intensity / (distance * 0.001) * guiControls.soundVolumeThunder, leftRightBalance, soundDelay);
     }
 
     playOnce(buffer, volume = 1, leftRightBalance = 0, delay = 0)
@@ -2989,9 +3091,10 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         beach.mult(distVolumeMult * 1.0);
         urban.mult(distVolumeMult * 1.0);
 
-        this.setSoundLeftRight(this.forest_sound, forest.x, forest.y);
-        this.setSoundLeftRight(this.beach_sound, beach.x, beach.y);
-        this.setSoundLeftRight(this.urban_sound, urban.x, urban.y);
+        const ambientMult = guiControls.soundAmbientEnabled ? guiControls.soundVolumeAmbient : 0.0;
+        this.setSoundLeftRight(this.forest_sound, forest.x * ambientMult, forest.y * ambientMult);
+        this.setSoundLeftRight(this.beach_sound,  beach.x  * ambientMult, beach.y  * ambientMult);
+        this.setSoundLeftRight(this.urban_sound,  urban.x  * ambientMult, urban.y  * ambientMult);
 
         // wind sound
         gl.readBuffer(gl.COLOR_ATTACHMENT0); // basetexture
@@ -3000,9 +3103,8 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         gl.readPixels(simXpos, justAboveSurfaceCellY, 1, 1, gl.RGBA, gl.FLOAT, baseTextureValues); // read single cell at mouse position
 
         let windVolume = Math.abs(baseTextureValues[0]) * 10.0;
-
         windVolume *= distVolumeMult;
-
+        windVolume *= guiControls.soundWindEnabled ? guiControls.soundVolumeWind : 0.0;
         this.setSoundGainAndPan(this.wind_sound, windVolume);
 
         let tempC = KtoC(potentialToRealT(baseTextureValues[3], justAboveSurfaceCellY));
@@ -3021,8 +3123,8 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
           rainVolume = Math.pow(waterTextureValues[2] * 0.5, 0.5);
 
           rainVolume *= map_range_C(tempC, 0., 3., 0., 1.); // rain sound fades as temperature approaches 0 (wet snow)
-
           rainVolume *= distVolumeMult;
+          rainVolume *= guiControls.soundRainEnabled ? guiControls.soundVolumeRain : 0.0;
         }
 
         this.setSoundGainAndPan(this.rain_sound, rainVolume);
@@ -4610,7 +4712,16 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   function setupDatGui(strGuiControls)
   {
     datGui = new dat.GUI();
-    guiControls = JSON.parse(strGuiControls); // load settings object
+    // Parse saved settings and merge onto defaults so new properties added since
+    // the file was saved always have a valid value. Saved values override defaults.
+    let savedControls = {};
+    try {
+      savedControls = JSON.parse(strGuiControls);
+    } catch(e) {
+      console.warn('Could not parse saved settings, using defaults:', e.message);
+    }
+    // Start from a fresh copy of defaults, then overlay saved values
+    guiControls = Object.assign({}, guiControls_default, savedControls);
     
     // Remove read-only restriction to allow manual typing
     // The previous code that made inputs read-only has been removed
@@ -4770,8 +4881,13 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
     guiControls.resetSettings = function() {
       if (confirm('Are you sure you want to reset all settings to default?')) {
+        // Preserve simHeight (altitude) from current settings
+        const currentSimHeight = guiControls.simHeight;
+        // Create a copy of default settings with preserved simHeight
+        const defaultSettings = JSON.parse(JSON.stringify(guiControls_default));
+        defaultSettings.simHeight = currentSimHeight;
         datGui.destroy();                                 // remove datGui completely
-        setupDatGui(JSON.stringify(guiControls_default)); // generate new one with new settings
+        setupDatGui(JSON.stringify(defaultSettings)); // generate new one with preserved simHeight
         setGuiUniforms();
         hideOrShowGraph();
         updateSunlight();
@@ -4899,6 +5015,21 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
     radiation_folder.add(guiControls, 'dayNightCycle')
       .name('Day/Night Cycle');
+
+    radiation_folder.add(guiControls, 'realtimeMode')
+      .name('🕐 Realtime Mode')
+      .onChange(function() {
+        if (guiControls.realtimeMode) {
+          // Sync simDateTime to wall clock immediately on enable
+          const now = new Date();
+          simDateTime = new Date(now);
+          guiControls.timeOfDay = now.getHours() + now.getMinutes() / 60 + now.getSeconds() / 3600;
+          guiControls.month = now.getMonth() + 1 + now.getDate() / 30.5 + now.getHours() / 720;
+          guiControls.dayNightCycle = true; // realtime implies day/night cycle on
+          updateSunlight();
+        }
+      })
+      .listen();
 
     radiation_folder.add(guiControls, 'sunAngle', -10.0, 190.0, 0.1)
       .onChange(function() {
@@ -5138,6 +5269,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         'Air Quality' : 'DISP_AIRQUALITY',
         'Radar' : 'DISP_RADAR',
         'CAPE' : 'DISP_CAPE',
+        'Charge' : 'DISP_CHARGE',
         'Risk' : 'DISP_RISK'
       })
       .name('Display Mode')
@@ -5285,7 +5417,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     var lightning_folder = datGui.addFolder('⚡ Lightning');
     lightning_folder.add(guiControls, 'enableCloudLightning')
       .name('☁☁ Cloud Lightning');
-    lightning_folder.add(guiControls, 'cloudLightningFrequency', 0.0, 1.0, 0.01)
+    lightning_folder.add(guiControls, 'cloudLightningFrequency', 0.0, 10.0, 0.01)
       .name('Cloud Flash Frequency');
     lightning_folder.add(guiControls, 'cloudLightningIntensity', 0.0, 10.0, 0.1)
       .name('Cloud Flash Intensity');
@@ -5293,12 +5425,74 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       .name('Cloud Density Threshold');
     lightning_folder.add(guiControls, 'enableCloudGroundLightning')
       .name('☁⬇ Cloud-Ground Lightning');
-    lightning_folder.add(guiControls, 'cloudGroundLightningFrequency', 0.0, 1.0, 0.01)
+    lightning_folder.add(guiControls, 'cloudGroundLightningFrequency', 0.0, 10.0, 0.01)
       .name('CG Flash Frequency');
     lightning_folder.add(guiControls, 'cloudGroundLightningIntensity', 0.0, 10.0, 0.1)
       .name('CG Flash Intensity');
     lightning_folder.add(guiControls, 'cloudGroundLightningThreshold', 0.0, 1.0, 0.01)
       .name('CG Density Threshold');
+    lightning_folder.add(guiControls, 'lightningRepeat')
+      .name('⚡ Repeat Strikes');
+    lightning_folder.add(guiControls, 'lightningCrossTrigger')
+      .name('⚡ Cross-Trigger Types');
+
+    // ── Sound folder ──────────────────────────────────────────────────────────
+    var sound_folder = datGui.addFolder('🔊 Sound');
+
+    // Master enable — synced with the existing advanced_folder toggle
+    sound_folder.add(guiControls, 'sound')
+      .name('Enable Sound')
+      .onChange(function() {
+        if (guiControls.sound) {
+          if (soundSystem == null) { soundSystem = new SoundSystem(); }
+        } else {
+          if (soundSystem) soundSystem.mute();
+        }
+      })
+      .listen(); // .listen() keeps it in sync with the advanced_folder toggle
+
+    sound_folder.add(guiControls, 'soundWindEnabled')
+      .name('Wind')
+      .onChange(function() {
+        if (soundSystem && !guiControls.soundWindEnabled)
+          soundSystem.setSoundGainAndPan(soundSystem.wind_sound, 0);
+      });
+
+    sound_folder.add(guiControls, 'soundVolumeWind', 0.0, 2.0, 0.05)
+      .name('Wind Volume')
+      .listen();
+
+    sound_folder.add(guiControls, 'soundRainEnabled')
+      .name('Rain')
+      .onChange(function() {
+        if (soundSystem && !guiControls.soundRainEnabled)
+          soundSystem.setSoundGainAndPan(soundSystem.rain_sound, 0);
+      });
+
+    sound_folder.add(guiControls, 'soundVolumeRain', 0.0, 2.0, 0.05)
+      .name('Rain Volume')
+      .listen();
+
+    sound_folder.add(guiControls, 'soundAmbientEnabled')
+      .name('Ambient (Forest/Beach/Urban)')
+      .onChange(function() {
+        if (soundSystem && !guiControls.soundAmbientEnabled) {
+          soundSystem.setSoundGainAndPan(soundSystem.forest_sound, 0);
+          soundSystem.setSoundGainAndPan(soundSystem.beach_sound, 0);
+          soundSystem.setSoundGainAndPan(soundSystem.urban_sound, 0);
+        }
+      });
+
+    sound_folder.add(guiControls, 'soundVolumeAmbient', 0.0, 2.0, 0.05)
+      .name('Ambient Volume')
+      .listen();
+
+    sound_folder.add(guiControls, 'soundThunderEnabled')
+      .name('Thunder');
+
+    sound_folder.add(guiControls, 'soundVolumeThunder', 0.0, 2.0, 0.05)
+      .name('Thunder Volume')
+      .listen();
 
     advanced_folder.add(guiControls, 'enableVectorField')
       .name('Vector Field');
@@ -5309,6 +5503,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
     advanced_folder.add(guiControls, 'sound')
       .name('Enable Sound')
+      .listen()  // synced with the Sound folder toggle
       .onChange(function() {
         if (guiControls.sound) {
           if (soundSystem == null) {
@@ -6053,7 +6248,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       const lineHeight = 19;
       const textX = infoBoxX + 8;
       let textY = infoBoxY + 8;
-      const numLines = 24;
+      const numLines = 32;
 
       c.fillStyle = 'rgba(0, 0, 0, 0.60)';
       c.fillRect(infoBoxX, infoBoxY, infoBoxWidth, lineHeight * numLines + 16);
@@ -6128,59 +6323,142 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       row('VTP:', vtp.toFixed(2), vtp >= 1 ? '#FF4400' : 'white');
       row('DCAPE:', Math.round(dcape) + ' J/kg', dcape > 1000 ? '#FF4400' : dcape > 500 ? '#FFAA00' : 'white');
 
-      // Possible Hazard Type
+      // Hazard probability list — score each hazard independently and show all
       (function() {
-        let hazard = 'None';
-        let hazardColor = '#888888';
-        const hasCAPE = muCape >= 500;
-        const highCAPE = muCape >= 2000;
-        const extremeCAPE = muCape >= 4000;
-        const highShear6 = shear6km >= 20;
-        const extremeShear6 = shear6km >= 30;
-        const highShear3 = shear3km >= 15;
-        const lowLCL = (muLcl || 9999) < 1000;
-        const veryLowLCL = (muLcl || 9999) < 500;
-        const highPwat = pwat_mm >= 30;
-        const extremePwat = pwat_mm >= 45;
-        const steepLapse = !isNaN(lapse03) && lapse03 >= 7.5;
-        const extremeLapse = !isNaN(lapse03) && lapse03 >= 9.0;
+        // Each hazard gets a 0–100% score based on how well conditions match.
+        // Scores are independent so multiple hazards can show simultaneously.
+        const hazards = [];
 
-        if (!hasCAPE) {
-          hazard = 'None'; hazardColor = '#888888';
-        } else if (vtp >= 8 && extremeCAPE && extremeShear6 && veryLowLCL) {
-          hazard = 'PDS Tornado'; hazardColor = '#FF00FF';
-        } else if (vtp >= 6 || (stp >= 10 && lowLCL && highShear6)) {
-          hazard = 'Tornado'; hazardColor = '#FF0066';
-        } else if (stp >= 4 && lowLCL && highShear3) {
-          hazard = 'Slight Tornado'; hazardColor = '#FF6699';
-        } else if (hasCAPE && highShear6) {
-          hazard = 'Supercell'; hazardColor = '#FF4400';
-        } else if (extremeLapse && highCAPE && highShear6) {
-          hazard = 'Giant Hail'; hazardColor = '#AA00FF';
-        } else if (steepLapse && highCAPE && highShear6) {
-          hazard = 'Large Hail'; hazardColor = '#FF8800';
-        } else if (steepLapse && hasCAPE) {
-          hazard = 'Hail'; hazardColor = '#FFCC00';
-        } else if (dcape >= 1200 && highShear6) {
-          hazard = 'Destructive Winds'; hazardColor = '#FF4400';
-        } else if (dcape >= 700 || (highShear6 && hasCAPE)) {
-          hazard = 'Damaging Winds'; hazardColor = '#FF8800';
-        } else if (extremePwat && hasCAPE) {
-          hazard = 'Flooding/Heavy Rainfall'; hazardColor = '#0088FF';
-        } else if (highPwat && hasCAPE) {
-          hazard = 'Intense Rainfall'; hazardColor = '#00AAFF';
-        } else {
-          hazard = 'General Thunderstorm'; hazardColor = '#AAAAAA';
+        function addHazard(label, color, score) {
+          if (score > 1) hazards.push({ label, color, pct: Math.min(100, Math.round(score)) });
         }
 
+        // PDS Tornado
+        {
+          let s = 0;
+          if (vtp >= 4)  s += map_range(vtp, 4, 10, 20, 60);
+          if (stp >= 6)  s += map_range(stp, 6, 15, 10, 30);
+          if ((muLcl || 9999) < 500) s += 10;
+          if (muCape >= 3000) s += map_range(muCape, 3000, 6000, 0, 20);
+          addHazard('PDS Tornado', '#FF00FF', s);
+        }
+        // Tornado
+        {
+          let s = 0;
+          if (vtp >= 2)  s += map_range(vtp, 2, 8, 15, 50);
+          if (stp >= 2)  s += map_range(stp, 2, 10, 15, 40);
+          if ((muLcl || 9999) < 1000) s += 10;
+          if (shear3km >= 10) s += map_range(shear3km, 10, 25, 5, 20);
+          addHazard('Tornado', '#FF0066', s);
+        }
+        // Supercell
+        {
+          let s = 0;
+          if (muCape >= 500 && shear6km >= 15) {
+            s += map_range(muCape, 500, 3000, 10, 40);
+            s += map_range(shear6km, 15, 35, 10, 40);
+            if (srh3km > 150) s += map_range(srh3km, 150, 500, 5, 20);
+          }
+          addHazard('Supercell', '#FF4400', s);
+        }
+        // Giant Hail
+        {
+          let s = 0;
+          if (!isNaN(lapse03) && lapse03 >= 8.0 && muCape >= 1500 && shear6km >= 20) {
+            s += map_range(lapse03, 8.0, 10.0, 20, 50);
+            s += map_range(muCape, 1500, 5000, 10, 30);
+            s += map_range(shear6km, 20, 40, 5, 20);
+          }
+          addHazard('Giant Hail', '#AA00FF', s);
+        }
+        // Large Hail
+        {
+          let s = 0;
+          if (!isNaN(lapse03) && lapse03 >= 7.0 && muCape >= 1000) {
+            s += map_range(lapse03, 7.0, 9.5, 15, 45);
+            s += map_range(muCape, 1000, 4000, 10, 30);
+            if (shear6km >= 15) s += map_range(shear6km, 15, 30, 5, 20);
+          }
+          addHazard('Large Hail', '#FF8800', s);
+        }
+        // Hail
+        {
+          let s = 0;
+          if (!isNaN(lapse03) && lapse03 >= 6.5 && muCape >= 300) {
+            s += map_range(lapse03, 6.5, 9.0, 10, 35);
+            s += map_range(muCape, 300, 2000, 5, 25);
+          }
+          addHazard('Hail', '#FFCC00', s);
+        }
+        // Destructive Winds
+        {
+          let s = 0;
+          if (dcape >= 600) s += map_range(dcape, 600, 1500, 15, 55);
+          if (shear6km >= 15) s += map_range(shear6km, 15, 35, 5, 25);
+          if (muCape >= 500) s += map_range(muCape, 500, 3000, 5, 20);
+          addHazard('Destructive Winds', '#FF4400', s);
+        }
+        // Damaging Winds
+        {
+          let s = 0;
+          if (dcape >= 300) s += map_range(dcape, 300, 900, 10, 40);
+          if (shear6km >= 10 && muCape >= 300) s += map_range(shear6km, 10, 25, 5, 25);
+          addHazard('Damaging Winds', '#FF8800', s);
+        }
+        // Flooding / Heavy Rainfall
+        {
+          let s = 0;
+          if (pwat_mm >= 20 && muCape >= 200) {
+            s += map_range(pwat_mm, 20, 55, 10, 55);
+            s += map_range(muCape, 200, 2000, 5, 25);
+            if (shear6km < 15) s += 15; // slow-moving storms flood more
+          }
+          addHazard('Flooding/Heavy Rain', '#0088FF', s);
+        }
+        // General Thunderstorm (always shown if any CAPE)
+        {
+          let s = 0;
+          if (muCape >= 100) s += map_range(muCape, 100, 1000, 10, 50);
+          addHazard('General Thunderstorm', '#AAAAAA', s);
+        }
+
+        // Sort by score descending
+        hazards.sort((a, b) => b.pct - a.pct);
+
+        // Draw header
         c.fillStyle = '#AAAAAA';
-        c.font = '13px monospace';
-        c.fillText('Hazard:', textX, textY);
-        c.fillStyle = hazardColor;
-        c.font = 'bold 11px monospace';
-        c.fillText(hazard, textX + 90, textY);
-        c.font = '13px monospace';
+        c.font = '12px monospace';
+        c.fillText('Hazards:', textX, textY);
         textY += lineHeight;
+
+        if (hazards.length === 0) {
+          c.fillStyle = '#888888';
+          c.font = '11px monospace';
+          c.fillText('  None', textX, textY);
+          textY += lineHeight;
+        } else {
+          // Draw each hazard with a mini bar
+          const barMaxW = 80;
+          hazards.forEach(h => {
+            // Bar background (drawn first at bottom)
+            c.fillStyle = '#333333';
+            c.fillRect(textX + 4, textY + 8, barMaxW, 5);
+            // Bar fill
+            c.fillStyle = h.color;
+            c.fillRect(textX + 4, textY + 8, Math.round(barMaxW * h.pct / 100), 5);
+            // Percentage text (drawn above bar)
+            const pctStr = h.pct + '%';
+            c.fillStyle = '#cccccc';
+            c.font = '10px monospace';
+            c.fillText(pctStr, textX + 4, textY);
+            // Label (drawn after percentage)
+            c.fillStyle = h.color;
+            c.font = '10px monospace';
+            c.fillText(h.label, textX + 4 + barMaxW + 4, textY);
+            textY += lineHeight + 4;
+          });
+          textY += 2;
+        }
       })();
 
       // Risk row with colored label
@@ -6431,7 +6709,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       function T_to_Xpos(T, y)
       {
         // temperature to horizontal position
-        var normX = T * 0.0115 + 1.18 - (y / graphBottem) * 0.8; // -30 to 50
+        var normX = T * 0.0115 + 0.9 - (y / graphBottem) * 0.8; // -30 to 50 (shifted left for readout space)
         return normX * this.graphCanvas.width;                   // T * 7.5 + 780.0 - 600.0 * (y / graphBottem);
       }
 
@@ -7175,6 +7453,10 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       guiControls.displayMode = 'DISP_PRESSURE';
     } else if (event.code == 'KeyK') {
       guiControls.displayMode = 'DISP_AIRQUALITY';
+    } else if (event.code == 'KeyE') {
+      guiControls.displayMode = 'DISP_CHARGE';
+    } else if (event.code === 'Backspace') {
+      guiControls.displayMode = 'DISP_CHARGE';
     } else if (event.key == 'ArrowLeft') {
       leftPressed = true; // <
     } else if (event.key == 'ArrowUp') {
@@ -7328,6 +7610,8 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   const advectionShader = await loadShader('advectionShader.frag');
   const curlShader = await loadShader('curlShader.frag');
   const capeShader = await loadShader('capeShader.frag');
+  const chargeShader = await loadShader('chargeShader.frag');
+  const chargeDisplayShader = await loadShader('chargeDisplayShader.frag');
   const vorticityShader = await loadShader('vorticityShader.frag');
   const boundaryShader = await loadShader('boundaryShader.frag');
 
@@ -7355,6 +7639,8 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   const advectionProgram = createProgram(simVertexShader, advectionShader);
   const curlProgram = createProgram(simVertexShader, curlShader);
   const capeProgram = createProgram(simVertexShader, capeShader);
+  const chargeProgram = createProgram(simVertexShader, chargeShader);
+  const chargeDisplayProgram = createProgram(dispVertexShader, chargeDisplayShader);
   const vorticityProgram = createProgram(simVertexShader, vorticityShader);
   const boundaryProgram = createProgram(simVertexShader, boundaryShader);
 
@@ -7782,6 +8068,9 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
   const curlTexture = gl.createTexture();
   const capeTexture = gl.createTexture();
+  // Charge texture: RG32F — R=air charge, G=ground/surface charge (bipolar, ±1.0 = ±100 MV)
+  const chargeTexture_0 = gl.createTexture();
+  const chargeTexture_1 = gl.createTexture();
   const vortForceTexture = gl.createTexture();
 
   const lightTexture_0 = gl.createTexture();
@@ -7820,6 +8109,8 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
   const curlFrameBuff = gl.createFramebuffer();
   const capeFrameBuff = gl.createFramebuffer();
+  const chargeFrameBuff_0 = gl.createFramebuffer();
+  const chargeFrameBuff_1 = gl.createFramebuffer();
   const vortForceFrameBuff = gl.createFramebuffer();
 
   lightFrameBuff_0 = gl.createFramebuffer();
@@ -7921,6 +8212,20 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, capeTexture,
                           0); // attach the texture as the first color attachment
 
+  // Charge textures: RG32F ping-ponged (R=air charge, G=ground charge), bipolar ±1.0
+  gl.bindTexture(gl.TEXTURE_2D, chargeTexture_0);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RG32F, sim_res_x, sim_res_y, 0, gl.RG, gl.FLOAT, null);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, chargeFrameBuff_0);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, chargeTexture_0, 0);
+
+  gl.bindTexture(gl.TEXTURE_2D, chargeTexture_1);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RG32F, sim_res_x, sim_res_y, 0, gl.RG, gl.FLOAT, null);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, chargeFrameBuff_1);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, chargeTexture_1, 0);
 
   gl.bindTexture(gl.TEXTURE_2D, vortForceTexture);
   gl.texImage2D(gl.TEXTURE_2D, 0, gl.RG32F, sim_res_x, sim_res_y, 0, gl.RG, gl.FLOAT, null);
@@ -8070,7 +8375,8 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     { id: 'radarVelocity',     name: 'Radar Velocity',     col: 19, stops: 33, interpolate: false },
     { id: 'radarCorrelation',  name: 'Radar Correlation',  col:20, stops: 22, interpolate: false },
     { id: 'radarEchoTops',     name: 'Radar Echo Tops',    col:21, stops: 32, interpolate: false },
-    { id: 'pressure',          name: 'Pressure',           col:22, stops: 33, interpolate: true  },
+    { id: 'pressure',          name: 'Pressure',           col:22, stops: 33, interpolate: false },
+    { id: 'charge',            name: 'Charge',             col:23, stops: 33, interpolate: false },
   ];
 
   const DEFAULT_IR_PALETTE = [
@@ -8380,6 +8686,40 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     }
     colorScaleData.pressure = pressureScale;
     colorScaleValues.pressure = Array.from({length: 33}, (_, i) => i);
+
+    // Charge: deep blue (strong negative) → cyan → white (neutral) → yellow → deep red (strong positive)
+    // Bipolar 33 stops. Negative = blue family, positive = red/orange family.
+    const chargeScale = [];
+    for (let i = 0; i <= 32; i++) {
+      const t = i / 32; // 0=max negative, 0.5=neutral, 1=max positive
+      if (t < 0.5) {
+        // Negative side: deep blue → cyan → white
+        const f = t / 0.5; // 0→1 as charge goes from max-neg to neutral
+        if (f < 0.5) {
+          // deep blue → cyan
+          const g = f / 0.5;
+          chargeScale.push([0, Math.round(g * 220), 255]);
+        } else {
+          // cyan → white
+          const g = (f - 0.5) / 0.5;
+          chargeScale.push([Math.round(g * 255), 220 + Math.round(g * 35), 255]);
+        }
+      } else {
+        // Positive side: white → yellow → deep red
+        const f = (t - 0.5) / 0.5; // 0→1 as charge goes from neutral to max-pos
+        if (f < 0.5) {
+          // white → yellow/orange
+          const g = f / 0.5;
+          chargeScale.push([255, Math.round(255 - g * 100), Math.round(255 - g * 255)]);
+        } else {
+          // orange → deep red
+          const g = (f - 0.5) / 0.5;
+          chargeScale.push([255, Math.round(155 - g * 155), 0]);
+        }
+      }
+    }
+    colorScaleData.charge = chargeScale;
+    colorScaleValues.charge = Array.from({length: 33}, (_, i) => i);
   }
 
   function uploadColorScaleTexture() {
@@ -9145,6 +9485,26 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   gl.uniform1f(gl.getUniformLocation(capeProgram, 'simHeight'), guiControls.simHeight);
   gl.uniform1f(gl.getUniformLocation(capeProgram, 'evapHeat'), guiControls.evapHeat);
 
+  gl.useProgram(chargeProgram);
+  gl.uniform2f(gl.getUniformLocation(chargeProgram, 'resolution'), sim_res_x, sim_res_y);
+  gl.uniform2f(gl.getUniformLocation(chargeProgram, 'texelSize'), texelSizeX, texelSizeY);
+  gl.uniform1i(gl.getUniformLocation(chargeProgram, 'baseTex'),   0);
+  gl.uniform1i(gl.getUniformLocation(chargeProgram, 'waterTex'),  1);
+  gl.uniform1i(gl.getUniformLocation(chargeProgram, 'wallTex'),   2);
+  gl.uniform1i(gl.getUniformLocation(chargeProgram, 'chargeTex'), 3);
+  gl.uniform1f(gl.getUniformLocation(chargeProgram, 'dryLapse'),  dryLapse);
+
+  gl.useProgram(chargeDisplayProgram);
+  gl.uniform2f(gl.getUniformLocation(chargeDisplayProgram, 'resolution'), sim_res_x, sim_res_y);
+  gl.uniform2f(gl.getUniformLocation(chargeDisplayProgram, 'texelSize'), texelSizeX, texelSizeY);
+  gl.uniform2f(gl.getUniformLocation(chargeDisplayProgram, 'aspectRatios'), sim_aspect, canvas_aspect);
+  gl.uniform1f(gl.getUniformLocation(chargeDisplayProgram, 'Xmult'), horizontalDisplayMult);
+  gl.uniform1i(gl.getUniformLocation(chargeDisplayProgram, 'chargeTex'),      0);
+  gl.uniform1i(gl.getUniformLocation(chargeDisplayProgram, 'wallTex'),        2);
+  gl.uniform1i(gl.getUniformLocation(chargeDisplayProgram, 'colorScalesTex'), 9);
+  gl.uniform1i(gl.getUniformLocation(chargeDisplayProgram, 'colorScaleColumn'), 23);
+  gl.uniform1i(gl.getUniformLocation(chargeDisplayProgram, 'colorScaleStops'),  33);
+
   gl.useProgram(lightingProgram);
   gl.uniform2f(gl.getUniformLocation(lightingProgram, 'resolution'), sim_res_x, sim_res_y);
   gl.uniform2f(gl.getUniformLocation(lightingProgram, 'texelSize'), texelSizeX, texelSizeY);
@@ -9220,6 +9580,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   gl.uniform1i(gl.getUniformLocation(realisticDisplayProgram, 'surfaceTextureMap'), 5);
   gl.uniform1i(gl.getUniformLocation(realisticDisplayProgram, 'curlTex'), 6);
   gl.uniform1i(gl.getUniformLocation(realisticDisplayProgram, 'ambientLightTex'), 7);
+  gl.uniform1i(gl.getUniformLocation(realisticDisplayProgram, 'chargeTex'), 11); // charge texture for physics-based lightning
   gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'dryLapse'), dryLapse);
   gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'cellHeight'), cellHeight);
   const realDisp_enableRHFog_loc = gl.getUniformLocation(realisticDisplayProgram, 'enableRHFog');
@@ -9353,6 +9714,8 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   const uloc_real_cloudGroundLightningIntensity = gl.getUniformLocation(realisticDisplayProgram, 'cloudGroundLightningIntensity');
   const uloc_real_cloudGroundLightningThreshold = gl.getUniformLocation(realisticDisplayProgram, 'cloudGroundLightningThreshold');
   const uloc_real_cloudGroundLightningFrequency = gl.getUniformLocation(realisticDisplayProgram, 'cloudGroundLightningFrequency');
+  const uloc_real_lightningRepeat       = gl.getUniformLocation(realisticDisplayProgram, 'lightningRepeat');
+  const uloc_real_lightningCrossTrigger = gl.getUniformLocation(realisticDisplayProgram, 'lightningCrossTrigger');
 
   // precipDisplay per-frame
   const uloc_precipDisp_aspectRatios   = gl.getUniformLocation(precipDisplayProgram, 'aspectRatios');
@@ -9669,7 +10032,14 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         let nightAccelerationActive = !airplaneMode && guiControls.dayNightCycle && guiControls.accelerateNight && guiControls.sunAngle < 0.;
 
         if (guiControls.dayNightCycle) {
-          if (airplaneMode) {
+          if (guiControls.realtimeMode) {
+            // Sync to real wall-clock time — advance simDateTime to match now
+            const now = new Date();
+            const realDeltaHours = (now - simDateTime) / 3600000; // ms → hours
+            if (Math.abs(realDeltaHours) > 0.0001) {
+              updateSunlight(realDeltaHours);
+            }
+          } else if (airplaneMode) {
             updateSunlight(1.0 / 3600.0 / 60);                                                                    // increase solar time at real speed: 1/60 seconds per frame
           } else {
             updateSunlight(timePerIteration * guiControls.IterPerFrame * (nightAccelerationActive ? 10.0 : 1.0)); // increase solar time
@@ -9717,6 +10087,23 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
               gl.activeTexture(gl.TEXTURE2);
               gl.bindTexture(gl.TEXTURE_2D, wallTexture_0);
               gl.bindFramebuffer(gl.FRAMEBUFFER, capeFrameBuff);
+              gl.drawBuffers([ gl.COLOR_ATTACHMENT0 ]);
+              gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+            }
+
+            // calc atmospheric charge (drives physics-based lightning)
+            {
+              gl.useProgram(chargeProgram);
+              gl.activeTexture(gl.TEXTURE0);
+              gl.bindTexture(gl.TEXTURE_2D, baseTexture_1);
+              gl.activeTexture(gl.TEXTURE1);
+              gl.bindTexture(gl.TEXTURE_2D, waterTexture_0);
+              gl.activeTexture(gl.TEXTURE2);
+              gl.bindTexture(gl.TEXTURE_2D, wallTexture_0);
+              gl.activeTexture(gl.TEXTURE3);
+              // Read from the opposite charge texture (ping-pong)
+              gl.bindTexture(gl.TEXTURE_2D, even ? chargeTexture_0 : chargeTexture_1);
+              gl.bindFramebuffer(gl.FRAMEBUFFER, even ? chargeFrameBuff_1 : chargeFrameBuff_0);
               gl.drawBuffers([ gl.COLOR_ATTACHMENT0 ]);
               gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
             }
@@ -10096,11 +10483,16 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       gl.uniform1f(uloc_real_cloudGroundLightningIntensity, guiControls.cloudGroundLightningIntensity);
       gl.uniform1f(uloc_real_cloudGroundLightningThreshold, guiControls.cloudGroundLightningThreshold);
       gl.uniform1f(uloc_real_cloudGroundLightningFrequency, guiControls.cloudGroundLightningFrequency);
+      gl.uniform1i(uloc_real_lightningRepeat,       guiControls.lightningRepeat       ? 1 : 0);
+      gl.uniform1i(uloc_real_lightningCrossTrigger, guiControls.lightningCrossTrigger ? 1 : 0);
       gl.uniform1f(uloc_real_iterNum, iterNum);
 
       gl.activeTexture(gl.TEXTURE7);
       gl.bindTexture(gl.TEXTURE_2D, ambientLightFBOs[0].texture);
 
+      // Bind charge texture for physics-based lightning
+      gl.activeTexture(gl.TEXTURE11);
+      gl.bindTexture(gl.TEXTURE_2D, even ? chargeTexture_1 : chargeTexture_0);
 
       gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4); // draw to hdr framebuffer
 
@@ -10581,13 +10973,31 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
           gl.uniform1i(uloc_univ_useUnipolarScale, 1);
           colorScaleStops = 72;
           break;
+        case 'DISP_CHARGE':
+          // Charge view uses its own dedicated display shader (not universalDisplayProgram)
+          // so we break out early after drawing
+          {
+            gl.useProgram(chargeDisplayProgram);
+            gl.uniform3f(gl.getUniformLocation(chargeDisplayProgram, 'view'), cam.curXpos, cam.curYpos, cam.curZoom);
+            gl.uniform4f(gl.getUniformLocation(chargeDisplayProgram, 'cursor'), mouseXinSim, mouseYinSim, guiControls.brushSize * 0.5, cursorType);
+            gl.uniform1f(gl.getUniformLocation(chargeDisplayProgram, 'Xmult'), horizontalDisplayMult);
+            gl.uniform2f(gl.getUniformLocation(chargeDisplayProgram, 'aspectRatios'), sim_aspect, canvas_aspect);
+            gl.activeTexture(gl.TEXTURE0);
+            gl.bindTexture(gl.TEXTURE_2D, even ? chargeTexture_1 : chargeTexture_0);
+            gl.activeTexture(gl.TEXTURE2);
+            gl.bindTexture(gl.TEXTURE_2D, wallTexture_1);
+            gl.activeTexture(gl.TEXTURE9);
+            gl.bindTexture(gl.TEXTURE_2D, colorScalesTexture);
+            gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+          }
+          break;
         case 'DISP_RISK':
           break;
         }
         gl.uniform1i(uloc_univ_colorScaleStops, colorScaleStops);
       }
 
-      if (guiControls.displayMode != 'DISP_RADAR' && guiControls.displayMode != 'DISP_RISK') {
+      if (guiControls.displayMode != 'DISP_RADAR' && guiControls.displayMode != 'DISP_RISK' && guiControls.displayMode != 'DISP_CHARGE') {
         gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4); // draw to canvas
       }
 
@@ -11082,7 +11492,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         let strRadarSettings = JSON.stringify(radarsSettings);
 
         let saveDataArray = [
-          Uint16Array.of(sim_res_x), Uint16Array.of(sim_res_y), baseTextureValues, waterTextureValues, wallTextureValues, precipBufferValues, Uint16Array.of(weatherStations.length),
+          Uint16Array.of(sim_res_x), Uint16Array.of(sim_res_y), baseTextureValues, waterTextureValues, wallTextureValues, Uint32Array.of(rainDrops.length / 5), precipBufferValues, Uint16Array.of(weatherStations.length),
           weatherStationsPositions, Uint16Array.of(radars.length), radarsPositions, Uint32Array.of(strGuiControls.length), strGuiControls, strRadarSettings
         ];
         let blob = new Blob(saveDataArray);        // combine everything into a single blob
