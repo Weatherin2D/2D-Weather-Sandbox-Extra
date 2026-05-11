@@ -227,8 +227,8 @@ void main()
 
       feedback[VAPOR] += evap;                              // added to water vapor in air
       feedback[VAPOR] += subli;
-      feedback[HEAT] -= evap * evapHeat;                    // heat cost extracted from air
-      feedback[HEAT] -= subli * evapHeat;
+      // feedback[HEAT] -= evap * evapHeat;                    // heat cost extracted from air (removed)
+      // feedback[HEAT] -= subli * evapHeat;                   // heat cost extracted from air (removed)
       feedback[HEAT] -= subli * meltingHeat;
 
       // Update position

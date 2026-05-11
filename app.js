@@ -442,7 +442,6 @@ const guiControls_default = {
   greenHueEndThreshold : 1.8,
   greenHueStrength : 0.8,
   enhancedLooks : false,
-  enableRHFog : true,
   timeOfDay : 12.0,
   latitude : 45.0,
   month : 6.65, // Northern hemisphere summer solstice
@@ -489,6 +488,12 @@ const guiControls_default = {
   lightningRepeat : true,          // allow repeat strikes driven by charge
   lightningCrossTrigger : true,    // CG can trigger CC crawlers and vice versa
   enableVectorField : false,
+  // Nuke settings
+  nukeBlastRadius : 50,
+  nukeTemperature : 100.0,
+  nukeSmokeAmount : 2.0,
+  nukeFallSpeed : 10.0,
+  nukeIgnitionEnabled : true,
   dryLapseRate : 10.0,     // Real: 9.8 degrees / km
   simHeight : 12000,       // meters
   twelveHourClock : false, // only for display.  false = metric
@@ -504,9 +509,13 @@ const guiControls_default = {
   riskUpdateFrequency : 30,
   starVisibility : 0.25,
   starLightEmitStrength : 0.15,
+  starDensity : 0.5,
+  minShadowLight : 0.02,
+  autoMinShadowLight : true,
   displayWeatherStations : true,
   displayRadars : true,
   airplaneMode : false,
+  slowMotion : false,
   readoutCursor : false,
   fullscreenResolution : 'Default',
   skipCurlCalculation : false,
@@ -546,6 +555,9 @@ var riskData = []; // stores {sx, sfcY, color} computed on frequency interval
 
 var radarOverlayCanvas = null;
 var radarImageData = null;
+
+var nukeOverlayCanvas = null;
+var nukeOverlayCtx = null;
 
 var sunIsUp = true;
 
@@ -1934,6 +1946,7 @@ function cycleRadarProducts(direction)
 let weatherStations = []; // array holding all weather stations
 let radars = []; // array holding all radars
 let markers = []; // array holding all markers
+let nukes = []; // array holding all nukes
 
 class Marker
 {
@@ -2132,6 +2145,133 @@ class Marker
   getColor() { return this.#color; }
   setName(name) { this.#name = name; }
   setColor(color) { this.#color = color; }
+}
+
+class Nuke
+{
+  #x; // position in simulation
+  #y;
+  #vx; // velocity
+  #vy;
+  #exploded;
+
+  constructor(xIn, yIn)
+  {
+    this.#x = xIn;
+    this.#y = yIn;
+    this.#vx = 0;
+    this.#vy = -guiControls.nukeFallSpeed / cellHeight; // convert m/s to sim units (downward in sim coordinates)
+    this.#exploded = false;
+  }
+
+  move()
+  {
+    if (this.#exploded) return;
+
+    // Apply gravity using the simulation time step correctly
+    const secondsPerIter = timePerIteration * 3600.0;
+    this.#vy -= 9.81 * secondsPerIter / cellHeight; // gravity in sim units (downward)
+
+    // Update position
+    this.#x += this.#vx * secondsPerIter;
+    this.#y += this.#vy * secondsPerIter;
+
+    // Check for ground impact using the active wall texture
+    const x = Math.floor(this.#x);
+    const y = Math.floor(this.#y);
+    if (x >= 0 && x < sim_res_x && y >= 0 && y < sim_res_y) {
+      const wallPixel = new Int8Array(4);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, window.frameBuff_1 || frameBuff_1);
+      gl.readBuffer(gl.COLOR_ATTACHMENT2);
+      gl.readPixels(x, y, 1, 1, gl.RGBA_INTEGER, gl.BYTE, wallPixel);
+      if (wallPixel[1] <= 0) {
+        this.explode();
+        return;
+      }
+    }
+
+    // Check for bottom of simulation domain
+    if (this.#y >= sim_res_y - 1) {
+      this.explode();
+    }
+  }
+
+  explode()
+  {
+    if (this.#exploded) return;
+    this.#exploded = true;
+
+    // Apply blast effect by directly modifying the simulation textures
+    const blastRadius = guiControls.nukeBlastRadius;
+    const centerX = Math.floor(this.#x);
+    const centerY = Math.floor(this.#y);
+    const blastTemp = CtoK(guiControls.nukeTemperature);
+
+    // Read current base, water, and wall texture data from the active framebuffer
+    gl.bindFramebuffer(gl.FRAMEBUFFER, window.frameBuff_1 || frameBuff_1);
+    gl.viewport(0, 0, sim_res_x, sim_res_y);
+
+    const baseData = new Float32Array(sim_res_x * sim_res_y * 4);
+    gl.readBuffer(gl.COLOR_ATTACHMENT0);
+    gl.readPixels(0, 0, sim_res_x, sim_res_y, gl.RGBA, gl.FLOAT, baseData);
+
+    const waterData = new Float32Array(sim_res_x * sim_res_y * 4);
+    gl.readBuffer(gl.COLOR_ATTACHMENT1);
+    gl.readPixels(0, 0, sim_res_x, sim_res_y, gl.RGBA, gl.FLOAT, waterData);
+
+    const wallData = new Int8Array(sim_res_x * sim_res_y * 4);
+    gl.readBuffer(gl.COLOR_ATTACHMENT2);
+    gl.readPixels(0, 0, sim_res_x, sim_res_y, gl.RGBA_INTEGER, gl.BYTE, wallData);
+
+    // Apply blast effect
+    for (let dy = -blastRadius; dy <= blastRadius; dy++) {
+      for (let dx = -blastRadius; dx <= blastRadius; dx++) {
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        if (dist <= blastRadius) {
+          const x = centerX + dx;
+          const y = centerY + dy;
+          if (x >= 0 && x < sim_res_x && y >= 0 && y < sim_res_y) {
+            const intensity = 1.0 - (dist / blastRadius);
+            const index = (y * sim_res_x + x) * 4;
+            baseData[index + 3] = Math.max(baseData[index + 3], blastTemp * intensity);
+            waterData[index + 3] = Math.min(waterData[index + 3] + guiControls.nukeSmokeAmount * intensity, 2.0);
+            
+            // Check if there's land/vegetation at this location and ignite it
+            if (guiControls.nukeIgnitionEnabled && wallData[index + 0] === 1) {
+              // Wall type 1 is land with vegetation; change to fire wall type
+              wallData[index + 0] = 3; // Set wall type to FIRE (3)
+              // The fire system will naturally burn out as vegetation is consumed
+            }
+          }
+        }
+      }
+    }
+
+    // Write back the modified data to both ping-pong texture buffers
+    [window.baseTexture_0 || baseTexture_0, window.baseTexture_1 || baseTexture_1].forEach(tex => {
+      gl.bindTexture(gl.TEXTURE_2D, tex);
+      gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, sim_res_x, sim_res_y, gl.RGBA, gl.FLOAT, baseData);
+    });
+
+    [window.waterTexture_0 || waterTexture_0, window.waterTexture_1 || waterTexture_1].forEach(tex => {
+      gl.bindTexture(gl.TEXTURE_2D, tex);
+      gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, sim_res_x, sim_res_y, gl.RGBA, gl.FLOAT, waterData);
+    });
+
+    [window.wallTexture_0 || wallTexture_0, window.wallTexture_1 || wallTexture_1].forEach(tex => {
+      gl.bindTexture(gl.TEXTURE_2D, tex);
+      gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, sim_res_x, sim_res_y, gl.RGBA_INTEGER, gl.BYTE, wallData);
+    });
+
+    // Remove from nukes array after a delay
+    setTimeout(() => {
+      this.#exploded = true; // Mark as exploded so it gets removed
+    }, 1000);
+  }
+
+  isExploded() { return this.#exploded; }
+  getX() { return this.#x; }
+  getY() { return this.#y; }
 }
 
 
@@ -2616,6 +2756,10 @@ function updateSoundingUniforms()
   if (!soundingData || soundingData.length < 10) return;
   if (!guiControls || !guiControls.simHeight) {
     console.warn('guiControls not initialized yet, cannot update sounding uniforms');
+    return;
+  }
+  if (!realWorldSounding_T || !realWorldSounding_W || !realWorldSounding_Vel) {
+    console.warn('Sounding arrays not initialized yet, cannot update sounding uniforms');
     return;
   }
   
@@ -4614,6 +4758,16 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   document.body.style.overflow = 'hidden'; // prevent scrolling bar from apearing
 
   canvas = document.getElementById('mainCanvas');
+  nukeOverlayCanvas = document.createElement('canvas');
+  nukeOverlayCanvas.id = 'nukeOverlayCanvas';
+  nukeOverlayCanvas.style.position = 'fixed';
+  nukeOverlayCanvas.style.top = '0';
+  nukeOverlayCanvas.style.left = '0';
+  nukeOverlayCanvas.style.pointerEvents = 'none';
+  nukeOverlayCanvas.style.zIndex = '2';
+  nukeOverlayCanvas.style.display = 'block';
+  document.body.appendChild(nukeOverlayCanvas);
+  nukeOverlayCtx = nukeOverlayCanvas.getContext('2d');
 
   var contextAttributes = {
     alpha : false,
@@ -4657,6 +4811,9 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         guiControls[key] = guiControls_default[key];
       }
     }
+
+    // Update sim_height from loaded save file (preserve saved altitude)
+    sim_height = guiControls.simHeight;
   }
 
   function setGuiUniforms()
@@ -4736,187 +4893,22 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     const folders = guiElement.querySelectorAll('.title');
     folders.forEach(folder => {
       folder.style.color = guiControls.menuTextColor;
+      // Make folder titles clickable to toggle open/close
+      folder.style.cursor = 'pointer';
+      folder.addEventListener('click', () => {
+        const li = folder.parentElement;
+        const ul = li.querySelector('ul');
+        if (ul) {
+          ul.classList.toggle('closed');
+        }
+      });
     });
   }
 
   function setupDatGui(strGuiControls)
   {
     datGui = new dat.GUI();
-    // Parse saved settings and merge onto defaults so new properties added since
-    // the file was saved always have a valid value. Saved values override defaults.
-    let savedControls = {};
-    try {
-      savedControls = JSON.parse(strGuiControls);
-    } catch(e) {
-      console.warn('Could not parse saved settings, using defaults:', e.message);
-    }
-    // Start from a fresh copy of defaults, then overlay saved values
-    guiControls = Object.assign({}, guiControls_default, savedControls);
-    
-    // Remove read-only restriction to allow manual typing
-    // The previous code that made inputs read-only has been removed
-    
-    // Add tooltip support for GUI controls
-    setTimeout(() => {
-      const descriptions = {
-        'Vorticity': 'Controls how much the air rotates. Higher values create more cyclonic motion.',
-        'Drag': 'Air resistance. Higher values slow down wind more quickly.',
-        'Wind': 'Background wind speed. Positive = right, Negative = left.',
-        'Global Drying': 'Rate at which water vapor is removed from the atmosphere.',
-        'Global Heating': 'Rate at which the atmosphere is heated or cooled globally.',
-        'Sounding Forcing': 'How strongly the simulation is forced to match real-world atmospheric soundings.',
-        'Apply above altitude': 'Altitude at which global effects start being applied.',
-        'Apply below altitude': 'Altitude at which global effects stop being applied.',
-        'Tool': 'Select which tool to use with the mouse.',
-        'Brush Diameter': 'Size of the brush for painting tools.',
-        'Whole Width Brush': 'Brush spans the entire horizontal width of the simulation.',
-        'Brush Intensity': 'Strength of the brush effect.',
-        'Allow Caves': 'Allow creating underground air pockets.',
-        'Time of day': 'Time of day in hours (0-24).',
-        'Accelerate Night': 'Speed up time during nighttime hours.',
-        'Latitude': 'Geographic latitude affecting sun angle and heating.',
-        'Month': 'Month of the year affecting sun angle and heating.',
-        'Day/Night Cycle': 'Enable automatic day/night cycle.',
-        'Sun Angle': 'Manual sun angle override.',
-        'IR Multiplier': 'Strength of infrared radiation heating/cooling.',
-        'Lake / Sea Temperature (°C)': 'Temperature of water bodies.',
-        'Land Evaporation': 'Rate of evaporation from land surfaces.',
-        'Water Evaporation': 'Rate of evaporation from water surfaces.',
-        'Water Weight': 'How much water vapor affects air density.',
-        'Dynamic Water Temperature': 'Enable water temperature to change based on air temperature and heating.',
-        'Lake / Sea Evaporation': 'Rate of evaporation specifically from lake and sea water bodies.',
-        'Evaporation Heat': 'Amount of heat energy consumed when water evaporates (latent heat of vaporization).',
-        'Melting Heat': 'Amount of heat energy consumed when ice melts (latent heat of fusion).',
-        'Precipitation Threshold +°C': 'Temperature above which precipitation falls as rain.',
-        'Precipitation Threshold -°C': 'Temperature below which precipitation falls as snow.',
-        'Condensation Rate': 'Speed at which water vapor condenses into clouds.',
-        'Evaporation Rate': 'Speed at which cloud water evaporates.',
-        'Inactive Droplets': 'Number of precipitation droplets not currently active.',
-        'Spawn Rate': 'Probability of new precipitation droplets forming in saturated air.',
-        'Snow Density': 'Density of snow relative to rain. Higher values mean heavier, faster-falling snow.',
-        'Fall Speed': 'Base falling speed of precipitation droplets.',
-        'Growth Rate 0°C': 'Rate at which precipitation particles grow at 0°C (freezing level).',
-        'Growth Rate -30°C': 'Rate at which precipitation particles grow at -30°C (very cold clouds).',
-        'Freezing Rate': 'Speed at which raindrops freeze into ice in cold air.',
-        'Melting Rate': 'Speed at which ice melts into rain in warm air.',
-        'Radar Imagery Opacity': 'Transparency of radar overlay.',
-        'Update Frequency (iterations)': 'How often radar updates.',
-        'Overlay on Realistic View': 'Show radar on top of realistic view.',
-        'dBZ-Based Opacity': 'Use radar reflectivity for opacity.',
-        'dBZ Opacity Strength': 'Strength of dBZ-based opacity effect.',
-        'Surface Pressure (hPa)': 'Base atmospheric pressure at surface level.',
-        'Pressure Persistence': 'How long pressure systems last before decaying.',
-        'Thermal-Pressure Coupling': 'How strongly temperature affects pressure (warm=low, cold=high).',
-        'Pressure Influence': 'How strongly pressure gradients affect wind speed. Keep below 1.0 for stability.',
-        'Pressure Gradient Radius': 'Radius over which pressure gradients are calculated. Larger values create broader pressure systems.',
-        'Asymmetric Pressure Effect': 'Makes low pressure cause rising motion more than high pressure causes sinking. 0.0 = symmetric, 1.0 = full asymmetry.',
-        'Force Intensity Multiplier': 'Overall multiplier for all pressure-related forces. Increase for stronger weather systems.',
-        'Exposure': 'Brightness of the image.',
-        'Saturation': 'Color intensity of the image.',
-        'Contrast': 'Contrast of the image.',
-        'Greenhouse Gases': 'Amount of greenhouse gas warming effect.',
-        'Water Greenhouse Effect': 'Additional warming from water vapor.',
-        'Sun Intensity': 'Brightness and heating power of the sun. Higher values increase global temperatures.',
-        'IR Rate': 'Rate of infrared radiation cooling.',
-        'Star Light Emit Strength': 'Brightness of stars in night sky.',
-        'Iterations per temperature update': 'How many simulation steps between temperature change calculations.',
-        'Camera Pan Speed': 'Speed of camera movement.',
-        'Sim Quality (High=Fast)': 'Higher values = better quality but slower performance.',
-        'Fullscreen Res': 'Resolution when in fullscreen mode.',
-        'Enable Precipitation': 'Enable rain and snow simulation. Disable for better performance.',
-        'Enable Bloom': 'Enable bloom/glow effect for bright areas.',
-        'Vector Field': 'Show wind vector field overlay on the simulation.',
-        'Iterations/Frame': 'Number of simulation steps per frame. Higher = more accurate but slower.',
-        'Auto Adjust Iters': 'Automatically adjust iterations per frame to maintain performance.',
-        'Enable Sound': 'Enable thunder and environmental sound effects.',
-        'Smooth Clouds': 'Make storms look more intimidating with darker, dramatic clouds and ominous lighting.',
-        'RH Fog': 'Enable relative humidity-based fog rendering.',
-        'Weather Stations': 'Show/hide weather station markers on the map.',
-        'Radars': 'Show/hide radar coverage circles on the map.',
-        'Airplane Mode': 'Enable airplane flight simulation mode.',
-        'Skip Curl (Faster)': 'Disable vorticity/curl calculation for performance boost.',
-        'Skip CAPE (Faster)': 'Disable CAPE (Convective Available Potential Energy) calculation.',
-        'Skip Lighting (Major boost)': 'Disable lighting/shadow calculations for major performance boost.'
-      };
-      const propertyNames = document.querySelectorAll('.dg .property-name');
-      propertyNames.forEach(el => {
-        const text = el.textContent.trim();
-        if (descriptions[text]) {
-          el.style.cursor = 'help';
-          el.title = descriptions[text];
-          
-          // Add custom tooltip behavior
-          el.addEventListener('mouseenter', (e) => {
-            const tooltip = document.createElement('div');
-            tooltip.id = 'gui-tooltip';
-            tooltip.textContent = descriptions[text];
-            tooltip.style.cssText = `
-              position: fixed;
-              background: rgba(0, 0, 0, 0.9);
-              color: white;
-              padding: 8px 12px;
-              border-radius: 4px;
-              font-size: 12px;
-              max-width: 300px;
-              z-index: 10000;
-              pointer-events: none;
-              box-shadow: 0 2px 8px rgba(0,0,0,0.3);
-            `;
-            document.body.appendChild(tooltip);
-            
-            const updateTooltipPos = (e) => {
-              tooltip.style.left = (e.clientX + 15) + 'px';
-              tooltip.style.top = (e.clientY + 15) + 'px';
-            };
-            
-            updateTooltipPos(e);
-            el.addEventListener('mousemove', updateTooltipPos);
-            el._tooltipUpdate = updateTooltipPos;
-          });
-          
-          el.addEventListener('mouseleave', () => {
-            const tooltip = document.getElementById('gui-tooltip');
-            if (tooltip) tooltip.remove();
-            if (el._tooltipUpdate) {
-              el.removeEventListener('mousemove', el._tooltipUpdate);
-              el._tooltipUpdate = null;
-            }
-          });
-        }
-      });
-
-    // Inject CSS improvements for dat.GUI readability
-    const guiStyle = document.createElement('style');
-    guiStyle.textContent = `
-      .dg.main { border-radius:0 0 6px 6px !important; overflow:hidden; }
-      .dg.main .close-button { height:22px !important; line-height:22px !important;
-        font-size:10px !important; letter-spacing:1.5px !important; }
-      .dg li { border-bottom:1px solid rgba(255,255,255,0.025) !important; }
-      .dg li:not(.folder) { height:27px !important; line-height:27px !important; }
-      .dg .property-name { font-size:11px !important; line-height:27px !important; }
-      .dg .c { line-height:27px !important; }
-      .dg .c input[type=text] { height:17px !important; border-radius:3px !important;
-        font-size:11px !important; }
-      .dg .title { font-size:11px !important; height:24px !important;
-        line-height:24px !important; letter-spacing:0.5px !important;
-        padding:0 8px !important; }
-      .dg .folder > .title { background:rgba(0,0,0,0.25) !important; }
-      .dg .slider { border-radius:3px !important; height:5px !important;
-        margin-top:11px !important; }
-      .dg .slider-fg { border-radius:3px !important; }
-      .dg select { font-size:11px !important; border-radius:3px !important;
-        height:19px !important; }
-      .dg.main::-webkit-scrollbar { width:4px !important; }
-      .dg.main::-webkit-scrollbar-thumb { background:#3a3a5c !important;
-        border-radius:2px !important; }
-      .dg.main::-webkit-scrollbar-track { background:#1a1a2e !important; }
-    `;
-    document.head.appendChild(guiStyle);
-    }, 200);
-
-    // Ensure new properties have default values if not present in save file
-    if (guiControls.starVisibility === undefined) guiControls.starVisibility = 0.25;
-    if (guiControls.starLightEmitStrength === undefined) guiControls.starLightEmitStrength = 0.15;
+    guiControls = JSON.parse(strGuiControls); // load settings object
 
     guiControls.tool = 'TOOL_NONE';
 
@@ -4937,22 +4929,32 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     // add functions to guicontrols object
     guiControls.download = function() { prepareDownload(); };
 
+    guiControls.openColorScaleEditor = function() {
+      const panel = document.getElementById('colorScalePanel');
+      if (panel) {
+        panel.style.display = 'block';
+      }
+    };
+
+    guiControls.openAllRadarMenus = function() {
+      for (let i = 0; i < radars.length; i++) {
+        if (radars[i].getMenuDiv && radars[i].getMenuDiv().style.display === 'none') {
+          radars[i].toggleMenu();
+        }
+      }
+    };
+
     guiControls.resetSettings = function() {
       if (confirm('Are you sure you want to reset all settings to default?')) {
-        // Preserve simHeight (altitude) from current settings
-        const currentSimHeight = guiControls.simHeight;
-        // Create a copy of default settings with preserved simHeight
-        const defaultSettings = JSON.parse(JSON.stringify(guiControls_default));
-        defaultSettings.simHeight = currentSimHeight;
         datGui.destroy();                                 // remove datGui completely
-        setupDatGui(JSON.stringify(defaultSettings)); // generate new one with preserved simHeight
+        setupDatGui(JSON.stringify(guiControls_default)); // generate new one with new settings
         setGuiUniforms();
         hideOrShowGraph();
         updateSunlight();
       }
     };
 
-    var fluidParams_folder = datGui.addFolder('💨 Fluid');
+    var fluidParams_folder = datGui.addFolder('Fluid');
 
     fluidParams_folder.add(guiControls, 'vorticity', 0.0, 0.010, 0.001)
       .onChange(function() {
@@ -4963,21 +4965,19 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
     fluidParams_folder.add(guiControls, 'dragMultiplier', 0.0, 1.0, 0.01)
       .onChange(function() {
-        if (!guiControls.soundingMode) {
-          gl.useProgram(velocityProgram);
-          gl.uniform1f(gl.getUniformLocation(velocityProgram, 'dragMultiplier'), guiControls.dragMultiplier);
-        }
+        gl.useProgram(velocityProgram);
+        gl.uniform1f(gl.getUniformLocation(velocityProgram, 'dragMultiplier'), guiControls.dragMultiplier);
       })
       .name('Drag');
 
-    fluidParams_folder.add(guiControls, 'wind', -10.0, 10.0, 0.01)
+    fluidParams_folder.add(guiControls, 'wind', -1.0, 1.0, 0.01)
       .onChange(function() {
         gl.useProgram(velocityProgram);
         gl.uniform1f(gl.getUniformLocation(velocityProgram, 'wind'), guiControls.wind);
       })
       .name('Wind');
 
-    fluidParams_folder.add(guiControls, 'globalDrying', -0.01, 0.01, 0.00001)
+    fluidParams_folder.add(guiControls, 'globalDrying', 0.0, 0.0001, 0.000001)
       .onChange(function() {
         gl.useProgram(advectionProgram);
         gl.uniform1f(gl.getUniformLocation(advectionProgram, 'globalDrying'), guiControls.globalDrying);
@@ -5024,8 +5024,53 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       .listen()
       .name('Apply above altitude');
 
+    fluidParams_folder.add(guiControls, 'surfacePressure', 900.0, 1100.0, 0.1)
+      .name('Surface Pressure (hPa)');
 
-    var UI_folder = datGui.addFolder('🖱️ User Interaction');
+    fluidParams_folder.add(guiControls, 'pressurePersistence', 0.0, 1.0, 0.01)
+      .name('Pressure Persistence');
+
+    fluidParams_folder.add(guiControls, 'thermalPressureCoupling', 0.0, 5.0, 0.1)
+      .name('Thermal-Pressure Coupling');
+
+    fluidParams_folder.add(guiControls, 'motionPressureCoupling', 0.0, 2.0, 0.1)
+      .onChange(function() {
+        if (typeof pressureProgram !== 'undefined') {
+          gl.useProgram(pressureProgram);
+          gl.uniform1f(gl.getUniformLocation(pressureProgram, 'motionPressureCoupling'), guiControls.motionPressureCoupling);
+        }
+      })
+      .name('Motion-Pressure Coupling (Disabled)');
+
+    fluidParams_folder.add(guiControls, 'pressureInfluence', 0.0, 2.0, 0.05)
+      .onChange(function() {
+        if (typeof velocityProgram !== 'undefined') {
+          gl.useProgram(velocityProgram);
+          gl.uniform1f(gl.getUniformLocation(velocityProgram, 'pressureInfluence'), guiControls.pressureInfluence);
+        }
+      })
+      .name('Pressure Influence');
+
+    fluidParams_folder.add(guiControls, 'asymmetricPressure', 0.0, 1.0, 0.05)
+      .onChange(function() {
+        if (typeof velocityProgram !== 'undefined') {
+          gl.useProgram(velocityProgram);
+          gl.uniform1f(gl.getUniformLocation(velocityProgram, 'asymmetricPressure'), guiControls.asymmetricPressure);
+        }
+      })
+      .name('Asymmetric Pressure Effect');
+
+    fluidParams_folder.add(guiControls, 'forceIntensityMultiplier', 0.0, 1.5, 0.05)
+      .onChange(function() {
+        if (typeof pressureProgram !== 'undefined') {
+          gl.useProgram(pressureProgram);
+          gl.uniform1f(gl.getUniformLocation(pressureProgram, 'forceIntensityMultiplier'), guiControls.forceIntensityMultiplier);
+        }
+      })
+      .name('Force Intensity Multiplier (Disabled)');
+
+
+    var UI_folder = datGui.addFolder('User Interaction');
 
     UI_folder
       .add(guiControls, 'tool', {
@@ -5035,7 +5080,6 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         'Land' : 'TOOL_WALL_LAND',
         'Lake / Sea' : 'TOOL_WALL_SEA',
         'Urban' : 'TOOL_WALL_URBAN',
-        'Suburban' : 'TOOL_WALL_SUBURBAN',
         'Runway' : 'TOOL_WALL_RUNWAY',
         'Industrial' : 'TOOL_WALL_INDUSTRIAL',
         'Fire' : 'TOOL_WALL_FIRE',
@@ -5047,13 +5091,14 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         'Air Pressure' : 'TOOL_PRESSURE',
         'Weather Station' : 'TOOL_STATION',
         'Radar Tower' : 'TOOL_RADAR',
-        'Marker' : 'TOOL_MARKER'
+        'Marker' : 'TOOL_MARKER',
+        'Nuke' : 'TOOL_NUKE',
       })
       .name('Tool')
       .listen();
     UI_folder.add(guiControls, 'brushSize', 1, 200, 1).name('Brush Diameter').listen();
     UI_folder.add(guiControls, 'wholeWidth').name('Whole Width Brush').listen();
-    UI_folder.add(guiControls, 'brushIntensity', 0.005, 1.0, 0.001).name('Brush Intensity');
+    UI_folder.add(guiControls, 'brushIntensity', 0.005, 0.05, 0.001).name('Brush Intensity');
     UI_folder.add(guiControls, 'allowCaves')
       .onChange(function() {
         gl.useProgram(boundaryProgram);
@@ -5061,33 +5106,17 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       })
       .name('Allow Caves');
 
-    var radiation_folder = datGui.addFolder('☀️ Radiation');
+    var radiation_folder = datGui.addFolder('Radiation');
 
     radiation_folder.add(guiControls, 'timeOfDay', 0.0, 23.96, 0.01).onChange(onUpdateTimeOfDaySlider).name('Time of day').listen();
+
+    radiation_folder.add(guiControls, 'dayNightCycle').name('Day/Night Cycle').listen();
 
     radiation_folder.add(guiControls, 'accelerateNight').name('Accelerate Night').listen();
 
     radiation_folder.add(guiControls, 'latitude', -90.0, 90.0, 0.1).onChange(function() { updateSunlight(); }).name('Latitude').listen();
 
     radiation_folder.add(guiControls, 'month', 1.0, 12.99, 0.01).onChange(onUpdateMonthSlider).name('Month').listen();
-
-    radiation_folder.add(guiControls, 'dayNightCycle')
-      .name('Day/Night Cycle');
-
-    radiation_folder.add(guiControls, 'realtimeMode')
-      .name('🕐 Realtime Mode')
-      .onChange(function() {
-        if (guiControls.realtimeMode) {
-          // Sync simDateTime to wall clock immediately on enable
-          const now = new Date();
-          simDateTime = new Date(now);
-          guiControls.timeOfDay = now.getHours() + now.getMinutes() / 60 + now.getSeconds() / 3600;
-          guiControls.month = now.getMonth() + 1 + now.getDate() / 30.5 + now.getHours() / 720;
-          guiControls.dayNightCycle = true; // realtime implies day/night cycle on
-          updateSunlight();
-        }
-      })
-      .listen();
 
     radiation_folder.add(guiControls, 'sunAngle', -10.0, 190.0, 0.1)
       .onChange(function() {
@@ -5097,16 +5126,16 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       .name('Sun Angle')
       .listen();
 
-    radiation_folder.add(guiControls, 'sunIntensity', 0.0, 8.0, 0.01).onChange(function() { updateSunlight('MANUAL_ANGLE'); }).name('Sun Intensity');
+    radiation_folder.add(guiControls, 'sunIntensity', 0.0, 2.0, 0.01).onChange(function() { updateSunlight('MANUAL_ANGLE'); }).name('Sun Intensity');
 
-    radiation_folder.add(guiControls, 'greenhouseGases', 0.0, 0.04, 0.0001)
+    radiation_folder.add(guiControls, 'greenhouseGases', 0.0, 0.01, 0.0001)
       .onChange(function() {
         gl.useProgram(lightingProgram);
         gl.uniform1f(gl.getUniformLocation(lightingProgram, 'greenhouseGases'), guiControls.greenhouseGases);
       })
       .name('Greenhouse Gases');
 
-    radiation_folder.add(guiControls, 'waterGreenHouseEffect', 0.0, 0.04, 0.0001)
+    radiation_folder.add(guiControls, 'waterGreenHouseEffect', 0.0, 0.01, 0.0001)
       .onChange(function() {
         gl.useProgram(lightingProgram);
         gl.uniform1f(gl.getUniformLocation(lightingProgram, 'waterGreenHouseEffect'), guiControls.waterGreenHouseEffect);
@@ -5121,10 +5150,9 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       })*/
       .name('IR Multiplier');
 
+    var water_folder = datGui.addFolder('Water');
 
-    var water_folder = datGui.addFolder('💧 Water');
-
-    water_folder.add(guiControls, 'waterTemperature', 0.0, 50.0, 0.1)
+    water_folder.add(guiControls, 'waterTemperature', 0.0, 40.0, 0.1)
       .onChange(function() {
         gl.useProgram(advectionProgram);
         gl.uniform1f(gl.getUniformLocation(advectionProgram, 'waterTemperature'), CtoK(guiControls.waterTemperature));
@@ -5138,19 +5166,19 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'dynamicWaterTemperature'), guiControls.dynamicWaterTemperature ? 1.0 : 0.0);
     });
 
-    water_folder.add(guiControls, 'landEvaporation', 0.0, 0.005, 0.00001)
+    water_folder.add(guiControls, 'landEvaporation', 0.0, 0.0002, 0.00001)
       .onChange(function() {
         gl.useProgram(boundaryProgram);
         gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'landEvaporation'), guiControls.landEvaporation);
       })
       .name('Land Evaporation');
-    water_folder.add(guiControls, 'waterEvaporation', 0.0, 0.005, 0.00001)
+    water_folder.add(guiControls, 'waterEvaporation', 0.0, 0.0004, 0.00001)
       .onChange(function() {
         gl.useProgram(boundaryProgram);
         gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'waterEvaporation'), guiControls.waterEvaporation);
       })
       .name('Lake / Sea Evaporation');
-    water_folder.add(guiControls, 'evapHeat', 0.0, 10.0, 0.1)
+    water_folder.add(guiControls, 'evapHeat', 0.0, 5.0, 0.1)
       .onChange(function() {
         gl.useProgram(advectionProgram);
         gl.uniform1f(gl.getUniformLocation(advectionProgram, 'evapHeat'), guiControls.evapHeat);
@@ -5158,11 +5186,9 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'evapHeat'), guiControls.evapHeat);
         gl.useProgram(boundaryProgram);
         gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'evapHeat'), guiControls.evapHeat);
-        gl.useProgram(capeProgram);
-        gl.uniform1f(gl.getUniformLocation(capeProgram, 'evapHeat'), guiControls.evapHeat);
       })
       .name('Evaporation Heat');
-    water_folder.add(guiControls, 'meltingHeat', 0.0, 10.0, 0.1)
+    water_folder.add(guiControls, 'meltingHeat', 0.0, 5.0, 0.1)
       .onChange(function() {
         gl.useProgram(advectionProgram);
         gl.uniform1f(gl.getUniformLocation(advectionProgram, 'meltingHeat'), guiControls.meltingHeat);
@@ -5184,7 +5210,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       })
       .name('Water Weight');
 
-    var precipitation_folder = datGui.addFolder('🌧️ Precipitation');
+    var precipitation_folder = datGui.addFolder('Precipitation');
 
     precipitation_folder.add(guiControls, 'aboveZeroThreshold', 0.1, 2.0, 0.001)
       .onChange(function() {
@@ -5261,49 +5287,14 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
     precipitation_folder.add(guiControls, 'inactiveDroplets', 0, NUM_DROPLETS).listen().name('Inactive Droplets');
 
-    var radar_folder = datGui.addFolder('📡 Radar');
-
+    var radar_folder = datGui.addFolder('Radar');
     radar_folder.add(guiControls, 'radarOpacity', 0.0, 1.0, 0.05).name('Radar Imagery Opacity').listen();
     radar_folder.add(guiControls, 'radarUpdateFrequency', 1, 300, 1).name('Update Frequency (iterations)').listen();
     radar_folder.add(guiControls, 'radarOverlay').name('Overlay on Realistic View').listen();
     radar_folder.add(guiControls, 'dbzOpacityEnabled').name('dBZ-Based Opacity').listen();
     radar_folder.add(guiControls, 'dbzOpacityStrength', 0.0, 10.0, 0.05).name('dBZ Opacity Strength').listen();
 
-
-    var display_folder = datGui.addFolder('📺 Display');
-
-    fluidParams_folder.add(guiControls, 'surfacePressure', 900.0, 1100.0, 0.1)
-      .name('Surface Pressure (hPa)');
-    fluidParams_folder.add(guiControls, 'pressurePersistence', 0.0, 1.0, 0.01)
-      .name('Pressure Persistence');
-    fluidParams_folder.add(guiControls, 'thermalPressureCoupling', 0.0, 5.0, 0.1)
-      .name('Thermal-Pressure Coupling');
-    // Note: Motion-Pressure coupling disabled in shader due to instability
-    fluidParams_folder.add(guiControls, 'motionPressureCoupling', 0.0, 2.0, 0.1)
-      .onChange(function() {
-        gl.useProgram(pressureProgram);
-        gl.uniform1f(gl.getUniformLocation(pressureProgram, 'motionPressureCoupling'), guiControls.motionPressureCoupling);
-      })
-      .name('Motion-Pressure Coupling (Disabled)');
-    fluidParams_folder.add(guiControls, 'pressureInfluence', 0.0, 2.0, 0.05)
-      .onChange(function() {
-        gl.useProgram(velocityProgram);
-        gl.uniform1f(gl.getUniformLocation(velocityProgram, 'pressureInfluence'), guiControls.pressureInfluence);
-      })
-      .name('Pressure Influence');
-    fluidParams_folder.add(guiControls, 'asymmetricPressure', 0.0, 1.0, 0.05)
-      .onChange(function() {
-        gl.useProgram(velocityProgram);
-        gl.uniform1f(gl.getUniformLocation(velocityProgram, 'asymmetricPressure'), guiControls.asymmetricPressure);
-      })
-      .name('Asymmetric Pressure Effect');
-    // Note: forceIntensityMultiplier currently disabled - motion-pressure coupling removed for stability
-    fluidParams_folder.add(guiControls, 'forceIntensityMultiplier', 0.0, 1.5, 0.05)
-      .onChange(function() {
-        gl.useProgram(pressureProgram);
-        gl.uniform1f(gl.getUniformLocation(pressureProgram, 'forceIntensityMultiplier'), guiControls.forceIntensityMultiplier);
-      })
-      .name('Force Intensity Multiplier (Disabled)');
+    var display_folder = datGui.addFolder('Display');
 
     display_folder
       .add(guiControls, 'displayMode', {
@@ -5315,8 +5306,6 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         '6 IR Heating / Cooling' : 'DISP_IRHEATING',
         '7 IR Down -60°C to 26°C' : 'DISP_IRDOWNTEMP',
         '8 IR Up -26°C to 30°C' : 'DISP_IRUPTEMP',
-        'J Temperature Change' : 'DISP_TEMPERATURE_CHANGE',
-        'Pressure (hPa)' : 'DISP_PRESSURE',
         '9 Precipitation Mass' : 'DISP_PRECIPFEEDBACK_MASS',
         'Precipitation Heating/Cooling' : 'DISP_PRECIPFEEDBACK_HEAT',
         'Precipitation Condensation/Evaporation' : 'DISP_PRECIPFEEDBACK_VAPOR',
@@ -5324,80 +5313,25 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         'Snow Deposition' : 'DISP_PRECIPFEEDBACK_SNOW',
         'Precipitation/Soil Moisture' : 'DISP_SOIL_MOISTURE',
         'Curl' : 'DISP_CURL',
+        'Relative Humidity / Cloud Density' : 'DISP_HUMD',
         'Air Quality' : 'DISP_AIRQUALITY',
-        'Radar' : 'DISP_RADAR',
-        'CAPE' : 'DISP_CAPE',
+        'Temperature Change' : 'DISP_TEMPERATURE_CHANGE',
+        'Pressure' : 'DISP_PRESSURE',
         'Charge' : 'DISP_CHARGE',
-        'Risk' : 'DISP_RISK'
+        'Radar Imagery' : 'DISP_RADAR',
+        'Convective Risk' : 'DISP_RISK'
       })
       .name('Display Mode')
       .listen();
-
-    display_folder.add(guiControls, 'temperatureChangeIterations', 1, 5, 1)
-      .name('Iterations per temperature update')
-      .listen();
-    display_folder.add(guiControls, 'camSpeed', 0.001, 0.050, 0.001).name('Camera Pan Speed');
-
-    var image_folder = datGui.addFolder('📷 Image');
-    image_folder.add(guiControls, 'exposure', 0.1, 5.0, 0.01)
+    display_folder.add(guiControls, 'exposure', 0.5, 5.0, 0.01)
       .onChange(function() {
         gl.useProgram(postProcessingProgram);
-        gl.uniform1f(postProc_exposure_loc, guiControls.exposure);
+        gl.uniform1f(gl.getUniformLocation(postProcessingProgram, 'exposure'), guiControls.exposure);
       })
       .name('Exposure');
-    image_folder.add(guiControls, 'saturation', 0.0, 3.0, 0.01)
-      .onChange(function() {
-        gl.useProgram(postProcessingProgram);
-        gl.uniform1f(postProc_saturation_loc, guiControls.saturation);
-      })
-      .name('Saturation');
-    image_folder.add(guiControls, 'contrast', 0.5, 3.0, 0.01)
-      .onChange(function() {
-        gl.useProgram(postProcessingProgram);
-        gl.uniform1f(postProc_contrast_loc, guiControls.contrast);
-      })
-      .name('Contrast');
-    image_folder.add(guiControls, 'greenHueStartThreshold', 0.0, 25.0, 0.01)
-      .onChange(function() {
-        gl.useProgram(realisticDisplayProgram);
-        gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'greenHueStartThreshold'), guiControls.greenHueStartThreshold);
-        gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'greenHueEndThreshold'), guiControls.greenHueEndThreshold);
-      })
-      .name('Green Hue Start');
-    image_folder.add(guiControls, 'greenHueEndThreshold', 0.0, 50.0, 0.01)
-      .onChange(function() {
-        gl.useProgram(realisticDisplayProgram);
-        gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'greenHueStartThreshold'), guiControls.greenHueStartThreshold);
-        gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'greenHueEndThreshold'), guiControls.greenHueEndThreshold);
-        gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'greenHueStrength'), guiControls.greenHueStrength);
-      })
-      .name('Green Hue End');
-    image_folder.add(guiControls, 'greenHueStrength', 0.0, 5.0, 0.001)
-      .onChange(function() {
-        gl.useProgram(realisticDisplayProgram);
-        gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'greenHueStrength'), guiControls.greenHueStrength);
-      })
-      .name('Green Hue Strength');
-    image_folder.add(guiControls, 'starVisibility', 0.0, 1.0, 0.01)
-      .onChange(function() {
-        gl.useProgram(skyBackgroundDisplayProgram);
-        gl.uniform1f(gl.getUniformLocation(skyBackgroundDisplayProgram, 'starVisibility'), guiControls.starVisibility);
-      })
-      .name('Star Visibility');
-    image_folder.add(guiControls, 'starLightEmitStrength', 0.0, 0.5, 0.01)
-      .onChange(function() {
-        gl.useProgram(skyBackgroundDisplayProgram);
-        gl.uniform1f(gl.getUniformLocation(skyBackgroundDisplayProgram, 'starLightEmitStrength'), guiControls.starLightEmitStrength);
-      })
-      .name('Star Light Emit Strength');
 
-    var colorScale_folder = datGui.addFolder('🎨 Color Scale');
-    colorScale_folder.add({
-      openEditor : function() {
-        const p = document.getElementById('colorScalePanel');
-        if (p) p.style.display = (p.style.display === 'none' ? 'block' : 'none');
-      }
-    }, 'openEditor').name('Open Editor ↗');
+    display_folder.add(guiControls, 'camSpeed', 0.001, 0.050, 0.001).name('Camera Pan Speed');
+
 
     display_folder.add(guiControls, 'wrapHorizontally')
       .onChange(function() {
@@ -5414,6 +5348,79 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
     display_folder.add(guiControls, 'showGraph').onChange(hideOrShowGraph).name('Show Sounding Graph').listen();
     display_folder.add(guiControls, 'showDrops').name('Show Droplets').listen();
+    display_folder.add(guiControls, 'realDewPoint').name('Show Real Dew Point');
+
+    display_folder.add(guiControls, 'saturation', 0.0, 3.0, 0.01)
+      .onChange(function() {
+        gl.useProgram(postProcessingProgram);
+        gl.uniform1f(gl.getUniformLocation(postProcessingProgram, 'saturation'), guiControls.saturation);
+      })
+      .name('Saturation');
+
+    display_folder.add(guiControls, 'contrast', 0.5, 3.0, 0.01)
+      .onChange(function() {
+        gl.useProgram(postProcessingProgram);
+        gl.uniform1f(gl.getUniformLocation(postProcessingProgram, 'contrast'), guiControls.contrast);
+      })
+      .name('Contrast');
+
+    display_folder.add(guiControls, 'greenHueStartThreshold', 0.0, 25.0, 0.01)
+      .onChange(function() {
+        gl.useProgram(realisticDisplayProgram);
+        gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'greenHueStartThreshold'), guiControls.greenHueStartThreshold);
+        gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'greenHueEndThreshold'), guiControls.greenHueEndThreshold);
+      })
+      .name('Green Hue Start');
+
+    display_folder.add(guiControls, 'greenHueEndThreshold', 0.0, 50.0, 0.01)
+      .onChange(function() {
+        gl.useProgram(realisticDisplayProgram);
+        gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'greenHueStartThreshold'), guiControls.greenHueStartThreshold);
+        gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'greenHueEndThreshold'), guiControls.greenHueEndThreshold);
+        gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'greenHueStrength'), guiControls.greenHueStrength);
+      })
+      .name('Green Hue End');
+
+    display_folder.add(guiControls, 'greenHueStrength', 0.0, 5.0, 0.001)
+      .onChange(function() {
+        gl.useProgram(realisticDisplayProgram);
+        gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'greenHueStrength'), guiControls.greenHueStrength);
+      })
+      .name('Green Hue Strength');
+
+    display_folder.add(guiControls, 'starVisibility', 0.0, 1.0, 0.01)
+      .onChange(function() {
+        gl.useProgram(skyBackgroundDisplayProgram);
+        gl.uniform1f(gl.getUniformLocation(skyBackgroundDisplayProgram, 'starVisibility'), guiControls.starVisibility);
+      })
+      .name('Star Visibility');
+
+    display_folder.add(guiControls, 'starLightEmitStrength', 0.0, 0.5, 0.01)
+      .onChange(function() {
+        gl.useProgram(skyBackgroundDisplayProgram);
+        gl.uniform1f(gl.getUniformLocation(skyBackgroundDisplayProgram, 'starLightEmitStrength'), guiControls.starLightEmitStrength);
+      })
+      .name('Star Light Emit Strength');
+
+    display_folder.add(guiControls, 'starDensity', 0.0, 1.0, 0.01)
+      .onChange(function() {
+        gl.useProgram(skyBackgroundDisplayProgram);
+        gl.uniform1f(gl.getUniformLocation(skyBackgroundDisplayProgram, 'starDensity'), guiControls.starDensity);
+      })
+      .name('Star Density');
+
+    display_folder.add(guiControls, 'autoMinShadowLight').name('Auto Shadow Light');
+
+    display_folder.add(guiControls, 'minShadowLight', 0.0, 0.2, 0.001)
+      .onChange(function() {
+        if (!guiControls.autoMinShadowLight) {
+          gl.useProgram(realisticDisplayProgram);
+          gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'minShadowLight'), guiControls.minShadowLight);
+          gl.useProgram(skyBackgroundDisplayProgram);
+          gl.uniform1f(gl.getUniformLocation(skyBackgroundDisplayProgram, 'minShadowLight'), guiControls.minShadowLight);
+        }
+      })
+      .name('Min Shadow Light (0=darkest)');
 
     display_folder.add(guiControls, 'twelveHourClock').name('12-hour clock');
 
@@ -5457,9 +5464,16 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       });
 
 
-    var advanced_folder = datGui.addFolder('⚙️ Advanced');
+    var advanced_folder = datGui.addFolder('Advanced');
 
-    // Performance optimizations moved to Advanced
+    // Nukes folder
+    var nukes_folder = datGui.addFolder('Nukes');
+    nukes_folder.add(guiControls, 'nukeBlastRadius', 10, 200, 1).name('Blast Radius');
+    nukes_folder.add(guiControls, 'nukeTemperature', 0, 500, 10).name('Blast Temperature (°C)');
+    nukes_folder.add(guiControls, 'nukeSmokeAmount', 0, 10, 0.1).name('Smoke Amount');
+    nukes_folder.add(guiControls, 'nukeFallSpeed', 1, 50, 1).name('Fall Speed (m/s)');
+    nukes_folder.add(guiControls, 'nukeIgnitionEnabled').name('Ignite Vegetation');
+
     advanced_folder.add(guiControls, 'enablePrecipitation')
       .onChange(function() {
         initRainDrops();
@@ -5468,124 +5482,29 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       })
       .name('Enable Precipitation');
 
-    advanced_folder.add(guiControls, 'enableBloom')
-      .name('Enable Bloom');
+    advanced_folder.add(guiControls, 'IterPerFrame', 1, 50, 1).onChange(function() { guiControls.auto_IterPerFrame = false; }).name('Iterations / Frame').listen();
 
-    // Lightning folder
-    var lightning_folder = datGui.addFolder('⚡ Lightning');
-    lightning_folder.add(guiControls, 'enableCloudLightning')
-      .name('☁☁ Cloud Lightning');
-    lightning_folder.add(guiControls, 'cloudLightningFrequency', 0.0, 10.0, 0.01)
-      .name('Cloud Flash Frequency');
-    lightning_folder.add(guiControls, 'cloudLightningIntensity', 0.0, 10.0, 0.1)
-      .name('Cloud Flash Intensity');
-    lightning_folder.add(guiControls, 'cloudLightningThreshold', 0.0, 1.0, 0.01)
-      .name('Cloud Density Threshold');
-    lightning_folder.add(guiControls, 'enableCloudGroundLightning')
-      .name('☁⬇ Cloud-Ground Lightning');
-    lightning_folder.add(guiControls, 'cloudGroundLightningFrequency', 0.0, 10.0, 0.01)
-      .name('CG Flash Frequency');
-    lightning_folder.add(guiControls, 'cloudGroundLightningIntensity', 0.0, 10.0, 0.1)
-      .name('CG Flash Intensity');
-    lightning_folder.add(guiControls, 'cloudGroundLightningThreshold', 0.0, 1.0, 0.01)
-      .name('CG Density Threshold');
-    lightning_folder.add(guiControls, 'lightningRepeat')
-      .name('⚡ Repeat Strikes');
-    lightning_folder.add(guiControls, 'lightningCrossTrigger')
-      .name('⚡ Cross-Trigger Types');
+    advanced_folder.add(guiControls, 'auto_IterPerFrame').name('Auto Adjust').listen();
 
-    // ── Sound folder ──────────────────────────────────────────────────────────
-    var sound_folder = datGui.addFolder('🔊 Sound');
 
-    // Master enable — synced with the existing advanced_folder toggle
-    sound_folder.add(guiControls, 'sound')
-      .name('Enable Sound')
-      .onChange(function() {
-        if (guiControls.sound) {
-          if (soundSystem == null) { soundSystem = new SoundSystem(); }
-        } else {
-          if (soundSystem) soundSystem.mute();
+    advanced_folder.add(guiControls, 'sound').name('Enable Sound').onChange(function() {
+      if (guiControls.sound) {
+        if (soundSystem == null) {
+          soundSystem = new SoundSystem();
         }
-      })
-      .listen(); // .listen() keeps it in sync with the advanced_folder toggle
+      } else {
+        soundSystem?.mute();
+      }
+    });
 
-    sound_folder.add(guiControls, 'soundWindEnabled')
-      .name('Wind')
-      .onChange(function() {
-        if (soundSystem && !guiControls.soundWindEnabled)
-          soundSystem.setSoundGainAndPan(soundSystem.wind_sound, 0);
-      });
-
-    sound_folder.add(guiControls, 'soundVolumeWind', 0.0, 2.0, 0.05)
-      .name('Wind Volume')
-      .listen();
-
-    sound_folder.add(guiControls, 'soundRainEnabled')
-      .name('Rain')
-      .onChange(function() {
-        if (soundSystem && !guiControls.soundRainEnabled)
-          soundSystem.setSoundGainAndPan(soundSystem.rain_sound, 0);
-      });
-
-    sound_folder.add(guiControls, 'soundVolumeRain', 0.0, 2.0, 0.05)
-      .name('Rain Volume')
-      .listen();
-
-    sound_folder.add(guiControls, 'soundAmbientEnabled')
-      .name('Ambient (Forest/Beach/Urban)')
-      .onChange(function() {
-        if (soundSystem && !guiControls.soundAmbientEnabled) {
-          soundSystem.setSoundGainAndPan(soundSystem.forest_sound, 0);
-          soundSystem.setSoundGainAndPan(soundSystem.beach_sound, 0);
-          soundSystem.setSoundGainAndPan(soundSystem.urban_sound, 0);
-        }
-      });
-
-    sound_folder.add(guiControls, 'soundVolumeAmbient', 0.0, 2.0, 0.05)
-      .name('Ambient Volume')
-      .listen();
-
-    sound_folder.add(guiControls, 'soundThunderEnabled')
-      .name('Thunder');
-
-    sound_folder.add(guiControls, 'soundVolumeThunder', 0.0, 2.0, 0.05)
-      .name('Thunder Volume')
-      .listen();
-
-    advanced_folder.add(guiControls, 'enableVectorField')
-      .name('Vector Field');
-
-    advanced_folder.add(guiControls, 'IterPerFrame', 1, 100, 1).onChange(function() { guiControls.auto_IterPerFrame = false; }).name('Iterations/Frame').listen();
-
-    advanced_folder.add(guiControls, 'auto_IterPerFrame').name('Auto Adjust Iters').listen();
-
-    advanced_folder.add(guiControls, 'sound')
-      .name('Enable Sound')
-      .listen()  // synced with the Sound folder toggle
-      .onChange(function() {
-        if (guiControls.sound) {
-          if (soundSystem == null) {
-            soundSystem = new SoundSystem();
-          }
-        } else {
-          soundSystem.mute();
-        }
-      });
-
+    advanced_folder.add(guiControls, 'enableBloom').name('Enable Bloom');
+    advanced_folder.add(guiControls, 'enableVectorField').name('Vector Field');
     advanced_folder.add(guiControls, 'enhancedLooks')
       .onChange(function() {
         gl.useProgram(realisticDisplayProgram);
-        gl.uniform1f(realDisp_enhancedLooks_loc, guiControls.enhancedLooks ? 1.0 : 0.0);
+        gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'enhancedLooks'), guiControls.enhancedLooks ? 1.0 : 0.0);
       })
       .name('Smooth Clouds');
-
-    advanced_folder.add(guiControls, 'enableRHFog')
-      .onChange(function() {
-        gl.useProgram(realisticDisplayProgram);
-        gl.uniform1f(realDisp_enableRHFog_loc, guiControls.enableRHFog ? 1.0 : 0.0);
-      })
-      .name('RH Fog');
-
     advanced_folder.add(guiControls, 'displayWeatherStations')
       .onChange(function() {
         displayWeatherStations = guiControls.displayWeatherStations;
@@ -5594,7 +5513,6 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         }
       })
       .name('Weather Stations');
-
     advanced_folder.add(guiControls, 'displayRadars')
       .onChange(function() {
         displayRadars = guiControls.displayRadars;
@@ -5603,7 +5521,6 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         }
       })
       .name('Radars');
-
     advanced_folder.add(guiControls, 'airplaneMode')
       .onChange(function() {
         airplaneMode = guiControls.airplaneMode;
@@ -5614,10 +5531,9 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         }
       })
       .name('Airplane Mode');
-
-    advanced_folder.add(guiControls, 'realDewPoint')
-      .name('Real Dew Point');
-
+    advanced_folder.add(guiControls, 'slowMotion')
+      .name('Realtime (Slow Motion)');
+    advanced_folder.add(guiControls, 'realDewPoint').name('Real Dew Point');
     advanced_folder.add(guiControls, 'soundingMode')
       .onChange(function() {
         gl.useProgram(velocityProgram);
@@ -5625,85 +5541,33 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
           guiControls.soundingMode ? 999.0 : guiControls.dragMultiplier);
       })
       .name('Sounding Mode');
-
-    // New optimization options with shortened labels and red color
-    let fullscreenResCtrl = advanced_folder.add(guiControls, 'fullscreenResolution', 
+    advanced_folder.add(guiControls, 'fullscreenResolution', 
       ['Default', '640x480', '800x600', '1024x768', '1280x720', '1280x1024', '1366x768', '1600x900', '1920x1080', '2560x1440', '3840x2160'])
       .onChange(changeFullscreenResolution)
       .name('Fullscreen Res');
-    fullscreenResCtrl.__li.querySelector('.property-name').style.color = '#ff4444';
-
-    let skipCurlCtrl = advanced_folder.add(guiControls, 'skipCurlCalculation')
-      .name('Skip Curl (Faster)');
-    skipCurlCtrl.__li.querySelector('.property-name').style.color = '#ff4444';
-    
-    let skipCAPECtrl = advanced_folder.add(guiControls, 'skipCAPECalculation')
-      .name('Skip CAPE (Faster)');
-    skipCAPECtrl.__li.querySelector('.property-name').style.color = '#ff4444';
-    
-    let simQualityCtrl = advanced_folder.add(guiControls, 'simulationQuality', 0.1, 25.0, 0.1)
-      .name('Sim Quality (High=Fast)');
-    simQualityCtrl.__li.querySelector('.property-name').style.color = '#ff4444';
-
-    let skipLightingCalcCtrl = advanced_folder.add(guiControls, 'skipLightingCalculation')
-      .name('Skip Lighting (Major boost)');
-    skipLightingCalcCtrl.__li.querySelector('.property-name').style.color = '#ff4444';
-    
-    let skipPressureCtrl = advanced_folder.add(guiControls, 'skipPressure')
-      .name('Skip Pressure (Faster)');
-    skipPressureCtrl.__li.querySelector('.property-name').style.color = '#ff4444';
-    
-    let skipAdvectionCtrl = advanced_folder.add(guiControls, 'skipAdvection')
-      .name('Skip Advection (No fluid)');
-    skipAdvectionCtrl.__li.querySelector('.property-name').style.color = '#ff4444';
-    
-    let reducedStationCtrl = advanced_folder.add(guiControls, 'reducedWeatherStationUpdates')
-      .name('Reduce Station Updates');
-    reducedStationCtrl.__li.querySelector('.property-name').style.color = '#ff4444';
-    
-    let reducedPrecipCtrl = advanced_folder.add(guiControls, 'reducedPrecipitation')
+    advanced_folder.add(guiControls, 'skipCurlCalculation').name('Skip Curl (Faster)');
+    advanced_folder.add(guiControls, 'skipCAPECalculation').name('Skip CAPE (Faster)');
+    advanced_folder.add(guiControls, 'simulationQuality', 0.1, 25.0, 0.1).name('Sim Quality (High=Fast)');
+    advanced_folder.add(guiControls, 'skipLightingCalculation').name('Skip Lighting (Major boost)');
+    advanced_folder.add(guiControls, 'skipPressure').name('Skip Pressure (Faster)');
+    advanced_folder.add(guiControls, 'skipAdvection').name('Skip Advection (No fluid)');
+    advanced_folder.add(guiControls, 'reducedWeatherStationUpdates').name('Reduce Station Updates');
+    advanced_folder.add(guiControls, 'reducedPrecipitation')
       .onChange(function() {
         initRainDrops();
         setupPrecipitationBuffers();
         guiControls.inactiveDroplets = NUM_DROPLETS;
       })
       .name('Reduce Precipitation');
-    reducedPrecipCtrl.__li.querySelector('.property-name').style.color = '#ff4444';
-    
-    let disableTempHistCtrl = advanced_folder.add(guiControls, 'disableTempChangeHistory')
-      .name('Disable Temp History');
-    disableTempHistCtrl.__li.querySelector('.property-name').style.color = '#ff4444';
-
-    // Menu styling options
-    let menuStyleFolder = advanced_folder.addFolder('Menu Style');
-    
-    menuStyleFolder.addColor(guiControls, 'menuBackgroundColor')
-      .name('Background Color')
-      .onChange(updateMenuStyle);
-    
-    menuStyleFolder.addColor(guiControls, 'menuTextColor')
-      .name('Text Color')
-      .onChange(updateMenuStyle);
-    
-    menuStyleFolder.addColor(guiControls, 'menuAccentColor')
-      .name('Accent Color')
-      .onChange(updateMenuStyle);
-    
-    menuStyleFolder.add(guiControls, 'menuWidth', 200, 800, 10)
-      .name('Menu Width')
-      .onChange(updateMenuStyle);
+    advanced_folder.add(guiControls, 'disableTempChangeHistory').name('Disable Temp History');
 
     advanced_folder.add(guiControls, 'resetSettings').name('Reset all settings');
-    advanced_folder.add(guiControls, 'riskUpdateFrequency', 1, 50, 1).name('Risk Update Freq').listen();
-    advanced_folder.add(guiControls, 'readoutCursor').name('Readout Cursor');
 
     datGui.add(guiControls, 'paused').onChange(handlePause).name('Paused').listen();
     datGui.add(guiControls, 'download').name('Save Simulation to File');
+    datGui.add(guiControls, 'openColorScaleEditor').name('Open Color Scale Editor');
 
-    datGui.width = guiControls.menuWidth;
-    
-    // Apply initial menu styling
-    setTimeout(updateMenuStyle, 100);
+    datGui.width = 400;
   }
 
   // guiControls.paused = true; // pause before first iteration for debugging
@@ -6725,6 +6589,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   canvas.height = window.innerHeight;
   canvas.style.display = 'block';
   canvas_aspect = canvas.width / canvas.height;
+  updateNukeOverlaySize();
 
   var mouseXinSim, mouseYinSim;
   var prevMouseXinSim, prevMouseYinSim;
@@ -6746,7 +6611,58 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       gl.bindTexture(gl.TEXTURE_2D, radarTexture);
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, canvas.width, canvas.height, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
     }
+
+    updateNukeOverlaySize();
   });
+
+  function updateNukeOverlaySize()
+  {
+    if (!nukeOverlayCanvas || !canvas) return;
+    const rect = canvas.getBoundingClientRect();
+    nukeOverlayCanvas.width = canvas.width;
+    nukeOverlayCanvas.height = canvas.height;
+    nukeOverlayCanvas.style.width = rect.width + 'px';
+    nukeOverlayCanvas.style.height = rect.height + 'px';
+    nukeOverlayCanvas.style.left = rect.left + 'px';
+    nukeOverlayCanvas.style.top = rect.top + 'px';
+  }
+
+  function drawNukeOverlay()
+  {
+    if (!nukeOverlayCtx || !nukeOverlayCanvas) return;
+    nukeOverlayCtx.clearRect(0, 0, nukeOverlayCanvas.width, nukeOverlayCanvas.height);
+    if (!nukes || nukes.length === 0) return;
+
+    for (let i = 0; i < nukes.length; i++) {
+      const nuke = nukes[i];
+      if (nuke.isExploded()) continue;
+      const sx = simToScreenX(nuke.getX());
+      const sy = simToScreenY(nuke.getY());
+      if (sx < -40 || sx > canvas.width + 40 || sy < -40 || sy > canvas.height + 40) continue;
+
+      nukeOverlayCtx.save();
+      nukeOverlayCtx.translate(sx, sy);
+      nukeOverlayCtx.strokeStyle = 'rgba(255, 190, 0, 0.95)';
+      nukeOverlayCtx.fillStyle = 'rgba(255, 100, 10, 0.95)';
+      nukeOverlayCtx.lineWidth = 2;
+      nukeOverlayCtx.beginPath();
+      nukeOverlayCtx.moveTo(0, -10);
+      nukeOverlayCtx.lineTo(-8, 10);
+      nukeOverlayCtx.lineTo(8, 10);
+      nukeOverlayCtx.closePath();
+      nukeOverlayCtx.fill();
+      nukeOverlayCtx.stroke();
+
+      nukeOverlayCtx.beginPath();
+      nukeOverlayCtx.moveTo(-5, 10);
+      nukeOverlayCtx.lineTo(0, 18);
+      nukeOverlayCtx.lineTo(5, 10);
+      nukeOverlayCtx.strokeStyle = 'rgba(255, 255, 100, 0.85)';
+      nukeOverlayCtx.lineWidth = 3;
+      nukeOverlayCtx.stroke();
+      nukeOverlayCtx.restore();
+    }
+  }
 
   function logSample()
   {
@@ -6920,6 +6836,21 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         rh = Math.max(0, Math.min(rh, 100)); // Safety clamp to ensure RH is between 0 and 100%
         readoutText = `DP: ${dp.toFixed(1)}°C\nRH: ${rh.toFixed(1)}%`;
         unit = '';
+        break;
+
+      case 'DISP_HUMD':
+        gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_0);
+        gl.readBuffer(gl.COLOR_ATTACHMENT1);
+        var waterTextureValues = new Float32Array(4);
+        gl.readPixels(simXpos, simYpos, 1, 1, gl.RGBA, gl.FLOAT, waterTextureValues);
+        gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_0);
+        gl.readBuffer(gl.COLOR_ATTACHMENT0);
+        var baseTextureValues = new Float32Array(4);
+        gl.readPixels(simXpos, simYpos, 1, 1, gl.RGBA, gl.FLOAT, baseTextureValues);
+        let rh_cursor = relativeHumd(KtoC(potentialToRealT(baseTextureValues[3], simYpos)), waterTextureValues[0]);
+        rh_cursor = Math.max(0, Math.min(rh_cursor, 100)); // Safety clamp
+        readoutText = rh_cursor.toFixed(1);
+        unit = '% RH';
         break;
 
       case 'DISP_HORIVEL':
@@ -7159,6 +7090,21 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
         if (simXpos >= 0 && simXpos < sim_res_x)
           markers.push(new Marker(simXpos, simYpos)); // add marker
+      } else if (guiControls.tool == 'TOOL_NUKE') {
+        let simXpos = Math.floor(mouseXinSim * sim_res_x);
+        let cursorYpos = Math.floor(mouseYinSim * sim_res_y);
+        let surfaceYpos = findSimYposAboveSurfaceAtMouseX();
+        let startYpos;
+
+        if (surfaceYpos !== undefined) {
+          startYpos = Math.min(cursorYpos, surfaceYpos - 5);
+          startYpos = Math.max(0, startYpos);
+        } else {
+          startYpos = Math.max(0, cursorYpos);
+        }
+
+        if (simXpos >= 0 && simXpos < sim_res_x)
+          nukes.push(new Nuke(simXpos, startYpos)); // add nuke
       }
     } else if (e.button == 1) {
       // middle mouse button
@@ -7301,6 +7247,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
             gl.bindTexture(gl.TEXTURE_2D, radarTexture);
             gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, canvas.width, canvas.height, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
           }
+          updateNukeOverlaySize();
 
           // Ensure dat.GUI menu remains visible
           if (datGui) {
@@ -7322,6 +7269,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         gl.bindTexture(gl.TEXTURE_2D, radarTexture);
         gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, canvas.width, canvas.height, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
       }
+      updateNukeOverlaySize();
 
       // Ensure dat.GUI menu remains visible
       if (datGui) {
@@ -7403,6 +7351,9 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     } else if (event.code == 'Enter') {
       // Enter: cycle radar products forward for enabled radars
       cycleRadarProducts(1);
+    } else if (event.code == 'KeyC') {
+      // C: humidity display
+      guiControls.displayMode = 'DISP_HUMD';
     } else if (event.key == 1) { // number keys for displaymodes
       guiControls.displayMode = 'DISP_TEMPERATURE';
     } else if (event.key == 2) {
@@ -7427,8 +7378,6 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       guiControls.displayMode = 'DISP_PRESSURE';
     } else if (event.code == 'KeyK') {
       guiControls.displayMode = 'DISP_AIRQUALITY';
-    } else if (event.code == 'KeyE') {
-      guiControls.displayMode = 'DISP_CHARGE';
     } else if (event.code === 'Backspace') {
       guiControls.displayMode = 'DISP_CHARGE';
     } else if (event.key == 'ArrowLeft') {
@@ -7596,6 +7545,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   const temperatureDisplayShader = await loadShader('temperatureDisplayShader.frag');
   const temperatureChangeDisplayShader = await loadShader('temperatureChangeDisplayShader.frag');
   const airQualityDisplayShader = await loadShader('airQualityDisplayShader.frag');
+  const humidityDisplayShader = await loadShader('humidityDisplayShader.frag');
   const precipDisplayShader = await loadShader('precipDisplayShader.frag');
   const universalDisplayShader = await loadShader('universalDisplayShader.frag');
   const skyBackgroundDisplayShader = await loadShader('skyBackgroundDisplayShader.frag');
@@ -7625,6 +7575,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   const temperatureDisplayProgram = createProgram(dispVertexShader, temperatureDisplayShader);
   const temperatureChangeDisplayProgram = createProgram(dispVertexShader, temperatureChangeDisplayShader);
   const airQualityDisplayProgram = createProgram(dispVertexShader, airQualityDisplayShader);
+  const humidityDisplayProgram = createProgram(dispVertexShader, humidityDisplayShader);
   const precipDisplayProgram = createProgram(precipDisplayVertexShader, precipDisplayShader);
   const universalDisplayProgram = createProgram(dispVertexShader, universalDisplayShader);
   const skyBackgroundDisplayProgram = createProgram(realDispVertexShader, skyBackgroundDisplayShader);
@@ -8040,6 +7991,13 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   const wallTexture_0 = gl.createTexture();
   const wallTexture_1 = gl.createTexture();
 
+  window.baseTexture_0 = baseTexture_0;
+  window.baseTexture_1 = baseTexture_1;
+  window.waterTexture_0 = waterTexture_0;
+  window.waterTexture_1 = waterTexture_1;
+  window.wallTexture_0 = wallTexture_0;
+  window.wallTexture_1 = wallTexture_1;
+
   const curlTexture = gl.createTexture();
   const capeTexture = gl.createTexture();
   // Charge texture: RG32F — R=air charge, G=ground/surface charge (bipolar, ±1.0 = ±100 MV)
@@ -8091,6 +8049,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   const lightFrameBuff_1 = gl.createFramebuffer();
   const precipitationFeedbackFrameBuff = gl.createFramebuffer();
   const radarFrameBuff = gl.createFramebuffer();
+  window.frameBuff_1 = frameBuff_1;
 
   // Set up Textures
   async function setupTextures()
@@ -8351,6 +8310,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     { id: 'radarEchoTops',     name: 'Radar Echo Tops',    col:21, stops: 32, interpolate: false },
     { id: 'pressure',          name: 'Pressure',           col:22, stops: 33, interpolate: false },
     { id: 'charge',            name: 'Charge',             col:23, stops: 33, interpolate: false },
+    { id: 'relativeHumidity',  name: 'Relative Humidity',  col:24, stops: 33, interpolate: true },
   ];
 
   const DEFAULT_IR_PALETTE = [
@@ -8694,6 +8654,33 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     }
     colorScaleData.charge = chargeScale;
     colorScaleValues.charge = Array.from({length: 33}, (_, i) => i);
+
+    // Relative Humidity: 0% (dry) → 100% (saturated), with distinct cloud density above 100%
+    // Uses blue-cyan gradient for humidity, transitioning to white/gray for clouds
+    const rhScale = [];
+    for (let i = 0; i <= 32; i++) {
+      const t = i / 32; // 0=dry, 1=saturated
+      if (t < 0.3) {
+        // Dry: dark blue to medium blue
+        const f = t / 0.3;
+        rhScale.push([0, Math.round(f * 100), Math.round(50 + f * 150)]);
+      } else if (t < 0.6) {
+        // Medium humidity: blue to cyan
+        const f = (t - 0.3) / 0.3;
+        rhScale.push([0, Math.round(100 + f * 155), Math.round(200 + f * 55)]);
+      } else if (t < 0.9) {
+        // High humidity: cyan to white
+        const f = (t - 0.6) / 0.3;
+        rhScale.push([Math.round(f * 255), 255, 255]);
+      } else {
+        // Saturated/cloudy: white to light gray
+        const f = (t - 0.9) / 0.1;
+        const gray = Math.round(255 - f * 40);
+        rhScale.push([gray, gray, gray]);
+      }
+    }
+    colorScaleData.relativeHumidity = rhScale;
+    colorScaleValues.relativeHumidity = Array.from({length: 33}, (_, i) => i * 3.125); // 0-100%
   }
 
   function uploadColorScaleTexture() {
@@ -8875,6 +8862,12 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
           <label class="cse-opt-lbl">
             <input type="checkbox" id="cse-interpolate"> Smooth interpolation
           </label>
+        </div>
+        <div class="cse-offset-row" style="margin-top:8px;">
+          <span class="cse-offset-lbl">View:</span>
+          <button class="cse-offset-btn" id="cse-view-rh" style="flex:2;">Relative Humidity</button>
+          <button class="cse-offset-btn" id="cse-view-water">Water Vapor</button>
+          <button class="cse-offset-btn" id="cse-view-temp">Temperature</button>
         </div>
         <div class="cse-stops" id="cse-stops"></div>
         <div class="cse-divider"></div>
@@ -9197,6 +9190,17 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       const cfg = COLOR_SCALE_CONFIGS.find(c => c.id === activeId);
       cfg.interpolate = document.getElementById('cse-interpolate').checked;
       uploadColorScaleTexture();
+    };
+
+    // View mode buttons
+    document.getElementById('cse-view-rh').onclick = () => {
+      guiControls.displayMode = 'DISP_HUMD';
+    };
+    document.getElementById('cse-view-water').onclick = () => {
+      guiControls.displayMode = 'DISP_WATER';
+    };
+    document.getElementById('cse-view-temp').onclick = () => {
+      guiControls.displayMode = 'DISP_TEMPERATURE';
     };
 
     document.getElementById('cse-add').onclick = () => {
@@ -9576,6 +9580,15 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   gl.uniform1i(gl.getUniformLocation(airQualityDisplayProgram, 'colorScalesTex'), 9);
   gl.uniform1f(gl.getUniformLocation(airQualityDisplayProgram, 'dryLapse'), dryLapse);
 
+  gl.useProgram(humidityDisplayProgram);
+  gl.uniform2f(gl.getUniformLocation(humidityDisplayProgram, 'resolution'), sim_res_x, sim_res_y);
+  gl.uniform2f(gl.getUniformLocation(humidityDisplayProgram, 'texelSize'), texelSizeX, texelSizeY);
+  gl.uniform1i(gl.getUniformLocation(humidityDisplayProgram, 'baseTex'), 0);
+  gl.uniform1i(gl.getUniformLocation(humidityDisplayProgram, 'waterTex'), 1);
+  gl.uniform1i(gl.getUniformLocation(humidityDisplayProgram, 'wallTex'), 2);
+  gl.uniform1i(gl.getUniformLocation(humidityDisplayProgram, 'colorScalesTex'), 9);
+  gl.uniform1f(gl.getUniformLocation(humidityDisplayProgram, 'dryLapse'), dryLapse);
+
   gl.useProgram(precipDisplayProgram);
   gl.uniform2f(gl.getUniformLocation(precipDisplayProgram, 'resolution'), sim_res_x, sim_res_y);
   gl.uniform2f(gl.getUniformLocation(precipDisplayProgram, 'texelSize'), texelSizeX, texelSizeY);
@@ -9587,8 +9600,10 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   gl.uniform2f(gl.getUniformLocation(skyBackgroundDisplayProgram, 'texelSize'), texelSizeX, texelSizeY);
   gl.uniform1f(gl.getUniformLocation(skyBackgroundDisplayProgram, 'simHeight'), guiControls.simHeight);
   gl.uniform1f(gl.getUniformLocation(skyBackgroundDisplayProgram, 'minShadowLight'), minShadowLight);
+  gl.uniform1f(gl.getUniformLocation(skyBackgroundDisplayProgram, 'sunAngle'), (90 - guiControls.sunAngle) * degToRad);
   gl.uniform1f(gl.getUniformLocation(skyBackgroundDisplayProgram, 'starVisibility'), guiControls.starVisibility);
   gl.uniform1f(gl.getUniformLocation(skyBackgroundDisplayProgram, 'starLightEmitStrength'), guiControls.starLightEmitStrength);
+  gl.uniform1f(gl.getUniformLocation(skyBackgroundDisplayProgram, 'starDensity'), guiControls.starDensity);
   gl.uniform1i(gl.getUniformLocation(skyBackgroundDisplayProgram, 'lightTex'), 3);
   gl.uniform1i(gl.getUniformLocation(skyBackgroundDisplayProgram, 'ambientLightTex'), 9);
   gl.uniform1i(gl.getUniformLocation(skyBackgroundDisplayProgram, 'precipFeedbackTex'), 7);
@@ -9617,8 +9632,6 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   gl.uniform1i(gl.getUniformLocation(realisticDisplayProgram, 'chargeTex'), 11); // charge texture for physics-based lightning
   gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'dryLapse'), dryLapse);
   gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'cellHeight'), cellHeight);
-  const realDisp_enableRHFog_loc = gl.getUniformLocation(realisticDisplayProgram, 'enableRHFog');
-  gl.uniform1f(realDisp_enableRHFog_loc, 1.0);
   const realDisp_enhancedLooks_loc = gl.getUniformLocation(realisticDisplayProgram, 'enhancedLooks');
   gl.uniform1f(realDisp_enhancedLooks_loc, 0.0);
   const realDisp_enableCloudLightning_loc = gl.getUniformLocation(realisticDisplayProgram, 'enableCloudLightning');
@@ -9703,6 +9716,8 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   const uloc_realistic_sunAngle        = gl.getUniformLocation(realisticDisplayProgram,     'sunAngle');
   const uloc_realistic_minShadowLight  = gl.getUniformLocation(realisticDisplayProgram,     'minShadowLight');
   const uloc_sky_minShadowLight        = gl.getUniformLocation(skyBackgroundDisplayProgram, 'minShadowLight');
+  const uloc_sky_sunAngle              = gl.getUniformLocation(skyBackgroundDisplayProgram, 'sunAngle');
+  const uloc_sky_starDensity           = gl.getUniformLocation(skyBackgroundDisplayProgram, 'starDensity');
 
   // per-frame lighting
   const uloc_lighting_IR_rate          = gl.getUniformLocation(lightingProgram,             'IR_rate');
@@ -9793,6 +9808,13 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   const uloc_airQ_view                 = gl.getUniformLocation(airQualityDisplayProgram, 'view');
   const uloc_airQ_cursor               = gl.getUniformLocation(airQualityDisplayProgram, 'cursor');
   const uloc_airQ_Xmult                = gl.getUniformLocation(airQualityDisplayProgram, 'Xmult');
+
+  // humidity display per-frame
+  const uloc_humd_aspectRatios         = gl.getUniformLocation(humidityDisplayProgram, 'aspectRatios');
+  const uloc_humd_view                 = gl.getUniformLocation(humidityDisplayProgram, 'view');
+  const uloc_humd_cursor               = gl.getUniformLocation(humidityDisplayProgram, 'cursor');
+  const uloc_humd_Xmult                = gl.getUniformLocation(humidityDisplayProgram, 'Xmult');
+  const uloc_humd_displayVectorField   = gl.getUniformLocation(humidityDisplayProgram, 'displayVectorField');
 
   // IR temp display per-frame
   const uloc_IR_aspectRatios           = gl.getUniformLocation(IRtempDisplayProgram, 'aspectRatios');
@@ -9907,7 +9929,11 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
     // minShadowLight = clamp(((90 + 10) - Math.abs(solarZenithAngleDeg)) * 0.006, 0.005, 0.040); // decrease until the sun goes 10 deg below the horizon
 
-    minShadowLight = map_range_C(Math.abs(solarZenithAngleDeg), 100.0, 85.0, 0.005, 0.040); // decrease until the sun goes 10 deg below the horizon
+    if (guiControls.autoMinShadowLight) {
+      minShadowLight = map_range_C(Math.abs(solarZenithAngleDeg), 100.0, 85.0, 0.005, 0.040); // decrease until the sun goes 10 deg below the horizon
+    } else {
+      minShadowLight = guiControls.minShadowLight;
+    }
 
     if (ulocsReady) {
       gl.useProgram(boundaryProgram);
@@ -9920,6 +9946,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       gl.uniform1f(uloc_realistic_minShadowLight, minShadowLight);
       gl.useProgram(skyBackgroundDisplayProgram);
       gl.uniform1f(uloc_sky_minShadowLight, minShadowLight);
+      gl.uniform1f(uloc_sky_sunAngle, solarZenithAngle);
     }
 
     if (guiControls.dayNightCycle)
@@ -10063,7 +10090,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
       if (!guiControls.paused) { // Simulation part
 
-        let nightAccelerationActive = !airplaneMode && guiControls.dayNightCycle && guiControls.accelerateNight && guiControls.sunAngle < 0.;
+        let nightAccelerationActive = !airplaneMode && !guiControls.slowMotion && guiControls.dayNightCycle && guiControls.accelerateNight && guiControls.sunAngle < 0.;
 
         if (guiControls.dayNightCycle) {
           if (guiControls.realtimeMode) {
@@ -10073,7 +10100,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
             if (Math.abs(realDeltaHours) > 0.0001) {
               updateSunlight(realDeltaHours);
             }
-          } else if (airplaneMode) {
+          } else if (airplaneMode || guiControls.slowMotion) {
             updateSunlight(1.0 / 3600.0 / 60);                                                                    // increase solar time at real speed: 1/60 seconds per frame
           } else {
             updateSunlight(timePerIteration * guiControls.IterPerFrame * (nightAccelerationActive ? 10.0 : 1.0)); // increase solar time
@@ -10088,7 +10115,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
         if (!airplaneMode || airplane.hasCrashed() || frameNum % 17 == 0) { // update every 17 frames because 60 * 0.288 secs per iteration = 17.28
           let numIterations = guiControls.IterPerFrame;
-          if (airplaneMode)
+          if (airplaneMode || guiControls.slowMotion)
             numIterations = 1;
           for (var i = 0; i < numIterations; i++) { // Simulation loop
             // calc and apply velocity
@@ -10305,6 +10332,14 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
           iterNum++;
           airplane.takeUserInput();
           airplane.move();
+        }
+
+        // Update nukes
+        for (let i = nukes.length - 1; i >= 0; i--) {
+          nukes[i].move();
+          if (nukes[i].isExploded()) {
+            nukes.splice(i, 1);
+          }
         }
 
       } // end of simulation part
@@ -10777,6 +10812,18 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         gl.uniform3f(uloc_airQ_view, cam.curXpos, cam.curYpos, cam.curZoom);
         gl.uniform4f(uloc_airQ_cursor, mouseXinSim, mouseYinSim, guiControls.brushSize * 0.5, cursorType);
         gl.uniform1f(uloc_airQ_Xmult, horizontalDisplayMult);
+
+      } else if (guiControls.displayMode == 'DISP_HUMD') {
+        gl.useProgram(humidityDisplayProgram);
+        gl.uniform2f(uloc_humd_aspectRatios, sim_aspect, canvas_aspect);
+        gl.uniform3f(uloc_humd_view, cam.curXpos, cam.curYpos, cam.curZoom);
+        gl.uniform4f(uloc_humd_cursor, mouseXinSim, mouseYinSim, guiControls.brushSize * 0.5, cursorType);
+        gl.uniform1f(uloc_humd_Xmult, horizontalDisplayMult);
+        if (cam.curZoom / sim_res_x > 0.003) {
+          gl.uniform1f(uloc_humd_displayVectorField, guiControls.enableVectorField ? 1.0 : 0.0);
+        } else {
+          gl.uniform1f(uloc_humd_displayVectorField, 0.0);
+        }
 
       } else if (guiControls.displayMode == 'DISP_IRDOWNTEMP') {
         gl.useProgram(IRtempDisplayProgram);
@@ -11444,7 +11491,8 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       markers[i].updateCanvas();
   }
 
-  frameNum++;
+drawNukeOverlay();
+    frameNum++;
   requestAnimationFrame(draw);
 } // end of draw() outer
 
@@ -11645,7 +11693,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       if (!guiControls.paused) {
         console.log(FPS + ' FPS   ' + guiControls.IterPerFrame + ' Iterations / frame      ' + FPS * guiControls.IterPerFrame + ' Iterations / second');
 
-        if (guiControls.auto_IterPerFrame && !airplaneMode) {
+        if (guiControls.auto_IterPerFrame && !airplaneMode && !guiControls.slowMotion) {
           const fpsTarget = 60;
           adjIterPerFrame((FPS / fpsTarget - 1.0) * 5.0); // example: ((30 / 60)-1.0) = -0.5
 

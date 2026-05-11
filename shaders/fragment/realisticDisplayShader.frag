@@ -75,7 +75,6 @@ uniform float time;
 
 uniform float smoothClouds;
 uniform float enhancedLooks;
-uniform float enableRHFog;
 
 out vec4 fragmentColor;
 
@@ -252,22 +251,15 @@ vec4 getAirColor(vec2 fragCoordIn)
   float relHum = water[TOTAL] / maxWater(realTemp);
   float fogMistOpacity = 0.0;
 
-  // Only apply fog if relative humidity is strictly above 95% and maxWater is valid and fog is enabled
+  // RH fog: instant appearance/disappearance based on RH levels
   // Disable RH fog when Enhanced Looks is enabled to prevent pixelation with dark storm clouds
-  if (enableRHFog > 0.5 && enhancedLooks < 0.5 && relHum > 0.95 && maxWater(realTemp) > 0.001) {
-    // Mist: 95% RH -> 0.00025% opacity, 98% RH -> 0.0025% opacity
-    if (relHum < 0.98) {
-      fogMistOpacity = mix(0.0000025, 0.000025, (relHum - 0.95) / (0.98 - 0.95));
+  if (enhancedLooks < 0.5 && maxWater(realTemp) > 0.001) {
+    // No condensation below 99% RH
+    if (relHum >= 0.99) {
+      // Linear interpolation: 25% condense at 99% RH, 100% condense at 100% RH
+      float condenseAmount = mix(0.25, 1.0, clamp((relHum - 0.99) / (1.0 - 0.99), 0.0, 1.0));
+      fogMistOpacity = condenseAmount * 0.00025; // Scale to appropriate opacity level
     }
-    // Plateau: 98% - 98.5% RH -> 0.0025% opacity
-    else if (relHum < 0.985) {
-      fogMistOpacity = 0.25;
-    }
-    // Fog: 98.5% RH -> 0.0025% opacity, 100% RH -> 0.025% opacity (haze only, not cloud)
-    else {
-      fogMistOpacity = mix(0.000025, 0.00025, clamp((relHum - 0.985) / (1.0 - 0.985), 0.0, 1.0));
-    }
-    fogMistOpacity = clamp(fogMistOpacity, 0.0, 0.00025);
   }
 
   float cloudwater = water[CLOUD];
