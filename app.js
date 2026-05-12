@@ -20,7 +20,7 @@ function updateSetupSliders()
 
   document.getElementById('simWorldProperties').innerHTML = 'cellHeight: ' + cellHeight.toFixed(1) + ' m  &nbsp&nbsp&nbsp   Simulation width: ' + (simWidth / 1000).toFixed(1) + ' km';
 
-  document.getElementById('simHeightWarning').style.display = (simHeight == 12000) ? 'none' : 'block';
+  document.getElementById('simHeightWarning').style.display = (simHeight == 15000) ? 'none' : 'block';
   document.getElementById('simResYWarning').style.display = (simResY == 300) ? 'none' : 'block';
   document.getElementById('simResShowX').value = simResX;
   document.getElementById('simResShowY').value = simResY
@@ -418,12 +418,12 @@ const guiControls_default = {
   waterEvaporation : 0.0001,
   evapHeat : 2.90,          //  Real: 2260 J/g
   meltingHeat : 0.43,       //  Real:  334 J/g
-  condensationRate : 0.0050,
+  condensationRate : 0.0010,  // REDUCED - less condensation to reduce rain
   waterWeight : 0.25,       // 0.50
   inactiveDroplets : 0,
   aboveZeroThreshold : 1.0, // PRECIPITATION
   subZeroThreshold : 0.005, // 0.01
-  spawnChance : 0.00005,    // 30. 10 to 50
+  spawnChance : 0.00001,    // REDUCED - much less rain droplet spawning
   snowDensity : 0.2,        // 0.3
   fallSpeed : 0.0003,
   growthRate0C : 0.0001,    // 0.0005
@@ -495,7 +495,7 @@ const guiControls_default = {
   nukeFallSpeed : 10.0,
   nukeIgnitionEnabled : true,
   dryLapseRate : 10.0,     // Real: 9.8 degrees / km
-  simHeight : 12000,       // meters
+  simHeight : 15000,       // meters
   twelveHourClock : false, // only for display.  false = metric
   lengthUnit : 'LENGTH_UNIT_METRIC',
   tempUnit : 'TEMP_UNIT_C',
@@ -527,11 +527,11 @@ const guiControls_default = {
   skipPressure : false,
   surfacePressure : 1013.25,
   pressurePersistence : 0.3,
-  thermalPressureCoupling : 0.5,
+  thermalPressureCoupling : 0.0,  // DISABLED - temperature no longer affects pressure
   motionPressureCoupling : 0.3,  // rising motion lowers pressure, sinking raises it (keep low for stability)
   asymmetricPressure : 0.0,  // 0.0 = symmetric, 1.0 = low pressure causes rising only (keep at 0 - non-zero creates one-way ratchet that amplifies updrafts)
   forceIntensityMultiplier : 0.3,  // overall multiplier for all pressure forces (keep low for stability)
-  pressureInfluence : 0.5,
+  pressureInfluence : 0.05,  // REDUCED - pressure has much less effect on fluid motion
   reducedWeatherStationUpdates : false,
   skipAdvection : false,
   // Menu styling
@@ -575,9 +575,9 @@ var datGui;
 var sim_res_x;
 var sim_res_y;
 var sim_aspect; //  = sim_res_x / sim_res_y
-var sim_height = 12000;
+var sim_height = 15000;
 
-var cellHeight = 12000. / 300.; // guiControls.simHeight / sim_res_y;  // in meters // cell width is the same
+var cellHeight = 15000. / 300.; // guiControls.simHeight / sim_res_y;  // in meters // cell width is the same
 
 var frameNum = 0;
 var lastFrameNum = 0;
@@ -2312,6 +2312,12 @@ window.loadData = async function()
         document.getElementById('fileInput').value = '';
         return;
       }
+
+      // Calculate varied altitude for old save files based on resolution
+      // This ensures old save files don't all have the same 12000m altitude
+      // Use sim_res_y * 50 to give varied altitudes (e.g., 300*50=15000, 400*50=20000, etc.)
+      sim_height = sim_res_y * 50;
+      console.log('Calculated sim_height from resolution:', sim_height, 'm (sim_res_y:', sim_res_y + ')');
 
       NUM_DROPLETS = (sim_res_x * sim_res_y) / NUM_DROPLETS_DEVIDER;
       if (guiControls && guiControls.reducedPrecipitation) {
@@ -6205,8 +6211,8 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         { let s = 0; if (!isNaN(lapse03) && lapse03 >= 8.0 && muCape >= 1500 && shear6km >= 20) { s += map_range(lapse03, 8.0, 10.0, 20, 50); s += map_range(muCape, 1500, 5000, 10, 30); s += map_range(shear6km, 20, 40, 5, 20); } _add('Giant Hail', '#AA00FF', s); }
         { let s = 0; if (!isNaN(lapse03) && lapse03 >= 7.0 && muCape >= 1000) { s += map_range(lapse03, 7.0, 9.5, 15, 45); s += map_range(muCape, 1000, 4000, 10, 30); if (shear6km >= 15) s += map_range(shear6km, 15, 30, 5, 20); } _add('Large Hail', '#FF8800', s); }
         { let s = 0; if (!isNaN(lapse03) && lapse03 >= 6.5 && muCape >= 300) { s += map_range(lapse03, 6.5, 9.0, 10, 35); s += map_range(muCape, 300, 2000, 5, 25); } _add('Hail', '#FFCC00', s); }
-        { let s = 0; if (dcape >= 600) s += map_range(dcape, 600, 1500, 15, 55); if (shear6km >= 15) s += map_range(shear6km, 15, 35, 5, 25); if (muCape >= 500) s += map_range(muCape, 500, 3000, 5, 20); _add('Destructive Winds', '#FF4400', s); }
-        { let s = 0; if (dcape >= 300) s += map_range(dcape, 300, 900, 10, 40); if (shear6km >= 10 && muCape >= 300) s += map_range(shear6km, 10, 25, 5, 25); _add('Damaging Winds', '#FF8800', s); }
+        { let s = 0; if (dcape >= 1200) s += map_range(dcape, 1200, 2500, 15, 40); if (shear6km >= 25) s += map_range(shear6km, 25, 50, 5, 20); if (muCape >= 1500) s += map_range(muCape, 1500, 5000, 5, 15); _add('Destructive Winds', '#FF4400', s); }
+        { let s = 0; if (dcape >= 800) s += map_range(dcape, 800, 1800, 10, 30); if (shear6km >= 20 && muCape >= 1000) s += map_range(shear6km, 20, 40, 5, 20); _add('Damaging Winds', '#FF8800', s); }
         { let s = 0; if (pwat_mm >= 20 && muCape >= 200) { s += map_range(pwat_mm, 20, 55, 10, 55); s += map_range(muCape, 200, 2000, 5, 25); if (shear6km < 15) s += 15; } _add('Flooding/Heavy Rain', '#0088FF', s); }
         { let s = 0; if (muCape >= 100) s += map_range(muCape, 100, 1000, 10, 50); _add('General Thunderstorm', '#AAAAAA', s); }
         hazards.sort((a, b) => b.pct - a.pct);

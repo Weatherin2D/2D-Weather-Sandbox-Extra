@@ -141,12 +141,13 @@ void main()
 
 #define gravMult 0.0001 // 0.0001 0.0005
 
-    // gravity for convection interpolated between this and above cell to fix wierd waves
-    // Because vertical velocity is defined at the top of the cell while temperature is defined in it's center.
-    float gravityForce = ((base[TEMPERATURE] + baseX0Yp[TEMPERATURE]) * 0.5 - (getInitialT(int(fragCoord.y)) + getInitialT(int(fragCoord.y) + 1)) * 0.5) * gravMult;
+    // DISABLED temperature-based buoyancy - rising motion no longer affected by temperature
+    // float gravityForce = ((base[TEMPERATURE] + baseX0Yp[TEMPERATURE]) * 0.5 - (getInitialT(int(fragCoord.y)) + getInitialT(int(fragCoord.y) + 1)) * 0.5) * gravMult;
 
     // float gravityForce = (base[3] - initial_T[int(fragCoord.y)]) * gravMult;
 
+    // Only keep water weight effects (cloud and precipitation weight)
+    float gravityForce = 0.0;
     gravityForce -= water[CLOUD] * gravMult * waterWeight;         // cloud water weight added to gravity force
 
     gravityForce -= precipFeedback[MASS] * gravMult * waterWeight; // precipitation weigth added to gravity force
@@ -167,18 +168,19 @@ void main()
       base[VX] *= 1.0 - topSponge * 0.1;
     }
 
-    // Hydrostatic pressure tendency: warm air reduces pressure, cold air increases it.
-    // This is the real mechanism behind thermal lows and highs.
+    // DISABLED Hydrostatic pressure tendency: warm air reduces pressure, cold air increases it.
+    // This was the real mechanism behind thermal lows and highs.
     // Rate is very small to avoid disrupting the fluid solver, but persistent.
     // Only apply near the surface where surface pressure is most relevant.
-    if (wall[VERT_DISTANCE] <= 3) {
-      float tempAnomaly = base[TEMPERATURE] - getInitialT(int(fragCoord.y));
-      // Clamp the anomaly contribution to prevent large surface temps (30°C+) from
-      // building a runaway low-pressure column that feeds back into vertical velocity.
-      tempAnomaly = clamp(tempAnomaly, -5.0, 5.0);
-      base[PRESSURE] -= tempAnomaly * 0.000002; // warm = lower pressure, cold = higher pressure
-      base[PRESSURE] = clamp(base[PRESSURE], -0.2, 0.2); // clamp to match pressure shader
-    }
+    // DISABLED - temperature no longer affects pressure
+    // if (wall[VERT_DISTANCE] <= 3) {
+    //   float tempAnomaly = base[TEMPERATURE] - getInitialT(int(fragCoord.y));
+    //   // Clamp the anomaly contribution to prevent large surface temps (30°C+) from
+    //   // building a runaway low-pressure column that feeds back into vertical velocity.
+    //   tempAnomaly = clamp(tempAnomaly, -5.0, 5.0);
+    //   base[PRESSURE] -= tempAnomaly * 0.000002; // warm = lower pressure, cold = higher pressure
+    //   base[PRESSURE] = clamp(base[PRESSURE], -0.2, 0.2); // clamp to match pressure shader
+    // }
 
     // base.x += sin(texCoord.x * PI * 2.0 + iterNum * 0.000005) * (1. - texCoord.y) * 0.00015; // phantom force to simulate high and low pressure areas
 
