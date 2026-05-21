@@ -53,12 +53,11 @@ layout(location = 2) out ivec4 wall;
 
 // #define wallManhattanInfluence 2 // 2 How many cells from the nearest wall effects like smoothing and drag are applied
 #define exchangeRate 0.015       // Rate of smoothing near surface
+#define gravMult 0.0001 // 0.0001 0.0005
+#define surfaceWindSmootingDist 5
 
-void exchangeWith(vec2 texCoord) // exchange temperature and water
+void exchangeWith(vec2 texCoord) // exchange velocity only to avoid wall temperature contamination
 {
-  // base[TEMPERATURE] -= (base[TEMPERATURE] - texture(baseTex, texCoord)[TEMPERATURE]) * exchangeRate;
-  // water[0] -= (water[0] - texture(waterTex, texCoord)[0]) * exchangeRate;
-
   base[VX] -= (base[VX] - texture(baseTex, texCoord)[VX]) * exchangeRate;
 }
 
@@ -74,6 +73,7 @@ void main()
 {
   base = texture(baseTex, texCoord);
   water = texture(waterTex, texCoord);
+  vec2 clampedTexCoordX0Yp = vec2(texCoordX0Yp.x, min(texCoordX0Yp.y, 1.0 - texelSize.y * 0.5));
 
   vec4 precipFeedback = texture(precipFeedbackTex, texCoord);
 
@@ -84,8 +84,6 @@ void main()
   ivec4 wallXmY0 = texture(wallTex, texCoordXmY0);
   ivec4 wallX0Ym = texture(wallTex, texCoordX0Ym);
   ivec4 wallXpY0 = texture(wallTex, texCoordXpY0);
-  // Clamp top boundary to prevent sampling outside valid range
-  vec2 clampedTexCoordX0Yp = vec2(texCoordX0Yp.x, min(texCoordX0Yp.y, 1.0 - texelSize.y * 0.5));
   ivec4 wallX0Yp = texture(wallTex, clampedTexCoordX0Yp);
 
   vec4 light = texture(lightTex, texCoord);
@@ -106,15 +104,12 @@ void main()
 
     float precipCoalescence = max(-precipFeedback[VAPOR], 0.); // how much cloud water turns into rain
 
-    water[CLOUD] = max(water[CLOUD] - precipCoalescence, 0.0); // clamp to prevent negative
-
-    // Remove precipitation coalescence, clamped to zero (no artificial moisture floor)
-    water[TOTAL] = max(water[TOTAL] - precipCoalescence, 0.0);
+    water[CLOUD] -= precipCoalescence;
+    water[TOTAL] -= precipCoalescence;
 
     float precipEvaporation = max(precipFeedback[VAPOR], 0.);
 
     water[TOTAL] += precipEvaporation; // evaporating rain adds water vapor to air
-    water[TOTAL] = max(water[TOTAL], 0.0); // ensure water[TOTAL] stays non-negative after evaporation
 
 
     //  0.004 for rain visualisation
@@ -139,34 +134,19 @@ void main()
     // temperature is calculated for Vy location
     vec4 baseX0Yp = texture(baseTex, clampedTexCoordX0Yp);
 
-#define gravMult 0.0001 // 0.0001 0.0005
-
-    // DISABLED temperature-based buoyancy - rising motion no longer affected by temperature
-    // float gravityForce = ((base[TEMPERATURE] + baseX0Yp[TEMPERATURE]) * 0.5 - (getInitialT(int(fragCoord.y)) + getInitialT(int(fragCoord.y) + 1)) * 0.5) * gravMult;
+    // gravity for convection interpolated between this and above cell to fix wierd waves
+    // Because vertical velocity is defined at the top of the cell while temperature is defined in it's center.
+    float gravityForce = ((base[TEMPERATURE] + baseX0Yp[TEMPERATURE]) * 0.5 - (getInitialT(int(fragCoord.y)) + getInitialT(int(fragCoord.y) + 1)) * 0.5) * gravMult;
 
     // float gravityForce = (base[3] - initial_T[int(fragCoord.y)]) * gravMult;
 
-    // Only keep water weight effects (cloud and precipitation weight)
-    float gravityForce = 0.0;
     gravityForce -= water[CLOUD] * gravMult * waterWeight;         // cloud water weight added to gravity force
 
     gravityForce -= precipFeedback[MASS] * gravMult * waterWeight; // precipitation weigth added to gravity force
 
-    // Clamp buoyancy force to prevent runaway updrafts at high surface temperatures.
-    // Without this, a 30°C+ surface produces a ~15K anomaly that accumulates into
-    // unrealistic 200 km/h vertical winds. Cap matches ~50 m/s terminal updraft speed.
-    gravityForce = clamp(gravityForce, -0.0005, 0.0005);
-
     base[VY] += gravityForce;
 
-    // ── Top sponge layer: damp velocities at the top boundary to prevent reflection ──
-    // Temperature nudging removed so global heating effects propagate freely
-    // without being counteracted by a fixed-profile restoring force.
-    float topSponge = smoothstep(0.95, 1.0, texCoord.y);
-    if (topSponge > 0.0) {
-      base[VY] *= 1.0 - topSponge * 0.3;
-      base[VX] *= 1.0 - topSponge * 0.1;
-    }
+    // base.x += sin(texCoord.x * PI * 2.0 + iterNum * 0.000005) * (1. - texCoord.y) * 0.00015; // phantom force to simulate high and low pressure areas
 
     // DISABLED Hydrostatic pressure tendency: warm air reduces pressure, cold air increases it.
     // This was the real mechanism behind thermal lows and highs.
@@ -301,8 +281,6 @@ void main()
       wall[DISTANCE] = nearest + 1; // add one to dist to wall
                                     // wall[TYPE] = nearestType;     // type = type of nearest wall
     }
-
-#define surfaceWindSmootingDist 5
 
     if (wall[VERT_DISTANCE] <= surfaceWindSmootingDist) { // above surface
 
@@ -449,7 +427,7 @@ void main()
               wall[TYPE] = WALLTYPE_LAND;             // turn off fire
           }
         }
-      case WALLTYPE_LAND:                                                                                          // no break,can also be fire or urban:
+      case WALLTYPE_LAND: {                                                                                        // no break,can also be fire or urban:
         water[SOIL_MOISTURE] = clamp(water[SOIL_MOISTURE] + precipDeposition[RAIN_DEPOSITION] * 0.1, 0.0, 1000.0); // rain accumulation
         water[SNOW] = clamp(water[SNOW] + precipDeposition[SNOW_DEPOSITION] * snowMassToHeight, 0.0, 4000.0);      // snow accumulation in cm
 
@@ -510,7 +488,8 @@ void main()
           //}
         }
         break;
-      case WALLTYPE_WATER:
+      }
+      case WALLTYPE_WATER: {
 
         const float waterTempUpdateInterval = 20.0; // Update less often but with bigger value to reduce rounding error
 
@@ -563,6 +542,7 @@ void main()
         water[SNOW] = 0.0;
         break;
       }
+      }
     }
   }
-} // main
+}

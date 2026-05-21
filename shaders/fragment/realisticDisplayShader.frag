@@ -76,6 +76,8 @@ uniform float time;
 uniform float smoothClouds;
 uniform float enhancedLooks;
 
+uniform int invertSun;
+
 out vec4 fragmentColor;
 
 #include "common.glsl"
@@ -335,6 +337,30 @@ vec4 getAirColor(vec2 fragCoordIn)
     color = (smokeOrFireCol * smokeOpacity / opacity) + (cloudCol * cloudOpacity * (1. - smokeOpacity) / opacity) + (vec3(0.95) * fogMistOpacity * (1. - smokeOpacity) * (1. - cloudOpacity) / opacity);
   } else {
     color = vec3(0.0);
+  }
+
+  // Invert Sun: Add sunrays pointing towards center of map
+  if (invertSun == 1 && cloudOpacity > 0.01) {
+    vec2 center = resolution * 0.5;
+    vec2 toCenter = normalize(center - fragCoordIn);
+    
+    // Calculate angle-based sunray intensity
+    float rayAngle = atan(toCenter.y, toCenter.x);
+    float rayIntensity = 0.5 + 0.5 * sin(rayAngle * 8.0 + iterNum * 0.1);
+    
+    // Distance-based falloff
+    float distToCenter = length(fragCoordIn - center);
+    float distFalloff = smoothstep(0.0, resolution.x * 0.5, distToCenter);
+    
+    // Apply sunray effect - brighter rays with golden/orange tint
+    vec3 sunrayColor = vec3(1.0, 0.8, 0.5) * rayIntensity * (1.0 - distFalloff) * 0.4;
+    
+    // Enhance cloud edges with backlighting
+    float edgeEnhancement = smoothstep(0.0, 0.3, cloudOpacity) * smoothstep(1.0, 0.7, cloudOpacity);
+    vec3 backlitColor = mix(cloudCol, vec3(1.0, 0.9, 0.7), edgeEnhancement * 0.3);
+    
+    color = mix(color, backlitColor, edgeEnhancement * 0.5);
+    color += sunrayColor * cloudOpacity;
   }
 
   return vec4(color, opacity);
