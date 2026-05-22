@@ -48,9 +48,9 @@ precision highp isampler2D;
 // water texture: RGBA32F
 #define TOTAL 0         // Vapor + cloud water             >= 0
 #define CLOUD 1         // cloud water                     >= 0
-#define SMOKE 3         // smoke/dust in air               >= 0
 #define PRECIPITATION 2 // precipitation in air            >= 0
 #define SOIL_MOISTURE 2 // moisture in surface             >= 0
+#define SMOKE 3         // smoke/dust in air               >= 0 for smoke/dust
 #define SNOW 3          // snow at surface in cm           0 to 40000
 
 // wall texture: RGBA8I
@@ -85,6 +85,12 @@ precision highp isampler2D;
 #define HEAT 1
 #define VAPOR 2
 // 3 not used
+
+// Lightning Location
+// #define POSX 0
+// #define POSY 1
+#define START_ITERNUM 2
+#define INTENSITY 3
 
 // Precipitation deposition
 #define RAIN_DEPOSITION 0
@@ -282,9 +288,9 @@ vec2 hash22(vec2 p, float seed)
 {
   float n = sin(dot(p, vec2(41, 289)));
   p = fract(vec2(2097152, 262144) * n);
-  return cos(p * 6.283 + vec2(seed * 2.));
-  // return abs(fract(p + vec2(seed * .5)) - .5) * 4. - 1.;  // Snooker.
-  // return abs(cos(p * 6.283 + vec2(seed * 2.))) * 2. - 1.; // Bounce.
+  return cos(p * 6.283 + seed * 2.);
+  return abs(fract(p + seed * .5) - .5) * 4. - 1.;  // Snooker.
+  return abs(cos(p * 6.283 + seed * 2.)) * 2. - 1.; // Bounce.
 }
 
 float simplesque2D(vec2 p, float seed)

@@ -452,6 +452,7 @@ const guiControls_default = {
   greenhouseGases : 0.001,
   waterGreenHouseEffect : 0.0015,
   IR_rate : 1.0,
+  invertSun : false,
   tool : 'TOOL_NONE',
   brushSize : 20,
   wholeWidth : false,
@@ -524,14 +525,6 @@ const guiControls_default = {
   reducedPrecipitation : false,
   disableTempChangeHistory : false,
   skipLightingCalculation : false,
-  skipPressure : false,
-  surfacePressure : 1013.25,
-  pressurePersistence : 0.3,
-  thermalPressureCoupling : 0.0,  // DISABLED - temperature no longer affects pressure
-  motionPressureCoupling : 0.3,  // rising motion lowers pressure, sinking raises it (keep low for stability)
-  asymmetricPressure : 0.0,  // 0.0 = symmetric, 1.0 = low pressure causes rising only (keep at 0 - non-zero creates one-way ratchet that amplifies updrafts)
-  forceIntensityMultiplier : 0.3,  // overall multiplier for all pressure forces (keep low for stability)
-  pressureInfluence : 0.05,  // REDUCED - pressure has much less effect on fluid motion
   reducedWeatherStationUpdates : false,
   skipAdvection : false,
   // Menu styling
@@ -4833,7 +4826,6 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'waterWeight'), guiControls.waterWeight);
     gl.useProgram(velocityProgram);
     gl.uniform1f(gl.getUniformLocation(velocityProgram, 'dragMultiplier'), guiControls.dragMultiplier);
-    gl.uniform1f(gl.getUniformLocation(velocityProgram, 'pressureInfluence'), guiControls.pressureInfluence);
     gl.uniform1f(gl.getUniformLocation(velocityProgram, 'wind'), guiControls.wind);
     gl.useProgram(lightingProgram);
     gl.uniform1f(gl.getUniformLocation(lightingProgram, 'waterTemperature'), CtoK(guiControls.waterTemperature));
@@ -4867,6 +4859,8 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     gl.uniform1f(postProc_exposure_loc, guiControls.exposure);
     gl.uniform1f(postProc_saturation_loc, guiControls.saturation);
     gl.uniform1f(postProc_contrast_loc, guiControls.contrast);
+    gl.useProgram(realisticDisplayProgram);
+    gl.uniform1i(gl.getUniformLocation(realisticDisplayProgram, 'invertSun'), guiControls.invertSun ? 1 : 0);
   }
 
   function updateMenuStyle()
@@ -5030,51 +5024,6 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       .listen()
       .name('Apply above altitude');
 
-    fluidParams_folder.add(guiControls, 'surfacePressure', 900.0, 1100.0, 0.1)
-      .name('Surface Pressure (hPa)');
-
-    fluidParams_folder.add(guiControls, 'pressurePersistence', 0.0, 1.0, 0.01)
-      .name('Pressure Persistence');
-
-    fluidParams_folder.add(guiControls, 'thermalPressureCoupling', 0.0, 5.0, 0.1)
-      .name('Thermal-Pressure Coupling');
-
-    fluidParams_folder.add(guiControls, 'motionPressureCoupling', 0.0, 2.0, 0.1)
-      .onChange(function() {
-        if (typeof pressureProgram !== 'undefined') {
-          gl.useProgram(pressureProgram);
-          gl.uniform1f(gl.getUniformLocation(pressureProgram, 'motionPressureCoupling'), guiControls.motionPressureCoupling);
-        }
-      })
-      .name('Motion-Pressure Coupling (Disabled)');
-
-    fluidParams_folder.add(guiControls, 'pressureInfluence', 0.0, 2.0, 0.05)
-      .onChange(function() {
-        if (typeof velocityProgram !== 'undefined') {
-          gl.useProgram(velocityProgram);
-          gl.uniform1f(gl.getUniformLocation(velocityProgram, 'pressureInfluence'), guiControls.pressureInfluence);
-        }
-      })
-      .name('Pressure Influence');
-
-    fluidParams_folder.add(guiControls, 'asymmetricPressure', 0.0, 1.0, 0.05)
-      .onChange(function() {
-        if (typeof velocityProgram !== 'undefined') {
-          gl.useProgram(velocityProgram);
-          gl.uniform1f(gl.getUniformLocation(velocityProgram, 'asymmetricPressure'), guiControls.asymmetricPressure);
-        }
-      })
-      .name('Asymmetric Pressure Effect');
-
-    fluidParams_folder.add(guiControls, 'forceIntensityMultiplier', 0.0, 1.5, 0.05)
-      .onChange(function() {
-        if (typeof pressureProgram !== 'undefined') {
-          gl.useProgram(pressureProgram);
-          gl.uniform1f(gl.getUniformLocation(pressureProgram, 'forceIntensityMultiplier'), guiControls.forceIntensityMultiplier);
-        }
-      })
-      .name('Force Intensity Multiplier (Disabled)');
-
 
     var UI_folder = datGui.addFolder('User Interaction');
 
@@ -5094,7 +5043,6 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         'Vegetation' : 'TOOL_VEGETATION',
         'Snow' : 'TOOL_WALL_SNOW',
         'Wind' : 'TOOL_WIND',
-        'Air Pressure' : 'TOOL_PRESSURE',
         'Weather Station' : 'TOOL_STATION',
         'Radar Tower' : 'TOOL_RADAR',
         'Marker' : 'TOOL_MARKER',
@@ -5155,6 +5103,13 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         gl.uniform1f(gl.getUniformLocation(lightingProgram, 'IR_rate'), guiControls.IR_rate);
       })*/
       .name('IR Multiplier');
+
+    radiation_folder.add(guiControls, 'invertSun')
+      .onChange(function() {
+        gl.useProgram(realisticDisplayProgram);
+        gl.uniform1i(gl.getUniformLocation(realisticDisplayProgram, 'invertSun'), guiControls.invertSun ? 1 : 0);
+      })
+      .name('Invert Sun');
 
     var water_folder = datGui.addFolder('Water');
 
@@ -5322,7 +5277,6 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         'Relative Humidity / Cloud Density' : 'DISP_HUMD',
         'Air Quality' : 'DISP_AIRQUALITY',
         'Temperature Change' : 'DISP_TEMPERATURE_CHANGE',
-        'Pressure' : 'DISP_PRESSURE',
         'Charge' : 'DISP_CHARGE',
         'Radar Imagery' : 'DISP_RADAR',
         'Convective Risk' : 'DISP_RISK'
@@ -5555,7 +5509,6 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     advanced_folder.add(guiControls, 'skipCAPECalculation').name('Skip CAPE (Faster)');
     advanced_folder.add(guiControls, 'simulationQuality', 0.1, 25.0, 0.1).name('Sim Quality (High=Fast)');
     advanced_folder.add(guiControls, 'skipLightingCalculation').name('Skip Lighting (Major boost)');
-    advanced_folder.add(guiControls, 'skipPressure').name('Skip Pressure (Faster)');
     advanced_folder.add(guiControls, 'skipAdvection').name('Skip Advection (No fluid)');
     advanced_folder.add(guiControls, 'reducedWeatherStationUpdates').name('Reduce Station Updates');
     advanced_folder.add(guiControls, 'reducedPrecipitation')
@@ -5778,6 +5731,15 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
       const graphBottem = this.graphCanvas.height - 40; // in pixels
 
+      // Sounding layout: full-width skew-T with right-side overlays
+      const WIND_COL_W = 52;
+      const windBarbX = this.graphCanvas.width - 14;
+      const windBarbScale = 2.5;
+      const infoBoxWidth = 320;
+      const infoBoxX = this.graphCanvas.width - infoBoxWidth - WIND_COL_W - 12;
+      const graphCanvasW = this.graphCanvas.width;
+      const graphCanvasH = this.graphCanvas.height;
+
       var c = this.ctx;
 
       function integrateSegment(B0, B1, dz) {
@@ -5889,9 +5851,9 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         return computeParcelProfile(meanT, meanTd, startIndex);
       }
 
-      c.clearRect(0, 0, graphCanvas.width, graphCanvas.height);
+      c.clearRect(0, 0, this.graphCanvas.width, this.graphCanvas.height);
       c.fillStyle = '#00000055';
-      c.fillRect(0, 0, graphCanvas.width, graphCanvas.height);
+      c.fillRect(0, 0, this.graphCanvas.width, this.graphCanvas.height);
 
       drawIsotherms();
 
@@ -6042,6 +6004,63 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       const shear6km = windShearToAlt(6000);
       const shear8km = windShearToAlt(8000);
 
+      // Hodograph profile + storm motion (parcel/storm speed 30 km/h along 0-6km mean wind)
+      const STORM_MOTION_MS = 30 / 3.6;
+      const hodoPoints = [];
+      for (let y = surfaceLevel; y < sim_res_y; y++) {
+        if (wallTextureValues[4 * y + 1] === 0) continue;
+        const altM = (y - surfaceLevel) * dz;
+        hodoPoints.push({
+          altM,
+          u: rawVelocityTo_ms(baseTextureValues[4 * y]),
+          v: rawVelocityTo_ms(baseTextureValues[4 * y + 1]),
+        });
+      }
+      function windAtAltM(altM) {
+        const yT = surfaceLevel + Math.round(altM / dz);
+        if (yT >= sim_res_y || wallTextureValues[4 * yT + 1] === 0) return {u: 0, v: 0};
+        return {
+          u: rawVelocityTo_ms(baseTextureValues[4 * yT]),
+          v: rawVelocityTo_ms(baseTextureValues[4 * yT + 1]),
+        };
+      }
+      function altToHodographColor(altM) {
+        if (altM < 500) return '#FF69B4';
+        if (altM < 3000) return '#FF0000';
+        if (altM < 6000) return '#00CC00';
+        if (altM < 9000) return '#FFFF00';
+        return '#00AAFF';
+      }
+      let stormU = STORM_MOTION_MS;
+      let stormV = 0;
+      {
+        let sumU = 0, sumV = 0, n = 0;
+        for (const p of hodoPoints) {
+          if (p.altM <= 6000) { sumU += p.u; sumV += p.v; n++; }
+        }
+        if (n > 0) {
+          const mU = sumU / n, mV = sumV / n;
+          const mSpd = Math.hypot(mU, mV);
+          if (mSpd > 0.01) {
+            stormU = mU / mSpd * STORM_MOTION_MS;
+            stormV = mV / mSpd * STORM_MOTION_MS;
+          }
+        }
+      }
+      // Storm-relative inflow: mean SR wind in 0.5-3 km layer
+      let sriU = 0, sriV = 0, sriCount = 0;
+      for (const p of hodoPoints) {
+        if (p.altM >= 500 && p.altM <= 3000) {
+          sriU += p.u - stormU;
+          sriV += p.v - stormV;
+          sriCount++;
+        }
+      }
+      if (sriCount > 0) { sriU /= sriCount; sriV /= sriCount; }
+      const sriMag = Math.hypot(sriU, sriV);
+      const sfcSr = windAtAltM(0);
+      const sr3km = windAtAltM(3000);
+
       // Storm-relative helicity (SRH) - 2D rotation potential for horizontal rolls
       function calculateSRH(altM) {
         const targetY = surfaceLevel + Math.round(altM / dz);
@@ -6157,18 +6176,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
       const altStr = (m) => isNaN(m) || m == null ? 'N/A' : printAltitude(Math.round(m));
       // Barometric pressure from altitude: ISA formula, default surface = 1013.25 hPa
-      const altToHpa = (alt_m) => guiControls.surfacePressure * Math.pow(1.0 - 2.25577e-5 * alt_m, 5.25588);
-      // Compute column-integrated pressure perturbation from fluid pressure field
-      // Sum base[PRESSURE] from top down to each level (hydrostatic: surface pressure = integral of density*g*dz)
-      // The fluid pressure field represents divergence-based perturbations; summing gives column pressure anomaly
-      let columnPressure = new Float32Array(sim_res_y); // hPa perturbation at each level
-      let cumPressAnomaly = 0.0;
-      for (let y = sim_res_y - 1; y >= 0; y--) {
-        if (wallTextureValues[4 * y + 1] !== 0) { // fluid cell
-          cumPressAnomaly += baseTextureValues[4 * y + 2] * 20.0; // scale fluid pressure to hPa
-        }
-        columnPressure[y] = cumPressAnomaly;
-      }
+      const altToHpa = (alt_m) => 1013.25 * Math.pow(1.0 - 2.25577e-5 * alt_m, 5.25588);
 
       const lineHeight = 19;
       const infoBoxY = 12;
@@ -6219,14 +6227,12 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       }
 
       // Dynamic box height: fixed rows + hazard section + padding
-      const numFixedRows = 24; // 21 data rows + "Hazards:" header + "Risk:" + "Fire Risk:"
+      const numFixedRows = 25; // data rows + SRI + "Hazards:" header + "Risk:" + "Fire Risk:"
       const hazardItemsH = hazards.length === 0
         ? lineHeight
         : hazards.length * (lineHeight + 4) + 2;
       const infoBoxHeight = 16 + numFixedRows * lineHeight + hazardItemsH;
 
-      const infoBoxWidth = 320;
-      const infoBoxX = graphCanvas.width - infoBoxWidth - 75;
       const textX = infoBoxX + 8;
       let textY = infoBoxY + 8;
 
@@ -6257,15 +6263,16 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       // Surface pressure and pressure at cursor altitude
       const sfcAlt_m = surfaceLevel * dz;
       const curAlt_m = simYpos * dz;
-      const sfcPressISA = guiControls.surfacePressure * Math.pow(1.0 - 2.25577e-5 * sfcAlt_m, 5.25588);
-      const curPressISA = guiControls.surfacePressure * Math.pow(1.0 - 2.25577e-5 * curAlt_m, 5.25588);
-      row('Sfc Pres:', (sfcPressISA + columnPressure[surfaceLevel]).toFixed(1) + ' hPa', '#AADDFF');
-      row('Cur Pres:', (curPressISA + columnPressure[simYpos]).toFixed(1) + ' hPa', '#AADDFF');
+      const sfcPressISA = 1013.25 * Math.pow(1.0 - 2.25577e-5 * sfcAlt_m, 5.25588);
+      const curPressISA = 1013.25 * Math.pow(1.0 - 2.25577e-5 * curAlt_m, 5.25588);
+      row('Sfc Pres:', sfcPressISA.toFixed(1) + ' hPa', '#AADDFF');
+      row('Cur Pres:', curPressISA.toFixed(1) + ' hPa', '#AADDFF');
       row('0-1km SRH:', Math.round(srh1km) + ' m²/s²', srh1km > 150 ? '#FF4400' : srh1km > 100 ? '#FFAA00' : 'white');
       row('0-3km SRH:', Math.round(srh3km) + ' m²/s²', srh3km > 400 ? '#FF4400' : srh3km > 250 ? '#FFAA00' : 'white');
       row('0-3km Shear:', printVelocity(shear3km));
       row('0-6km Shear:', printVelocity(shear6km), shear6km > 20 ? '#FFAA00' : 'white');
       row('0-8km Shear:', printVelocity(shear8km));
+      row('SRI:', printVelocity(sriMag), sriMag > 12 ? '#FF8800' : sriMag > 8 ? '#FFAA00' : 'white');
       row('Lapse 0-3km:', isNaN(lapse03) ? 'N/A' : lapse03.toFixed(1) + ' °C/km', lapse03 > 8 ? '#FF8800' : 'white');
       row('Lapse 3-6km:', isNaN(lapse36) ? 'N/A' : lapse36.toFixed(1) + ' °C/km');
       // dcape already pre-computed above for dynamic box sizing
@@ -6325,23 +6332,196 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       c.font = '13px monospace';
       textY += lineHeight;
 
-      // Draw wind indicators
-      c.beginPath();
-      for (var y = surfaceLevel; y < sim_res_y; y++) {
+      // Fixed 2D hodograph + wind column (right of readout panel)
+      const surfaceScrY = map_range(surfaceLevel, sim_res_y, 0, 0, graphBottem);
+      const topScrY = 24;
+      const topAltM = (sim_res_y - 1 - surfaceLevel) * dz;
 
-        var scrYpos = map_range(y, sim_res_y, 0, 0, graphBottem);
+      const hodographRadius = Math.min(108, Math.round(this.graphCanvas.height * 0.14));
+      const hodographCx = infoBoxX - hodographRadius - 32;
+      const hodographCy = Math.round(this.graphCanvas.height * 0.38);
+      const hodoPanelPad = 14;
+      const hodoPanelSize = (hodographRadius + hodoPanelPad) * 2;
 
-        var velocity = rawVelocityTo_ms(baseTextureValues[4 * y]); // horizontal wind velocity
+      let maxHodoWind = STORM_MOTION_MS;
+      for (const p of hodoPoints) {
+        maxHodoWind = Math.max(maxHodoWind, Math.abs(p.u), Math.abs(p.v));
+      }
+      maxHodoWind = Math.max(maxHodoWind, Math.hypot(stormU, stormV), 1);
+      const hodoScale = hodographRadius / maxHodoWind;
 
-        let Xpos = this.graphCanvas.width - 70;
-
-        c.moveTo(Xpos, scrYpos);
-        c.lineTo(Xpos + velocity * 2.5, scrYpos); // draw line segment
+      function toHodoPx(u, v) {
+        return {x: hodographCx + u * hodoScale, y: hodographCy - v * hodoScale};
       }
 
-      c.lineWidth = 2.0; // 3
+      const legendEntries = [
+        ['0-0.5km', '#FF69B4'],
+        ['0.5-3km', '#FF0000'],
+        ['3-6km', '#00CC00'],
+        ['6-9km', '#FFFF00'],
+        ['9km+', '#00AAFF'],
+      ];
+
+      // Fixed hodograph panel background
+      c.fillStyle = 'rgba(0, 0, 0, 0.35)';
+      c.fillRect(
+        hodographCx - hodographRadius - hodoPanelPad,
+        hodographCy - hodographRadius - hodoPanelPad,
+        hodoPanelSize,
+        hodoPanelSize
+      );
+      c.strokeStyle = 'rgba(255, 255, 255, 0.2)';
+      c.lineWidth = 1;
+      c.strokeRect(
+        hodographCx - hodographRadius - hodoPanelPad,
+        hodographCy - hodographRadius - hodoPanelPad,
+        hodoPanelSize,
+        hodoPanelSize
+      );
+
+      // Hodograph grid
+      c.beginPath();
+      c.arc(hodographCx, hodographCy, hodographRadius, 0, Math.PI * 2);
+      c.strokeStyle = 'rgba(255, 255, 255, 0.15)';
+      c.lineWidth = 1;
+      c.stroke();
+      c.beginPath();
+      c.moveTo(hodographCx - hodographRadius, hodographCy);
+      c.lineTo(hodographCx + hodographRadius, hodographCy);
+      c.moveTo(hodographCx, hodographCy - hodographRadius);
+      c.lineTo(hodographCx, hodographCy + hodographRadius);
+      c.strokeStyle = 'rgba(255, 255, 255, 0.1)';
+      c.stroke();
+
+      c.font = 'bold 10px Arial';
+      c.fillStyle = '#CCCCCC';
+      c.fillText('Hodograph', hodographCx - 28, hodographCy - hodographRadius - hodoPanelPad + 12);
+
+      // Storm motion marker (30 km/h along 0-6 km mean wind)
+      const smPx = toHodoPx(stormU, stormV);
+      c.beginPath();
+      c.arc(smPx.x, smPx.y, 4, 0, Math.PI * 2);
+      c.fillStyle = 'rgba(255, 255, 255, 0.9)';
+      c.fill();
+      c.font = '9px Arial';
+      c.fillStyle = '#CCCCCC';
+      c.fillText('SM', smPx.x + 6, smPx.y - 5);
+
+      // Altitude-colored 2D hodograph
+      if (hodoPoints.length >= 2) {
+        for (let i = 1; i < hodoPoints.length; i++) {
+          const p0 = hodoPoints[i - 1];
+          const p1 = hodoPoints[i];
+          const midAlt = (p0.altM + p1.altM) * 0.5;
+          const a = toHodoPx(p0.u, p0.v);
+          const b = toHodoPx(p1.u, p1.v);
+          c.beginPath();
+          c.moveTo(a.x, a.y);
+          c.lineTo(b.x, b.y);
+          c.strokeStyle = altToHodographColor(midAlt);
+          c.lineWidth = 3;
+          c.stroke();
+        }
+        const topPt = hodoPoints[hodoPoints.length - 1];
+        const topPx = toHodoPx(topPt.u, topPt.v);
+        c.fillStyle = altToHodographColor(topPt.altM);
+        c.beginPath();
+        c.arc(topPx.x, topPx.y, 4, 0, Math.PI * 2);
+        c.fill();
+      }
+
+      // SRI on 2D hodograph
+      const sfcPx = toHodoPx(sfcSr.u, sfcSr.v);
+      const km3Px = toHodoPx(sr3km.u, sr3km.v);
+      c.beginPath();
+      c.moveTo(smPx.x, smPx.y);
+      c.lineTo(sfcPx.x, sfcPx.y);
+      c.moveTo(smPx.x, smPx.y);
+      c.lineTo(km3Px.x, km3Px.y);
+      c.strokeStyle = '#000000';
+      c.lineWidth = 2.5;
+      c.stroke();
+
+      // Legend inside fixed hodograph panel
+      let legendY = hodographCy + hodographRadius + 6;
+      const legendX = hodographCx - hodographRadius;
+      c.font = '8px Arial';
+      legendEntries.forEach(([label, color]) => {
+        c.fillStyle = color;
+        c.fillRect(legendX, legendY, 10, 4);
+        c.fillStyle = '#AAAAAA';
+        c.fillText(label, legendX + 13, legendY + 4);
+        legendY += 11;
+      });
+
+      // Wind column: barbs + vertical profile trace (hodograph-like, same colors)
+      const profilePoints = [];
+      for (let y = surfaceLevel; y < sim_res_y; y++) {
+        if (wallTextureValues[4 * y + 1] === 0) continue;
+        const scrYpos = map_range(y, sim_res_y, 0, 0, graphBottem);
+        const u = rawVelocityTo_ms(baseTextureValues[4 * y]);
+        const v = rawVelocityTo_ms(baseTextureValues[4 * y + 1]);
+        profilePoints.push({
+          scrY: scrYpos,
+          scrX: windBarbX + u * windBarbScale,
+          altM: (y - surfaceLevel) * dz,
+          u, v,
+        });
+      }
+
+      // Grey wind barbs behind profile trace
+      c.beginPath();
+      for (const pt of profilePoints) {
+        c.moveTo(windBarbX, pt.scrY);
+        c.lineTo(pt.scrX, pt.scrY);
+      }
+      c.lineWidth = 2.0;
       c.strokeStyle = '#666666';
       c.stroke();
+
+      // Vertical profile trace overlaid on wind vectors (storm-relative u offset)
+      if (profilePoints.length >= 2) {
+        for (let i = 1; i < profilePoints.length; i++) {
+          const p0 = profilePoints[i - 1];
+          const p1 = profilePoints[i];
+          const midAlt = (p0.altM + p1.altM) * 0.5;
+          const x0 = windBarbX + (p0.u - stormU) * windBarbScale;
+          const x1 = windBarbX + (p1.u - stormU) * windBarbScale;
+          c.beginPath();
+          c.moveTo(x0, p0.scrY);
+          c.lineTo(x1, p1.scrY);
+          c.strokeStyle = altToHodographColor(midAlt);
+          c.lineWidth = 3;
+          c.stroke();
+        }
+      }
+
+      // SRI on vertical profile trace
+      const y3kmIdx = surfaceLevel + Math.round(3000 / dz);
+      const sfcProfileY = surfaceScrY;
+      const sfcProfileX = windBarbX + (sfcSr.u - stormU) * windBarbScale;
+      const km3ProfileY = map_range(Math.min(y3kmIdx, sim_res_y - 1), sim_res_y, 0, 0, graphBottem);
+      const km3ProfileX = windBarbX + (sr3km.u - stormU) * windBarbScale;
+      const sriVertexX = Math.max(sfcProfileX, km3ProfileX) + 18;
+      const sriVertexY = (sfcProfileY + km3ProfileY) * 0.5;
+      c.beginPath();
+      c.moveTo(sfcProfileX, sfcProfileY);
+      c.lineTo(sriVertexX, sriVertexY);
+      c.lineTo(km3ProfileX, km3ProfileY);
+      c.strokeStyle = '#000000';
+      c.lineWidth = 2.5;
+      c.stroke();
+      c.fillStyle = '#000000';
+      c.font = 'bold 9px Arial';
+      c.fillText('SRI', sriVertexX + 4, sriVertexY - 4);
+
+      // Wind column labels
+      c.fillStyle = '#FFFF00';
+      c.font = 'bold 11px Arial';
+      c.fillText(printAltitude(Math.round(topAltM)), windBarbX - 28, topScrY + 4);
+      c.fillStyle = '#888888';
+      c.font = '9px Arial';
+      c.fillText('Profile', windBarbX - 22, topScrY + 16);
 
 
       // Draw Dew point line
@@ -6368,7 +6548,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
           if (y == simYpos) {
             c.fillText('' + printAltitude(map_range(y - 1, 0, sim_res_y, 0, guiControls.simHeight)), 5, scrYpos + 5);
 
-            c.fillText('' + printVelocity(velocity), this.graphCanvas.width - 113, scrYpos + 20);
+            c.fillText('' + printVelocity(velocity), windBarbX - 45, scrYpos + 20);
 
 
             c.strokeStyle = '#FFF';
@@ -6486,7 +6666,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       drawMarker(muEl, 'EL', '#FFFF00');
 
 
-      c.fillText('' + printDistance(map_range(simXpos, 0, sim_res_y, 0, guiControls.simHeight)), this.graphCanvas.width - 70, 20);
+      c.fillText('' + printDistance(map_range(simXpos, 0, sim_res_y, 0, guiControls.simHeight)), windBarbX - 10, 20);
 
       // Draw buttons
       const btnY = this.graphCanvas.height - 40;
@@ -6494,7 +6674,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       
       if (guiControls.graphFixedPosition) {
         // When frozen: show "Save Sounding" and "Unlock" buttons
-        const saveBtnX = this.graphCanvas.width - 260;
+        const saveBtnX = this.graphCanvas.width - WIND_COL_W - 252;
         const saveBtnWidth = 120;
         
         c.fillStyle = 'rgba(0, 100, 200, 0.7)';
@@ -6512,7 +6692,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         this.saveButtonBounds = {x: saveBtnX, y: btnY, width: saveBtnWidth, height: btnHeight};
         
         // Unlock button
-        const unlockBtnX = this.graphCanvas.width - 130;
+        const unlockBtnX = this.graphCanvas.width - WIND_COL_W - 125;
         const unlockBtnWidth = 110;
         
         c.fillStyle = 'rgba(200, 100, 0, 0.7)';
@@ -6527,7 +6707,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         this.unlockButtonBounds = {x: unlockBtnX, y: btnY, width: unlockBtnWidth, height: btnHeight};
       } else {
         // When not frozen: show "Freeze" button
-        const freezeBtnX = this.graphCanvas.width - 140;
+        const freezeBtnX = this.graphCanvas.width - WIND_COL_W - 128;
         const freezeBtnWidth = 120;
         
         c.fillStyle = 'rgba(0, 100, 200, 0.7)';
@@ -6552,9 +6732,9 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
       function T_to_Xpos(T, y)
       {
-        // temperature to horizontal position
-        var normX = T * 0.0115 + 0.9 - (y / graphBottem) * 0.8; // -30 to 50 (shifted left for readout space)
-        return normX * this.graphCanvas.width;                   // T * 7.5 + 780.0 - 600.0 * (y / graphBottem);
+        // temperature to horizontal position (skew-T: parallel isotherms, skewed with height)
+        var normX = T * 0.0115 + 0.9 - (y / graphBottem) * 0.8;
+        return normX * graphCanvasW;
       }
 
       function drawIsotherms()
@@ -6568,7 +6748,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
           c.lineTo(T_to_Xpos(T, 0), 0);
 
           if (T >= -30.0)
-            c.fillText(printTemp(Math.round(T)), T_to_Xpos(T, graphBottem) - 20, this.graphCanvas.height - 5);
+            c.fillText(printTemp(Math.round(T)), T_to_Xpos(T, graphBottem) - 20, graphCanvasH - 5);
         }
         c.lineWidth = 1.0;
         c.stroke();
@@ -7431,8 +7611,6 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       guiControls.tool = 'TOOL_WALL_SNOW';
     } else if (event.code == 'KeyP') {
       guiControls.tool = 'TOOL_WIND';
-    } else if (event.code == 'KeyK') {
-      guiControls.tool = 'TOOL_PRESSURE';
     } else if (event.code == 'BracketLeft') {
       guiControls.tool = 'TOOL_WALL_URBAN';
     } else if (event.code == 'BracketRight') {
@@ -7546,6 +7724,8 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
   const lightingShader = await loadShader('lightingShader.frag');
 
+  const lightningLocationShader = await loadShader('lightningLocationShader.frag');
+
   const setupShader = await loadShader('setupShader.frag');
 
   const temperatureDisplayShader = await loadShader('temperatureDisplayShader.frag');
@@ -7575,6 +7755,8 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   const boundaryProgram = createProgram(simVertexShader, boundaryShader);
 
   const lightingProgram = createProgram(simVertexShader, lightingShader);
+
+  const lightningLocationProgram = createProgram(simVertexShader, lightningLocationShader);
 
   const setupProgram = createProgram(simVertexShader, setupShader);
 
@@ -7629,10 +7811,10 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   var fluidVertexBufferObject = gl.createBuffer();
   gl.bindBuffer(gl.ARRAY_BUFFER, fluidVertexBufferObject);
   gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(fluidQuadVertices), gl.STATIC_DRAW);
-  var positionAttribLocation = gl.getAttribLocation(pressureProgram,
+  var positionAttribLocation = gl.getAttribLocation(velocityProgram,
                                                     'vertPosition'); // 0 these positions are the same for every program,
   // since they all use the same vertex shader
-  var texCoordAttribLocation = gl.getAttribLocation(pressureProgram, 'vertTexCoord'); // 1
+  var texCoordAttribLocation = gl.getAttribLocation(velocityProgram, 'vertTexCoord'); // 1
   gl.enableVertexAttribArray(positionAttribLocation);
   gl.enableVertexAttribArray(texCoordAttribLocation);
   gl.vertexAttribPointer(
@@ -8015,6 +8197,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   const lightTexture_1 = gl.createTexture();
   const precipitationFeedbackTexture = gl.createTexture();
   const precipitationDepositionTexture = gl.createTexture();
+  const lightningDataTexture = gl.createTexture();
   const radarTexture = gl.createTexture();
 
   // Cache textures for radar display (to freeze all input textures)
@@ -8054,6 +8237,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   lightFrameBuff_0 = gl.createFramebuffer();
   const lightFrameBuff_1 = gl.createFramebuffer();
   const precipitationFeedbackFrameBuff = gl.createFramebuffer();
+  const lightningDataFrameBuff = gl.createFramebuffer();
   const radarFrameBuff = gl.createFramebuffer();
   window.frameBuff_1 = frameBuff_1;
 
@@ -8211,6 +8395,14 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   gl.bindFramebuffer(gl.FRAMEBUFFER, precipitationFeedbackFrameBuff);
   gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, precipitationFeedbackTexture, 0);
   gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT1, gl.TEXTURE_2D, precipitationDepositionTexture, 0);
+
+  gl.bindTexture(gl.TEXTURE_2D, lightningDataTexture);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, 1, 1, 0, gl.RGBA, gl.FLOAT, null);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+
+  gl.bindFramebuffer(gl.FRAMEBUFFER, lightningDataFrameBuff);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, lightningDataTexture, 0);
 
   gl.bindTexture(gl.TEXTURE_2D, radarTexture);
   gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, canvas.width, canvas.height, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
@@ -9478,16 +9670,11 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   gl.uniform1i(gl.getUniformLocation(pressureProgram, 'baseTex'), 0);
   gl.uniform1i(gl.getUniformLocation(pressureProgram, 'wallTex'), 1);
   gl.uniform2f(gl.getUniformLocation(pressureProgram, 'texelSize'), texelSizeX, texelSizeY);
-  gl.uniform1f(gl.getUniformLocation(pressureProgram, 'pressurePersistence'), guiControls.pressurePersistence);
-  gl.uniform1f(gl.getUniformLocation(pressureProgram, 'thermalPressureCoupling'), guiControls.thermalPressureCoupling);
-  gl.uniform1f(gl.getUniformLocation(pressureProgram, 'motionPressureCoupling'), guiControls.motionPressureCoupling);
-  gl.uniform1f(gl.getUniformLocation(pressureProgram, 'forceIntensityMultiplier'), guiControls.forceIntensityMultiplier);
 
   gl.useProgram(velocityProgram);
   gl.uniform1i(gl.getUniformLocation(velocityProgram, 'baseTex'), 0);
   gl.uniform1i(gl.getUniformLocation(velocityProgram, 'wallTex'), 1);
   gl.uniform2f(gl.getUniformLocation(velocityProgram, 'texelSize'), texelSizeX, texelSizeY);
-  gl.uniform1f(gl.getUniformLocation(velocityProgram, 'asymmetricPressure'), guiControls.asymmetricPressure);
 
   // gl.uniform1fv(gl.getUniformLocation(velocityProgram, 'initial_T'), initial_T);
   gl.uniform4fv(gl.getUniformLocation(velocityProgram, 'initial_Tv'), initial_T);
@@ -9648,9 +9835,15 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   gl.uniform1f(realDisp_cloudLightningThreshold_loc, 0.5);
   const realDisp_iterNum_loc = gl.getUniformLocation(realisticDisplayProgram, 'iterNum');
 
+  gl.useProgram(lightningLocationProgram);
+  gl.uniform1i(gl.getUniformLocation(lightningLocationProgram, 'precipFeedbackTex'), 0);
+  gl.uniform2f(gl.getUniformLocation(lightningLocationProgram, 'resolution'), sim_res_x, sim_res_y);
+  gl.uniform2f(gl.getUniformLocation(lightningLocationProgram, 'texelSize'), texelSizeX, texelSizeY);
+
   gl.useProgram(precipitationProgram);
   gl.uniform1i(gl.getUniformLocation(precipitationProgram, 'baseTex'), 0);
   gl.uniform1i(gl.getUniformLocation(precipitationProgram, 'waterTex'), 1);
+  gl.uniform1i(gl.getUniformLocation(precipitationProgram, 'lightningDataTex'), 2);
   gl.uniform2f(gl.getUniformLocation(precipitationProgram, 'resolution'), sim_res_x, sim_res_y);
   gl.uniform2f(gl.getUniformLocation(precipitationProgram, 'texelSize'), texelSizeX, texelSizeY);
   gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'dryLapse'), dryLapse);
@@ -9771,6 +9964,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   const uloc_real_cloudGroundLightningFrequency = gl.getUniformLocation(realisticDisplayProgram, 'cloudGroundLightningFrequency');
   const uloc_real_lightningRepeat       = gl.getUniformLocation(realisticDisplayProgram, 'lightningRepeat');
   const uloc_real_lightningCrossTrigger = gl.getUniformLocation(realisticDisplayProgram, 'lightningCrossTrigger');
+  const uloc_real_invertSun             = gl.getUniformLocation(realisticDisplayProgram, 'invertSun');
 
   // precipDisplay per-frame
   const uloc_precipDisp_aspectRatios   = gl.getUniformLocation(precipDisplayProgram, 'aspectRatios');
@@ -10038,8 +10232,6 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
           inputType = 3;
         else if (guiControls.tool == 'TOOL_WIND')
           inputType = 4;
-        else if (guiControls.tool == 'TOOL_PRESSURE')
-          inputType = 5;
         else if (guiControls.tool == 'TOOL_WALL')
           inputType = 10;
         else if (guiControls.tool == 'TOOL_WALL_LAND')
@@ -10220,6 +10412,16 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
               gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_1);
               gl.drawBuffers([ gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1, gl.COLOR_ATTACHMENT2 ]);
               gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+
+              // calc and apply pressure (divergence correction)
+              gl.useProgram(pressureProgram);
+              gl.activeTexture(gl.TEXTURE0);
+              gl.bindTexture(gl.TEXTURE_2D, baseTexture_1);
+              gl.activeTexture(gl.TEXTURE1);
+              gl.bindTexture(gl.TEXTURE_2D, wallTexture_1);
+              gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_0);
+              gl.drawBuffers([ gl.COLOR_ATTACHMENT0, gl.NONE, gl.COLOR_ATTACHMENT2 ]);
+              gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
             }
 
             // capture current temperature state for the temperature-change display
@@ -10231,22 +10433,6 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
               gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, sim_res_x, sim_res_y);
               gl.bindFramebuffer(gl.READ_FRAMEBUFFER, null);
               temperatureChangeHistoryIndex = (temperatureChangeHistoryIndex + 1) % temperatureChangeHistoryTextures.length;
-            }
-
-            // calc and apply pressure
-            if (!guiControls.skipPressure) {
-              gl.useProgram(pressureProgram);
-              gl.uniform1f(gl.getUniformLocation(pressureProgram, 'pressurePersistence'), guiControls.pressurePersistence);
-              gl.uniform1f(gl.getUniformLocation(pressureProgram, 'thermalPressureCoupling'), guiControls.thermalPressureCoupling);
-              gl.uniform1f(gl.getUniformLocation(pressureProgram, 'motionPressureCoupling'), guiControls.motionPressureCoupling);
-              gl.uniform1f(gl.getUniformLocation(pressureProgram, 'forceIntensityMultiplier'), guiControls.forceIntensityMultiplier);
-              gl.activeTexture(gl.TEXTURE0);
-              gl.bindTexture(gl.TEXTURE_2D, baseTexture_1);
-              gl.activeTexture(gl.TEXTURE1);
-              gl.bindTexture(gl.TEXTURE_2D, wallTexture_1);
-              gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_0);
-              gl.drawBuffers([ gl.COLOR_ATTACHMENT0, gl.NONE, gl.COLOR_ATTACHMENT2 ]);
-              gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
             }
 
             // calc light
@@ -10295,6 +10481,8 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
               gl.bindTexture(gl.TEXTURE_2D, baseTexture_1);
               gl.activeTexture(gl.TEXTURE1);
               gl.bindTexture(gl.TEXTURE_2D, waterTexture_1);
+              gl.activeTexture(gl.TEXTURE2);
+              gl.bindTexture(gl.TEXTURE_2D, lightningDataTexture);
 
               gl.bindVertexArray(srcVAO);
               gl.bindTransformFeedback(gl.TRANSFORM_FEEDBACK, destTF);
@@ -10320,6 +10508,13 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
               gl.disable(gl.BLEND);
               gl.bindVertexArray(fluidVao); // set screenfilling rect again
 
+              gl.useProgram(lightningLocationProgram);
+              gl.uniform1f(gl.getUniformLocation(lightningLocationProgram, 'iterNum'), iterNum);
+              gl.activeTexture(gl.TEXTURE0);
+              gl.bindTexture(gl.TEXTURE_2D, precipitationFeedbackTexture);
+              gl.bindFramebuffer(gl.FRAMEBUFFER, lightningDataFrameBuff);
+              gl.drawBuffers([ gl.COLOR_ATTACHMENT0 ]);
+              gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
 
             }
 
@@ -10560,6 +10755,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       gl.uniform1f(uloc_real_cloudGroundLightningFrequency, guiControls.cloudGroundLightningFrequency);
       gl.uniform1i(uloc_real_lightningRepeat,       guiControls.lightningRepeat       ? 1 : 0);
       gl.uniform1i(uloc_real_lightningCrossTrigger, guiControls.lightningCrossTrigger ? 1 : 0);
+      gl.uniform1i(uloc_real_invertSun,             guiControls.invertSun             ? 1 : 0);
       gl.uniform1f(uloc_real_iterNum, iterNum);
 
       gl.activeTexture(gl.TEXTURE7);

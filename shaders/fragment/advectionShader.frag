@@ -24,7 +24,7 @@ uniform vec4 userInputValues; // xpos    Ypos     intensity     Brush Size
 #define BRUSH_SIZE 3
 
 uniform vec2 userInputMove;  // moveX  moveY
-uniform int userInputType;   // 0 = nothing     1 = temp ...
+uniform int userInputType;   // 0 = nothing 	1 = temp ...
 
 uniform vec4 airplaneValues; // xpos   Ypos   throttle   fire
 
@@ -110,6 +110,7 @@ void main()
 
     realTemp = potentialToRealT(base[TEMPERATURE]);
 
+
     //  float excessWater = max(water[TOTAL] - maxWater(realTemp), 0.0); // calculate the amount of extra water beyond 100% rel hum, including both vapor and cloud water
     float excessWater = water[TOTAL] - maxWater(realTemp);
 
@@ -120,7 +121,7 @@ void main()
     if (overSaturation < 0.) {                          // evaporation
       condensation = overSaturation * 0.20;             // evaporation is rapid
     } else {                                            // condensation
-      condensation = overSaturation * condensationRate; // 0.002 0.25 amount of the oversaturated water vapor that slowly condenses
+      condensation = overSaturation * condensationRate; // 0.002 0.25 amount of the oversaturated water vapor that slowly condences
     }
     condensation = max(condensation, -water[CLOUD]);    // Prevent cloudwater from going negative
 
@@ -129,7 +130,8 @@ void main()
     realTemp += dT;
     water[CLOUD] += condensation;
 
-    // float newCloudWater = water[CLOUD] + condensation;                             // slowly condense the oversaturated vapor
+
+    // float newCloudWater = water[CLOUD] + condensation;                             // slowly condence the oversaturated vapor
 
     // float dWt = max(water[TOTAL] - maxWater(realTemp + dT), 0.0) - overSaturation; // how much that temperature change would change
     //  the amount of liquid water
@@ -142,7 +144,8 @@ void main()
 
     // float tempC = KtoC(realTemp);
 
-    // water[CLOUD] = max(water[TOTAL] - maxWater(realTemp), 0.0); // recalculate cloud water
+
+    //   water[CLOUD] = max(water[TOTAL] - maxWater(realTemp), 0.0); // recalculate cloud water
 
     // float relHum = relativeHumd(realTemp, water[TOTAL]); // not used
 
@@ -181,7 +184,7 @@ void main()
     // drying !
 
 
-    water[TOTAL] = max(water[TOTAL], 0.0); // prevent water from going negative (final clamp)
+    water[TOTAL] = max(water[TOTAL], 0.0); // prevent water from going negative
 
   } else {                                 // this is wall
 
@@ -259,24 +262,20 @@ void main()
         base[3] = clamp(base[TEMPERATURE], CtoK(0.0), CtoK(maxWaterTemp)); // limit water temperature range
     } else if (userInputType == 2) {                                       // water
 
-      float cloudWaterChange = userInputValues[BRUSH_INTENSITY]; // positive intensity
 
+      //     if ()
+
+      float cloudWaterChange = userInputValues[BRUSH_INTENSITY]; // positive intensity
+      // float vaporChange = max(userInputValues[BRUSH_INTENSITY]);
+
+
+      if (water[CLOUD] > 0.0) {                // add as liquid
+        water[CLOUD] += cloudWaterChange;
+        water[CLOUD] = max(water[CLOUD], 0.0); // prevent negative cloudwater
+      }                                        // else {                                 // add as gas
       water[TOTAL] += cloudWaterChange;
       water[TOTAL] = max(water[TOTAL], 0.0);
-
-      if (cloudWaterChange > 0.0) {
-        // Pre-apply the latent heat COST of adding vapour.
-        // When this vapour later condenses it releases an equal amount of heat,
-        // so the net temperature effect of painting in vapour is near zero.
-        base[TEMPERATURE] -= cloudWaterChange * evapHeat;
-        realTemp         -= cloudWaterChange * evapHeat;
-      } else {
-        // When removing vapour, also pull cloud water down so it never
-        // exceeds total water.  Without this the evaporation latent-heat
-        // path fires every iteration and causes a spurious temperature drop.
-        water[CLOUD] = min(water[CLOUD], water[TOTAL]);
-        water[CLOUD] = max(water[CLOUD], 0.0);
-      }
+      // }
 
     } else if (userInputType == 3 && wall[DISTANCE] != 0) { // smoke, only apply if not wall
       water[SMOKE] += userInputValues[BRUSH_INTENSITY];
@@ -320,12 +319,6 @@ void main()
             wall[TYPE] = WALLTYPE_URBAN;
           }
           break;
-        case 17:                                               // set suburban
-          if (wall[DISTANCE] == 0 && (wall[TYPE] == WALLTYPE_LAND || wall[TYPE] == WALLTYPE_RUNWAY || wall[TYPE] == WALLTYPE_INDUSTRIAL) &&
-              texture(wallTex, texCoordX0Yp)[DISTANCE] != 0) {
-            wall[TYPE] = WALLTYPE_SUBURBAN;
-          }
-          break;
         case 15:                                               // set runway
           if (wall[DISTANCE] == 0 && (wall[TYPE] == WALLTYPE_LAND || wall[TYPE] == WALLTYPE_URBAN || wall[TYPE] == WALLTYPE_INDUSTRIAL) &&
               texture(wallTex, texCoordX0Yp)[DISTANCE] != 0) { // if land wall and no wall above
@@ -336,6 +329,12 @@ void main()
           if (wall[DISTANCE] == 0 && (wall[TYPE] == WALLTYPE_LAND || wall[TYPE] == WALLTYPE_URBAN || wall[TYPE] == WALLTYPE_RUNWAY) &&
               texture(wallTex, texCoordX0Yp)[DISTANCE] != 0) { // if land wall and no wall above
             wall[TYPE] = WALLTYPE_INDUSTRIAL;
+          }
+          break;
+        case 17:                                               // set suburban
+          if (wall[DISTANCE] == 0 && (wall[TYPE] == WALLTYPE_LAND || wall[TYPE] == WALLTYPE_RUNWAY || wall[TYPE] == WALLTYPE_INDUSTRIAL) &&
+              texture(wallTex, texCoordX0Yp)[DISTANCE] != 0) {
+            wall[TYPE] = WALLTYPE_SUBURBAN;
           }
           break;
 
@@ -379,14 +378,14 @@ void main()
           } else if (userInputType == 14) {
             if (wall[TYPE] == WALLTYPE_URBAN) // remove buildings
               wall[TYPE] = WALLTYPE_LAND;
-          } else if (userInputType == 17) {
-            if (wall[TYPE] == WALLTYPE_SUBURBAN) // remove suburban buildings
-              wall[TYPE] = WALLTYPE_LAND;
           } else if (userInputType == 15) {
             if (wall[TYPE] == WALLTYPE_RUNWAY) // remove runway
               wall[TYPE] = WALLTYPE_LAND;
           } else if (userInputType == 16) {
             if (wall[TYPE] == WALLTYPE_INDUSTRIAL) // remove industry
+              wall[TYPE] = WALLTYPE_LAND;
+          } else if (userInputType == 17) {
+            if (wall[TYPE] == WALLTYPE_SUBURBAN) // remove suburban
               wall[TYPE] = WALLTYPE_LAND;
           } else if (userInputType == 20) {        // remove moisture
             water[SOIL_MOISTURE] += userInputValues[BRUSH_INTENSITY] * 10.0;
