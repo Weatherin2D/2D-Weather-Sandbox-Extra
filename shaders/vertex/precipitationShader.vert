@@ -22,6 +22,7 @@ float realTemp;
 
 uniform sampler2D baseTex;
 uniform sampler2D waterTex;
+uniform sampler2D lightningDataTex;
 
 uniform vec2 resolution;
 uniform vec2 texelSize;
@@ -54,6 +55,7 @@ float newDensity;
 
 bool isActive = true;
 bool spawned = false; // spawned in this iteration
+bool lightningSpawned = false;
 
 void disableDroplet()
 {
@@ -66,10 +68,6 @@ void main()
   newPos = dropPosition;
   newMass = mass;         // amount of water and ice carried
   newDensity = density;   // determines fall speed
-
-  // CRITICAL: Initialize feedback to zero to prevent accumulation of garbage values
-  feedback = vec4(0.0);
-  deposition = vec2(0.0);
 
   if (mass[WATER] < 0.) { // inactive
                           /*
@@ -99,10 +97,10 @@ void main()
       //  treshHold = max(map_range(realTemp, CtoK(0.0), CtoK(-30.0), subZeroThreshold, initalMass), initalMass);
       threshold = subZeroThreshold;
 
-    if (water[CLOUD] > threshold && base[TEMPERATURE] < 500.) {                                                                     // if cloudwater above threshold and not wall
-                                                                                                                                    // float spawnChance = (water[1] - threshold) * 1000.0 / inactiveDroplets;
-                                                                                                                                    // if (spawnChance > rand2d(mass.xy)) {
-                                                                                                                                    //  float spawnChance = (water[CLOUD] - threshold) / inactiveDroplets * resolution.x * resolution.y * spawnChanceMult;
+    if (water[CLOUD] > threshold && base[TEMPERATURE] < 500.) { // if cloudwater above threshold and not wall
+                                                                // float spawnChance = (water[1] - threshold) * 1000.0 / inactiveDroplets;
+                                                                // if (spawnChance > rand2d(mass.xy)) {
+                                                                //  float spawnChance = (water[CLOUD] - threshold) / inactiveDroplets * resolution.x * resolution.y * spawnChanceMult;
 
       float spawnChance = ((water[CLOUD] - threshold) / (inactiveDroplets + 10.0)) * resolution.x * resolution.y * spawnChanceMult; // 20.0  50.0
 
@@ -119,6 +117,28 @@ void main()
           newMass[ICE] = initalMass;                                     // snow
           feedback[HEAT] += newMass[ICE] * meltingHeat;                  // add heat of freezing
           newDensity = snowDensity;
+
+          vec4 lightningData = texture(lightningDataTex, vec2(0.5)); // data from last lightning bolt
+
+          const float lightningCloudDensityThreshold = 2.5;          // 3.0
+          const float lightningChanceMultiplier = 0.0033;            // 0.0011
+
+          float cloudPlusPrecipDensity = water[CLOUD] + water[PRECIPITATION];
+
+          float lightningSpawnChance = max((cloudPlusPrecipDensity - lightningCloudDensityThreshold) * lightningChanceMultiplier, 0.);
+
+          const float minIterationsSinceLastLightningBolt = 30.; // 50.
+
+          if (lightningData[START_ITERNUM] < iterNum - minIterationsSinceLastLightningBolt &&
+              random2d(vec2(base[TEMPERATURE] * 0.2324, water[TOTAL] * 7.7)) < lightningSpawnChance) { // Spawn lightning
+            lightningSpawned = true;
+            isActive = false;
+            gl_PointSize = 1.0;
+            feedback.xy = texCoord;
+            feedback[START_ITERNUM] = iterNum;
+            feedback[INTENSITY] = clamp(cloudPlusPrecipDensity / 10.0 + (random2d(texCoord) - 0.5), 0.01, 4.0);
+            gl_Position = vec4(vec2(-1. + texelSize.x * 3., -1. + texelSize.y), 0.0, 1.0); // render to bottem left corner (1, 0)
+          }
         } else {
           newMass[WATER] = initalMass; // rain
           newMass[ICE] = 0.0;
@@ -129,8 +149,10 @@ void main()
     }
 
     if (spawned) {
-      gl_PointSize = 1.0;
-      gl_Position = vec4(newPos, 0.0, 1.0);
+      if (!lightningSpawned) {
+        gl_PointSize = 1.0;
+        gl_Position = vec4(newPos, 0.0, 1.0);
+      }
     } else { // still inactive
       isActive = false;
       gl_PointSize = 1.0;
@@ -148,6 +170,8 @@ void main()
       base = texture(baseTex, texCoord);
       realTemp = potentialToRealT(base[TEMPERATURE]); // in Kelvin
     }
+
+    float relativeHumidity = relativeHumd(realTemp, water[TOTAL]);
 
     float totalMass = newMass[WATER] + newMass[ICE];
 
@@ -173,12 +197,15 @@ void main()
       // float surfaceArea = sqrt(totalMass); // As if droplet is a circle (2D)
       float surfaceArea = pow(totalMass, 1. / 3.); // As if droplet is a sphere (3D)
 
-                                                   // float growthRate = clamp(map_range(realTemp, CtoK(0.0), CtoK(-30.0), growthRate0C, growthRate_30C), growthRate0C, growthRate_30C); // the colder it gets the faster ice forms
+      // float growthRate = clamp(map_range(realTemp, CtoK(0.0), CtoK(-30.0), growthRate0C, growthRate_30C), growthRate0C, growthRate_30C); // the colder it gets the faster ice forms
       float growthRate = max(map_range(realTemp, CtoK(0.0), CtoK(-30.0), growthRate0C, growthRate_30C), growthRate0C); // the colder it gets the faster ice forms
 
       // growthRate = 0.0;                                                                                                                  // for debug
 
       float growth = water[CLOUD] * growthRate * surfaceArea;
+
+      growth += max(relativeHumidity - 1.0, 0.) * max(-30.0 - KtoC(realTemp), 0.) * 0.0000; // increase growthrate below -30 C and above 100% relative humidity
+
 
       // Hail growth enhancement:
       if (realTemp < CtoK(0.0) && water[CLOUD] > 0.0 && density == 1.0) { // below freezing
@@ -227,8 +254,8 @@ void main()
 
       feedback[VAPOR] += evap;                              // added to water vapor in air
       feedback[VAPOR] += subli;
-      // feedback[HEAT] -= evap * evapHeat;                    // heat cost extracted from air (removed)
-      // feedback[HEAT] -= subli * evapHeat;                   // heat cost extracted from air (removed)
+      feedback[HEAT] -= evap * evapHeat;                    // heat cost extracted from air
+      feedback[HEAT] -= subli * evapHeat;
       feedback[HEAT] -= subli * meltingHeat;
 
       // Update position
@@ -247,9 +274,7 @@ void main()
 
       newPos.x = mod(newPos.x + 1., 2.) - 1.; // wrap horizontal position around map edges
 
-      float sizeFactor = pow(totalMass, 1.0 / 3.0);
-      float massScore = totalMass * sizeFactor; // weight mass by droplet size
-      feedback[MASS] = massScore;
+      feedback[MASS] = totalMass;
 
     }               // update
 
