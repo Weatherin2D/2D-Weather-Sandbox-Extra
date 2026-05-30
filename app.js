@@ -512,6 +512,7 @@ const guiControls_default = {
   worldRadarSensitivity : 0.65,
   radarOverlay : false,
   radarLightningIcons : true,
+  radarLightningIconDuration : 5,
   dbzOpacityEnabled : false,
   dbzOpacityStrength : 0.9,
   riskUpdateFrequency : 30,
@@ -5290,6 +5291,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     radar_folder.add(guiControls, 'radarUpdateFrequency', 1, 300, 1).name('Update Frequency (iterations)').listen();
     radar_folder.add(guiControls, 'radarOverlay').name('Overlay on Realistic View').listen();
     radar_folder.add(guiControls, 'radarLightningIcons').name('Lightning Strike Icons').listen();
+    radar_folder.add(guiControls, 'radarLightningIconDuration', 0.5, 30, 0.5).name('Lightning Icon Duration (s)').listen();
     radar_folder.add(guiControls, 'dbzOpacityEnabled').name('dBZ-Based Opacity').listen();
     radar_folder.add(guiControls, 'dbzOpacityStrength', 0.0, 10.0, 0.05).name('dBZ Opacity Strength').listen();
     radar_folder.add(guiControls, 'worldRadarResolution', 0.3, 100.0, 0.1).name('World Radar Resolution').listen();
@@ -10482,7 +10484,10 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     gl.uniform1fv(uloc_comp_radarSensitivities, sensitivities);
   }
 
-  const RADAR_LIGHTNING_ICON_MS = 5000;
+  function getRadarLightningIconDurationMs()
+  {
+    return Math.max(500, guiControls.radarLightningIconDuration * 1000);
+  }
 
   function shaderRand(n)
   {
@@ -10969,7 +10974,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     radarLightningStrikes.push({
       simX,
       simY,
-      expireAt: performance.now() + RADAR_LIGHTNING_ICON_MS
+      expireAt: performance.now() + getRadarLightningIconDurationMs()
     });
     if (registeredLightningEvents.size > 500)
       registeredLightningEvents.clear();
@@ -11059,7 +11064,8 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       const sy = simToScreenY(strike.simY);
       if (sx < -30 || sx > canvas.width + 30 || sy < -30 || sy > canvas.height + 30)
         continue;
-      const fade = Math.min(1, (strike.expireAt - now) / 800);
+      const fadeMs = Math.max(200, getRadarLightningIconDurationMs() * 0.16);
+      const fade = Math.min(1, (strike.expireAt - now) / fadeMs);
       drawRadarLightningIcon(ctx, sx, sy, 16, fade);
     }
   }
