@@ -483,6 +483,10 @@ const guiControls_default = {
   cloudLightningIntensity : 2.0,
   cloudLightningThreshold : 0.3,
   cloudLightningFrequency : 0.8,
+  enableStrobeLightning : true,
+  strobeLightningIntensity : 2.0,
+  strobeLightningThreshold : 0.3,
+  strobeLightningFrequency : 0.8,
   enableCloudGroundLightning : true,  cloudGroundLightningIntensity : 2.0,
   cloudGroundLightningThreshold : 0.3,
   cloudGroundLightningFrequency : 0.8,
@@ -504,7 +508,10 @@ const guiControls_default = {
   temperatureChangeIterations : 5,
   radarOpacity : 0.8,
   radarUpdateFrequency : 60,
+  worldRadarResolution : 20.0,
+  worldRadarSensitivity : 0.65,
   radarOverlay : false,
+  radarLightningIcons : true,
   dbzOpacityEnabled : false,
   dbzOpacityStrength : 0.9,
   riskUpdateFrequency : 30,
@@ -527,11 +534,14 @@ const guiControls_default = {
   skipLightingCalculation : false,
   reducedWeatherStationUpdates : false,
   skipAdvection : false,
+  skipChargeCalculation : false,
   // Menu styling
   menuBackgroundColor : '#222222',
   menuTextColor : '#ffffff',
   menuAccentColor : '#2196F3',
   menuWidth : 400,
+  hodograph2DNodes : 30,
+  hodographProfileNodes : 30,
 };
 
 var horizontalDisplayMult = 3.0; // 3.0 to cover srceen while zoomed out
@@ -548,6 +558,27 @@ var riskData = []; // stores {sx, sfcY, color} computed on frequency interval
 
 var radarOverlayCanvas = null;
 var radarImageData = null;
+var radarLightningCanvas = null;
+var radarLightningStrikes = [];
+var registeredLightningEvents = new Set();
+var registeredThunderEvents = new Set();
+var proceduralLightningState = {
+  eventAge: -1, eventId: -1, builtEventId: -1, channelId: null,
+  trackedEventId: -1, trackedChannel: null, strikes: []
+};
+var chargeDischargesThisIter = [];
+var lightningFieldCache = null;
+var lightningFieldCacheFrame = -1;
+var lightningSummaryTexture = null;
+var lightningSummaryFrameBuff = null;
+var lightningSummaryBuffer = null;
+var lightningCacheW = 0;
+var lightningCacheH = 0;
+const LIGHTNING_CACHE_SCALE = 4;
+const LIGHTNING_FLASH_DURATION = 11;
+var particleLightningReadBuffer = new Float32Array(4);
+var procLightningPosArr = new Float32Array(16);
+var procLightningMetaArr = new Float32Array(16);
 
 var nukeOverlayCanvas = null;
 var nukeOverlayCtx = null;
@@ -576,8 +607,7 @@ var frameNum = 0;
 var lastFrameNum = 0;
 
 var iterNum = 0;
-var lastRadarOverlayIterNum = -1;
-var lastRadarDisplayIterNum = -1;
+var lastRadarCacheIterNum = -1;
 
 // global framebuffers for measurements
 var frameBuff_0;
@@ -1502,7 +1532,7 @@ class Radar
   #product = 'reflectivity';
   #range = 1000;
   #resolution = 100.0;
-  #sensitivity = 1.0; // 0.0 to 10.0 (0% to 1000%)
+  #sensitivity = 0.001; // 0.0 to 10.0 (0% to 1000%)
   #updateFrequency = 60; // iterations between updates
   #lastUpdateIteration = -1; // last iteration when radar was updated
   #cacheFBO = null; // framebuffer to cache radar display
@@ -3172,17 +3202,24 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
       // console.log(camDistFromSim, camHorDistFromStrike, distance, leftRightBalance);
 
-      // Speed of sound ≈ 343 m/s
+      // Speed of sound ≈ 343 m/s — thunder follows the flash, delayed by distance
       let soundDelay = distance / 343;                                            // in seconds
+      soundDelay = Math.max(soundDelay, 0.12); // always slightly after the visible flash
 
       let simTimeMult = timePerIteration * guiControls.IterPerFrame * FPS * 3600; // how much faster sime time is than real time
 
       soundDelay /= simTimeMult;
 
-      let soundArray = intensity > 1.0 ? this.thunderCGSounds : this.thunderCCSounds;
-      let randomThunderSound = soundArray[Math.floor(Math.random() * soundArray.length)];
       if (!guiControls.soundThunderEnabled) return;
-      this.playOnce(randomThunderSound, intensity / (distance * 0.001) * guiControls.soundVolumeThunder, leftRightBalance, soundDelay);
+
+      let soundArray = intensity > 0.75 ? this.thunderCGSounds : this.thunderCCSounds;
+      if (!soundArray || soundArray.length === 0) return;
+      let randomThunderSound = soundArray[Math.floor(Math.random() * soundArray.length)];
+      if (!randomThunderSound) return;
+      let volume = intensity * 0.16 * guiControls.soundVolumeThunder;
+      volume /= (1.0 + distance * 0.004);
+      volume = Math.min(volume, 0.55);
+      this.playOnce(randomThunderSound, volume, leftRightBalance, soundDelay);
     }
 
     playOnce(buffer, volume = 1, leftRightBalance = 0, delay = 0)
@@ -5157,7 +5194,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'meltingHeat'), guiControls.meltingHeat);
       })
       .name('Melting Heat');
-    water_folder.add(guiControls, 'condensationRate', 0.001, 0.020, 0.001)
+    water_folder.add(guiControls, 'condensationRate', 0.00001, 0.020, 0.001)
       .onChange(function() {
         gl.useProgram(advectionProgram);
         gl.uniform1f(gl.getUniformLocation(advectionProgram, 'condensationRate'), guiControls.condensationRate);
@@ -5252,8 +5289,19 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     radar_folder.add(guiControls, 'radarOpacity', 0.0, 1.0, 0.05).name('Radar Imagery Opacity').listen();
     radar_folder.add(guiControls, 'radarUpdateFrequency', 1, 300, 1).name('Update Frequency (iterations)').listen();
     radar_folder.add(guiControls, 'radarOverlay').name('Overlay on Realistic View').listen();
+    radar_folder.add(guiControls, 'radarLightningIcons').name('Lightning Strike Icons').listen();
     radar_folder.add(guiControls, 'dbzOpacityEnabled').name('dBZ-Based Opacity').listen();
     radar_folder.add(guiControls, 'dbzOpacityStrength', 0.0, 10.0, 0.05).name('dBZ Opacity Strength').listen();
+    radar_folder.add(guiControls, 'worldRadarResolution', 0.3, 100.0, 0.1).name('World Radar Resolution').listen();
+    radar_folder.add(guiControls, 'worldRadarSensitivity', 0.0, 10.0, 0.01).name('World Radar Sensitivity').listen();
+
+    var lightning_folder = datGui.addFolder('Lightning');
+    lightning_folder.add(guiControls, 'cloudLightningFrequency', 0.0, 100.0, 0.05).name('Cloud-Cloud Frequency');
+    lightning_folder.add(guiControls, 'enableStrobeLightning').name('Strobe Lightning');
+    lightning_folder.add(guiControls, 'strobeLightningIntensity', 0.0, 10.0, 0.1).name('Strobe Intensity');
+    lightning_folder.add(guiControls, 'strobeLightningThreshold', 0.0, 1.0, 0.05).name('Strobe Threshold');
+    lightning_folder.add(guiControls, 'strobeLightningFrequency', 0.0, 100.0, 0.05).name('Strobe Frequency');
+    lightning_folder.add(guiControls, 'cloudGroundLightningFrequency', 0.0, 100.0, 0.05).name('Cloud-Ground Frequency');
 
     var display_folder = datGui.addFolder('Display');
 
@@ -5274,11 +5322,14 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         'Snow Deposition' : 'DISP_PRECIPFEEDBACK_SNOW',
         'Precipitation/Soil Moisture' : 'DISP_SOIL_MOISTURE',
         'Curl' : 'DISP_CURL',
+        'CAPE' : 'DISP_CAPE',
         'Relative Humidity / Cloud Density' : 'DISP_HUMD',
         'Air Quality' : 'DISP_AIRQUALITY',
         'Temperature Change' : 'DISP_TEMPERATURE_CHANGE',
         'Charge' : 'DISP_CHARGE',
         'Radar Imagery' : 'DISP_RADAR',
+        'Composite Radar' : 'DISP_RADAR_COMPOSITE',
+        'World Radar' : 'DISP_RADAR_WORLD',
         'Convective Risk' : 'DISP_RISK'
       })
       .name('Display Mode')
@@ -5510,6 +5561,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     advanced_folder.add(guiControls, 'simulationQuality', 0.1, 25.0, 0.1).name('Sim Quality (High=Fast)');
     advanced_folder.add(guiControls, 'skipLightingCalculation').name('Skip Lighting (Major boost)');
     advanced_folder.add(guiControls, 'skipAdvection').name('Skip Advection (No fluid)');
+    advanced_folder.add(guiControls, 'skipChargeCalculation').name('Skip Charge (Faster)');
     advanced_folder.add(guiControls, 'reducedWeatherStationUpdates').name('Reduce Station Updates');
     advanced_folder.add(guiControls, 'reducedPrecipitation')
       .onChange(function() {
@@ -5525,6 +5577,8 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     datGui.add(guiControls, 'paused').onChange(handlePause).name('Paused').listen();
     datGui.add(guiControls, 'download').name('Save Simulation to File');
     datGui.add(guiControls, 'openColorScaleEditor').name('Open Color Scale Editor');
+    datGui.add(guiControls, 'hodograph2DNodes', 5, 100, 1).name('2D Hodograph Nodes');
+    datGui.add(guiControls, 'hodographProfileNodes', 5, 100, 1).name('Profile Hodograph Nodes');
 
     datGui.width = 400;
   }
@@ -5573,6 +5627,8 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     graphCanvas : null,
     ctx : null,
     saveButtonBounds : null,
+    _lastGraphX : null,
+    _windDisplaySmooth : null,
     init : function() {
       this.graphCanvas = document.getElementById('graphCanvas');
       this.graphCanvas.height = window.innerHeight;
@@ -5731,12 +5787,12 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
       const graphBottem = this.graphCanvas.height - 40; // in pixels
 
-      // Sounding layout: full-width skew-T with right-side overlays
-      const WIND_COL_W = 52;
-      const windBarbX = this.graphCanvas.width - 14;
+      // Sounding layout: full-width skew-T with right-side overlays (wind column sized after profile is built)
       const windBarbScale = 2.5;
       const infoBoxWidth = 320;
-      const infoBoxX = this.graphCanvas.width - infoBoxWidth - WIND_COL_W - 12;
+      let WIND_COL_W = 70;
+      let windBarbX = this.graphCanvas.width - 30;
+      let infoBoxX = this.graphCanvas.width - infoBoxWidth - WIND_COL_W - 12;
       const graphCanvasW = this.graphCanvas.width;
       const graphCanvasH = this.graphCanvas.height;
 
@@ -6061,6 +6117,79 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       const sfcSr = windAtAltM(0);
       const sr3km = windAtAltM(3000);
 
+      function subsampleWindNodesByAlt(points, nodeCount) {
+        if (points.length <= nodeCount || nodeCount < 2) return points.slice();
+        const minAlt = points[0].altM;
+        const maxAlt = points[points.length - 1].altM;
+        if (maxAlt <= minAlt) return [points[0]];
+        const out = [points[0]];
+        let j = 0;
+        for (let i = 1; i < nodeCount - 1; i++) {
+          const targetAlt = minAlt + (maxAlt - minAlt) * i / (nodeCount - 1);
+          while (j + 1 < points.length && points[j + 1].altM < targetAlt) j++;
+          const p0 = points[j];
+          const p1 = points[Math.min(j + 1, points.length - 1)];
+          const t = p1.altM > p0.altM ? (targetAlt - p0.altM) / (p1.altM - p0.altM) : 0;
+          const pt = {
+            altM: targetAlt,
+            u: p0.u + (p1.u - p0.u) * t,
+            v: p0.v + (p1.v - p0.v) * t,
+          };
+          if ('scrY' in p0 && 'scrY' in p1) {
+            pt.scrY = p0.scrY + (p1.scrY - p0.scrY) * t;
+          }
+          out.push(pt);
+        }
+        out.push(points[points.length - 1]);
+        return out;
+      }
+
+      // Size wind column from profile extent so barbs/profile do not clip at canvas edge
+      {
+        let maxWindRight = 0;
+        let maxWindLeft = 0;
+        for (const p of hodoPoints) {
+          maxWindRight = Math.max(maxWindRight, p.u, p.u - stormU);
+          maxWindLeft = Math.max(maxWindLeft, -p.u, -(p.u - stormU));
+        }
+        maxWindRight = Math.max(maxWindRight, sfcSr.u, sr3km.u, sfcSr.u - stormU, sr3km.u - stormU, 0);
+        maxWindLeft = Math.max(maxWindLeft, -sfcSr.u, -sr3km.u, -(sfcSr.u - stormU), -(sr3km.u - stormU), 0);
+        const windColRightPad = 48;
+        const windColLeftPad = 14;
+        const targetRightExtent = maxWindRight * windBarbScale + windColRightPad;
+        const targetLeftExtent = maxWindLeft * windBarbScale + windColLeftPad;
+
+        if (this._lastGraphX !== simXpos) {
+          this._windDisplaySmooth = null;
+          this._lastGraphX = simXpos;
+        }
+        if (!this._windDisplaySmooth) {
+          this._windDisplaySmooth = {
+            rightExtent: targetRightExtent,
+            leftExtent: targetLeftExtent,
+            stormU: stormU,
+            stormV: stormV,
+            hodoMaxWind: 15,
+          };
+        }
+        const smooth = 0.12;
+        const ws = this._windDisplaySmooth;
+        ws.rightExtent += (targetRightExtent - ws.rightExtent) * smooth;
+        ws.leftExtent += (targetLeftExtent - ws.leftExtent) * smooth;
+        ws.stormU += (stormU - ws.stormU) * smooth;
+        ws.stormV += (stormV - ws.stormV) * smooth;
+
+        WIND_COL_W = Math.max(70, Math.ceil(ws.leftExtent + ws.rightExtent));
+        windBarbX = this.graphCanvas.width - ws.rightExtent;
+        infoBoxX = this.graphCanvas.width - infoBoxWidth - WIND_COL_W - 12;
+      }
+
+      const displayStormU = this._windDisplaySmooth.stormU;
+      const displayStormV = this._windDisplaySmooth.stormV;
+      const hodo2DNodeCount = Math.max(2, Math.round(guiControls.hodograph2DNodes || guiControls.hodographNodes || 30));
+      const hodoProfileNodeCount = Math.max(2, Math.round(guiControls.hodographProfileNodes || guiControls.hodographNodes || 30));
+      const displayHodoPoints = subsampleWindNodesByAlt(hodoPoints, hodo2DNodeCount);
+
       // Storm-relative helicity (SRH) - 2D rotation potential for horizontal rolls
       function calculateSRH(altM) {
         const targetY = surfaceLevel + Math.round(altM / dz);
@@ -6348,6 +6477,11 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         maxHodoWind = Math.max(maxHodoWind, Math.abs(p.u), Math.abs(p.v));
       }
       maxHodoWind = Math.max(maxHodoWind, Math.hypot(stormU, stormV), 1);
+      {
+        const ws = this._windDisplaySmooth;
+        ws.hodoMaxWind += (maxHodoWind - ws.hodoMaxWind) * 0.12;
+        maxHodoWind = ws.hodoMaxWind;
+      }
       const hodoScale = hodographRadius / maxHodoWind;
 
       function toHodoPx(u, v) {
@@ -6408,10 +6542,10 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       c.fillText('SM', smPx.x + 6, smPx.y - 5);
 
       // Altitude-colored 2D hodograph
-      if (hodoPoints.length >= 2) {
-        for (let i = 1; i < hodoPoints.length; i++) {
-          const p0 = hodoPoints[i - 1];
-          const p1 = hodoPoints[i];
+      if (displayHodoPoints.length >= 2) {
+        for (let i = 1; i < displayHodoPoints.length; i++) {
+          const p0 = displayHodoPoints[i - 1];
+          const p1 = displayHodoPoints[i];
           const midAlt = (p0.altM + p1.altM) * 0.5;
           const a = toHodoPx(p0.u, p0.v);
           const b = toHodoPx(p1.u, p1.v);
@@ -6422,7 +6556,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
           c.lineWidth = 3;
           c.stroke();
         }
-        const topPt = hodoPoints[hodoPoints.length - 1];
+        const topPt = displayHodoPoints[displayHodoPoints.length - 1];
         const topPx = toHodoPx(topPt.u, topPt.v);
         c.fillStyle = altToHodographColor(topPt.altM);
         c.beginPath();
@@ -6463,30 +6597,32 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         const v = rawVelocityTo_ms(baseTextureValues[4 * y + 1]);
         profilePoints.push({
           scrY: scrYpos,
-          scrX: windBarbX + u * windBarbScale,
           altM: (y - surfaceLevel) * dz,
           u, v,
         });
       }
 
-      // Grey wind barbs behind profile trace
+      const displayProfilePoints = subsampleWindNodesByAlt(profilePoints, hodoProfileNodeCount);
+
+      // Grey wind barbs behind profile trace (always full resolution)
       c.beginPath();
       for (const pt of profilePoints) {
+        const barbX = windBarbX + pt.u * windBarbScale;
         c.moveTo(windBarbX, pt.scrY);
-        c.lineTo(pt.scrX, pt.scrY);
+        c.lineTo(barbX, pt.scrY);
       }
       c.lineWidth = 2.0;
       c.strokeStyle = '#666666';
       c.stroke();
 
       // Vertical profile trace overlaid on wind vectors (storm-relative u offset)
-      if (profilePoints.length >= 2) {
-        for (let i = 1; i < profilePoints.length; i++) {
-          const p0 = profilePoints[i - 1];
-          const p1 = profilePoints[i];
+      if (displayProfilePoints.length >= 2) {
+        for (let i = 1; i < displayProfilePoints.length; i++) {
+          const p0 = displayProfilePoints[i - 1];
+          const p1 = displayProfilePoints[i];
           const midAlt = (p0.altM + p1.altM) * 0.5;
-          const x0 = windBarbX + (p0.u - stormU) * windBarbScale;
-          const x1 = windBarbX + (p1.u - stormU) * windBarbScale;
+          const x0 = windBarbX + (p0.u - displayStormU) * windBarbScale;
+          const x1 = windBarbX + (p1.u - displayStormU) * windBarbScale;
           c.beginPath();
           c.moveTo(x0, p0.scrY);
           c.lineTo(x1, p1.scrY);
@@ -6499,9 +6635,9 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       // SRI on vertical profile trace
       const y3kmIdx = surfaceLevel + Math.round(3000 / dz);
       const sfcProfileY = surfaceScrY;
-      const sfcProfileX = windBarbX + (sfcSr.u - stormU) * windBarbScale;
+      const sfcProfileX = windBarbX + (sfcSr.u - displayStormU) * windBarbScale;
       const km3ProfileY = map_range(Math.min(y3kmIdx, sim_res_y - 1), sim_res_y, 0, 0, graphBottem);
-      const km3ProfileX = windBarbX + (sr3km.u - stormU) * windBarbScale;
+      const km3ProfileX = windBarbX + (sr3km.u - displayStormU) * windBarbScale;
       const sriVertexX = Math.max(sfcProfileX, km3ProfileX) + 18;
       const sriVertexY = (sfcProfileY + km3ProfileY) * 0.5;
       c.beginPath();
@@ -7164,12 +7300,11 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         break;
 
       case 'DISP_CAPE':
-        gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_0);
+        gl.bindFramebuffer(gl.FRAMEBUFFER, capeFrameBuff);
         gl.readBuffer(gl.COLOR_ATTACHMENT0);
-        var baseTextureValues = new Float32Array(4);
-        gl.readPixels(simXpos, simYpos, 1, 1, gl.RGBA, gl.FLOAT, baseTextureValues);
-        let cape = baseTextureValues[3] * 5000.0;
-        readoutText = cape.toFixed(0);
+        var capeValues = new Float32Array(1);
+        gl.readPixels(simXpos, simYpos, 1, 1, gl.RED, gl.FLOAT, capeValues);
+        readoutText = capeValues[0].toFixed(0);
         unit = 'J/kg';
         break;
 
@@ -7185,6 +7320,16 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
       case 'DISP_RADAR':
         readoutText = 'Radar Imagery';
+        unit = '';
+        break;
+
+      case 'DISP_RADAR_COMPOSITE':
+        readoutText = 'Composite Radar';
+        unit = '';
+        break;
+
+      case 'DISP_RADAR_WORLD':
+        readoutText = 'World Radar';
         unit = '';
         break;
 
@@ -7718,6 +7863,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   const curlShader = await loadShader('curlShader.frag');
   const capeShader = await loadShader('capeShader.frag');
   const chargeShader = await loadShader('chargeShader.frag');
+  const lightningSummaryShader = await loadShader('lightningSummaryShader.frag');
   const chargeDisplayShader = await loadShader('chargeDisplayShader.frag');
   const vorticityShader = await loadShader('vorticityShader.frag');
   const boundaryShader = await loadShader('boundaryShader.frag');
@@ -7750,6 +7896,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   const curlProgram = createProgram(simVertexShader, curlShader);
   const capeProgram = createProgram(simVertexShader, capeShader);
   const chargeProgram = createProgram(simVertexShader, chargeShader);
+  const lightningSummaryProgram = createProgram(simVertexShader, lightningSummaryShader);
   const chargeDisplayProgram = createProgram(dispVertexShader, chargeDisplayShader);
   const vorticityProgram = createProgram(simVertexShader, vorticityShader);
   const boundaryProgram = createProgram(simVertexShader, boundaryShader);
@@ -7902,6 +8049,12 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   const radarVertexShader = await loadShader('radarDisplayShader.vert');
   const radarFragmentShader = await loadShader('radarDisplayShader.frag');
   let radarDisplayProgram; try { radarDisplayProgram = createProgram(radarVertexShader, radarFragmentShader, []); } catch(e) { loadingBar.showError("Radar link error: " + e.message); throw e; }
+
+  const compositeRadarFragmentShader = await loadShader('compositeRadarDisplayShader.frag');
+  let compositeRadarDisplayProgram; try { compositeRadarDisplayProgram = createProgram(radarVertexShader, compositeRadarFragmentShader, []); } catch(e) { loadingBar.showError("Composite radar link error: " + e.message); throw e; }
+
+  const worldRadarFragmentShader = await loadShader('worldRadarDisplayShader.frag');
+  let worldRadarDisplayProgram; try { worldRadarDisplayProgram = createProgram(radarVertexShader, worldRadarFragmentShader, []); } catch(e) { loadingBar.showError("World radar link error: " + e.message); throw e; }
 
   const passthroughFragmentShader = await loadShader('passthroughShader.frag');
   let passthroughProgram; try { passthroughProgram = createProgram(postProcessingVertexShader, passthroughFragmentShader, []); } catch(e) { loadingBar.showError("Passthrough link error: " + e.message); throw e; }
@@ -8350,6 +8503,22 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   gl.bindFramebuffer(gl.FRAMEBUFFER, chargeFrameBuff_1);
   gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, chargeTexture_1, 0);
 
+  lightningCacheW = Math.max(1, Math.ceil(sim_res_x / LIGHTNING_CACHE_SCALE));
+  lightningCacheH = Math.max(1, Math.ceil(sim_res_y / LIGHTNING_CACHE_SCALE));
+  if (!lightningSummaryTexture)
+    lightningSummaryTexture = gl.createTexture();
+  if (!lightningSummaryFrameBuff)
+    lightningSummaryFrameBuff = gl.createFramebuffer();
+  gl.bindTexture(gl.TEXTURE_2D, lightningSummaryTexture);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, lightningCacheW, lightningCacheH, 0, gl.RGBA, gl.FLOAT, null);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, lightningSummaryFrameBuff);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, lightningSummaryTexture, 0);
+  lightningSummaryBuffer = new Float32Array(lightningCacheW * lightningCacheH * 4);
+  lightningFieldCacheFrame = -1;
+  lightningFieldCache = null;
+
   gl.bindTexture(gl.TEXTURE_2D, vortForceTexture);
   gl.texImage2D(gl.TEXTURE_2D, 0, gl.RG32F, sim_res_x, sim_res_y, 0, gl.RG, gl.FLOAT, null);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
@@ -8412,7 +8581,22 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   gl.bindFramebuffer(gl.FRAMEBUFFER, radarFrameBuff);
   gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, radarTexture, 0);
 
-  // Initialize cache textures for precipitation
+  // Initialize cache textures for radar display (frozen sim snapshots)
+  gl.bindTexture(gl.TEXTURE_2D, cachedBaseTexture);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, sim_res_x, sim_res_y, 0, gl.RGBA, gl.FLOAT, null);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+
+  gl.bindTexture(gl.TEXTURE_2D, cachedWaterTexture);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, sim_res_x, sim_res_y, 0, gl.RGBA, gl.FLOAT, null);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+
+  gl.bindTexture(gl.TEXTURE_2D, cachedWallTexture);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8I, sim_res_x, sim_res_y, 0, gl.RGBA_INTEGER, gl.BYTE, null);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+
   gl.bindTexture(gl.TEXTURE_2D, cachedPrecipFeedbackTexture);
   gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, sim_res_x, sim_res_y, 0, gl.RGBA, gl.FLOAT, null);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
@@ -9066,6 +9250,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
           <button class="cse-offset-btn" id="cse-view-rh" style="flex:2;">Relative Humidity</button>
           <button class="cse-offset-btn" id="cse-view-water">Water Vapor</button>
           <button class="cse-offset-btn" id="cse-view-temp">Temperature</button>
+          <button class="cse-offset-btn" id="cse-view-cape">CAPE</button>
         </div>
         <div class="cse-stops" id="cse-stops"></div>
         <div class="cse-divider"></div>
@@ -9400,6 +9585,10 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     document.getElementById('cse-view-temp').onclick = () => {
       guiControls.displayMode = 'DISP_TEMPERATURE';
     };
+    document.getElementById('cse-view-cape').onclick = () => {
+      guiControls.displayMode = 'DISP_CAPE';
+      showScale('cape');
+    };
 
     document.getElementById('cse-add').onclick = () => {
       const cfg = COLOR_SCALE_CONFIGS.find(c => c.id === activeId);
@@ -9724,6 +9913,14 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   gl.uniform1i(gl.getUniformLocation(chargeProgram, 'wallTex'),   2);
   gl.uniform1i(gl.getUniformLocation(chargeProgram, 'chargeTex'), 3);
   gl.uniform1f(gl.getUniformLocation(chargeProgram, 'dryLapse'),  dryLapse);
+  const uloc_charge_ltDischargeCount = gl.getUniformLocation(chargeProgram, 'ltDischargeCount');
+  const uloc_charge_ltDischarge      = gl.getUniformLocation(chargeProgram, 'ltDischarge');
+  const uloc_charge_ltDischargeMeta  = gl.getUniformLocation(chargeProgram, 'ltDischargeMeta');
+
+  gl.useProgram(lightningSummaryProgram);
+  gl.uniform2f(gl.getUniformLocation(lightningSummaryProgram, 'texelSize'), texelSizeX, texelSizeY);
+  gl.uniform1i(gl.getUniformLocation(lightningSummaryProgram, 'chargeTex'), 0);
+  gl.uniform1i(gl.getUniformLocation(lightningSummaryProgram, 'waterTex'), 1);
 
   gl.useProgram(chargeDisplayProgram);
   gl.uniform2f(gl.getUniformLocation(chargeDisplayProgram, 'resolution'), sim_res_x, sim_res_y);
@@ -9822,7 +10019,6 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   gl.uniform1i(gl.getUniformLocation(realisticDisplayProgram, 'surfaceTextureMap'), 5);
   gl.uniform1i(gl.getUniformLocation(realisticDisplayProgram, 'curlTex'), 6);
   gl.uniform1i(gl.getUniformLocation(realisticDisplayProgram, 'ambientLightTex'), 7);
-  gl.uniform1i(gl.getUniformLocation(realisticDisplayProgram, 'chargeTex'), 11); // charge texture for physics-based lightning
   gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'dryLapse'), dryLapse);
   gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'cellHeight'), cellHeight);
   const realDisp_enhancedLooks_loc = gl.getUniformLocation(realisticDisplayProgram, 'enhancedLooks');
@@ -9962,9 +10158,17 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   const uloc_real_cloudGroundLightningIntensity = gl.getUniformLocation(realisticDisplayProgram, 'cloudGroundLightningIntensity');
   const uloc_real_cloudGroundLightningThreshold = gl.getUniformLocation(realisticDisplayProgram, 'cloudGroundLightningThreshold');
   const uloc_real_cloudGroundLightningFrequency = gl.getUniformLocation(realisticDisplayProgram, 'cloudGroundLightningFrequency');
+  const uloc_real_enableStrobeLightning = gl.getUniformLocation(realisticDisplayProgram, 'enableStrobeLightning');
+  const uloc_real_strobeLightningIntensity = gl.getUniformLocation(realisticDisplayProgram, 'strobeLightningIntensity');
+  const uloc_real_strobeLightningThreshold = gl.getUniformLocation(realisticDisplayProgram, 'strobeLightningThreshold');
+  const uloc_real_strobeLightningFrequency = gl.getUniformLocation(realisticDisplayProgram, 'strobeLightningFrequency');
   const uloc_real_lightningRepeat       = gl.getUniformLocation(realisticDisplayProgram, 'lightningRepeat');
   const uloc_real_lightningCrossTrigger = gl.getUniformLocation(realisticDisplayProgram, 'lightningCrossTrigger');
   const uloc_real_invertSun             = gl.getUniformLocation(realisticDisplayProgram, 'invertSun');
+  const uloc_real_ltEventAge            = gl.getUniformLocation(realisticDisplayProgram, 'ltEventAge');
+  const uloc_real_ltNumStrikes          = gl.getUniformLocation(realisticDisplayProgram, 'ltNumStrikes');
+  const uloc_real_ltStrikePos           = gl.getUniformLocation(realisticDisplayProgram, 'ltStrikePos');
+  const uloc_real_ltStrikeMeta          = gl.getUniformLocation(realisticDisplayProgram, 'ltStrikeMeta');
 
   // precipDisplay per-frame
   const uloc_precipDisp_aspectRatios   = gl.getUniformLocation(precipDisplayProgram, 'aspectRatios');
@@ -10046,6 +10250,47 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   const uloc_radar_colorScalesTex      = gl.getUniformLocation(radarDisplayProgram, 'colorScalesTex');
   const uloc_radar_precipFeedbackTex   = gl.getUniformLocation(radarDisplayProgram, 'precipFeedbackTexture');
   const uloc_radar_precipDepositionTex = gl.getUniformLocation(radarDisplayProgram, 'precipDepositionTexture');
+
+  const MAX_COMPOSITE_RADARS = 32;
+  const uloc_comp_aspectRatios        = gl.getUniformLocation(compositeRadarDisplayProgram, 'aspectRatios');
+  const uloc_comp_view                = gl.getUniformLocation(compositeRadarDisplayProgram, 'view');
+  const uloc_comp_Xmult               = gl.getUniformLocation(compositeRadarDisplayProgram, 'Xmult');
+  const uloc_comp_resolution          = gl.getUniformLocation(compositeRadarDisplayProgram, 'resolution');
+  const uloc_comp_texelSize           = gl.getUniformLocation(compositeRadarDisplayProgram, 'texelSize');
+  const uloc_comp_opacity             = gl.getUniformLocation(compositeRadarDisplayProgram, 'opacity');
+  const uloc_comp_dbzOpacityEnabled   = gl.getUniformLocation(compositeRadarDisplayProgram, 'dbzOpacityEnabled');
+  const uloc_comp_dbzOpacityStrength  = gl.getUniformLocation(compositeRadarDisplayProgram, 'dbzOpacityStrength');
+  const uloc_comp_colorScaleColumn    = gl.getUniformLocation(compositeRadarDisplayProgram, 'colorScaleColumn');
+  const uloc_comp_colorScaleStops     = gl.getUniformLocation(compositeRadarDisplayProgram, 'colorScaleStops');
+  const uloc_comp_radarCount          = gl.getUniformLocation(compositeRadarDisplayProgram, 'radarCount');
+  const uloc_comp_radarPositions      = gl.getUniformLocation(compositeRadarDisplayProgram, 'radarPositions');
+  const uloc_comp_radarRanges         = gl.getUniformLocation(compositeRadarDisplayProgram, 'radarRanges');
+  const uloc_comp_radarResolutions    = gl.getUniformLocation(compositeRadarDisplayProgram, 'radarResolutions');
+  const uloc_comp_radarSensitivities  = gl.getUniformLocation(compositeRadarDisplayProgram, 'radarSensitivities');
+  const uloc_comp_baseTexture         = gl.getUniformLocation(compositeRadarDisplayProgram, 'baseTexture');
+  const uloc_comp_waterTexture        = gl.getUniformLocation(compositeRadarDisplayProgram, 'waterTexture');
+  const uloc_comp_wallTexture         = gl.getUniformLocation(compositeRadarDisplayProgram, 'wallTexture');
+  const uloc_comp_colorScalesTex      = gl.getUniformLocation(compositeRadarDisplayProgram, 'colorScalesTex');
+  const uloc_comp_precipFeedbackTex   = gl.getUniformLocation(compositeRadarDisplayProgram, 'precipFeedbackTexture');
+  const uloc_comp_precipDepositionTex = gl.getUniformLocation(compositeRadarDisplayProgram, 'precipDepositionTexture');
+
+  const uloc_world_aspectRatios        = gl.getUniformLocation(worldRadarDisplayProgram, 'aspectRatios');
+  const uloc_world_view                = gl.getUniformLocation(worldRadarDisplayProgram, 'view');
+  const uloc_world_cursor              = gl.getUniformLocation(worldRadarDisplayProgram, 'cursor');
+  const uloc_world_Xmult               = gl.getUniformLocation(worldRadarDisplayProgram, 'Xmult');
+  const uloc_world_resolution          = gl.getUniformLocation(worldRadarDisplayProgram, 'resolution');
+  const uloc_world_texelSize           = gl.getUniformLocation(worldRadarDisplayProgram, 'texelSize');
+  const uloc_world_opacity             = gl.getUniformLocation(worldRadarDisplayProgram, 'opacity');
+  const uloc_world_dbzOpacityEnabled   = gl.getUniformLocation(worldRadarDisplayProgram, 'dbzOpacityEnabled');
+  const uloc_world_dbzOpacityStrength  = gl.getUniformLocation(worldRadarDisplayProgram, 'dbzOpacityStrength');
+  const uloc_world_colorScaleColumn    = gl.getUniformLocation(worldRadarDisplayProgram, 'colorScaleColumn');
+  const uloc_world_colorScaleStops     = gl.getUniformLocation(worldRadarDisplayProgram, 'colorScaleStops');
+  const uloc_world_blockSize           = gl.getUniformLocation(worldRadarDisplayProgram, 'blockSize');
+  const uloc_world_sensitivity         = gl.getUniformLocation(worldRadarDisplayProgram, 'sensitivity');
+  const uloc_world_waterTexture        = gl.getUniformLocation(worldRadarDisplayProgram, 'waterTexture');
+  const uloc_world_wallTexture         = gl.getUniformLocation(worldRadarDisplayProgram, 'wallTexture');
+  const uloc_world_colorScalesTex      = gl.getUniformLocation(worldRadarDisplayProgram, 'colorScalesTex');
+
   // temperatureChange texture slot uniforms
   const uloc_tempChg_baseTex           = gl.getUniformLocation(temperatureChangeDisplayProgram, 'baseTex');
   const uloc_tempChg_prevBaseTex       = gl.getUniformLocation(temperatureChangeDisplayProgram, 'prevBaseTex');
@@ -10153,6 +10398,670 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       clockEl.innerHTML = dateTimeStr(); // update clock
     else
       clockEl.innerHTML = '';
+  }
+
+  function isRadarDisplayMode(mode)
+  {
+    return mode === 'DISP_RADAR' || mode === 'DISP_RADAR_COMPOSITE' || mode === 'DISP_RADAR_WORLD';
+  }
+
+  function shouldUpdateRadarDisplayCache()
+  {
+    let updateFreq = Math.max(1, Math.round(guiControls.radarUpdateFrequency || 1));
+    if (lastRadarCacheIterNum === -1)
+      return true;
+    return (iterNum - lastRadarCacheIterNum) >= updateFreq;
+  }
+
+  function updateRadarDisplayCache()
+  {
+    if (!shouldUpdateRadarDisplayCache())
+      return;
+
+    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, frameBuff_1);
+    gl.readBuffer(gl.COLOR_ATTACHMENT0);
+    gl.bindTexture(gl.TEXTURE_2D, cachedBaseTexture);
+    gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, sim_res_x, sim_res_y);
+    gl.readBuffer(gl.COLOR_ATTACHMENT1);
+    gl.bindTexture(gl.TEXTURE_2D, cachedWaterTexture);
+    gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, sim_res_x, sim_res_y);
+    gl.readBuffer(gl.COLOR_ATTACHMENT2);
+    gl.bindTexture(gl.TEXTURE_2D, cachedWallTexture);
+    gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, sim_res_x, sim_res_y);
+    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, null);
+
+    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, precipitationFeedbackFrameBuff);
+    gl.readBuffer(gl.COLOR_ATTACHMENT0);
+    gl.bindTexture(gl.TEXTURE_2D, cachedPrecipFeedbackTexture);
+    gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, sim_res_x, sim_res_y);
+    gl.readBuffer(gl.COLOR_ATTACHMENT1);
+    gl.bindTexture(gl.TEXTURE_2D, cachedPrecipDepositionTexture);
+    gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, sim_res_x, sim_res_y);
+    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, null);
+
+    lastRadarCacheIterNum = iterNum;
+  }
+
+  function bindRadarCachedSimTextures(baseLoc, waterLoc, wallLoc, precipFbLoc, precipDepLoc)
+  {
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, cachedBaseTexture);
+    gl.uniform1i(baseLoc, 0);
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, cachedWaterTexture);
+    gl.uniform1i(waterLoc, 1);
+    gl.activeTexture(gl.TEXTURE2);
+    gl.bindTexture(gl.TEXTURE_2D, cachedWallTexture);
+    gl.uniform1i(wallLoc, 2);
+    gl.activeTexture(gl.TEXTURE4);
+    gl.bindTexture(gl.TEXTURE_2D, cachedPrecipFeedbackTexture);
+    gl.uniform1i(precipFbLoc, 4);
+    gl.activeTexture(gl.TEXTURE5);
+    gl.bindTexture(gl.TEXTURE_2D, cachedPrecipDepositionTexture);
+    gl.uniform1i(precipDepLoc, 5);
+  }
+
+  function uploadCompositeRadarArrays()
+  {
+    const positions = new Float32Array(MAX_COMPOSITE_RADARS * 2);
+    const ranges = new Float32Array(MAX_COMPOSITE_RADARS);
+    const resolutions = new Float32Array(MAX_COMPOSITE_RADARS);
+    const sensitivities = new Float32Array(MAX_COMPOSITE_RADARS);
+    const count = Math.min(radars.length, MAX_COMPOSITE_RADARS);
+    for (let i = 0; i < count; i++) {
+      positions[i * 2] = radars[i].getXpos();
+      positions[i * 2 + 1] = radars[i].getYpos();
+      ranges[i] = radars[i].getRange();
+      resolutions[i] = radars[i].getResolution();
+      sensitivities[i] = radars[i].getSensitivity();
+    }
+    gl.uniform1i(uloc_comp_radarCount, count);
+    gl.uniform2fv(uloc_comp_radarPositions, positions);
+    gl.uniform1fv(uloc_comp_radarRanges, ranges);
+    gl.uniform1fv(uloc_comp_radarResolutions, resolutions);
+    gl.uniform1fv(uloc_comp_radarSensitivities, sensitivities);
+  }
+
+  const RADAR_LIGHTNING_ICON_MS = 5000;
+
+  function shaderRand(n)
+  {
+    return Math.sin(n) * 43758.5453123 - Math.floor(Math.sin(n) * 43758.5453123);
+  }
+
+  function posMod(a, b)
+  {
+    return ((a % b) + b) % b;
+  }
+
+  function isProceduralLightningEnabled()
+  {
+    return guiControls.enableCloudLightning || guiControls.enableCloudGroundLightning
+      || guiControls.enableStrobeLightning;
+  }
+
+  function refreshLightningFieldCache()
+  {
+    if (!isProceduralLightningEnabled())
+      return;
+    if (lightningFieldCacheFrame === frameNum && lightningFieldCache)
+      return;
+    if (!lightningSummaryBuffer || lightningCacheW < 1)
+      return;
+
+    lightningFieldCacheFrame = frameNum;
+
+    gl.useProgram(lightningSummaryProgram);
+    gl.bindVertexArray(fluidVao);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, lightningSummaryFrameBuff);
+    gl.viewport(0, 0, lightningCacheW, lightningCacheH);
+    gl.drawBuffers([ gl.COLOR_ATTACHMENT0 ]);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, even ? chargeTexture_0 : chargeTexture_1);
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, waterTexture_0);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+
+    gl.readPixels(0, 0, lightningCacheW, lightningCacheH, gl.RGBA, gl.FLOAT, lightningSummaryBuffer);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.viewport(0, 0, sim_res_x, sim_res_y);
+
+    lightningFieldCache = {
+      data: lightningSummaryBuffer,
+      cacheW: lightningCacheW,
+      cacheH: lightningCacheH,
+      scale: LIGHTNING_CACHE_SCALE
+    };
+  }
+
+  function readChargeCached(simX, simY)
+  {
+    if (!lightningFieldCache)
+      return 0;
+    const px = Math.max(0, Math.min(lightningFieldCache.cacheW - 1, Math.floor(simX / lightningFieldCache.scale)));
+    const py = Math.max(0, Math.min(lightningFieldCache.cacheH - 1, Math.floor(simY / lightningFieldCache.scale)));
+    return lightningFieldCache.data[(py * lightningFieldCache.cacheW + px) * 4];
+  }
+
+  function readCloudCached(simX, simY)
+  {
+    if (!lightningFieldCache)
+      return 0;
+    const px = Math.max(0, Math.min(lightningFieldCache.cacheW - 1, Math.floor(simX / lightningFieldCache.scale)));
+    const py = Math.max(0, Math.min(lightningFieldCache.cacheH - 1, Math.floor(simY / lightningFieldCache.scale)));
+    return lightningFieldCache.data[(py * lightningFieldCache.cacheW + px) * 4 + 1];
+  }
+
+  function chargeThresholdForType(ltType)
+  {
+    let t = guiControls.cloudLightningThreshold;
+    if (ltType >= 5)
+      t = guiControls.cloudGroundLightningThreshold;
+    else if (ltType >= 3)
+      t = guiControls.strobeLightningThreshold;
+    return 0.12 + t * 0.38;
+  }
+
+  function lightningStrikeInterval(freq)
+  {
+    if (freq <= 0)
+      return Infinity;
+    return Math.max(6, 80 / (freq + 0.08));
+  }
+
+  function lightningStrikeChance(freq)
+  {
+    const interval = lightningStrikeInterval(freq);
+    return interval === Infinity ? 0 : 1 / interval;
+  }
+
+  function getLightningChannels()
+  {
+    return [
+      {
+        id: 'cc',
+        salt: 911,
+        typeMin: 1,
+        typeMax: 2,
+        enabled: () => guiControls.enableCloudLightning,
+        freq: () => guiControls.cloudLightningFrequency
+      },
+      {
+        id: 'strobe',
+        salt: 1913,
+        typeMin: 3,
+        typeMax: 4,
+        enabled: () => guiControls.enableStrobeLightning,
+        freq: () => guiControls.strobeLightningFrequency
+      },
+      {
+        id: 'cg',
+        salt: 2917,
+        typeMin: 5,
+        typeMax: 6,
+        enabled: () => guiControls.enableCloudGroundLightning,
+        freq: () => guiControls.cloudGroundLightningFrequency
+      }
+    ];
+  }
+
+  function getActiveLightningChannels()
+  {
+    return getLightningChannels().filter(ch => ch.enabled() && ch.freq() > 0);
+  }
+
+  function findActiveLightningEventJS(frameIter)
+  {
+    if (!lightningFieldCache)
+      return { eventAge: -1, eventId: 0, channel: null };
+
+    const channels = getActiveLightningChannels();
+    if (channels.length === 0)
+      return { eventAge: -1, eventId: 0, channel: null };
+
+    const maxLook = 11;
+    for (let k = 0; k < maxLook; k++) {
+      const startIter = frameIter - k;
+      if (startIter < 0)
+        break;
+
+      const hits = [];
+      for (const ch of channels) {
+        const strikeChance = lightningStrikeChance(ch.freq());
+        if (strikeChance <= 0)
+          continue;
+        if (shaderRand(startIter * 1.37 + ch.salt) >= strikeChance)
+          continue;
+        if (!isStrikeStartChargeValidForChannel(startIter, ch))
+          continue;
+        hits.push(ch);
+      }
+      if (hits.length > 0) {
+        const pick = hits[Math.floor(shaderRand(startIter * 7.31 + 613.0) * hits.length)];
+        return { eventAge: k, eventId: startIter, channel: pick };
+      }
+    }
+    return { eventAge: -1, eventId: 0, channel: null };
+  }
+
+  function isStrikeStartChargeValidForChannel(eventId, channel)
+  {
+    for (let s = 0; s < 3; s++) {
+      const pick = pickLightningOriginCached(eventId, s, 3);
+      const strike = evaluateProceduralStrikeCached(pick.originX, pick.originY, channel);
+      if (!strike)
+        continue;
+      if (strike.originMag >= chargeThresholdForType(strike.ltType))
+        return true;
+    }
+    return false;
+  }
+
+  function readCloudAtSimPixel(simX, simY)
+  {
+    if (lightningFieldCache)
+      return readCloudCached(simX, simY);
+    const px = Math.max(0, Math.min(sim_res_x - 1, Math.floor(simX)));
+    const py = Math.max(0, Math.min(sim_res_y - 1, Math.floor(simY)));
+    const data = new Float32Array(4);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_1);
+    gl.readBuffer(gl.COLOR_ATTACHMENT1);
+    gl.readPixels(px, py, 1, 1, gl.RGBA, gl.FLOAT, data);
+    gl.readBuffer(gl.COLOR_ATTACHMENT0);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    return data[1];
+  }
+
+  function cloudGateFromDensity(originCloud)
+  {
+    return clamp(1.0 - 1.0 / (1.0 + originCloud * 13.0), 0.0, 1.0);
+  }
+
+  function selectLightningTypeJS(chargeVal, cloudGate)
+  {
+    const chargeMag = Math.abs(chargeVal);
+    const chargeNeg = Math.max(-chargeVal, 0);
+    if (cloudGate < 0.15 || chargeMag < 0.20) return 0;
+    if (chargeNeg >= 0.12 && chargeMag >= 0.28) {
+      if (chargeMag >= 0.42 || chargeNeg >= 0.30) return 6;
+      return 5;
+    }
+    if (chargeMag >= 0.52) return 4;
+    if (chargeMag >= 0.38) return 3;
+    if (chargeMag < 0.35) return 1;
+    return 2;
+  }
+
+  function lightningStrikeSeedJS(eventId, strikeSlot, originX, originY)
+  {
+    const h1 = shaderRand(eventId * 12.9898 + strikeSlot * 78.233 + 911.7);
+    const h2 = shaderRand(originX * 0.017 + originY * 0.013 + eventId * 0.031 + strikeSlot * 503.7);
+    const h3 = shaderRand(h1 * 9100.3 + h2 * 5321.1 + strikeSlot * 91.17);
+    // Keep in float32-safe range — never scale by eventId directly
+    return 500 + h1 * 5500 + h2 * 5500 + h3 * 3500 + strikeSlot * 317;
+  }
+
+  function pickLightningOriginCached(eventId, strikeSlot, numStrikeSlots)
+  {
+    let bestScore = -1;
+    let bestO = { x: sim_res_x * 0.5, y: sim_res_y * 0.35 };
+    let bestCloud = 0;
+    let bestCharge = 0;
+    const slots = Math.max(numStrikeSlots, 1);
+
+    for (let c = 0; c < 6; c++) {
+      const cs = c * 503 + strikeSlot * 131;
+      const xSlot = (strikeSlot + shaderRand(eventId * 1.37 + cs + 1) * 0.80) / slots;
+      const ox = (xSlot * 0.72 + shaderRand(eventId * 2.11 + cs + 10) * 0.20 + 0.04) * sim_res_x;
+      const probeY = (shaderRand(eventId * 3.07 + cs + 20) * 0.78 + 0.10) * sim_res_y;
+
+      let bestLocalScore = -1;
+      let bestLocalO = { x: ox, y: probeY };
+      let bestLocalCloud = 0;
+      let bestLocalCharge = 0;
+
+      for (let v = 0; v < 3; v++) {
+        const vy = Math.max(sim_res_y * 0.06,
+          Math.min(sim_res_y * 0.94, probeY + (v - 1) * sim_res_y * 0.055));
+        const cloud = readCloudCached(ox, vy);
+        const charge = readChargeCached(ox, vy);
+        const cg = cloudGateFromDensity(cloud);
+        const localScore = Math.abs(charge) * cg * (0.45 + cloud * 0.35);
+        if (localScore > bestLocalScore) {
+          bestLocalScore = localScore;
+          bestLocalO = { x: ox, y: vy };
+          bestLocalCloud = cloud;
+          bestLocalCharge = charge;
+        }
+      }
+
+      const score = bestLocalScore * (0.65 + shaderRand(eventId * 5.03 + cs + 30) * 0.70);
+      if (score > bestScore) {
+        bestScore = score;
+        bestO = bestLocalO;
+        bestCloud = bestLocalCloud;
+        bestCharge = bestLocalCharge;
+      }
+    }
+    return {
+      originX: bestO.x,
+      originY: bestO.y,
+      cloudGate: cloudGateFromDensity(bestCloud),
+      chargeVal: bestCharge
+    };
+  }
+
+  function evaluateProceduralStrikeCached(originX, originY, channel)
+  {
+    const cloudGate = cloudGateFromDensity(readCloudCached(originX, originY));
+    const chargeVal = readChargeCached(originX, originY);
+    const originMag = Math.abs(chargeVal);
+    const ltType = selectLightningTypeJS(chargeVal, cloudGate);
+    if (ltType === 0)
+      return null;
+    if (channel && (ltType < channel.typeMin || ltType > channel.typeMax))
+      return null;
+    const threshold = (ltType >= 3 && ltType <= 4)
+      ? guiControls.strobeLightningThreshold
+      : guiControls.cloudLightningThreshold;
+    if (cloudGate < threshold * 0.35)
+      return null;
+    if (ltType >= 1 && ltType <= 2 && !guiControls.enableCloudLightning)
+      return null;
+    if (ltType >= 3 && ltType <= 4 && !guiControls.enableStrobeLightning)
+      return null;
+    if (ltType >= 5 && !guiControls.enableCloudGroundLightning)
+      return null;
+    return { ltType, chargeVal, originMag, cloudGate };
+  }
+
+  function dischargeAmountForStrike(ltType, originMag)
+  {
+    let amount = originMag * 0.68 + 0.10;
+    if (ltType >= 5)
+      amount *= 1.20;
+    else if (ltType >= 3)
+      amount *= 0.90;
+    else
+      amount *= 0.82;
+    return Math.min(amount, 0.92);
+  }
+
+  function dischargeRadiusForStrike(ltType)
+  {
+    if (ltType >= 5)
+      return 18;
+    if (ltType >= 3)
+      return 11;
+    return 14;
+  }
+
+  function queueChargeDischargeForStrike(strike)
+  {
+    if (chargeDischargesThisIter.length >= 4)
+      return;
+    chargeDischargesThisIter.push({
+      u: strike.originX / sim_res_x,
+      v: strike.originY / sim_res_y,
+      amount: dischargeAmountForStrike(strike.ltType, strike.originMag),
+      radius: dischargeRadiusForStrike(strike.ltType),
+      ltType: strike.ltType
+    });
+  }
+
+  function uploadChargeDischargeUniforms()
+  {
+    const count = Math.min(chargeDischargesThisIter.length, 4);
+    gl.uniform1i(uloc_charge_ltDischargeCount, count);
+    const disArr = new Float32Array(16);
+    const metaArr = new Float32Array(16);
+    for (let i = 0; i < count; i++) {
+      const d = chargeDischargesThisIter[i];
+      disArr[i * 4] = d.u;
+      disArr[i * 4 + 1] = d.v;
+      disArr[i * 4 + 2] = d.amount;
+      disArr[i * 4 + 3] = d.radius;
+      metaArr[i * 4] = d.ltType;
+    }
+    gl.uniform4fv(uloc_charge_ltDischarge, disArr);
+    gl.uniform4fv(uloc_charge_ltDischargeMeta, metaArr);
+  }
+
+  function buildProceduralStrikesForEvent(eventId, channel)
+  {
+    const freq = channel.freq();
+    const numStrikes = 1 + Math.floor(shaderRand(eventId * 29 + 401 + channel.salt)
+      * Math.min(Math.max(freq + 0.35, 1), 3));
+    const strikes = [];
+    for (let s = 0; s < numStrikes; s++) {
+      const pick = pickLightningOriginCached(eventId, s, numStrikes);
+      const strike = evaluateProceduralStrikeCached(pick.originX, pick.originY, channel);
+      if (!strike)
+        continue;
+      if (strike.originMag < chargeThresholdForType(strike.ltType))
+        continue;
+      const seed = lightningStrikeSeedJS(eventId, s, pick.originX, pick.originY);
+      let numFlashes = 1;
+      if (guiControls.lightningRepeat && strike.originMag > 0.55 && shaderRand(seed + 888) > 0.88)
+        numFlashes = 2;
+      strikes.push({
+        originX: pick.originX,
+        originY: pick.originY,
+        ltType: strike.ltType,
+        chargeVal: strike.chargeVal,
+        seed,
+        originMag: strike.originMag,
+        cloudGate: strike.cloudGate,
+        numFlashes
+      });
+    }
+    return strikes;
+  }
+
+  function updateProceduralLightningState()
+  {
+    if (!isProceduralLightningEnabled()) {
+      proceduralLightningState.eventAge = -1;
+      proceduralLightningState.strikes = [];
+      proceduralLightningState.builtEventId = -1;
+      proceduralLightningState.channelId = null;
+      proceduralLightningState.trackedEventId = -1;
+      proceduralLightningState.trackedChannel = null;
+      return;
+    }
+
+    // Fast path: skip expensive lookback while an active flash is playing out
+    if (proceduralLightningState.trackedEventId >= 0 && proceduralLightningState.trackedChannel) {
+      const age = iterNum - proceduralLightningState.trackedEventId;
+      if (age >= 0 && age < LIGHTNING_FLASH_DURATION) {
+        proceduralLightningState.eventAge = age;
+        proceduralLightningState.eventId = proceduralLightningState.trackedEventId;
+        proceduralLightningState.channelId = proceduralLightningState.trackedChannel.id;
+        return;
+      }
+      proceduralLightningState.trackedEventId = -1;
+      proceduralLightningState.trackedChannel = null;
+    }
+
+    const active = findActiveLightningEventJS(iterNum);
+    proceduralLightningState.eventAge = active.eventAge;
+    proceduralLightningState.eventId = active.eventId;
+    proceduralLightningState.channelId = active.channel ? active.channel.id : null;
+
+    if (active.eventAge < 0 || !active.channel) {
+      proceduralLightningState.strikes = [];
+      proceduralLightningState.builtEventId = -1;
+      return;
+    }
+
+    proceduralLightningState.trackedEventId = active.eventId;
+    proceduralLightningState.trackedChannel = active.channel;
+
+    if (proceduralLightningState.builtEventId !== active.eventId
+        || proceduralLightningState.channelId !== active.channel.id) {
+      proceduralLightningState.builtEventId = active.eventId;
+      proceduralLightningState.strikes = buildProceduralStrikesForEvent(active.eventId, active.channel);
+
+      if (active.eventAge <= 0.5) {
+        for (let s = 0; s < proceduralLightningState.strikes.length; s++) {
+          const st = proceduralLightningState.strikes[s];
+          queueChargeDischargeForStrike(st);
+          const eventKey = 'lt-' + active.eventId + '-s' + s;
+          if (guiControls.radarLightningIcons)
+            registerRadarLightningStrike(eventKey, st.originX, st.originY);
+          playThunderForStrike(eventKey, st.originX / sim_res_x, st.originY / sim_res_y,
+            thunderIntensityForType(st.ltType, st.originMag));
+        }
+      }
+    }
+  }
+
+  function uploadProceduralLightningUniforms()
+  {
+    const st = proceduralLightningState;
+    gl.uniform1f(uloc_real_ltEventAge, st.eventAge >= 0 ? st.eventAge : -1);
+    gl.uniform1i(uloc_real_ltNumStrikes, st.strikes.length);
+
+    const posArr = procLightningPosArr;
+    const metaArr = procLightningMetaArr;
+    posArr.fill(0);
+    metaArr.fill(0);
+    for (let i = 0; i < 4; i++) {
+      if (i < st.strikes.length) {
+        const s = st.strikes[i];
+        posArr[i * 4] = s.originX;
+        posArr[i * 4 + 1] = s.originY;
+        posArr[i * 4 + 2] = s.ltType;
+        posArr[i * 4 + 3] = s.seed;
+        metaArr[i * 4] = s.originMag;
+        metaArr[i * 4 + 1] = s.cloudGate;
+        metaArr[i * 4 + 2] = s.numFlashes;
+      }
+    }
+    gl.uniform4fv(uloc_real_ltStrikePos, posArr);
+    gl.uniform4fv(uloc_real_ltStrikeMeta, metaArr);
+  }
+
+  function thunderIntensityForType(ltType, originMag)
+  {
+    if (ltType >= 5) return 0.65 + originMag * 0.45;
+    if (ltType === 4) return 0.32 + originMag * 0.25;
+    if (ltType === 3) return 0.16 + originMag * 0.12;
+    if (ltType === 2) return 0.42 + originMag * 0.28;
+    return 0.32 + originMag * 0.20;
+  }
+
+  function playThunderForStrike(eventKey, normX, normY, intensity)
+  {
+    if (!guiControls.soundThunderEnabled || !soundSystem || registeredThunderEvents.has(eventKey))
+      return;
+    registeredThunderEvents.add(eventKey);
+    if (registeredThunderEvents.size > 500)
+      registeredThunderEvents.clear();
+    soundSystem.soundThunder(normX, normY, intensity);
+  }
+
+  function registerRadarLightningStrike(eventKey, simX, simY)
+  {
+    if (!guiControls.radarLightningIcons || registeredLightningEvents.has(eventKey))
+      return;
+    registeredLightningEvents.add(eventKey);
+    radarLightningStrikes.push({
+      simX,
+      simY,
+      expireAt: performance.now() + RADAR_LIGHTNING_ICON_MS
+    });
+    if (registeredLightningEvents.size > 500)
+      registeredLightningEvents.clear();
+  }
+
+  function detectParticleLightningStrike()
+  {
+    if (!guiControls.enablePrecipitation)
+      return;
+    if (!guiControls.soundThunderEnabled && !guiControls.radarLightningIcons)
+      return;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, lightningDataFrameBuff);
+    gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.FLOAT, particleLightningReadBuffer);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    const data = particleLightningReadBuffer;
+    const startIter = data[2];
+    // Only react to a strike written this exact iteration (ignore stale texture data)
+    if (Math.floor(startIter + 0.5) !== iterNum)
+      return;
+    const simX = data[0] * sim_res_x;
+    const simY = data[1] * sim_res_y;
+    const cloudGate = cloudGateFromDensity(readCloudAtSimPixel(simX, simY));
+    if (cloudGate < guiControls.cloudLightningThreshold * 0.35 || data[3] < 0.05)
+      return;
+    const eventKey = 'particle-' + Math.floor(startIter);
+    if (guiControls.radarLightningIcons)
+      registerRadarLightningStrike(eventKey, simX, simY);
+    const intensity = Math.max(data[3], 1.2);
+    playThunderForStrike(eventKey, data[0], data[1], intensity);
+  }
+
+  function shouldShowRadarLightningOverlay()
+  {
+    return isRadarDisplayMode(guiControls.displayMode)
+      || (guiControls.displayMode === 'DISP_REAL' && guiControls.radarOverlay);
+  }
+
+  function drawRadarLightningIcon(ctx, x, y, size, alpha)
+  {
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.translate(x, y);
+    ctx.scale(size / 12, size / 12);
+    ctx.beginPath();
+    ctx.moveTo(0, -10);
+    ctx.lineTo(4, -2);
+    ctx.lineTo(1, -2);
+    ctx.lineTo(5, 10);
+    ctx.lineTo(-1, 0);
+    ctx.lineTo(2, 0);
+    ctx.closePath();
+    ctx.fillStyle = '#FFE066';
+    ctx.strokeStyle = '#FFFFFF';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    ctx.fill();
+    ctx.restore();
+  }
+
+  function drawRadarLightningOverlay()
+  {
+    if (!shouldShowRadarLightningOverlay() || !guiControls.radarLightningIcons) {
+      if (radarLightningCanvas)
+        radarLightningCanvas.style.display = 'none';
+      return;
+    }
+
+    if (!radarLightningCanvas) {
+      radarLightningCanvas = document.createElement('canvas');
+      radarLightningCanvas.style.cssText = 'position:fixed;top:0;left:0;pointer-events:none;z-index:2;';
+      document.body.appendChild(radarLightningCanvas);
+    }
+    if (radarLightningCanvas.width !== canvas.width || radarLightningCanvas.height !== canvas.height) {
+      radarLightningCanvas.width = canvas.width;
+      radarLightningCanvas.height = canvas.height;
+    }
+    radarLightningCanvas.style.display = 'block';
+
+    const now = performance.now();
+    radarLightningStrikes = radarLightningStrikes.filter(strike => strike.expireAt > now);
+
+    const ctx = radarLightningCanvas.getContext('2d');
+    ctx.clearRect(0, 0, radarLightningCanvas.width, radarLightningCanvas.height);
+
+    for (const strike of radarLightningStrikes) {
+      const sx = simToScreenX(strike.simX);
+      const sy = simToScreenY(strike.simY);
+      if (sx < -30 || sx > canvas.width + 30 || sy < -30 || sy > canvas.height + 30)
+        continue;
+      const fade = Math.min(1, (strike.expireAt - now) / 800);
+      drawRadarLightningIcon(ctx, sx, sy, 16, fade);
+    }
   }
 
   function draw()
@@ -10315,6 +11224,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
           let numIterations = guiControls.IterPerFrame;
           if (airplaneMode || guiControls.slowMotion)
             numIterations = 1;
+          refreshLightningFieldCache();
           for (var i = 0; i < numIterations; i++) { // Simulation loop
             // calc and apply velocity
             gl.useProgram(velocityProgram);
@@ -10350,9 +11260,17 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
               gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
             }
 
+            const runChargePass = isProceduralLightningEnabled() && !guiControls.skipChargeCalculation;
+
+            if (isProceduralLightningEnabled()) {
+              chargeDischargesThisIter.length = 0;
+              updateProceduralLightningState();
+            }
+
             // calc atmospheric charge (drives physics-based lightning)
-            {
+            if (runChargePass) {
               gl.useProgram(chargeProgram);
+              uploadChargeDischargeUniforms();
               gl.activeTexture(gl.TEXTURE0);
               gl.bindTexture(gl.TEXTURE_2D, baseTexture_1);
               gl.activeTexture(gl.TEXTURE1);
@@ -10360,7 +11278,6 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
               gl.activeTexture(gl.TEXTURE2);
               gl.bindTexture(gl.TEXTURE_2D, wallTexture_0);
               gl.activeTexture(gl.TEXTURE3);
-              // Read from the opposite charge texture (ping-pong)
               gl.bindTexture(gl.TEXTURE_2D, even ? chargeTexture_0 : chargeTexture_1);
               gl.bindFramebuffer(gl.FRAMEBUFFER, even ? chargeFrameBuff_1 : chargeFrameBuff_0);
               gl.drawBuffers([ gl.COLOR_ATTACHMENT0 ]);
@@ -10515,6 +11432,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
               gl.bindFramebuffer(gl.FRAMEBUFFER, lightningDataFrameBuff);
               gl.drawBuffers([ gl.COLOR_ATTACHMENT0 ]);
               gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+              detectParticleLightningStrike();
 
             }
 
@@ -10530,6 +11448,8 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         }
 
         if (airplaneMode) {
+          refreshLightningFieldCache();
+          updateProceduralLightningState();
           iterNum++;
           airplane.takeUserInput();
           airplane.move();
@@ -10753,17 +11673,18 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       gl.uniform1f(uloc_real_cloudGroundLightningIntensity, guiControls.cloudGroundLightningIntensity);
       gl.uniform1f(uloc_real_cloudGroundLightningThreshold, guiControls.cloudGroundLightningThreshold);
       gl.uniform1f(uloc_real_cloudGroundLightningFrequency, guiControls.cloudGroundLightningFrequency);
+      gl.uniform1f(uloc_real_enableStrobeLightning, guiControls.enableStrobeLightning ? 1.0 : 0.0);
+      gl.uniform1f(uloc_real_strobeLightningIntensity, guiControls.strobeLightningIntensity);
+      gl.uniform1f(uloc_real_strobeLightningThreshold, guiControls.strobeLightningThreshold);
+      gl.uniform1f(uloc_real_strobeLightningFrequency, guiControls.strobeLightningFrequency);
       gl.uniform1i(uloc_real_lightningRepeat,       guiControls.lightningRepeat       ? 1 : 0);
       gl.uniform1i(uloc_real_lightningCrossTrigger, guiControls.lightningCrossTrigger ? 1 : 0);
       gl.uniform1i(uloc_real_invertSun,             guiControls.invertSun             ? 1 : 0);
+      uploadProceduralLightningUniforms();
       gl.uniform1f(uloc_real_iterNum, iterNum);
 
       gl.activeTexture(gl.TEXTURE7);
       gl.bindTexture(gl.TEXTURE_2D, ambientLightFBOs[0].texture);
-
-      // Bind charge texture for physics-based lightning
-      gl.activeTexture(gl.TEXTURE11);
-      gl.bindTexture(gl.TEXTURE_2D, even ? chargeTexture_1 : chargeTexture_0);
 
       gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4); // draw to hdr framebuffer
 
@@ -10874,30 +11795,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
       // Radar overlay on realistic view
       if (guiControls.radarOverlay && radars.length > 0) {
-        // Update global cache at the global radar update frequency
-        let updateFreq = guiControls.radarUpdateFrequency || 60;
-        let shouldUpdateCache = (iterNum - lastRadarOverlayIterNum) >= updateFreq || lastRadarOverlayIterNum === -1;
-        
-        // Also update cache if paused and cache hasn't been initialized yet
-        if (guiControls.paused && lastRadarOverlayIterNum === -1) {
-          shouldUpdateCache = true;
-        }
-        
-        if (iterNum % 60 === 0) {
-          console.log('Radar overlay cache check: iterNum=' + iterNum + ', lastRadarOverlayIterNum=' + lastRadarOverlayIterNum + ', updateFreq=' + updateFreq + ', shouldUpdate=' + shouldUpdateCache);
-        }
-        
-        if (shouldUpdateCache) {
-          gl.bindFramebuffer(gl.FRAMEBUFFER, precipitationFeedbackFrameBuff);
-          gl.readBuffer(gl.COLOR_ATTACHMENT0);
-          gl.bindTexture(gl.TEXTURE_2D, cachedPrecipFeedbackTexture);
-          gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, sim_res_x, sim_res_y);
-          gl.readBuffer(gl.COLOR_ATTACHMENT1);
-          gl.bindTexture(gl.TEXTURE_2D, cachedPrecipDepositionTexture);
-          gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, sim_res_x, sim_res_y);
-          gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-          lastRadarOverlayIterNum = iterNum;
-        }
+        updateRadarDisplayCache();
 
         gl.enable(gl.BLEND);
         gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
@@ -10910,20 +11808,13 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         gl.uniform1f(uloc_radar_opacity, guiControls.radarOpacity);
         gl.uniform1i(uloc_radar_dbzOpacityEnabled, guiControls.dbzOpacityEnabled);
         gl.uniform1f(uloc_radar_dbzOpacityStrength, guiControls.dbzOpacityStrength);
-        gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, baseTexture_0);
-        gl.uniform1i(uloc_radar_baseTexture, 0);
-        gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, waterTexture_0);
-        gl.uniform1i(uloc_radar_waterTexture, 1);
-        gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, wallTexture_0);
-        gl.uniform1i(uloc_radar_wallTexture, 2);
-        gl.activeTexture(gl.TEXTURE3); gl.bindTexture(gl.TEXTURE_2D, colorScalesTexture);
+        gl.activeTexture(gl.TEXTURE3);
+        gl.bindTexture(gl.TEXTURE_2D, colorScalesTexture);
         gl.uniform1i(uloc_radar_colorScalesTex, 3);
         gl.uniform1i(uloc_radar_colorScaleColumn, 18);
         gl.uniform1i(uloc_radar_colorScaleStops, 18);
-        gl.activeTexture(gl.TEXTURE4); gl.bindTexture(gl.TEXTURE_2D, cachedPrecipFeedbackTexture);
-        gl.uniform1i(uloc_radar_precipFeedbackTex, 4);
-        gl.activeTexture(gl.TEXTURE5); gl.bindTexture(gl.TEXTURE_2D, cachedPrecipDepositionTexture);
-        gl.uniform1i(uloc_radar_precipDepositionTex, 5);
+        bindRadarCachedSimTextures(uloc_radar_baseTexture, uloc_radar_waterTexture, uloc_radar_wallTexture,
+                                   uloc_radar_precipFeedbackTex, uloc_radar_precipDepositionTex);
         
         for (let r = 0; r < radars.length; r++) {
           const radar = radars[r];
@@ -11164,94 +12055,14 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
           colorScaleStops = 33;
           break;
         case 'DISP_RADAR':
-          // Radar Reflectivity - render radar imagery from all radars
-          gl.clearColor(0.0, 0.0, 0.0, 1.0);
-          gl.clear(gl.COLOR_BUFFER_BIT);
-
-          // Render radar imagery for each radar
-          if (radars.length > 0) {
-            gl.useProgram(radarDisplayProgram);
-
-            gl.uniform2f(uloc_radar_aspectRatios, sim_aspect, canvas_aspect);
-            gl.uniform3f(uloc_radar_view, cam.curXpos, cam.curYpos, cam.curZoom);
-            gl.uniform1f(uloc_radar_Xmult, horizontalDisplayMult);
-            gl.uniform2f(uloc_radar_resolution, sim_res_x, sim_res_y);
-            gl.uniform2f(uloc_radar_texelSize, 1.0 / sim_res_x, 1.0 / sim_res_y);
-            gl.uniform1f(uloc_radar_opacity, guiControls.radarOpacity);
-            gl.uniform1i(uloc_radar_dbzOpacityEnabled, guiControls.dbzOpacityEnabled);
-            gl.uniform1f(uloc_radar_dbzOpacityStrength, guiControls.dbzOpacityStrength);
-
-            gl.activeTexture(gl.TEXTURE0);
-            gl.bindTexture(gl.TEXTURE_2D, baseTexture_0);
-            gl.uniform1i(uloc_radar_baseTexture, 0);
-
-            gl.activeTexture(gl.TEXTURE1);
-            gl.bindTexture(gl.TEXTURE_2D, waterTexture_0);
-            gl.uniform1i(uloc_radar_waterTexture, 1);
-
-            gl.activeTexture(gl.TEXTURE2);
-            gl.bindTexture(gl.TEXTURE_2D, wallTexture_0);
-            gl.uniform1i(uloc_radar_wallTexture, 2);
-
-            gl.activeTexture(gl.TEXTURE3);
-            gl.bindTexture(gl.TEXTURE_2D, colorScalesTexture);
-            gl.uniform1i(uloc_radar_colorScalesTex, 3);
-            gl.uniform1i(uloc_radar_colorScaleColumn, 18);
-            gl.uniform1i(uloc_radar_colorScaleStops, 36);
-
-            gl.activeTexture(gl.TEXTURE4);
-            gl.bindTexture(gl.TEXTURE_2D, precipitationFeedbackTexture);
-            gl.uniform1i(uloc_radar_precipFeedbackTex, 4);
-            gl.activeTexture(gl.TEXTURE5);
-            gl.bindTexture(gl.TEXTURE_2D, precipitationDepositionTexture);
-            gl.uniform1i(uloc_radar_precipDepositionTex, 5);
-
-            gl.enable(gl.BLEND);
-            gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
-
-            for (let r = 0; r < radars.length; r++) {
-              let radar = radars[r];
-              if (!radar.getEnabled()) continue;
-
-              // Always render radar using live textures (remove update frequency check for display)
-              // The update frequency slider now only affects performance, not visibility
-
-              let productType = 0;
-              if (radar.getProduct() === 'velocity') productType = 1;
-              else if (radar.getProduct() === 'correlation') productType = 2;
-              else if (radar.getProduct() === 'echotops') productType = 3;
-
-              if (productType === 0) {
-                gl.uniform1i(uloc_radar_colorScaleColumn, 18);
-                gl.uniform1i(uloc_radar_colorScaleStops, 36);
-              } else if (productType === 1) {
-                gl.uniform1i(uloc_radar_colorScaleColumn, 19);
-                gl.uniform1i(uloc_radar_colorScaleStops, 33);
-              } else if (productType === 2) {
-                gl.uniform1i(uloc_radar_colorScaleColumn, 20);
-                gl.uniform1i(uloc_radar_colorScaleStops, 22);
-              } else {
-                gl.uniform1i(uloc_radar_colorScaleColumn, 21);
-                gl.uniform1i(uloc_radar_colorScaleStops, 32);
-              }
-
-              gl.uniform2f(uloc_radar_radarPos, radar.getXpos(), radar.getYpos());
-              gl.uniform1f(uloc_radar_radarRange, radar.getRange());
-              gl.uniform1f(uloc_radar_radarResolution, radar.getResolution());
-              gl.uniform1f(uloc_radar_sensitivity, radar.getSensitivity());
-              gl.uniform1i(uloc_radar_productType, productType);
-
-              gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
-            }
-
-            gl.disable(gl.BLEND);
-          }
+        case 'DISP_RADAR_COMPOSITE':
+        case 'DISP_RADAR_WORLD':
           break;
         case 'DISP_CAPE':
           gl.activeTexture(gl.TEXTURE0);
           gl.bindTexture(gl.TEXTURE_2D, capeTexture);
           gl.uniform1i(uloc_univ_quantityIndex, 0);
-          gl.uniform1f(uloc_univ_dispMultiplier, 1.0 / 5000.0);
+          gl.uniform1f(uloc_univ_dispMultiplier, 1.0 / 10000.0);
           gl.uniform1i(uloc_univ_colorScaleColumn, 17);
           gl.uniform1i(uloc_univ_useUnipolarScale, 1);
           colorScaleStops = 72;
@@ -11280,120 +12091,130 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         gl.uniform1i(uloc_univ_colorScaleStops, colorScaleStops);
       }
 
-      if (guiControls.displayMode != 'DISP_RADAR' && guiControls.displayMode != 'DISP_RISK' && guiControls.displayMode != 'DISP_CHARGE') {
+      if (!isRadarDisplayMode(guiControls.displayMode) && guiControls.displayMode != 'DISP_RISK' && guiControls.displayMode != 'DISP_CHARGE') {
         gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4); // draw to canvas
       }
 
-      // Radar display: render every frame with cached precipitation textures
-      if (guiControls.displayMode === 'DISP_RADAR') {
-        // Hide overlay canvas if it exists
+      // Radar display modes: render every frame with cached precipitation textures
+      if (isRadarDisplayMode(guiControls.displayMode)) {
         if (radarOverlayCanvas) {
           radarOverlayCanvas.style.display = 'none';
         }
 
-        // Update global cache at the global radar update frequency
-        let updateFreq = guiControls.radarUpdateFrequency || 60;
-        let shouldUpdateCache = (iterNum - lastRadarDisplayIterNum) >= updateFreq || lastRadarDisplayIterNum === -1;
-        
-        // Also update cache if paused and cache hasn't been initialized yet
-        if (guiControls.paused && lastRadarDisplayIterNum === -1) {
-          shouldUpdateCache = true;
-        }
-        
-        if (iterNum % 60 === 0) {
-          console.log('Radar display cache check: iterNum=' + iterNum + ', lastRadarDisplayIterNum=' + lastRadarDisplayIterNum + ', updateFreq=' + updateFreq + ', shouldUpdate=' + shouldUpdateCache);
-        }
-        
-        if (shouldUpdateCache) {
-          gl.bindFramebuffer(gl.FRAMEBUFFER, precipitationFeedbackFrameBuff);
-          gl.readBuffer(gl.COLOR_ATTACHMENT0);
-          gl.bindTexture(gl.TEXTURE_2D, cachedPrecipFeedbackTexture);
-          gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, sim_res_x, sim_res_y);
-          gl.readBuffer(gl.COLOR_ATTACHMENT1);
-          gl.bindTexture(gl.TEXTURE_2D, cachedPrecipDepositionTexture);
-          gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, sim_res_x, sim_res_y);
-          gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-          lastRadarDisplayIterNum = iterNum;
-        }
+        updateRadarDisplayCache();
 
-        // Render radars to screen every frame using cached precipitation textures
         gl.bindFramebuffer(gl.FRAMEBUFFER, null);
         gl.viewport(0, 0, canvas.width, canvas.height);
         gl.clearColor(0.0, 0.0, 0.0, 0.0);
         gl.clear(gl.COLOR_BUFFER_BIT);
-
-        gl.useProgram(radarDisplayProgram);
         gl.bindVertexArray(fluidVao);
 
-        gl.uniform2f(uloc_radar_aspectRatios, sim_aspect, canvas_aspect);
-        gl.uniform3f(uloc_radar_view, cam.curXpos, cam.curYpos, cam.curZoom);
-        gl.uniform1f(uloc_radar_Xmult, horizontalDisplayMult);
-        gl.uniform2f(uloc_radar_resolution, sim_res_x, sim_res_y);
-        gl.uniform2f(uloc_radar_texelSize, 1.0 / sim_res_x, 1.0 / sim_res_y);
-        gl.uniform1f(uloc_radar_opacity, guiControls.radarOpacity);
-        gl.uniform1i(uloc_radar_dbzOpacityEnabled, guiControls.dbzOpacityEnabled);
-        gl.uniform1f(uloc_radar_dbzOpacityStrength, guiControls.dbzOpacityStrength);
+        if (guiControls.displayMode === 'DISP_RADAR_WORLD') {
+          gl.useProgram(worldRadarDisplayProgram);
 
-        gl.activeTexture(gl.TEXTURE0);
-        gl.bindTexture(gl.TEXTURE_2D, baseTexture_0);
-        gl.uniform1i(uloc_radar_baseTexture, 0);
+          gl.uniform2f(uloc_world_aspectRatios, sim_aspect, canvas_aspect);
+          gl.uniform3f(uloc_world_view, cam.curXpos, cam.curYpos, cam.curZoom);
+          gl.uniform4f(uloc_world_cursor, mouseXinSim, mouseYinSim, guiControls.brushSize * 0.5, cursorType);
+          gl.uniform1f(uloc_world_Xmult, horizontalDisplayMult);
+          gl.uniform2f(uloc_world_resolution, sim_res_x, sim_res_y);
+          gl.uniform2f(uloc_world_texelSize, 1.0 / sim_res_x, 1.0 / sim_res_y);
+          gl.uniform1f(uloc_world_opacity, guiControls.radarOpacity);
+          gl.uniform1i(uloc_world_dbzOpacityEnabled, guiControls.dbzOpacityEnabled);
+          gl.uniform1f(uloc_world_dbzOpacityStrength, guiControls.dbzOpacityStrength);
+          gl.uniform1i(uloc_world_colorScaleColumn, 18);
+          gl.uniform1i(uloc_world_colorScaleStops, 36);
+          gl.uniform1f(uloc_world_blockSize, Math.max(2.0, sim_res_x / (guiControls.worldRadarResolution * 6.0)));
+          gl.uniform1f(uloc_world_sensitivity, guiControls.worldRadarSensitivity);
 
-        gl.activeTexture(gl.TEXTURE1);
-        gl.bindTexture(gl.TEXTURE_2D, waterTexture_0);
-        gl.uniform1i(uloc_radar_waterTexture, 1);
-
-        gl.activeTexture(gl.TEXTURE2);
-        gl.bindTexture(gl.TEXTURE_2D, wallTexture_0);
-        gl.uniform1i(uloc_radar_wallTexture, 2);
-
-        gl.activeTexture(gl.TEXTURE3);
-        gl.bindTexture(gl.TEXTURE_2D, colorScalesTexture);
-        gl.uniform1i(uloc_radar_colorScalesTex, 3);
-
-        gl.activeTexture(gl.TEXTURE4);
-        gl.bindTexture(gl.TEXTURE_2D, cachedPrecipFeedbackTexture);
-        gl.uniform1i(uloc_radar_precipFeedbackTex, 4);
-
-        gl.activeTexture(gl.TEXTURE5);
-        gl.bindTexture(gl.TEXTURE_2D, cachedPrecipDepositionTexture);
-        gl.uniform1i(uloc_radar_precipDepositionTex, 5);
-
-        gl.enable(gl.BLEND);
-        gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
-
-        for (let r = 0; r < radars.length; r++) {
-          let radar = radars[r];
-          if (!radar.getEnabled()) continue;
-
-          let productType = 0;
-          if (radar.getProduct() === 'velocity') productType = 1;
-          else if (radar.getProduct() === 'correlation') productType = 2;
-          else if (radar.getProduct() === 'echotops') productType = 3;
-
-          if (productType === 0) {
-            gl.uniform1i(uloc_radar_colorScaleColumn, 18);
-            gl.uniform1i(uloc_radar_colorScaleStops, 36);
-          } else if (productType === 1) {
-            gl.uniform1i(uloc_radar_colorScaleColumn, 19);
-            gl.uniform1i(uloc_radar_colorScaleStops, 33);
-          } else if (productType === 2) {
-            gl.uniform1i(uloc_radar_colorScaleColumn, 20);
-            gl.uniform1i(uloc_radar_colorScaleStops, 22);
-          } else {
-            gl.uniform1i(uloc_radar_colorScaleColumn, 21);
-            gl.uniform1i(uloc_radar_colorScaleStops, 32);
-          }
-
-          gl.uniform2f(uloc_radar_radarPos, radar.getXpos(), radar.getYpos());
-          gl.uniform1f(uloc_radar_radarRange, radar.getRange());
-          gl.uniform1f(uloc_radar_radarResolution, radar.getResolution());
-          gl.uniform1f(uloc_radar_sensitivity, radar.getSensitivity());
-          gl.uniform1i(uloc_radar_productType, productType);
+          gl.activeTexture(gl.TEXTURE0);
+          gl.bindTexture(gl.TEXTURE_2D, cachedWaterTexture);
+          gl.uniform1i(uloc_world_waterTexture, 0);
+          gl.activeTexture(gl.TEXTURE1);
+          gl.bindTexture(gl.TEXTURE_2D, cachedWallTexture);
+          gl.uniform1i(uloc_world_wallTexture, 1);
+          gl.activeTexture(gl.TEXTURE2);
+          gl.bindTexture(gl.TEXTURE_2D, colorScalesTexture);
+          gl.uniform1i(uloc_world_colorScalesTex, 2);
 
           gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+        } else if (guiControls.displayMode === 'DISP_RADAR_COMPOSITE') {
+          gl.useProgram(compositeRadarDisplayProgram);
+
+          gl.uniform2f(uloc_comp_aspectRatios, sim_aspect, canvas_aspect);
+          gl.uniform3f(uloc_comp_view, cam.curXpos, cam.curYpos, cam.curZoom);
+          gl.uniform1f(uloc_comp_Xmult, horizontalDisplayMult);
+          gl.uniform2f(uloc_comp_resolution, sim_res_x, sim_res_y);
+          gl.uniform2f(uloc_comp_texelSize, 1.0 / sim_res_x, 1.0 / sim_res_y);
+          gl.uniform1f(uloc_comp_opacity, guiControls.radarOpacity);
+          gl.uniform1i(uloc_comp_dbzOpacityEnabled, guiControls.dbzOpacityEnabled);
+          gl.uniform1f(uloc_comp_dbzOpacityStrength, guiControls.dbzOpacityStrength);
+          gl.uniform1i(uloc_comp_colorScaleColumn, 18);
+          gl.uniform1i(uloc_comp_colorScaleStops, 36);
+
+          gl.activeTexture(gl.TEXTURE3);
+          gl.bindTexture(gl.TEXTURE_2D, colorScalesTexture);
+          gl.uniform1i(uloc_comp_colorScalesTex, 3);
+          bindRadarCachedSimTextures(uloc_comp_baseTexture, uloc_comp_waterTexture, uloc_comp_wallTexture,
+                                     uloc_comp_precipFeedbackTex, uloc_comp_precipDepositionTex);
+
+          uploadCompositeRadarArrays();
+          gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+        } else {
+          gl.useProgram(radarDisplayProgram);
+
+          gl.uniform2f(uloc_radar_aspectRatios, sim_aspect, canvas_aspect);
+          gl.uniform3f(uloc_radar_view, cam.curXpos, cam.curYpos, cam.curZoom);
+          gl.uniform1f(uloc_radar_Xmult, horizontalDisplayMult);
+          gl.uniform2f(uloc_radar_resolution, sim_res_x, sim_res_y);
+          gl.uniform2f(uloc_radar_texelSize, 1.0 / sim_res_x, 1.0 / sim_res_y);
+          gl.uniform1f(uloc_radar_opacity, guiControls.radarOpacity);
+          gl.uniform1i(uloc_radar_dbzOpacityEnabled, guiControls.dbzOpacityEnabled);
+          gl.uniform1f(uloc_radar_dbzOpacityStrength, guiControls.dbzOpacityStrength);
+
+          gl.activeTexture(gl.TEXTURE3);
+          gl.bindTexture(gl.TEXTURE_2D, colorScalesTexture);
+          gl.uniform1i(uloc_radar_colorScalesTex, 3);
+          bindRadarCachedSimTextures(uloc_radar_baseTexture, uloc_radar_waterTexture, uloc_radar_wallTexture,
+                                     uloc_radar_precipFeedbackTex, uloc_radar_precipDepositionTex);
+
+          gl.enable(gl.BLEND);
+          gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+
+          for (let r = 0; r < radars.length; r++) {
+            let radar = radars[r];
+            if (!radar.getEnabled()) continue;
+
+            let productType = 0;
+            if (radar.getProduct() === 'velocity') productType = 1;
+            else if (radar.getProduct() === 'correlation') productType = 2;
+            else if (radar.getProduct() === 'echotops') productType = 3;
+
+            if (productType === 0) {
+              gl.uniform1i(uloc_radar_colorScaleColumn, 18);
+              gl.uniform1i(uloc_radar_colorScaleStops, 36);
+            } else if (productType === 1) {
+              gl.uniform1i(uloc_radar_colorScaleColumn, 19);
+              gl.uniform1i(uloc_radar_colorScaleStops, 33);
+            } else if (productType === 2) {
+              gl.uniform1i(uloc_radar_colorScaleColumn, 20);
+              gl.uniform1i(uloc_radar_colorScaleStops, 22);
+            } else {
+              gl.uniform1i(uloc_radar_colorScaleColumn, 21);
+              gl.uniform1i(uloc_radar_colorScaleStops, 32);
+            }
+
+            gl.uniform2f(uloc_radar_radarPos, radar.getXpos(), radar.getYpos());
+            gl.uniform1f(uloc_radar_radarRange, radar.getRange());
+            gl.uniform1f(uloc_radar_radarResolution, radar.getResolution());
+            gl.uniform1f(uloc_radar_sensitivity, radar.getSensitivity());
+            gl.uniform1i(uloc_radar_productType, productType);
+
+            gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+          }
+
+          gl.disable(gl.BLEND);
         }
 
-        gl.disable(gl.BLEND);
         gl.bindVertexArray(fluidVao);
       }
 
@@ -11663,9 +12484,11 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     }
   }
 
-  if (guiControls.displayMode !== 'DISP_RADAR' && radarOverlayCanvas) {
+  if (!isRadarDisplayMode(guiControls.displayMode) && radarOverlayCanvas) {
     radarOverlayCanvas.style.display = 'none';
   }
+
+  drawRadarLightningOverlay();
 
   if (displayWeatherStations) {
     for (i = 0; i < weatherStations.length; i++) {
