@@ -331,12 +331,6 @@ void main()
             wall[TYPE] = WALLTYPE_INDUSTRIAL;
           }
           break;
-        case 17:                                               // set suburban
-          if (wall[DISTANCE] == 0 && (wall[TYPE] == WALLTYPE_LAND || wall[TYPE] == WALLTYPE_RUNWAY || wall[TYPE] == WALLTYPE_INDUSTRIAL) &&
-              texture(wallTex, texCoordX0Yp)[DISTANCE] != 0) {
-            wall[TYPE] = WALLTYPE_SUBURBAN;
-          }
-          break;
 
         case 20:                                                                                                      // add soil moisture
           if (wall[DISTANCE] == 0 && wall[TYPE] != WALLTYPE_WATER && texture(wallTex, texCoordX0Yp)[DISTANCE] != 0) { // if land wall and no wall above
@@ -383,9 +377,6 @@ void main()
               wall[TYPE] = WALLTYPE_LAND;
           } else if (userInputType == 16) {
             if (wall[TYPE] == WALLTYPE_INDUSTRIAL) // remove industry
-              wall[TYPE] = WALLTYPE_LAND;
-          } else if (userInputType == 17) {
-            if (wall[TYPE] == WALLTYPE_SUBURBAN) // remove suburban
               wall[TYPE] = WALLTYPE_LAND;
           } else if (userInputType == 20) {        // remove moisture
             water[SOIL_MOISTURE] += userInputValues[BRUSH_INTENSITY] * 10.0;

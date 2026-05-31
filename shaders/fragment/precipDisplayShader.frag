@@ -27,9 +27,7 @@ void main()
   fragmentColor = vec4(0.0, 1.0, 1.0, 1.0); // rain
   */
 
-  float totalMass = mass_out[WATER] + mass_out[ICE];
-  float sizeFactor = pow(totalMass, 1.0 / 3.0);
-  float opacity = totalMass * 0.10 * mix(0.75, 1.5, clamp(sizeFactor * 0.8, 0.0, 1.0));
+  float opacity = (mass_out[WATER] + mass_out[ICE]) * 0.10;
 
   if (mass_out[ICE] > 0.) {                           // has ice
     if (mass_out[WATER] == 0.) {                      // has no liquid water, pure ice
@@ -42,16 +40,6 @@ void main()
     }
   } else {                                            // rain
     fragmentColor = vec4(0.0, 0.5, 1.0, opacity);     // dark blue
-  }
-
-  float glowThreshold = 3.0;
-  float glowFactor = clamp((totalMass * sizeFactor - glowThreshold) / 2.0, 0.0, 1.0);
-  if (glowFactor > 0.0) {
-    vec2 coord = gl_PointCoord - vec2(0.5);
-    float dist = length(coord) * 2.0;
-    float halo = smoothstep(0.45, 0.85, dist) * (1.0 - dist) * 0.65 * glowFactor;
-    fragmentColor.rgb += vec3(0.0, 1.0, 0.0) * halo;
-    fragmentColor.a = max(fragmentColor.a, halo * 0.55);
   }
 
   // fragmentColor = vec4(1.0, 1.0, 0.0, 1.0); // all highly visible for DEBUG

@@ -9,7 +9,6 @@ in vec2 texCoord;
 uniform vec2 resolution;
 uniform vec2 texelSize;
 uniform vec2 aspectRatios;
-uniform vec3 view;
 
 uniform sampler2D lightTex;
 uniform sampler2D planeTex;
@@ -18,10 +17,6 @@ uniform sampler2D planeGearTex;
 uniform sampler2D ambientLightTex;
 
 uniform float minShadowLight;
-uniform float starVisibility;
-uniform float starLightEmitStrength;
-uniform float starDensity;
-uniform float sunAngle;
 
 uniform float iterNum;
 
@@ -146,85 +141,6 @@ void main()
 
   vec3 mixedCol = hsv2rgb(vec3(hue, sat, val));                     // blue air
 
-  // Star field - only visible at night (sun below horizon)
-  vec3 starColor = vec3(0.0);
-  vec3 starLight = vec3(0.0);
-  // Only show stars when sun is below horizon (night time), not just in dark shadows
-  // sunAngle is in radians: 0 = overhead, PI/2 = horizon, PI = below horizon
-  float sunAngleRad = abs(sunAngle);
-  bool isNightTime = sunAngleRad > 1.4; // Sun below horizon (~80 degrees, slightly before actual horizon for smoother transition)
-  float twilightZone = smoothstep(1.3, 1.6, sunAngleRad); // Gradual fade during twilight (75 to 92 degrees)
-  
-  if (starVisibility > 0.0 && isNightTime) {
-    float nightFactor = twilightZone;
-    
-    // Fade out stars near the surface (bottom of screen)
-    float surfaceFade = smoothstep(0.0, 0.2, texCoord.y);
-    
-    // Generate pseudo-random star positions on a fixed grid
-    // Stars should pan with the world (move with camera), like weather stations/radars
-    // Convert screen texCoord to world coordinates
-    // view.xy = camera position (range -1 to 1), view.z = zoom
-    vec2 centeredCoord = (texCoord - 0.5) / view.z;           // offset from center, scaled by zoom
-    vec2 worldPos = centeredCoord + vec2(view.x * 0.5, view.y * 0.5 * aspectRatios.y); // add camera position
-    
-    // Snap to a fixed grid so stars stay at consistent world positions
-    // Grid cell size in normalized world coordinates
-    float gridSize = 0.008;
-    vec2 gridPos = floor(worldPos / gridSize) * gridSize + gridSize * 0.5;
-    
-    // Hash based on fixed grid position - same grid cell always gives same star
-    vec2 starSeed = gridPos * 1000.0;
-    float starRand1 = fract(sin(dot(starSeed, vec2(12.9898, 78.233))) * 43758.5453);
-    float starRand2 = fract(sin(dot(starSeed + 100.0, vec2(39.346, 57.123))) * 23421.1234);
-    float starRand3 = fract(sin(dot(starSeed + 200.0, vec2(73.456, 12.789))) * 12345.6789);
-    
-    // Only render stars at certain grid positions based on density
-    // starDensity 0 = no stars, 1 = many stars
-    // Map 0-1 to threshold range 0.999 (few stars) to 0.98 (many stars)
-    float densityThreshold = mix(0.999, 0.97, starDensity);
-    if (starRand1 > densityThreshold) {
-      // Star size (0.0 to 1.0, weighted toward smaller stars)
-      float starSize = pow(starRand2, 3.0);
-      
-      // Calculate actual star center position in screen space for this grid cell
-      // Subtract camera offset and multiply by zoom to get screen position
-      vec2 starScreenPos = (gridPos - vec2(view.x * 0.5, view.y * 0.5 * aspectRatios.y)) * view.z + 0.5;
-      
-      // Distance from current pixel to star center (accounting for aspect ratio)
-      vec2 distVec = (texCoord - starScreenPos);
-      distVec.x *= aspectRatios.x; // Correct for aspect ratio to make stars circular
-      float dist = length(distVec);
-      
-      // Star radius in screen space (very small point)
-      float starRadius = 0.001 + starSize * 0.002;
-      
-      // Only render if within star radius (creates circular point star)
-      if (dist < starRadius) {
-        // Twinkling speed varies by star
-        float twinkleSpeed = 0.05 + starRand3 * 0.15;
-        float twinkle = sin(iterNum * twinkleSpeed + starRand1 * 100.0) * 0.5 + 0.5;
-        twinkle = pow(twinkle, 2.0 + starSize * 2.0);
-        
-        // Brightness based on size, distance from center (soft edge), and twinkling
-        float edgeSoftness = smoothstep(starRadius, 0.0, dist);
-        float starBrightness = (starSize * 2.0 + 0.5) * edgeSoftness;
-        starBrightness *= twinkle;
-        starBrightness *= starVisibility * nightFactor * surfaceFade;
-        
-        // Star color variation (slight blue/white tint)
-        vec3 starTint = mix(vec3(1.0, 1.0, 0.95), vec3(0.85, 0.9, 1.0), starRand3);
-        starColor = starTint * starBrightness;
-        
-        // Bigger stars emit more light, controlled by starLightEmitStrength
-        starLight = starTint * starSize * starLightEmitStrength * starVisibility * nightFactor * surfaceFade * twinkle * edgeSoftness;
-      }
-    }
-    
-    // Add stars to the sky background (mixedCol) so they're behind all objects
-    mixedCol += starColor;
-  }
-
   vec3 airplaneLights;
 
   vec3 airplaneOnLight;
@@ -235,7 +151,6 @@ void main()
   mixedCol += A380Col.rgb * A380Col.a;
 
   vec3 finalColor = mixedCol * (light + minShadowLight + airplaneOnLight);
-  finalColor += starLight;
 
   float airDensityFactor = clamp(1.0 - texCoord.y, 0., 1.);
 

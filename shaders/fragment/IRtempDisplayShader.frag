@@ -7,7 +7,6 @@ in vec2 fragCoord;
 
 uniform sampler2D lightTex;
 uniform isampler2D wallTex;
-uniform sampler2D colorScalesTex;
 
 uniform vec2 resolution;
 uniform vec2 texelSize;
@@ -58,7 +57,7 @@ void main()
 
     palletteIndex = clamp(palletteIndex, 0, 29);
 
-    fragmentColor = texelFetch(colorScalesTex, ivec2(2 + upOrDown, palletteIndex), 0);
+    fragmentColor = vec4(tempColorPalette[palletteIndex], 1.0);
   }
   drawCursor(cursor, view);
 }
