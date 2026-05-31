@@ -1,5 +1,4 @@
 # 2D Weather Sandbox
-THIS IS FORK OF 2D WEATHER SANDBOX. I DO NOT GUARANTE THAT IT WILL WORK AS INTENDED!
 
 Previously called "Weather_Sim_4"
 

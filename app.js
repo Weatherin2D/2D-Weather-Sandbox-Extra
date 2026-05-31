@@ -20,37 +20,11 @@ function updateSetupSliders()
 
   document.getElementById('simWorldProperties').innerHTML = 'cellHeight: ' + cellHeight.toFixed(1) + ' m  &nbsp&nbsp&nbsp   Simulation width: ' + (simWidth / 1000).toFixed(1) + ' km';
 
-  document.getElementById('simHeightWarning').style.display = (simHeight == 15000) ? 'none' : 'block';
+  document.getElementById('simHeightWarning').style.display = (simHeight == 12000) ? 'none' : 'block';
   document.getElementById('simResYWarning').style.display = (simResY == 300) ? 'none' : 'block';
   document.getElementById('simResShowX').value = simResX;
   document.getElementById('simResShowY').value = simResY
   document.getElementById('simHeightShow').value = simHeight + ' m';
-  
-  // Sync text input values with slider values
-  document.getElementById('simResInputX').value = simResX;
-  document.getElementById('simResInputY').value = simResY;
-  document.getElementById('simHeightInput').value = simHeight;
-}
-
-function updateFromTextInput(inputId, sliderId)
-{
-  let input = document.getElementById(inputId);
-  let slider = document.getElementById(sliderId);
-  let min = parseInt(input.min);
-  let max = parseInt(input.max);
-  let step = parseInt(input.step);
-  let value = parseInt(input.value);
-  
-  // Clamp value to min/max
-  if (value < min) value = min;
-  if (value > max) value = max;
-  
-  // Round to nearest step
-  value = Math.round(value / step) * step;
-  
-  input.value = value;
-  slider.value = value;
-  updateSetupSliders();
 }
 
 var FPS = 60.0;
@@ -174,61 +148,37 @@ function rawSoundingToSimSounding(soundingData, simHeight, inSimSoundingRes)
 {
   let soundingForSim = [];
 
-  // Safety check: ensure soundingData exists and has valid data
-  if (!soundingData || soundingData.length === 0) {
-    console.warn('No sounding data available, using default profile');
-    // Return a default sounding profile
-    for (let y = 0; y < inSimSoundingRes; y++) {
-      const alt = y * (simHeight / sim_res_y);
-      const temp = 20 - (alt / 1000) * 6.5; // Standard lapse rate
-      soundingForSim[y] = {'t' : temp, 'td' : temp - 10, 'vel' : 0.01};
-    }
-    return soundingForSim;
-  }
+  soundingDataIndex = soundingData.length - 1; // start from lowest datapoint
 
-  // Debug: check first few data points to understand the input format
-  console.log('rawSoundingToSimSounding input sample:', soundingData[0], soundingData[Math.floor(soundingData.length/2)], soundingData[soundingData.length-1]);
-
-  // The sounding data is stored with increasing altitude (index 0 = lowest, last = highest)
-  // We need to find the correct data point for each simulation level
-  
   for (let y = 0; y < inSimSoundingRes; y++) {
+
     const inSimAlt = y * (simHeight / sim_res_y);
-    
-    // Find the data point just above or equal to the simulation altitude
-    let idx = 0;
-    while (idx < soundingData.length - 1 && soundingData[idx]['alt'] < inSimAlt) {
-      idx++;
+
+    while (soundingData[soundingDataIndex]['alt'] < inSimAlt ||
+           sampleIsInvalid(soundingData[soundingDataIndex])) { // go up in the sounding until the altitude matches, or is more than the in sim altitude
+      soundingDataIndex--;
     }
-    
-    // Safety check
-    if (idx >= soundingData.length) {
-      soundingForSim[y] = {'t' : -50, 'td' : -60, 'vel' : 0.01};
-      continue;
+
+    const sampleAboveOrEqual = soundingData[soundingDataIndex];
+
+    const sampleBelow = soundingData[Math.min(soundingDataIndex + 1, soundingData.length - 1)];
+
+    let s = sampleAboveOrEqual;
+    if (sampleAboveOrEqual['alt'] != inSimAlt && inSimAlt >= soundingData[soundingData.length - 1].alt) {
+      let a = (inSimAlt - sampleBelow['alt']) / (sampleAboveOrEqual['alt'] - sampleBelow['alt']);
+      s = mixGeneric(sampleBelow, sampleAboveOrEqual, a);
     }
-    
-    const sampleAbove = soundingData[idx];
-    const sampleBelow = soundingData[Math.max(0, idx - 1)];
-    
-    let s = sampleAbove;
-    
-    // Interpolate if we have a sample below and the altitudes don't match
-    if (sampleAbove['alt'] !== inSimAlt && idx > 0) {
-      const altDiff = sampleAbove['alt'] - sampleBelow['alt'];
-      if (altDiff > 0) {
-        const a = (inSimAlt - sampleBelow['alt']) / altDiff;
-        s = mixGeneric(sampleBelow, sampleAbove, a);
-      }
-    }
+
+    // console.log(inSimAlt, sampleBelow['alt'], sampleAboveOrEqual['alt'], s);
 
     let twoDimentionalVel = s.vel * Math.cos(s.angle * degToRad);   // km/h
+
     const inSimVel = msToRawVelocity(twoDimentionalVel / 3.6);      // convert to m/s first
 
-    soundingForSim[y] = {'t' : s.t, 'td' : s.td, 'vel' : inSimVel};
+    soundingForSim[y] = {'t' : s.t, 'td' : s.td, 'vel' : inSimVel}; // Put the requered data in an array of objects
   }
 
-  // Debug: check output
-  console.log('rawSoundingToSimSounding output sample:', soundingForSim[0], soundingForSim[Math.floor(inSimSoundingRes/2)], soundingForSim[inSimSoundingRes-1]);
+  // console.log('soundingForSim', soundingForSim);
 
   return soundingForSim;
 }
@@ -368,16 +318,6 @@ document.addEventListener('DOMContentLoaded', () => {
   createPresetSelect();
   stationSelector = createStationSelect();
   prepareSounding();
-  
-  // Add event listeners for the sliders
-  document.getElementById('simResSelX').addEventListener('input', updateSetupSliders);
-  document.getElementById('simResSelY').addEventListener('input', updateSetupSliders);
-  document.getElementById('simHeightSel').addEventListener('input', updateSetupSliders);
-  
-  // Add event listeners for the text inputs
-  document.getElementById('simResInputX').addEventListener('input', function() { updateFromTextInput('simResInputX', 'simResSelX'); });
-  document.getElementById('simResInputY').addEventListener('input', function() { updateFromTextInput('simResInputY', 'simResSelY'); });
-  document.getElementById('simHeightInput').addEventListener('input', function() { updateFromTextInput('simHeightInput', 'simHeightSel'); });
 });
 
 
@@ -400,10 +340,10 @@ const radToDeg = 57.2957795;
 const kmToMil = 0.62137;
 const mToFt = 3.28084;
 
-const saveFileVersionID = 263574037; // Uint32 id to check if save file is compatible (incremented to include NUM_DROPLETS in save format)
+const saveFileVersionID = 263574036; // Uint32 id to check if save file is compatible
 
 const guiControls_default = {
-  vorticity : 0.01,
+  vorticity : 0.005,
   dragMultiplier : 0.001, // 0.01
   wind : 0.0,
   globalEffectsStartAlt : 0,
@@ -418,12 +358,12 @@ const guiControls_default = {
   waterEvaporation : 0.0001,
   evapHeat : 2.90,          //  Real: 2260 J/g
   meltingHeat : 0.43,       //  Real:  334 J/g
-  condensationRate : 0.0010,  // REDUCED - less condensation to reduce rain
+  condensationRate : 0.0050,
   waterWeight : 0.25,       // 0.50
   inactiveDroplets : 0,
   aboveZeroThreshold : 1.0, // PRECIPITATION
   subZeroThreshold : 0.005, // 0.01
-  spawnChance : 0.00001,    // REDUCED - much less rain droplet spawning
+  spawnChance : 0.00005,    // 30. 10 to 50
   snowDensity : 0.2,        // 0.3
   fallSpeed : 0.0003,
   growthRate0C : 0.0001,    // 0.0005
@@ -436,32 +376,21 @@ const guiControls_default = {
   SmoothCam : true,
   camSpeed : 0.01,
   exposure : 1.0,
-  saturation : 1.0,
-  contrast : 1.0,
-  greenHueStartThreshold : 0.8,
-  greenHueEndThreshold : 1.8,
-  greenHueStrength : 0.8,
-  enhancedLooks : false,
-  timeOfDay : 12.0,
+  timeOfDay : 9.9,
   latitude : 45.0,
   month : 6.65, // Northern hemisphere summer solstice
-  sunAngle : 90.0,
+  sunAngle : 9.9,
   dayNightCycle : true,
-  realtimeMode : false,  // sync sun position to real wall-clock time
   accelerateNight : true,
   greenhouseGases : 0.001,
   waterGreenHouseEffect : 0.0015,
   IR_rate : 1.0,
-  invertSun : false,
   tool : 'TOOL_NONE',
   brushSize : 20,
   wholeWidth : false,
   brushIntensity : 0.01,
   allowCaves : true,
   showGraph : false,
-  graphFixedPosition : false, // When true, graph stays at fixed position instead of following cursor
-  graphFixedX : 0,
-  graphFixedY : 0,
   realDewPoint : false, // show real dew point in graph, instead of dew point with cloud water included
   enablePrecipitation : true,
   showDrops : false,
@@ -469,80 +398,12 @@ const guiControls_default = {
   IterPerFrame : 10,
   auto_IterPerFrame : true,
   sound : true,
-  enableBloom : true,
-  // Sound volume controls
-  soundVolumeWind    : 1.0,
-  soundVolumeRain    : 1.0,
-  soundVolumeAmbient : 1.0,  // forest / beach / urban
-  soundVolumeThunder : 1.0,
-  soundWindEnabled    : true,
-  soundRainEnabled    : true,
-  soundAmbientEnabled : true,
-  soundThunderEnabled : true,
-  enableCloudLightning : true,
-  cloudLightningIntensity : 2.0,
-  cloudLightningThreshold : 0.3,
-  cloudLightningFrequency : 0.8,
-  enableStrobeLightning : true,
-  strobeLightningIntensity : 2.0,
-  strobeLightningThreshold : 0.3,
-  strobeLightningFrequency : 0.8,
-  enableCloudGroundLightning : true,  cloudGroundLightningIntensity : 2.0,
-  cloudGroundLightningThreshold : 0.3,
-  cloudGroundLightningFrequency : 0.8,
-  lightningRepeat : true,          // allow repeat strikes driven by charge
-  lightningCrossTrigger : true,    // CG can trigger CC crawlers and vice versa
-  enableVectorField : false,
-  // Nuke settings
-  nukeBlastRadius : 50,
-  nukeTemperature : 100.0,
-  nukeSmokeAmount : 2.0,
-  nukeFallSpeed : 10.0,
-  nukeIgnitionEnabled : true,
   dryLapseRate : 10.0,     // Real: 9.8 degrees / km
-  simHeight : 15000,       // meters
+  simHeight : 12000,       // meters
   twelveHourClock : false, // only for display.  false = metric
   lengthUnit : 'LENGTH_UNIT_METRIC',
   tempUnit : 'TEMP_UNIT_C',
   windUnit : 'SPEED_UNIT_KMH',
-  temperatureChangeIterations : 5,
-  radarOpacity : 0.8,
-  radarUpdateFrequency : 60,
-  worldRadarResolution : 20.0,
-  worldRadarSensitivity : 0.65,
-  radarOverlay : false,
-  radarLightningIcons : true,
-  radarLightningIconDuration : 5,
-  dbzOpacityEnabled : false,
-  dbzOpacityStrength : 0.9,
-  riskUpdateFrequency : 30,
-  starVisibility : 0.25,
-  starLightEmitStrength : 0.15,
-  starDensity : 0.5,
-  minShadowLight : 0.02,
-  autoMinShadowLight : true,
-  displayWeatherStations : true,
-  displayRadars : true,
-  airplaneMode : false,
-  slowMotion : false,
-  readoutCursor : false,
-  fullscreenResolution : 'Default',
-  skipCurlCalculation : false,
-  skipCAPECalculation : false,
-  simulationQuality : 1.0,
-  reducedPrecipitation : false,
-  disableTempChangeHistory : false,
-  skipLightingCalculation : false,
-  reducedWeatherStationUpdates : false,
-  skipAdvection : false,
-  skipChargeCalculation : false,
-  // Menu styling
-  menuBackgroundColor : '#222222',
-  menuTextColor : '#ffffff',
-  menuAccentColor : '#2196F3',
-  menuWidth : 400,
-  hodograph2DNodes : 30,
-  hodographProfileNodes : 30,
 };
 
 var horizontalDisplayMult = 3.0; // 3.0 to cover srceen while zoomed out
@@ -552,37 +413,6 @@ var guiControls;
 var displayVectorField = false;
 
 var displayWeatherStations = true;
-var displayRadars = true;
-
-var riskCanvas = null;
-var riskData = []; // stores {sx, sfcY, color} computed on frequency interval
-
-var radarOverlayCanvas = null;
-var radarImageData = null;
-var radarLightningCanvas = null;
-var radarLightningStrikes = [];
-var registeredLightningEvents = new Set();
-var registeredThunderEvents = new Set();
-var proceduralLightningState = {
-  eventAge: -1, eventId: -1, builtEventId: -1, channelId: null,
-  trackedEventId: -1, trackedChannel: null, strikes: []
-};
-var chargeDischargesThisIter = [];
-var lightningFieldCache = null;
-var lightningFieldCacheFrame = -1;
-var lightningSummaryTexture = null;
-var lightningSummaryFrameBuff = null;
-var lightningSummaryBuffer = null;
-var lightningCacheW = 0;
-var lightningCacheH = 0;
-const LIGHTNING_CACHE_SCALE = 4;
-const LIGHTNING_FLASH_DURATION = 11;
-var particleLightningReadBuffer = new Float32Array(4);
-var procLightningPosArr = new Float32Array(16);
-var procLightningMetaArr = new Float32Array(16);
-
-var nukeOverlayCanvas = null;
-var nukeOverlayCtx = null;
 
 var sunIsUp = true;
 
@@ -600,15 +430,14 @@ var datGui;
 var sim_res_x;
 var sim_res_y;
 var sim_aspect; //  = sim_res_x / sim_res_y
-var sim_height = 15000;
+var sim_height = 12000;
 
-var cellHeight = 15000. / 300.; // guiControls.simHeight / sim_res_y;  // in meters // cell width is the same
+var cellHeight = 12000. / 300.; // guiControls.simHeight / sim_res_y;  // in meters // cell width is the same
 
 var frameNum = 0;
 var lastFrameNum = 0;
 
 var iterNum = 0;
-var lastRadarCacheIterNum = -1;
 
 // global framebuffers for measurements
 var frameBuff_0;
@@ -1047,14 +876,9 @@ class Weatherstation
   #snowHeight = 0;   // cm
   #airQuality = 0;   // AQI
   #waterTemperature = 0;
-  
 
   #netIRpow = 0;
   #solarPower = 0;
-
-  #predictedWeather = 'sunny'; // sunny, partly_cloudy, cloudy, rainy, thunderstorms
-
-  #weatherIconDiv;
 
   #chartCanvas;
   #historyChart;
@@ -1083,15 +907,6 @@ class Weatherstation
     this.#canvas.style.zIndex = 1; // z-index
 
     this.#displaySunAndIRPower = false;
-
-    // Create weather icon div
-    this.#weatherIconDiv = document.createElement('div');
-    this.#weatherIconDiv.style.position = 'absolute';
-    this.#weatherIconDiv.style.fontSize = '32px';
-    this.#weatherIconDiv.style.zIndex = 2;
-    this.#weatherIconDiv.style.pointerEvents = 'none';
-    this.#weatherIconDiv.textContent = '☀️';
-    document.body.appendChild(this.#weatherIconDiv);
 
     let thisObj = this;
     this.#canvas.addEventListener('mousedown', function(event) {
@@ -1260,7 +1075,6 @@ class Weatherstation
   {
     this.#chartCanvas.remove();
     this.#canvas.parentElement.removeChild(this.#canvas); // remove canvas element
-    this.#weatherIconDiv.remove(); // remove weather icon div
     let index = weatherStations.indexOf(this);
     weatherStations.splice(index, 1);                     // remove object from array
   }
@@ -1358,78 +1172,7 @@ class Weatherstation
     this.#solarPower = directSunlight;
 
     this.#time = simDateTime.toISOString();
-    this.#predictWeather();
     this.updateChartJS(); // update chart
-  }
-
-  #predictWeather()
-  {
-    // Weather prediction based on sensor readings
-    // Factors: relative humidity, temperature, solar power, dew point, wind speed, air quality, soil moisture (rainfall), snow height, net IR power
-
-    const rh = this.#relativeHumd;
-    const temp = this.#temperature;
-    const solar = this.#solarPower;
-    const dewpoint = this.#dewpoint;
-    const wind = this.#velocity;
-    const airQuality = this.#airQuality;
-    const soilMoisture = this.#soilMoisture;
-    const snowHeight = this.#snowHeight;
-    const netIR = this.#netIRpow;
-
-    // Calculate dew point depression (temp - dewpoint)
-    const dewPointDepression = temp - dewpoint;
-
-    // Thunderstorm conditions: high humidity, high wind, high air quality (smoke), unstable conditions
-    if (rh > 75 && wind > 8 && airQuality > 50 && dewPointDepression < 5) {
-      this.#predictedWeather = 'thunderstorms';
-    }
-    // Rainy conditions: high humidity, significant soil moisture (rainfall), but only if solar is low (not sunny)
-    else if (soilMoisture > 0.5 && rh > 65 && solar < 100) {
-      this.#predictedWeather = 'rainy';
-    }
-    // Sunny: prioritize high solar power, even with moderate humidity (lowered threshold)
-    else if (solar > 200) {
-      this.#predictedWeather = 'sunny';
-    }
-    // Partly cloudy: moderate solar power (lowered threshold)
-    else if (solar > 100) {
-      this.#predictedWeather = 'partly_cloudy';
-    }
-    // Cloudy conditions: high humidity, low solar power, no significant precipitation
-    else if (rh > 60 && soilMoisture < 0.5) {
-      this.#predictedWeather = 'cloudy';
-    }
-    // Rainy conditions with low solar power
-    else if (soilMoisture > 0.5 && rh > 60) {
-      this.#predictedWeather = 'rainy';
-    }
-    // Default fallback based on humidity
-    else if (rh > 60) {
-      this.#predictedWeather = 'cloudy';
-    } else if (rh > 40) {
-      this.#predictedWeather = 'partly_cloudy';
-    } else {
-      this.#predictedWeather = 'sunny';
-    }
-  }
-
-  #getWeatherIcon()
-  {
-    switch(this.#predictedWeather) {
-      case 'sunny':
-        return '☀️';
-      case 'partly_cloudy':
-        return '⛅';
-      case 'cloudy':
-        return '☁️';
-      case 'rainy':
-        return '🌧️';
-      case 'thunderstorms':
-        return '⛈️';
-      default:
-        return '☀️';
-    }
   }
 
   getXpos() { return this.#x; }
@@ -1439,7 +1182,6 @@ class Weatherstation
   setHidden(hidden)
   {
     this.#mainDiv.style.display = hidden ? 'none' : 'block';
-    this.#weatherIconDiv.style.display = hidden ? 'none' : 'block';
     this.#chartCanvas.style.display = 'none'; // hide charts
   }
 
@@ -1458,17 +1200,6 @@ class Weatherstation
     c.fillStyle = '#00000000';
     c.fillRect(0, 0, this.#width, this.#height);
 
-    // Update weather icon div position (above the station)
-    this.#weatherIconDiv.style.left = (screenX + this.#width / 2 - 16) + 'px'; // Center the icon
-    this.#weatherIconDiv.style.top = (screenY - 40) + 'px'; // Position 40px above the station
-    
-    // Add wind icon if wind speed is above 20 knots (10.29 m/s)
-    let iconText = this.#getWeatherIcon();
-    if (this.#velocity > 10.29) { // 20 knots = 10.29 m/s
-      iconText += ' 💨';
-    }
-    this.#weatherIconDiv.textContent = iconText;
-
     // temperature
     c.font = '15px Arial';
     c.fillStyle = '#FFFFFF';
@@ -1480,9 +1211,9 @@ class Weatherstation
       c.fillText(this.#relativeHumd.toFixed(1) + ' %', 30, 28);
 
       c.fillStyle = '#FFFFFF';
-      c.fillText('🔅 ' + this.#solarPower.toFixed(1) + 'W/m2', 10, 40);
+      c.fillText('🔅 ' + this.#solarPower.toFixed(1) + ' W/m²', 10, 40);
       c.fillStyle = '#FFFFFF';
-      c.fillText('♨️' + this.#netIRpow.toFixed(1) + 'W/m2', 10, 55);
+      c.fillText('♨️' + this.#netIRpow.toFixed(1) + ' W/m²', 10, 55);
     } else {
       c.font = '12px Arial';
       c.fillStyle = '#00FFFF';
@@ -1519,787 +1250,10 @@ class Weatherstation
 }
 
 
-class Radar
-{
-  #width = 80;
-  #height = 90;
-  #mainDiv;
-  #canvas;
-  #c; // 2d canvas context
-  #x; // position in simulation
-  #y;
-
-  #name = 'Radar';
-  #product = 'reflectivity';
-  #range = 1000;
-  #resolution = 100.0;
-  #sensitivity = 0.001; // 0.0 to 10.0 (0% to 1000%)
-  #updateFrequency = 60; // iterations between updates
-  #lastUpdateIteration = -1; // last iteration when radar was updated
-  #cacheFBO = null; // framebuffer to cache radar display
-  #enabled = false;
-  #menuDiv;
-  #selectBtn;
-  #menuSelectBtn;
-
-  constructor(xIn, yIn)
-  {
-    this.#x = Math.floor(xIn);
-    this.#y = Math.floor(yIn);
-    this.#mainDiv = document.createElement('div');
-    this.#canvas = document.createElement('canvas');
-    this.#mainDiv.appendChild(this.#canvas);
-    document.body.appendChild(this.#mainDiv);
-    this.#canvas.height = this.#height;
-    this.#canvas.width = this.#width;
-
-    this.#mainDiv.style.position = 'absolute';
-    this.#mainDiv.style.width = '0px';
-    this.#mainDiv.style.height = '0px';
-
-    this.#c = this.#canvas.getContext('2d');
-
-    this.#canvas.style.position = 'absolute';
-    this.#canvas.style.zIndex = 1;
-
-    let thisObj = this;
-    this.#canvas.addEventListener('mousedown', function(event) {
-      if (event.button == 0) { // left mouse button
-        if (guiControls.tool == 'TOOL_RADAR') {
-          thisObj.destroy();
-          event.stopPropagation();
-        } else {
-          thisObj.toggleMenu();
-        }
-      }
-    });
-
-    this.#canvas.addEventListener('contextmenu', function(event) { event.preventDefault(); });
-
-    this.createMenu();
-
-    // Select button below icon — only visible when disabled
-    this.#selectBtn = document.createElement('button');
-    this.#selectBtn.textContent = 'Select';
-    this.#selectBtn.style.cssText = 'position:absolute;left:50%;transform:translateX(-50%);top:' + (this.#height - 22) + 'px;font-size:13px;font-weight:bold;padding:4px 14px;cursor:pointer;background:#1a1a2e;color:#4a90e2;border:2px solid #4a90e2;border-radius:5px;white-space:nowrap;z-index:2;';
-    let thisObj2 = this;
-    this.#selectBtn.addEventListener('click', function(event) {
-      event.stopPropagation();
-      radars.forEach(r => r.setEnabled(false));
-      thisObj.setEnabled(true);
-    });
-    this.#mainDiv.appendChild(this.#selectBtn);
-    this.#selectBtn.style.display = this.#enabled ? 'none' : 'block';
-
-    // Initialize cache FBO (will be created when GL context is ready)
-    this.#cacheFBO = null;
-  }
-
-  initCacheFBO()
-  {
-    if (this.#cacheFBO) return; // Already initialized
-    this.#cacheFBO = new FBO(sim_res_x, sim_res_y, gl.RGBA16F, gl.RGBA, gl.HALF_FLOAT, gl.LINEAR);
-  }
-
-  createMenu()
-  {
-    this.#menuDiv = document.createElement('div');
-    this.#menuDiv.style.cssText = `
-      position: absolute;
-      display: none;
-      z-index: 1000;
-      background: #13131f;
-      border: 1px solid #252540;
-      border-radius: 12px;
-      padding: 0;
-      color: white;
-      font-family: Arial, sans-serif;
-      font-size: 13px;
-      min-width: 266px;
-      box-shadow: 0 8px 32px rgba(0,0,0,0.75);
-      overflow: hidden;
-    `;
-
-    let thisObj = this;
-
-    // Header bar
-    const hdr = document.createElement('div');
-    hdr.style.cssText = 'display:flex;justify-content:space-between;align-items:center;padding:11px 14px;background:linear-gradient(135deg,#191930,#0e0e22);border-bottom:1px solid #252540;cursor:move;user-select:none;gap:8px;';
-
-    let dragOffX = 0, dragOffY = 0, dragging = false;
-    hdr.addEventListener('mousedown', (e) => {
-      if (e.target === closeBtn) return;
-      dragging = true;
-      dragOffX = e.clientX - thisObj.#menuDiv.getBoundingClientRect().left;
-      dragOffY = e.clientY - thisObj.#menuDiv.getBoundingClientRect().top;
-      e.preventDefault();
-    });
-    document.addEventListener('mousemove', (e) => {
-      if (!dragging) return;
-      thisObj.#menuDiv.style.left = (e.clientX - dragOffX) + 'px';
-      thisObj.#menuDiv.style.top  = (e.clientY - dragOffY) + 'px';
-    });
-    document.addEventListener('mouseup', () => { dragging = false; });
-
-    const hdrTitle = document.createElement('span');
-    hdrTitle.style.cssText = 'font-weight:700;font-size:13px;display:flex;align-items:center;gap:6px;flex:1;min-width:0;';
-    hdrTitle.innerHTML = '<span style="flex-shrink:0">📡</span>';
-    const hdrText = document.createElement('span');
-    hdrText.textContent = this.#name;
-    hdrText.style.cssText = 'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
-    hdrTitle.appendChild(hdrText);
-
-    const closeBtn = document.createElement('button');
-    closeBtn.innerHTML = '&#x2715;';
-    closeBtn.style.cssText = 'background:rgba(255,255,255,0.07);border:none;color:#777;font-size:12px;cursor:pointer;padding:3px 8px;border-radius:5px;line-height:1;flex-shrink:0;';
-    closeBtn.addEventListener('mouseover', () => { closeBtn.style.background='rgba(220,60,60,0.35)'; closeBtn.style.color='#fff'; });
-    closeBtn.addEventListener('mouseout',  () => { closeBtn.style.background='rgba(255,255,255,0.07)'; closeBtn.style.color='#777'; });
-    closeBtn.addEventListener('click', () => { thisObj.#menuDiv.style.display = 'none'; });
-    hdr.appendChild(hdrTitle);
-    hdr.appendChild(closeBtn);
-    this.#menuDiv.appendChild(hdr);
-
-    // Body
-    const body = document.createElement('div');
-    body.style.cssText = 'padding:14px 15px 16px;';
-
-    // Helper: section label
-    const mkSectionLabel = (text) => {
-      const l = document.createElement('div');
-      l.textContent = text;
-      l.style.cssText = 'color:#4a5060;font-size:10px;text-transform:uppercase;letter-spacing:1.2px;font-weight:600;margin-bottom:6px;margin-top:14px;';
-      return l;
-    };
-
-    // Helper: styled select
-    const mkSelect = (optList, currentVal, onChange) => {
-      const sel = document.createElement('select');
-      sel.style.cssText = 'width:100%;box-sizing:border-box;background:#0b0b17;border:1px solid #252540;border-radius:6px;color:#d0d0e0;padding:7px 10px;font-size:12px;cursor:pointer;outline:none;';
-      optList.forEach(({value, text}) => {
-        const opt = document.createElement('option');
-        opt.value = value;
-        opt.textContent = text;
-        if (value === currentVal) opt.selected = true;
-        sel.appendChild(opt);
-      });
-      sel.addEventListener('change', function() { onChange(this.value); });
-      return sel;
-    };
-
-    // Helper: slider group (section header with live value badge + slider)
-    let rangeSlider, rangeValBadge, resSlider, resValBadge, sensSlider, sensValBadge;
-
-    const mkSliderGroup = (text, initVal, unit, min, max, step, onChange) => {
-      const hd = document.createElement('div');
-      hd.style.cssText = 'display:flex;justify-content:space-between;align-items:center;margin-bottom:5px;margin-top:13px;';
-      const lb = document.createElement('span');
-      lb.textContent = text;
-      lb.style.cssText = 'color:#4a5060;font-size:10px;text-transform:uppercase;letter-spacing:1.2px;font-weight:600;';
-      const badge = document.createElement('span');
-      badge.textContent = initVal + unit;
-      badge.style.cssText = 'color:#4a90e2;font-size:11px;font-weight:700;background:rgba(74,144,226,0.13);padding:1px 8px;border-radius:10px;';
-      hd.appendChild(lb);
-      hd.appendChild(badge);
-      const sl = document.createElement('input');
-      sl.type = 'range';
-      sl.min = min; sl.max = max; sl.step = step;
-      sl.value = initVal;
-      sl.style.cssText = 'width:100%;accent-color:#4a90e2;cursor:pointer;margin-top:2px;';
-      sl.addEventListener('input', function() {
-        badge.textContent = onChange(this.value) + unit;
-      });
-      return { hd, sl, badge };
-    };
-
-    // Helper: divider line
-    const mkDivider = () => {
-      const d = document.createElement('div');
-      d.style.cssText = 'border-top:1px solid #1c1c30;margin:10px -15px;';
-      return d;
-    };
-
-    // ── Product ─────────────────────────────────────────────────────
-    body.appendChild(mkSectionLabel('Product'));
-    const productSelect = mkSelect(
-      ['reflectivity','velocity','correlation','echotops'].map(p => ({value:p, text:p.charAt(0).toUpperCase()+p.slice(1)})),
-      this.#product,
-      (v) => { thisObj.#product = v; }
-    );
-    body.appendChild(productSelect);
-    body.appendChild(mkDivider());
-
-    // ── Radar Type Preset ────────────────────────────────────────────
-    body.appendChild(mkSectionLabel('Radar Type Preset'));
-    const presets = [
-      { value: 'custom', name: 'Custom',                            range: 1000, resolution: 100.0, sensitivity: 1.0 },
-      { value: 'L',      name: 'L-Band (1-2 GHz) — Long Range',    range: 8000, resolution: 20.0,  sensitivity: 0.6 },
-      { value: 'S',      name: 'S-Band (2-4 GHz) — Weather',       range: 6000, resolution: 35.0,  sensitivity: 0.8 },
-      { value: 'C',      name: 'C-Band (4-8 GHz) — General',       range: 4000, resolution: 55.0,  sensitivity: 1.0 },
-      { value: 'X',      name: 'X-Band (8-12 GHz) — High Res',     range: 2000, resolution: 80.0,  sensitivity: 1.3 },
-      { value: 'Ku',     name: 'Ku-Band (12-18 GHz) — Very High',  range: 800,  resolution: 150.0, sensitivity: 1.6 },
-      { value: 'Ka',     name: 'Ka-Band (27-40 GHz) — Extreme',    range: 400,  resolution: 250.0, sensitivity: 2.0 }
-    ];
-    const presetSelect = mkSelect(
-      presets.map(p => ({value:p.value, text:p.name})),
-      'custom',
-      (v) => {
-        const preset = presets.find(p => p.value === v);
-        if (preset && preset.value !== 'custom') {
-          thisObj.#range = preset.range;
-          thisObj.#resolution = preset.resolution;
-          thisObj.#sensitivity = preset.sensitivity;
-          rangeSlider.value = preset.range;
-          rangeValBadge.textContent = preset.range + ' km';
-          resSlider.value = preset.resolution;
-          resValBadge.textContent = preset.resolution.toFixed(1) + 'x';
-          sensSlider.value = preset.sensitivity * 100;
-          sensValBadge.textContent = Math.round(preset.sensitivity * 100) + '%';
-        }
-      }
-    );
-    body.appendChild(presetSelect);
-    body.appendChild(mkDivider());
-
-    // ── Parameters ───────────────────────────────────────────────────
-    body.appendChild(mkSectionLabel('Parameters'));
-
-    const { hd: rangeHd, sl: _rs, badge: _rb } = mkSliderGroup(
-      'Range', this.#range, ' km', 10, 10000, 1,
-      (v) => { thisObj.#range = parseInt(v); return parseInt(v); }
-    );
-    rangeSlider = _rs; rangeValBadge = _rb;
-    body.appendChild(rangeHd); body.appendChild(rangeSlider);
-
-    const { hd: resHd, sl: _rss, badge: _rsb } = mkSliderGroup(
-      'Resolution', this.#resolution.toFixed(1), 'x', 0.3, 100.0, 0.1,
-      (v) => { thisObj.#resolution = parseFloat(v); return parseFloat(v).toFixed(1); }
-    );
-    resSlider = _rss; resValBadge = _rsb;
-    body.appendChild(resHd); body.appendChild(resSlider);
-
-    const { hd: sensHd, sl: _ss, badge: _sb } = mkSliderGroup(
-      'Sensitivity', Math.round(thisObj.#sensitivity * 100), '%', 0, 1000, 1,
-      (v) => { thisObj.#sensitivity = parseInt(v) / 100; return Math.round(parseInt(v)); }
-    );
-    sensSlider = _ss; sensValBadge = _sb;
-    body.appendChild(sensHd); body.appendChild(sensSlider);
-    body.appendChild(mkDivider());
-
-    // ── Enabled toggle switch ────────────────────────────────────────
-    const enabledRow = document.createElement('div');
-    enabledRow.style.cssText = 'display:flex;justify-content:space-between;align-items:center;margin-bottom:13px;';
-    const enabledLbl = document.createElement('span');
-    enabledLbl.textContent = 'Enabled';
-    enabledLbl.style.cssText = 'color:#aaa;font-size:12px;';
-
-    const toggleLabel = document.createElement('label');
-    toggleLabel.style.cssText = 'position:relative;display:inline-block;width:44px;height:24px;cursor:pointer;flex-shrink:0;';
-    const enabledToggle = document.createElement('input');
-    enabledToggle.type = 'checkbox';
-    enabledToggle.checked = this.#enabled;
-    enabledToggle.style.cssText = 'opacity:0;width:0;height:0;position:absolute;';
-    const isOn = this.#enabled;
-    const toggleTrack = document.createElement('span');
-    toggleTrack.style.cssText = `position:absolute;top:0;left:0;right:0;bottom:0;background:${isOn ? '#3a7ad4' : '#252540'};border-radius:24px;transition:background 0.2s;`;
-    const toggleKnob = document.createElement('span');
-    toggleKnob.style.cssText = `position:absolute;height:18px;width:18px;left:${isOn ? '23px' : '3px'};bottom:3px;background:#fff;border-radius:50%;transition:left 0.2s;box-shadow:0 1px 4px rgba(0,0,0,0.5);`;
-    toggleTrack.appendChild(toggleKnob);
-    toggleLabel.appendChild(enabledToggle);
-    toggleLabel.appendChild(toggleTrack);
-
-    enabledToggle.addEventListener('change', function() {
-      thisObj.setEnabled(this.checked);
-      toggleTrack.style.background = this.checked ? '#3a7ad4' : '#252540';
-      toggleKnob.style.left = this.checked ? '23px' : '3px';
-    });
-
-    enabledRow.appendChild(enabledLbl);
-    enabledRow.appendChild(toggleLabel);
-    body.appendChild(enabledRow);
-
-    // ── Select button ────────────────────────────────────────────────
-    this.#menuSelectBtn = document.createElement('button');
-    this.#menuSelectBtn.textContent = 'Select This Radar';
-    this.#menuSelectBtn.style.cssText = 'width:100%;padding:9px;cursor:pointer;background:linear-gradient(135deg,#1a5535,#1e7045);color:#b0f0c8;border:1px solid #2a9050;border-radius:7px;font-size:13px;font-weight:700;transition:filter 0.15s;';
-    this.#menuSelectBtn.addEventListener('mouseover', () => { thisObj.#menuSelectBtn.style.filter='brightness(1.2)'; });
-    this.#menuSelectBtn.addEventListener('mouseout',  () => { thisObj.#menuSelectBtn.style.filter='brightness(1)'; });
-    this.#menuSelectBtn.addEventListener('click', function(event) {
-      event.stopPropagation();
-      radars.forEach(r => r.setEnabled(false));
-      thisObj.setEnabled(true);
-    });
-    body.appendChild(this.#menuSelectBtn);
-
-    this.#menuDiv.appendChild(body);
-    document.body.appendChild(this.#menuDiv);
-  }
-
-  toggleMenu()
-  {
-    if (this.#menuDiv.style.display === 'none') {
-      let screenX = simToScreenX(this.#x);
-      let screenY = simToScreenY(this.#y);
-      this.#menuDiv.style.left = screenX + 'px';
-      this.#menuDiv.style.top = (screenY - 200) + 'px';
-      this.#menuDiv.style.display = 'block';
-    } else {
-      this.#menuDiv.style.display = 'none';
-    }
-  }
-
-  destroy()
-  {
-    this.#menuDiv.remove();
-    this.#selectBtn.remove();
-    this.#canvas.parentElement.removeChild(this.#canvas);
-    this.#mainDiv.remove();
-    let index = radars.indexOf(this);
-    radars.splice(index, 1);
-  }
-
-  getXpos() { return this.#x; }
-  getYpos() { return this.#y; }
-  getName() { return this.#name; }
-  getProduct() { return this.#product; }
-  setProduct(product) { this.#product = product; }
-  getRange() { return this.#range; }
-  setRange(range) { this.#range = range; }
-  getResolution() { return this.#resolution; }
-  setResolution(resolution) { this.#resolution = resolution; }
-  getSensitivity() { return this.#sensitivity; }
-  setSensitivity(sensitivity) { this.#sensitivity = sensitivity; }
-  getUpdateFrequency() { return this.#updateFrequency; }
-  setUpdateFrequency(freq) { this.#updateFrequency = freq; }
-  getLastUpdateIteration() { return this.#lastUpdateIteration; }
-  setLastUpdateIteration(iter) { this.#lastUpdateIteration = iter; }
-  getCacheFBO() { return this.#cacheFBO; }
-  setCacheFBO(fbo) { this.#cacheFBO = fbo; }
-  getEnabled() { return this.#enabled; }
-  setEnabled(val) {
-    this.#enabled = val;
-    if (this.#selectBtn) this.#selectBtn.style.display = val ? 'none' : 'block';
-    if (this.#menuSelectBtn) this.#menuSelectBtn.style.display = val ? 'none' : 'block';
-  }
-  getSettings() {
-    return {
-      name: this.#name,
-      product: this.#product,
-      range: this.#range,
-      resolution: this.#resolution,
-      sensitivity: this.#sensitivity,
-      enabled: this.#enabled
-    };
-  }
-  setSettings(settings) {
-    if (settings.name !== undefined) this.#name = settings.name;
-    if (settings.product !== undefined) this.#product = settings.product;
-    if (settings.range !== undefined) this.#range = settings.range;
-    if (settings.resolution !== undefined) this.#resolution = settings.resolution;
-    if (settings.sensitivity !== undefined) this.#sensitivity = settings.sensitivity;
-    if (settings.enabled !== undefined) this.setEnabled(settings.enabled);
-  }
-
-  setHidden(hidden)
-  {
-    this.#mainDiv.style.display = hidden ? 'none' : 'block';
-  }
-
-  updateCanvas()
-  {
-    let screenX = simToScreenX(this.#x) - this.#width / 2;
-    let screenY = simToScreenY(this.#y) - this.#height;
-
-    this.#mainDiv.style.left = screenX + 'px';
-    this.#mainDiv.style.top = screenY + 'px';
-
-    let c = this.#c;
-    c.clearRect(0, 0, this.#width, this.#height);
-    c.fillStyle = '#00000000';
-    c.fillRect(0, 0, this.#width, this.#height);
-
-    // Draw radar tower icon
-    c.fillStyle = '#FF0000';
-    c.beginPath();
-    c.arc(this.#width / 2, this.#height / 2, 8, 0, Math.PI * 2);
-    c.fill();
-
-    // Draw tower structure
-    c.strokeStyle = '#FF0000';
-    c.lineWidth = 2;
-    c.beginPath();
-    c.moveTo(this.#width / 2, this.#height / 2 + 8);
-    c.lineTo(this.#width / 2, this.#height - 5);
-    c.stroke();
-
-    // Draw radar dish
-    c.beginPath();
-    c.arc(this.#width / 2, this.#height / 2 - 5, 12, Math.PI, 0);
-    c.stroke();
-
-    // Draw name above tower
-    c.font = 'bold 12px Arial';
-    c.fillStyle = '#FFFFFF';
-    c.textAlign = 'center';
-    c.fillText(this.#name, this.#width / 2, 12);
-
-    // Position pointer
-    c.beginPath();
-    c.moveTo(this.#width / 2, this.#height - 5);
-    c.lineTo(this.#width / 2, this.#height);
-    c.strokeStyle = 'white';
-    c.lineWidth = 2;
-    c.stroke();
-  }
-}
-
-
-function cycleRadarProducts(direction)
-{
-  const products = ['reflectivity', 'velocity', 'correlation', 'echotops'];
-  radars.forEach(radar => {
-    if (radar.getEnabled()) {
-      const currentProduct = radar.getProduct();
-      const currentIndex = products.indexOf(currentProduct);
-      const nextIndex = (currentIndex + direction + products.length) % products.length;
-      radar.setProduct(products[nextIndex]);
-    }
-  });
-}
-
-
 let weatherStations = []; // array holding all weather stations
-let radars = []; // array holding all radars
-let markers = []; // array holding all markers
-let nukes = []; // array holding all nukes
-
-class Marker
-{
-  #width = 60;
-  #height = 60;
-  #mainDiv;
-  #canvas;
-  #c; // 2d canvas context
-  #x; // position in simulation
-  #y;
-  #name = 'Marker';
-  #color = '#FF0000';
-  #menuDiv;
-
-  constructor(xIn, yIn)
-  {
-    this.#x = Math.floor(xIn);
-    this.#y = Math.floor(yIn);
-    this.#mainDiv = document.createElement('div');
-    this.#canvas = document.createElement('canvas');
-    this.#mainDiv.appendChild(this.#canvas);
-    document.body.appendChild(this.#mainDiv);
-    this.#canvas.height = this.#height;
-    this.#canvas.width = this.#width;
-
-    this.#mainDiv.style.position = 'absolute';
-    this.#mainDiv.style.width = '0px';
-    this.#mainDiv.style.height = '0px';
-
-    this.#c = this.#canvas.getContext('2d');
-
-    this.#canvas.style.position = 'absolute';
-    this.#canvas.style.zIndex = 1;
-
-    let thisObj = this;
-    this.#canvas.addEventListener('mousedown', function(event) {
-      if (event.button == 0) { // left mouse button
-        if (guiControls.tool == 'TOOL_MARKER') {
-          thisObj.destroy();
-          event.stopPropagation();
-        } else {
-          thisObj.toggleMenu();
-        }
-      }
-    });
-
-    this.#canvas.addEventListener('contextmenu', function(event) { event.preventDefault(); });
-
-    this.createMenu();
-  }
-
-  createMenu()
-  {
-    this.#menuDiv = document.createElement('div');
-    this.#menuDiv.style.cssText = `
-      position: absolute;
-      display: none;
-      z-index: 1000;
-      background: #1a1a2e;
-      border: 1px solid #3a3a5c;
-      border-radius: 10px;
-      padding: 0;
-      color: white;
-      font-family: Arial, sans-serif;
-      font-size: 13px;
-      min-width: 240px;
-      box-shadow: 0 4px 20px rgba(0,0,0,0.6);
-      overflow: hidden;
-    `;
-
-    let thisObj = this;
-
-    // Header bar
-    const hdr = document.createElement('div');
-    hdr.style.cssText = 'display:flex; justify-content:space-between; align-items:center; padding:10px 14px; background:#12122a; border-bottom:1px solid #3a3a5c; cursor:move;';
-    // Drag to move
-    let dragOffX = 0, dragOffY = 0, dragging = false;
-    hdr.addEventListener('mousedown', (e) => {
-      if (e.target === closeBtn) return;
-      dragging = true;
-      dragOffX = e.clientX - thisObj.#menuDiv.getBoundingClientRect().left;
-      dragOffY = e.clientY - thisObj.#menuDiv.getBoundingClientRect().top;
-      e.preventDefault();
-    });
-    document.addEventListener('mousemove', (e) => {
-      if (!dragging) return;
-      thisObj.#menuDiv.style.left = (e.clientX - dragOffX) + 'px';
-      thisObj.#menuDiv.style.top  = (e.clientY - dragOffY) + 'px';
-    });
-    document.addEventListener('mouseup', () => { dragging = false; });
-    const hdrTitle = document.createElement('span');
-    hdrTitle.textContent = '📍 ' + this.#name + ' Settings';
-    hdrTitle.style.fontWeight = 'bold';
-    const closeBtn = document.createElement('button');
-    closeBtn.textContent = '✕';
-    closeBtn.style.cssText = 'background:none; border:none; color:#aaa; font-size:16px; cursor:pointer; padding:0 4px; line-height:1;';
-    closeBtn.addEventListener('click', () => { thisObj.#menuDiv.style.display = 'none'; });
-    hdr.appendChild(hdrTitle);
-    hdr.appendChild(closeBtn);
-    this.#menuDiv.appendChild(hdr);
-
-    // Body
-    const body = document.createElement('div');
-    body.style.cssText = 'padding: 14px;';
-
-    const mkLabel = (text) => {
-      const l = document.createElement('div');
-      l.textContent = text;
-      l.style.cssText = 'color:#aaa; font-size:11px; text-transform:uppercase; letter-spacing:1px; margin-bottom:5px; margin-top:10px;';
-      return l;
-    };
-
-    const mkInput = (type, val) => {
-      const i = document.createElement('input');
-      i.type = type;
-      i.value = val;
-      i.style.cssText = 'width:100%; box-sizing:border-box; background:#0d0d1a; border:1px solid #3a3a5c; border-radius:5px; color:white; padding:6px 8px; font-size:13px;';
-      return i;
-    };
-
-    // Name
-    body.appendChild(mkLabel('Name'));
-    const nameInput = mkInput('text', this.#name);
-    nameInput.addEventListener('change', function() { thisObj.#name = this.value; hdrTitle.textContent = '📍 ' + thisObj.#name + ' Settings'; });
-    body.appendChild(nameInput);
-
-    // Color
-    body.appendChild(mkLabel('Color'));
-    const colorInput = document.createElement('input');
-    colorInput.type = 'color';
-    colorInput.value = this.#color;
-    colorInput.style.cssText = 'width:100%; height:40px; box-sizing:border-box; background:#0d0d1a; border:1px solid #3a3a5c; border-radius:5px; cursor:pointer;';
-    colorInput.addEventListener('change', function() { thisObj.#color = this.value; });
-    body.appendChild(colorInput);
-
-    this.#menuDiv.appendChild(body);
-    document.body.appendChild(this.#menuDiv);
-  }
-
-  toggleMenu()
-  {
-    const screenX = simToScreenX(this.#x);
-    const screenY = simToScreenY(this.#y);
-    this.#menuDiv.style.left = screenX + 'px';
-    this.#menuDiv.style.top = (screenY - 200) + 'px';
-    this.#menuDiv.style.display = (this.#menuDiv.style.display == 'none') ? 'block' : 'none';
-  }
-
-  updateCanvas()
-  {
-    let screenX = simToScreenX(this.#x) - this.#width / 2;
-    let screenY = simToScreenY(this.#y) - this.#height / 2;
-
-    this.#mainDiv.style.left = screenX + 'px';
-    this.#mainDiv.style.top = screenY + 'px';
-
-    let c = this.#c;
-    c.clearRect(0, 0, this.#width, this.#height);
-
-    // Draw marker icon (pin shape)
-    c.fillStyle = this.#color;
-    c.beginPath();
-    c.moveTo(this.#width / 2, 5);
-    c.quadraticCurveTo(this.#width - 5, 5, this.#width - 5, this.#height / 2);
-    c.quadraticCurveTo(this.#width - 5, this.#height - 10, this.#width / 2, this.#height - 5);
-    c.quadraticCurveTo(5, this.#height - 10, 5, this.#height / 2);
-    c.quadraticCurveTo(5, 5, this.#width / 2, 5);
-    c.fill();
-
-    // Draw inner circle
-    c.fillStyle = '#FFFFFF';
-    c.beginPath();
-    c.arc(this.#width / 2, this.#height / 2 - 5, 8, 0, Math.PI * 2);
-    c.fill();
-
-    // Draw marker name below
-    c.fillStyle = '#FFFFFF';
-    c.font = '12px Arial';
-    c.textAlign = 'center';
-    c.fillText(this.#name, this.#width / 2, this.#height + 15);
-  }
-
-  destroy()
-  {
-    this.#mainDiv.remove();
-    this.#menuDiv.remove();
-    let index = markers.indexOf(this);
-    if (index > -1) {
-      markers.splice(index, 1);
-    }
-  }
-
-  getXpos() { return this.#x; }
-  getYpos() { return this.#y; }
-  getName() { return this.#name; }
-  getColor() { return this.#color; }
-  setName(name) { this.#name = name; }
-  setColor(color) { this.#color = color; }
-}
-
-class Nuke
-{
-  #x; // position in simulation
-  #y;
-  #vx; // velocity
-  #vy;
-  #exploded;
-
-  constructor(xIn, yIn)
-  {
-    this.#x = xIn;
-    this.#y = yIn;
-    this.#vx = 0;
-    this.#vy = -guiControls.nukeFallSpeed / cellHeight; // convert m/s to sim units (downward in sim coordinates)
-    this.#exploded = false;
-  }
-
-  move()
-  {
-    if (this.#exploded) return;
-
-    // Apply gravity using the simulation time step correctly
-    const secondsPerIter = timePerIteration * 3600.0;
-    this.#vy -= 9.81 * secondsPerIter / cellHeight; // gravity in sim units (downward)
-
-    // Update position
-    this.#x += this.#vx * secondsPerIter;
-    this.#y += this.#vy * secondsPerIter;
-
-    // Check for ground impact using the active wall texture
-    const x = Math.floor(this.#x);
-    const y = Math.floor(this.#y);
-    if (x >= 0 && x < sim_res_x && y >= 0 && y < sim_res_y) {
-      const wallPixel = new Int8Array(4);
-      gl.bindFramebuffer(gl.FRAMEBUFFER, window.frameBuff_1 || frameBuff_1);
-      gl.readBuffer(gl.COLOR_ATTACHMENT2);
-      gl.readPixels(x, y, 1, 1, gl.RGBA_INTEGER, gl.BYTE, wallPixel);
-      if (wallPixel[1] <= 0) {
-        this.explode();
-        return;
-      }
-    }
-
-    // Check for bottom of simulation domain
-    if (this.#y >= sim_res_y - 1) {
-      this.explode();
-    }
-  }
-
-  explode()
-  {
-    if (this.#exploded) return;
-    this.#exploded = true;
-
-    // Apply blast effect by directly modifying the simulation textures
-    const blastRadius = guiControls.nukeBlastRadius;
-    const centerX = Math.floor(this.#x);
-    const centerY = Math.floor(this.#y);
-    const blastTemp = CtoK(guiControls.nukeTemperature);
-
-    // Read current base, water, and wall texture data from the active framebuffer
-    gl.bindFramebuffer(gl.FRAMEBUFFER, window.frameBuff_1 || frameBuff_1);
-    gl.viewport(0, 0, sim_res_x, sim_res_y);
-
-    const baseData = new Float32Array(sim_res_x * sim_res_y * 4);
-    gl.readBuffer(gl.COLOR_ATTACHMENT0);
-    gl.readPixels(0, 0, sim_res_x, sim_res_y, gl.RGBA, gl.FLOAT, baseData);
-
-    const waterData = new Float32Array(sim_res_x * sim_res_y * 4);
-    gl.readBuffer(gl.COLOR_ATTACHMENT1);
-    gl.readPixels(0, 0, sim_res_x, sim_res_y, gl.RGBA, gl.FLOAT, waterData);
-
-    const wallData = new Int8Array(sim_res_x * sim_res_y * 4);
-    gl.readBuffer(gl.COLOR_ATTACHMENT2);
-    gl.readPixels(0, 0, sim_res_x, sim_res_y, gl.RGBA_INTEGER, gl.BYTE, wallData);
-
-    // Apply blast effect
-    for (let dy = -blastRadius; dy <= blastRadius; dy++) {
-      for (let dx = -blastRadius; dx <= blastRadius; dx++) {
-        const dist = Math.sqrt(dx * dx + dy * dy);
-        if (dist <= blastRadius) {
-          const x = centerX + dx;
-          const y = centerY + dy;
-          if (x >= 0 && x < sim_res_x && y >= 0 && y < sim_res_y) {
-            const intensity = 1.0 - (dist / blastRadius);
-            const index = (y * sim_res_x + x) * 4;
-            baseData[index + 3] = Math.max(baseData[index + 3], blastTemp * intensity);
-            waterData[index + 3] = Math.min(waterData[index + 3] + guiControls.nukeSmokeAmount * intensity, 2.0);
-            
-            // Check if there's land/vegetation at this location and ignite it
-            if (guiControls.nukeIgnitionEnabled && wallData[index + 0] === 1) {
-              // Wall type 1 is land with vegetation; change to fire wall type
-              wallData[index + 0] = 3; // Set wall type to FIRE (3)
-              // The fire system will naturally burn out as vegetation is consumed
-            }
-          }
-        }
-      }
-    }
-
-    // Write back the modified data to both ping-pong texture buffers
-    [window.baseTexture_0 || baseTexture_0, window.baseTexture_1 || baseTexture_1].forEach(tex => {
-      gl.bindTexture(gl.TEXTURE_2D, tex);
-      gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, sim_res_x, sim_res_y, gl.RGBA, gl.FLOAT, baseData);
-    });
-
-    [window.waterTexture_0 || waterTexture_0, window.waterTexture_1 || waterTexture_1].forEach(tex => {
-      gl.bindTexture(gl.TEXTURE_2D, tex);
-      gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, sim_res_x, sim_res_y, gl.RGBA, gl.FLOAT, waterData);
-    });
-
-    [window.wallTexture_0 || wallTexture_0, window.wallTexture_1 || wallTexture_1].forEach(tex => {
-      gl.bindTexture(gl.TEXTURE_2D, tex);
-      gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, sim_res_x, sim_res_y, gl.RGBA_INTEGER, gl.BYTE, wallData);
-    });
-
-    // Remove from nukes array after a delay
-    setTimeout(() => {
-      this.#exploded = true; // Mark as exploded so it gets removed
-    }, 1000);
-  }
-
-  isExploded() { return this.#exploded; }
-  getX() { return this.#x; }
-  getY() { return this.#y; }
-}
 
 
-window.loadData = async function()
+async function loadData()
 {
   let file = document.getElementById('fileInput').files[0];
 
@@ -2308,46 +1262,24 @@ window.loadData = async function()
     let versionBuf = await versionBlob.arrayBuffer();
     let version = new Uint32Array(versionBuf)[0];                // convert to Uint32
 
-    if (version == saveFileVersionID || version == 263574036 || version == 1939327491) { // allow current, previous, and older version
+    if (version == saveFileVersionID || version == 1939327491) { // also allow previous version, settings will not be loaded
       // check version id, only proceed if file has the right version id
-      let fileArrBuf = await file.slice(4).arrayBuffer();
-      let fileUint8Arr = new Uint8Array(fileArrBuf);
-      let decompressed;
-      try {
-        decompressed = window.pako.inflate(fileUint8Arr);
-      } catch(e) {
-        alert('Failed to decompress save file. The file may be corrupted or from an incompatible version.');
-        document.getElementById('fileInput').value = '';
-        return;
-      }
-      let dataBlob = new Blob([ decompressed ]);
+      let fileArrBuf = await file.slice(4).arrayBuffer(); // slice from behind version id to
+      // the end of the file
+      let fileUint8Arr = new Uint8Array(fileArrBuf);        // convert to Uint8Array for pako
+      let decompressed = window.pako.inflate(fileUint8Arr); // uncompress
+      let dataBlob = new Blob([ decompressed ]);            // turn into blob
 
       let sliceStart = 0;
       let sliceEnd = 4;
 
-      let resBlob = dataBlob.slice(sliceStart, sliceEnd);
+      let resBlob = dataBlob.slice(sliceStart, sliceEnd); // extract first 4 bytes containing resolution
       let resBuf = await resBlob.arrayBuffer();
       resArray = new Uint16Array(resBuf);
       sim_res_x = resArray[0];
       sim_res_y = resArray[1];
 
-      if (!sim_res_x || !sim_res_y || sim_res_x > 16000 || sim_res_y > 10000) {
-        alert('Save file has invalid resolution (' + sim_res_x + 'x' + sim_res_y + '). File may be corrupted.');
-        document.getElementById('fileInput').value = '';
-        return;
-      }
-
-      // Calculate varied altitude for old save files based on resolution
-      // This ensures old save files don't all have the same 12000m altitude
-      // Use sim_res_y * 50 to give varied altitudes (e.g., 300*50=15000, 400*50=20000, etc.)
-      sim_height = sim_res_y * 50;
-      console.log('Calculated sim_height from resolution:', sim_height, 'm (sim_res_y:', sim_res_y + ')');
-
       NUM_DROPLETS = (sim_res_x * sim_res_y) / NUM_DROPLETS_DEVIDER;
-      if (guiControls && guiControls.reducedPrecipitation) {
-        NUM_DROPLETS = Math.floor(NUM_DROPLETS * 0.5); // Reduce droplets by 50%
-      }
-      NUM_DROPLETS = Math.min(NUM_DROPLETS, 120000); // safety cap to prevent freeze on large old files
 
       saveFileName = file.name;
 
@@ -2359,205 +1291,59 @@ window.loadData = async function()
       console.log('File versionID: ' + version);
       console.log('sim_res_x: ' + sim_res_x);
       console.log('sim_res_y: ' + sim_res_y);
-      console.log('Total decompressed size:', decompressed.byteLength);
 
 
       sliceStart = sliceEnd;
       sliceEnd += sim_res_x * sim_res_y * 4 * 4;
-      console.log('baseTex slice:', sliceStart, 'to', sliceEnd, 'size:', sliceEnd - sliceStart);
       let baseTexBlob = dataBlob.slice(sliceStart, sliceEnd);
       let baseTexBuf = await baseTexBlob.arrayBuffer();
       let baseTexF32 = new Float32Array(baseTexBuf);
 
       sliceStart = sliceEnd;
       sliceEnd += sim_res_x * sim_res_y * 4 * 4; // 4 * float
-      console.log('waterTex slice:', sliceStart, 'to', sliceEnd, 'size:', sliceEnd - sliceStart);
       let waterTexBlob = dataBlob.slice(sliceStart, sliceEnd);
       let waterTexBuf = await waterTexBlob.arrayBuffer();
       let waterTexF32 = new Float32Array(waterTexBuf);
 
       sliceStart = sliceEnd;
       sliceEnd += sim_res_x * sim_res_y * 4 * 1; // 4 * byte
-      console.log('wallTex slice:', sliceStart, 'to', sliceEnd, 'size:', sliceEnd - sliceStart);
       let wallTexBlob = dataBlob.slice(sliceStart, sliceEnd);
       let wallTexBuf = await wallTexBlob.arrayBuffer();
       let wallTexI8 = new Int8Array(wallTexBuf);
 
-      // Read saved NUM_DROPLETS if present in new format (version >= 263574037)
-      if (version == 263574037) {
+      sliceStart = sliceEnd;
+      sliceEnd += NUM_DROPLETS * Float32Array.BYTES_PER_ELEMENT * 5;
+      let precipArrayBlob = dataBlob.slice(sliceStart, sliceEnd);
+      let precipArrayBuf = await precipArrayBlob.arrayBuffer();
+      let precipArray = new Float32Array(precipArrayBuf);
+
+      if (version == saveFileVersionID) {             // only load settings and weather stations from save file if it's the newest version with all the settings included
         sliceStart = sliceEnd;
-        sliceEnd += 1 * Uint32Array.BYTES_PER_ELEMENT;
-        let numDropletsBlob = dataBlob.slice(sliceStart, sliceEnd);
-        let numDropletsBuf = await numDropletsBlob.arrayBuffer();
-        let savedNumDroplets = new Uint32Array(numDropletsBuf)[0];
-        NUM_DROPLETS = savedNumDroplets;
-        console.log('Loaded saved NUM_DROPLETS:', NUM_DROPLETS);
-
-        sliceStart = sliceEnd;
-        sliceEnd += NUM_DROPLETS * Float32Array.BYTES_PER_ELEMENT * 5;
-        console.log('precipArray slice:', sliceStart, 'to', sliceEnd, 'size:', sliceEnd - sliceStart);
-        
-        if (sliceEnd > decompressed.byteLength) {
-          console.error('ERROR: precipArray slice extends past end of file!');
-          alert('Save file appears to be corrupted.');
-          document.getElementById('fileInput').value = '';
-          return;
-        }
-        
-        let precipArrayBlob = dataBlob.slice(sliceStart, sliceEnd);
-        let precipArrayBuf = await precipArrayBlob.arrayBuffer();
-        precipArray = new Float32Array(precipArrayBuf);
-        console.log('precipArray actual length:', precipArray.length, 'expected:', NUM_DROPLETS * 5);
-      } else {
-        // Old save file format - skip loading precipitation array to prevent data corruption
-        // The NUM_DROPLETS value is unknown and misalignment would corrupt subsequent data
-        console.log('Skipping precipitation array load for old version to prevent data corruption');
-        precipArray = null; // Will trigger default initialization in mainScript
-        // Recalculate NUM_DROPLETS for default initialization
-        NUM_DROPLETS = (sim_res_x * sim_res_y) / NUM_DROPLETS_DEVIDER;
-        NUM_DROPLETS = Math.min(NUM_DROPLETS, 120000);
-        console.log('Using default NUM_DROPLETS:', NUM_DROPLETS);
-      }
-
-      if (version == saveFileVersionID) {             // only load settings and weather stations from save file if it's the newest version with NUM_DROPLETS saved
-        console.log('Loading weather stations, radars, and settings for new version');
-        
-        // Helper: safely read a slice — returns null if not enough bytes remain
-        const totalBytes = decompressed.byteLength;
-        function safeSlice(start, end) {
-          if (start >= totalBytes) return null;
-          return dataBlob.slice(start, Math.min(end, totalBytes));
-        }
-
-        try { // wrap entire optional section — any parse error falls back to defaults
-
-        sliceStart = sliceEnd;
-        sliceEnd += 1 * Int16Array.BYTES_PER_ELEMENT;
-        const numWSBlob = safeSlice(sliceStart, sliceEnd);
-        let numWeatherStations = 0;
-        if (numWSBlob) {
-          let numWeatherStationsBuf = await numWSBlob.arrayBuffer();
-          if (numWeatherStationsBuf.byteLength >= Int16Array.BYTES_PER_ELEMENT) {
-            numWeatherStations = new Int16Array(numWeatherStationsBuf)[0];
-          }
-        }
+        sliceEnd += 1 * Int16Array.BYTES_PER_ELEMENT; // one 16 bit int indicates number of weather stations
+        let numWeatherStationsArrayBlob = dataBlob.slice(sliceStart, sliceEnd);
+        let numWeatherStationsBuf = await numWeatherStationsArrayBlob.arrayBuffer();
+        let numWeatherStations = new Int16Array(numWeatherStationsBuf)[0];
 
         console.log('numWeatherStations', numWeatherStations);
 
-        if (numWeatherStations > 0 && numWeatherStations < 10000) {
-          sliceStart = sliceEnd;
-          sliceEnd += numWeatherStations * 2 * Int16Array.BYTES_PER_ELEMENT;
-          const wsBlob = safeSlice(sliceStart, sliceEnd);
-          if (wsBlob) {
-            let weatherStationBuf = await wsBlob.arrayBuffer();
-            const safeLen = Math.floor(weatherStationBuf.byteLength / Int16Array.BYTES_PER_ELEMENT) * Int16Array.BYTES_PER_ELEMENT;
-            if (safeLen >= 2 * Int16Array.BYTES_PER_ELEMENT) {
-              let weatherStationArray = new Int16Array(weatherStationBuf, 0, safeLen / Int16Array.BYTES_PER_ELEMENT);
-              const count = Math.floor(weatherStationArray.length / 2);
-              for (i = 0; i < count; i++) {
-                weatherStations.push(new Weatherstation(weatherStationArray[i * 2], weatherStationArray[i * 2 + 1]));
-              }
-            }
-          }
-        } else {
-          sliceEnd = sliceStart + numWeatherStations * 2 * Int16Array.BYTES_PER_ELEMENT;
-        }
-
-        // Load radars
         sliceStart = sliceEnd;
-        sliceEnd += 1 * Int16Array.BYTES_PER_ELEMENT;
-        const numRadarsBlob = safeSlice(sliceStart, sliceEnd);
-        let numRadars = 0;
-        if (numRadarsBlob) {
-          let numRadarsBuf = await numRadarsBlob.arrayBuffer();
-          if (numRadarsBuf.byteLength >= Int16Array.BYTES_PER_ELEMENT) {
-            numRadars = new Int16Array(numRadarsBuf)[0];
-          }
-        }
+        sliceEnd += numWeatherStations * 2 * Int16Array.BYTES_PER_ELEMENT;
+        let weatherStationArrayBlob = dataBlob.slice(sliceStart, sliceEnd);
+        let weatherStationBuf = await weatherStationArrayBlob.arrayBuffer();
+        let weatherStationArray = new Int16Array(weatherStationBuf);
 
-        console.log('numRadars', numRadars);
 
-        if (numRadars > 0 && numRadars < 10000) {
-          sliceStart = sliceEnd;
-          sliceEnd += numRadars * 2 * Int16Array.BYTES_PER_ELEMENT;
-          const radarBlob = safeSlice(sliceStart, sliceEnd);
-          if (radarBlob) {
-            let radarBuf = await radarBlob.arrayBuffer();
-            // Round down to nearest multiple of Int16Array element size before constructing
-            const safeLen = Math.floor(radarBuf.byteLength / Int16Array.BYTES_PER_ELEMENT) * Int16Array.BYTES_PER_ELEMENT;
-            if (safeLen >= 2 * Int16Array.BYTES_PER_ELEMENT) {
-              let radarArray = new Int16Array(radarBuf, 0, safeLen / Int16Array.BYTES_PER_ELEMENT);
-              const count = Math.floor(radarArray.length / 2);
-              for (i = 0; i < count; i++) {
-                radars.push(new Radar(radarArray[i * 2], radarArray[i * 2 + 1]));
-              }
-            }
-          }
-        } else {
-          sliceEnd = sliceStart + numRadars * 2 * Int16Array.BYTES_PER_ELEMENT;
+        for (i = 0; i < numWeatherStations; i++) {
+          weatherStations.push(new Weatherstation(weatherStationArray[i * 2], weatherStationArray[i * 2 + 1]));
         }
 
         sliceStart = sliceEnd;
-        if (sliceStart < totalBytes) {
-          let settingsArrayBlob = dataBlob.slice(sliceStart); // until end of file
-          
-          // Try new format first (with guiControls length prefix)
-          try {
-            let tempSliceStart = 0;
-            let tempSliceEnd = 1 * Uint32Array.BYTES_PER_ELEMENT;
-            let guiControlsLengthArrayBlob = settingsArrayBlob.slice(tempSliceStart, tempSliceEnd);
-            let guiControlsLengthBuf = await guiControlsLengthArrayBlob.arrayBuffer();
-            if (guiControlsLengthBuf.byteLength < Uint32Array.BYTES_PER_ELEMENT) throw new Error('Too short');
-            let guiControlsLength = new Uint32Array(guiControlsLengthBuf)[0];
-            
-            // Check if this looks like a reasonable length (not too large)
-            if (guiControlsLength > 0 && guiControlsLength < 1000000) {
-              tempSliceStart = tempSliceEnd;
-              tempSliceEnd += guiControlsLength;
-              let guiControlsArrayBlob = settingsArrayBlob.slice(tempSliceStart, tempSliceEnd);
-              guiControlsFromSaveFile = await guiControlsArrayBlob.text();
-              
-              tempSliceStart = tempSliceEnd;
-              let radarSettingsArrayBlob = settingsArrayBlob.slice(tempSliceStart);
-              let radarSettingsText = await radarSettingsArrayBlob.text();
-              
-              // Load radar settings if available
-              try {
-                const radarSettings = JSON.parse(radarSettingsText);
-                if (Array.isArray(radarSettings) && radarSettings.length === radars.length) {
-                  for (i = 0; i < radars.length; i++) {
-                    radars[i].setSettings(radarSettings[i]);
-                  }
-                  console.log('Loaded radar settings for ' + radars.length + ' radars');
-                }
-              } catch(e) {
-                console.log('No radar settings in save file:', e.message);
-              }
-            } else {
-              throw new Error('Invalid length, using old format');
-            }
-          } catch(e) {
-            // Fall back to old format (no length prefix, just guiControls)
-            console.log('Using old save file format (no guiControls length prefix)');
-            guiControlsFromSaveFile = await settingsArrayBlob.text();
-          }
-        } else {
-          console.log('Save file has no settings section — using defaults');
-        }
-        } catch(e) {
-          // Older file with same version ID but missing/truncated optional sections
-          console.warn('Could not load optional save data (weather stations, radars, settings) — using defaults. Reason:', e.message);
-        }
+        let settingsArrayBlob = dataBlob.slice(sliceStart); // until end of file
+
+
+        guiControlsFromSaveFile = await settingsArrayBlob.text();
       } else {
-        // For old versions, completely skip loading any data after textures
-        // This ensures no misalignment issues affect the simulation state
-        console.log('Skipping all post-texture data for old version to prevent corruption');
-        // Reset weather stations, radars to empty arrays
-        weatherStations = [];
-        radars = [];
-        // Call mainScript with only texture data and null precipArray
-        mainScript(baseTexF32, waterTexF32, wallTexI8, null);
-        return; // Skip the rest of the loading code
+        alert('Save File from older version, settings will not be loaded');
       }
 
       mainScript(baseTexF32, waterTexF32, wallTexI8, precipArray);
@@ -2573,9 +1359,6 @@ window.loadData = async function()
     sim_height = parseInt(document.getElementById('simHeightSel').value);
 
     NUM_DROPLETS = (sim_res_x * sim_res_y) / NUM_DROPLETS_DEVIDER;
-    if (guiControls && guiControls.reducedPrecipitation) {
-      NUM_DROPLETS = Math.floor(NUM_DROPLETS * 0.5); // Reduce droplets by 50%
-    }
     SETUP_MODE = true;
 
     mainScript(null); // run without initial textures
@@ -2664,7 +1447,7 @@ class LoadingBar
   {
     return new Promise((resolve) => {
       this.bar.style.width = this.percent + '%';
-      this.bar.innerHTML = this.percent + '%';
+      this.bar.innerHTML = this.percent + ' %';
       this.underBar.innerHTML = this.description;
       let timeout;
       if (this.percent == 100)
@@ -2694,201 +1477,6 @@ function setLoadingBar()
 }
 
 var soundingData;
-var realWorldSounding_T;
-var realWorldSounding_W;
-var realWorldSounding_Vel;
-var customSoundingLoaded = false;
-
-function saveSoundingToFile()
-{
-  if (!soundingData || soundingData.length === 0) {
-    alert('No sounding data to save!');
-    return;
-  }
-
-  // Create header with metadata
-  let content = "# Sounding Data Export\n";
-  content += "# Alt(m), Pressure(hPa), Temp(C), WetBulb(C), DewPoint(C), RH(%), Velocity(km/h), Angle(deg)\n";
-  
-  // Add data rows
-  soundingData.forEach(row => {
-    content += `${row.alt.toFixed(1)}, ${row.p.toFixed(1)}, ${row.t.toFixed(1)}, ${row.tw.toFixed(1)}, ${row.td.toFixed(1)}, ${row.rh.toFixed(1)}, ${row.vel.toFixed(1)}, ${row.angle.toFixed(1)}\n`;
-  });
-
-  // Create download
-  const blob = new Blob([content], { type: 'text/plain' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = 'sounding_data.txt';
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(url);
-}
-
-function loadSoundingFromFile(file)
-{
-  const reader = new FileReader();
-  reader.onload = function(e) {
-    const text = e.target.result;
-    const lines = text.split('\n');
-    const newSoundingData = [];
-    
-    lines.forEach(line => {
-      line = line.trim();
-      // Skip comments and empty lines
-      if (line.startsWith('#') || line === '') return;
-      
-      const parts = line.split(',').map(s => s.trim());
-      if (parts.length >= 8) {
-        const rowData = {
-          alt: parseFloat(parts[0]),
-          p: parseFloat(parts[1]),
-          t: parseFloat(parts[2]),
-          tw: parseFloat(parts[3]),
-          td: parseFloat(parts[4]),
-          rh: parseFloat(parts[5]),
-          vel: parseFloat(parts[6]),
-          angle: parseFloat(parts[7])
-        };
-        
-        // Validate data
-        if (!Object.values(rowData).some(v => isNaN(v))) {
-          newSoundingData.push(rowData);
-        }
-      }
-    });
-    
-    if (newSoundingData.length > 0) {
-      soundingData = newSoundingData;
-      customSoundingLoaded = true; // Mark that a custom sounding was loaded
-      console.log('Loaded custom sounding data sample:', newSoundingData[0], newSoundingData[Math.floor(newSoundingData.length/2)], newSoundingData[newSoundingData.length-1]);
-      // Update the sounding uniforms in the shader (only if simulation is initialized)
-      if (guiControls && guiControls.simHeight && realWorldSounding_T) {
-        updateSoundingUniforms();
-        console.log('Updated sounding uniforms. realWorldSounding_T[0]:', realWorldSounding_T[0], 'realWorldSounding_T[100]:', realWorldSounding_T[100]);
-      } else {
-        console.log('Simulation not yet initialized, uniforms will be updated when simulation starts');
-      }
-      // Update the preview image
-      updateSoundingPreview(newSoundingData);
-      alert('Sounding loaded successfully! Use the Sounding Forcing slider to apply it to the simulation.');
-    } else {
-      alert('Failed to load sounding data. Invalid file format.');
-    }
-  };
-  reader.readAsText(file);
-}
-
-function updateSoundingUniforms()
-{
-  if (!soundingData || soundingData.length < 10) return;
-  if (!guiControls || !guiControls.simHeight) {
-    console.warn('guiControls not initialized yet, cannot update sounding uniforms');
-    return;
-  }
-  if (!realWorldSounding_T || !realWorldSounding_W || !realWorldSounding_Vel) {
-    console.warn('Sounding arrays not initialized yet, cannot update sounding uniforms');
-    return;
-  }
-  
-  var soundingForSim = rawSoundingToSimSounding(soundingData, guiControls.simHeight, sim_res_y + 1);
-  
-  for (var y = 0; y < sim_res_y + 1; y++) {
-    let soundingSample = soundingForSim[y];
-    realWorldSounding_T[y] = realToPotentialT(CtoK(soundingSample.t), y);
-    realWorldSounding_W[y] = maxWater(CtoK(soundingSample.td), y);
-    realWorldSounding_Vel[y] = soundingSample.vel;
-  }
-  
-  gl.useProgram(advectionProgram);
-  gl.uniform4fv(gl.getUniformLocation(advectionProgram, 'realWorldSounding_Tv'), realWorldSounding_T);
-  gl.uniform4fv(gl.getUniformLocation(advectionProgram, 'realWorldSounding_Wv'), realWorldSounding_W);
-  gl.uniform4fv(gl.getUniformLocation(advectionProgram, 'realWorldSounding_Velv'), realWorldSounding_Vel);
-}
-
-function updateSoundingPreview(soundingData)
-{
-  const canvas = document.createElement('canvas');
-  canvas.width = 400;
-  canvas.height = 500;
-  const ctx = canvas.getContext('2d');
-  
-  // Background
-  ctx.fillStyle = '#1a1a2e';
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-  
-  // Draw grid
-  ctx.strokeStyle = '#333';
-  ctx.lineWidth = 1;
-  for (let i = 0; i <= 10; i++) {
-    const y = (i / 10) * canvas.height;
-    ctx.beginPath();
-    ctx.moveTo(0, y);
-    ctx.lineTo(canvas.width, y);
-    ctx.stroke();
-  }
-  
-  // Find min/max altitude and temperature
-  const alts = soundingData.map(d => d.alt);
-  const temps = soundingData.map(d => d.t);
-  const dewpoints = soundingData.map(d => d.td);
-  
-  const minAlt = Math.min(...alts);
-  const maxAlt = Math.max(...alts);
-  const minTemp = Math.min(...temps, ...dewpoints) - 5;
-  const maxTemp = Math.max(...temps, ...dewpoints) + 5;
-  
-  // Helper to map coordinates
-  const mapX = (temp) => ((temp - minTemp) / (maxTemp - minTemp)) * (canvas.width - 40) + 20;
-  const mapY = (alt) => canvas.height - ((alt - minAlt) / (maxAlt - minAlt)) * (canvas.height - 40) - 20;
-  
-  // Draw temperature line (red)
-  ctx.strokeStyle = '#ff4444';
-  ctx.lineWidth = 2;
-  ctx.beginPath();
-  soundingData.forEach((d, i) => {
-    const x = mapX(d.t);
-    const y = mapY(d.alt);
-    if (i === 0) ctx.moveTo(x, y);
-    else ctx.lineTo(x, y);
-  });
-  ctx.stroke();
-  
-  // Draw dewpoint line (blue)
-  ctx.strokeStyle = '#4444ff';
-  ctx.lineWidth = 2;
-  ctx.beginPath();
-  soundingData.forEach((d, i) => {
-    const x = mapX(d.td);
-    const y = mapY(d.alt);
-    if (i === 0) ctx.moveTo(x, y);
-    else ctx.lineTo(x, y);
-  });
-  ctx.stroke();
-  
-  // Labels
-  ctx.fillStyle = '#fff';
-  ctx.font = '12px Arial';
-  ctx.fillText('Temperature (°C)', 20, 15);
-  ctx.fillText('Altitude (m)', canvas.width - 80, canvas.height - 5);
-  
-  // Legend
-  ctx.fillStyle = '#ff4444';
-  ctx.fillRect(20, canvas.height - 30, 20, 10);
-  ctx.fillStyle = '#fff';
-  ctx.fillText('Temp', 45, canvas.height - 20);
-  
-  ctx.fillStyle = '#4444ff';
-  ctx.fillRect(100, canvas.height - 30, 20, 10);
-  ctx.fillStyle = '#fff';
-  ctx.fillText('Dewpoint', 125, canvas.height - 20);
-  
-  // Update preview image
-  const soundingImgEl = document.getElementById('soundingPreview');
-  soundingImgEl.src = canvas.toDataURL();
-}
 
 async function prepareSounding()
 {
@@ -2902,12 +1490,6 @@ async function prepareSounding()
   epochTime += hour * 3600;
 
   soundingData = await loadSounding(stationSelector.options[stationSelector.selectedIndex].value, epochTime);
-  customSoundingLoaded = false; // This is a real-world sounding, not custom
-  
-  // Update the shader uniforms with the new sounding data
-  if (soundingData && soundingData.length > 10) {
-    updateSoundingUniforms();
-  }
 }
 
 async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initialRainDrops)
@@ -3129,7 +1711,11 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       this.mix.gain.value = 170.0 / dist;
     }
 
-    mute() { if (this.mix && this.mix.gain) this.mix.gain.value = 0.; }
+    mute()
+    {
+      if (this.mix)
+        this.mix.gain.value = 0.;
+    }
 
     stop()
     {
@@ -3203,24 +1789,16 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
       // console.log(camDistFromSim, camHorDistFromStrike, distance, leftRightBalance);
 
-      // Speed of sound ≈ 343 m/s — thunder follows the flash, delayed by distance
+      // Speed of sound ≈ 343 m/s
       let soundDelay = distance / 343;                                            // in seconds
-      soundDelay = Math.max(soundDelay, 0.12); // always slightly after the visible flash
 
       let simTimeMult = timePerIteration * guiControls.IterPerFrame * FPS * 3600; // how much faster sime time is than real time
 
       soundDelay /= simTimeMult;
 
-      if (!guiControls.soundThunderEnabled) return;
-
-      let soundArray = intensity > 0.75 ? this.thunderCGSounds : this.thunderCCSounds;
-      if (!soundArray || soundArray.length === 0) return;
+      let soundArray = intensity > 1.0 ? this.thunderCGSounds : this.thunderCCSounds;
       let randomThunderSound = soundArray[Math.floor(Math.random() * soundArray.length)];
-      if (!randomThunderSound) return;
-      let volume = intensity * 0.16 * guiControls.soundVolumeThunder;
-      volume /= (1.0 + distance * 0.004);
-      volume = Math.min(volume, 0.55);
-      this.playOnce(randomThunderSound, volume, leftRightBalance, soundDelay);
+      this.playOnce(randomThunderSound, intensity / (distance * 0.001), leftRightBalance, soundDelay);
     }
 
     playOnce(buffer, volume = 1, leftRightBalance = 0, delay = 0)
@@ -3302,10 +1880,9 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         beach.mult(distVolumeMult * 1.0);
         urban.mult(distVolumeMult * 1.0);
 
-        const ambientMult = guiControls.soundAmbientEnabled ? guiControls.soundVolumeAmbient : 0.0;
-        this.setSoundLeftRight(this.forest_sound, forest.x * ambientMult, forest.y * ambientMult);
-        this.setSoundLeftRight(this.beach_sound,  beach.x  * ambientMult, beach.y  * ambientMult);
-        this.setSoundLeftRight(this.urban_sound,  urban.x  * ambientMult, urban.y  * ambientMult);
+        this.setSoundLeftRight(this.forest_sound, forest.x, forest.y);
+        this.setSoundLeftRight(this.beach_sound, beach.x, beach.y);
+        this.setSoundLeftRight(this.urban_sound, urban.x, urban.y);
 
         // wind sound
         gl.readBuffer(gl.COLOR_ATTACHMENT0); // basetexture
@@ -3314,8 +1891,9 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         gl.readPixels(simXpos, justAboveSurfaceCellY, 1, 1, gl.RGBA, gl.FLOAT, baseTextureValues); // read single cell at mouse position
 
         let windVolume = Math.abs(baseTextureValues[0]) * 10.0;
+
         windVolume *= distVolumeMult;
-        windVolume *= guiControls.soundWindEnabled ? guiControls.soundVolumeWind : 0.0;
+
         this.setSoundGainAndPan(this.wind_sound, windVolume);
 
         let tempC = KtoC(potentialToRealT(baseTextureValues[3], justAboveSurfaceCellY));
@@ -3334,8 +1912,8 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
           rainVolume = Math.pow(waterTextureValues[2] * 0.5, 0.5);
 
           rainVolume *= map_range_C(tempC, 0., 3., 0., 1.); // rain sound fades as temperature approaches 0 (wet snow)
+
           rainVolume *= distVolumeMult;
-          rainVolume *= guiControls.soundRainEnabled ? guiControls.soundVolumeRain : 0.0;
         }
 
         this.setSoundGainAndPan(this.rain_sound, rainVolume);
@@ -3372,10 +1950,11 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
     setSoundGainAndPan(sound, gain, pan = 0.0)
     {
-      if (sound) {
-        sound.gain.value = gain;
-        sound.pan.value = pan;
-      }
+      if (!sound)
+        return;
+
+      sound.gain.value = Number.isFinite(gain) ? gain : 0;
+      sound.pan.value = Number.isFinite(pan) ? pan : 0;
     }
 
     mute()
@@ -3688,14 +2267,6 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       this.#targetIASInput.step = '5';
       this.#targetIASInput.value = '220';
       this.#targetIASInput.style = 'width: 150px;';
-      this.#targetIASInput.readOnly = true;
-      this.#targetIASInput.style.cursor = 'default';
-      this.#targetIASInput.style.userSelect = 'none';
-      this.#targetIASInput.style.webkitUserSelect = 'none';
-      this.#targetIASInput.style.mozUserSelect = 'none';
-      this.#targetIASInput.style.msUserSelect = 'none';
-      this.#targetIASInput.tabIndex = -1;
-      this.#targetIASInput.addEventListener('focus', (e) => e.target.blur());
       this.#targetIASInput.addEventListener('wheel', (e) => { e.stopPropagation(); });
       this.#targetIASInput.addEventListener('keydown', (e) => { e.stopPropagation(); });
       speedLabel.appendChild(this.#targetIASInput);
@@ -3735,14 +2306,6 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       this.#targetGlideslopeInput.step = '1';
       this.#targetGlideslopeInput.value = '3';
       this.#targetGlideslopeInput.style.width = '55px';
-      this.#targetGlideslopeInput.readOnly = true;
-      this.#targetGlideslopeInput.style.cursor = 'default';
-      this.#targetGlideslopeInput.style.userSelect = 'none';
-      this.#targetGlideslopeInput.style.webkitUserSelect = 'none';
-      this.#targetGlideslopeInput.style.mozUserSelect = 'none';
-      this.#targetGlideslopeInput.style.msUserSelect = 'none';
-      this.#targetGlideslopeInput.tabIndex = -1;
-      this.#targetGlideslopeInput.addEventListener('focus', (e) => e.target.blur());
       this.#targetGlideslopeInput.addEventListener('wheel', (e) => { e.stopPropagation(); });
       this.#targetGlideslopeInput.addEventListener('keydown', (e) => { e.stopPropagation(); });
       glideSlopeLabel.appendChild(this.#targetGlideslopeInput);
@@ -4591,7 +3154,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       let gearPos = clamp(-(heightAboveGround - gearTouchAlt), 0.0, 5.0) + this.#gearExtPos; // 0 is all the way down, positive is up into the airplane
 
       gl.useProgram(skyBackgroundDisplayProgram);
-      gl.uniform2f(uloc_sky_planeDirectionAndGearPos, this.directionIsLeft, gearPos);
+      gl.uniform2f(gl.getUniformLocation(skyBackgroundDisplayProgram, 'planeDirectionAndGearPos'), this.directionIsLeft, gearPos);
 
       if (wallTextureValues[0] != 2 && (heightAboveObstacles < 6.0 || radarAltL < 6.0 || (heightAboveObstacles < 10.0 && Math.abs(this.phys.angle) > 0.25))) { // crash into the surface
         guiControls.IterPerFrame = 1;
@@ -4772,9 +3335,9 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
       // console.log(normXpos, normYpos);
       gl.useProgram(skyBackgroundDisplayProgram);
-      gl.uniform3f(uloc_sky_planePos, normXpos, normYpos, this.directionIsLeft ? this.phys.angle : -this.phys.angle);
+      gl.uniform3f(gl.getUniformLocation(skyBackgroundDisplayProgram, 'planePos'), normXpos, normYpos, this.directionIsLeft ? this.phys.angle : -this.phys.angle);
       gl.useProgram(advectionProgram);
-      gl.uniform4f(uloc_adv_airplaneValues, normXpos, normYpos, this.throttle, this.#framesSinceCrash > 0 ? 1.0 : (zPressed ? -1.0 : 0.0));
+      gl.uniform4f(gl.getUniformLocation(advectionProgram, 'airplaneValues'), normXpos, normYpos, this.throttle, this.#framesSinceCrash > 0 ? 1.0 : (zPressed ? -1.0 : 0.0));
       gl.useProgram(skyBackgroundDisplayProgram);
 
       if (this.#camFollow) {
@@ -4795,16 +3358,6 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   document.body.style.overflow = 'hidden'; // prevent scrolling bar from apearing
 
   canvas = document.getElementById('mainCanvas');
-  nukeOverlayCanvas = document.createElement('canvas');
-  nukeOverlayCanvas.id = 'nukeOverlayCanvas';
-  nukeOverlayCanvas.style.position = 'fixed';
-  nukeOverlayCanvas.style.top = '0';
-  nukeOverlayCanvas.style.left = '0';
-  nukeOverlayCanvas.style.pointerEvents = 'none';
-  nukeOverlayCanvas.style.zIndex = '2';
-  nukeOverlayCanvas.style.display = 'block';
-  document.body.appendChild(nukeOverlayCanvas);
-  nukeOverlayCtx = nukeOverlayCanvas.getContext('2d');
 
   var contextAttributes = {
     alpha : false,
@@ -4848,9 +3401,6 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         guiControls[key] = guiControls_default[key];
       }
     }
-
-    // Update sim_height from loaded save file (preserve saved altitude)
-    sim_height = guiControls.simHeight;
   }
 
   function setGuiUniforms()
@@ -4894,53 +3444,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'meltingRate'), guiControls.meltingRate);
     gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'evapRate'), guiControls.evapRate);
     gl.useProgram(postProcessingProgram);
-    gl.uniform1f(postProc_exposure_loc, guiControls.exposure);
-    gl.uniform1f(postProc_saturation_loc, guiControls.saturation);
-    gl.uniform1f(postProc_contrast_loc, guiControls.contrast);
-    gl.useProgram(realisticDisplayProgram);
-    gl.uniform1i(gl.getUniformLocation(realisticDisplayProgram, 'invertSun'), guiControls.invertSun ? 1 : 0);
-  }
-
-  function updateMenuStyle()
-  {
-    // Apply menu width
-    datGui.width = guiControls.menuWidth;
-    
-    // Apply background color
-    const guiElement = datGui.domElement;
-    guiElement.style.backgroundColor = guiControls.menuBackgroundColor;
-    
-    // Apply text color to all elements
-    const allTextElements = guiElement.querySelectorAll('*');
-    allTextElements.forEach(el => {
-      if (el.classList.contains('property-name') || 
-          el.classList.contains('c') || 
-          el.tagName === 'LABEL' ||
-          el.tagName === 'SPAN') {
-        el.style.color = guiControls.menuTextColor;
-      }
-    });
-    
-    // Apply accent color to sliders only
-    const sliders = guiElement.querySelectorAll('.slider-fg');
-    sliders.forEach(slider => {
-      slider.style.backgroundColor = guiControls.menuAccentColor;
-    });
-    
-    // Keep folder titles white (not accent color)
-    const folders = guiElement.querySelectorAll('.title');
-    folders.forEach(folder => {
-      folder.style.color = guiControls.menuTextColor;
-      // Make folder titles clickable to toggle open/close
-      folder.style.cursor = 'pointer';
-      folder.addEventListener('click', () => {
-        const li = folder.parentElement;
-        const ul = li.querySelector('ul');
-        if (ul) {
-          ul.classList.toggle('closed');
-        }
-      });
-    });
+    gl.uniform1f(gl.getUniformLocation(postProcessingProgram, 'exposure'), guiControls.exposure);
   }
 
   function setupDatGui(strGuiControls)
@@ -4967,21 +3471,6 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     // add functions to guicontrols object
     guiControls.download = function() { prepareDownload(); };
 
-    guiControls.openColorScaleEditor = function() {
-      const panel = document.getElementById('colorScalePanel');
-      if (panel) {
-        panel.style.display = 'block';
-      }
-    };
-
-    guiControls.openAllRadarMenus = function() {
-      for (let i = 0; i < radars.length; i++) {
-        if (radars[i].getMenuDiv && radars[i].getMenuDiv().style.display === 'none') {
-          radars[i].toggleMenu();
-        }
-      }
-    };
-
     guiControls.resetSettings = function() {
       if (confirm('Are you sure you want to reset all settings to default?')) {
         datGui.destroy();                                 // remove datGui completely
@@ -5001,7 +3490,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       })
       .name('Vorticity');
 
-    fluidParams_folder.add(guiControls, 'dragMultiplier', 0.0, 1.0, 0.01)
+    fluidParams_folder.add(guiControls, 'dragMultiplier', 0.0, 100.0, 0.01)
       .onChange(function() {
         gl.useProgram(velocityProgram);
         gl.uniform1f(gl.getUniformLocation(velocityProgram, 'dragMultiplier'), guiControls.dragMultiplier);
@@ -5082,9 +3571,6 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         'Snow' : 'TOOL_WALL_SNOW',
         'Wind' : 'TOOL_WIND',
         'Weather Station' : 'TOOL_STATION',
-        'Radar Tower' : 'TOOL_RADAR',
-        'Marker' : 'TOOL_MARKER',
-        'Nuke' : 'TOOL_NUKE',
       })
       .name('Tool')
       .listen();
@@ -5142,13 +3628,6 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       })*/
       .name('IR Multiplier');
 
-    radiation_folder.add(guiControls, 'invertSun')
-      .onChange(function() {
-        gl.useProgram(realisticDisplayProgram);
-        gl.uniform1i(gl.getUniformLocation(realisticDisplayProgram, 'invertSun'), guiControls.invertSun ? 1 : 0);
-      })
-      .name('Invert Sun');
-
     var water_folder = datGui.addFolder('Water');
 
     water_folder.add(guiControls, 'waterTemperature', 0.0, 40.0, 0.1)
@@ -5195,7 +3674,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'meltingHeat'), guiControls.meltingHeat);
       })
       .name('Melting Heat');
-    water_folder.add(guiControls, 'condensationRate', 0.00001, 0.020, 0.001)
+    water_folder.add(guiControls, 'condensationRate', 0.001, 0.020, 0.001)
       .onChange(function() {
         gl.useProgram(advectionProgram);
         gl.uniform1f(gl.getUniformLocation(advectionProgram, 'condensationRate'), guiControls.condensationRate);
@@ -5286,24 +3765,6 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
     precipitation_folder.add(guiControls, 'inactiveDroplets', 0, NUM_DROPLETS).listen().name('Inactive Droplets');
 
-    var radar_folder = datGui.addFolder('Radar');
-    radar_folder.add(guiControls, 'radarOpacity', 0.0, 1.0, 0.05).name('Radar Imagery Opacity').listen();
-    radar_folder.add(guiControls, 'radarUpdateFrequency', 1, 300, 1).name('Update Frequency (iterations)').listen();
-    radar_folder.add(guiControls, 'radarOverlay').name('Overlay on Realistic View').listen();
-    radar_folder.add(guiControls, 'radarLightningIcons').name('Lightning Strike Icons').listen();
-    radar_folder.add(guiControls, 'radarLightningIconDuration', 0.5, 30, 0.5).name('Lightning Icon Duration (s)').listen();
-    radar_folder.add(guiControls, 'dbzOpacityEnabled').name('dBZ-Based Opacity').listen();
-    radar_folder.add(guiControls, 'dbzOpacityStrength', 0.0, 10.0, 0.05).name('dBZ Opacity Strength').listen();
-    radar_folder.add(guiControls, 'worldRadarResolution', 0.3, 100.0, 0.1).name('World Radar Resolution').listen();
-    radar_folder.add(guiControls, 'worldRadarSensitivity', 0.0, 10.0, 0.01).name('World Radar Sensitivity').listen();
-
-    var lightning_folder = datGui.addFolder('Lightning');
-    lightning_folder.add(guiControls, 'cloudLightningFrequency', 0.0, 100.0, 0.05).name('Cloud-Cloud Frequency');
-    lightning_folder.add(guiControls, 'enableStrobeLightning').name('Strobe Lightning');
-    lightning_folder.add(guiControls, 'strobeLightningIntensity', 0.0, 10.0, 0.1).name('Strobe Intensity');
-    lightning_folder.add(guiControls, 'strobeLightningThreshold', 0.0, 1.0, 0.05).name('Strobe Threshold');
-    lightning_folder.add(guiControls, 'strobeLightningFrequency', 0.0, 100.0, 0.05).name('Strobe Frequency');
-    lightning_folder.add(guiControls, 'cloudGroundLightningFrequency', 0.0, 100.0, 0.05).name('Cloud-Ground Frequency');
 
     var display_folder = datGui.addFolder('Display');
 
@@ -5324,15 +3785,8 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         'Snow Deposition' : 'DISP_PRECIPFEEDBACK_SNOW',
         'Precipitation/Soil Moisture' : 'DISP_SOIL_MOISTURE',
         'Curl' : 'DISP_CURL',
-        'CAPE' : 'DISP_CAPE',
         'Relative Humidity / Cloud Density' : 'DISP_HUMD',
-        'Air Quality' : 'DISP_AIRQUALITY',
-        'Temperature Change' : 'DISP_TEMPERATURE_CHANGE',
-        'Charge' : 'DISP_CHARGE',
-        'Radar Imagery' : 'DISP_RADAR',
-        'Composite Radar' : 'DISP_RADAR_COMPOSITE',
-        'World Radar' : 'DISP_RADAR_WORLD',
-        'Convective Risk' : 'DISP_RISK'
+        'Air Quality' : 'DISP_AIRQUALITY'
       })
       .name('Display Mode')
       .listen();
@@ -5363,77 +3817,6 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     display_folder.add(guiControls, 'showDrops').name('Show Droplets').listen();
     display_folder.add(guiControls, 'realDewPoint').name('Show Real Dew Point');
 
-    display_folder.add(guiControls, 'saturation', 0.0, 3.0, 0.01)
-      .onChange(function() {
-        gl.useProgram(postProcessingProgram);
-        gl.uniform1f(gl.getUniformLocation(postProcessingProgram, 'saturation'), guiControls.saturation);
-      })
-      .name('Saturation');
-
-    display_folder.add(guiControls, 'contrast', 0.5, 3.0, 0.01)
-      .onChange(function() {
-        gl.useProgram(postProcessingProgram);
-        gl.uniform1f(gl.getUniformLocation(postProcessingProgram, 'contrast'), guiControls.contrast);
-      })
-      .name('Contrast');
-
-    display_folder.add(guiControls, 'greenHueStartThreshold', 0.0, 25.0, 0.01)
-      .onChange(function() {
-        gl.useProgram(realisticDisplayProgram);
-        gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'greenHueStartThreshold'), guiControls.greenHueStartThreshold);
-        gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'greenHueEndThreshold'), guiControls.greenHueEndThreshold);
-      })
-      .name('Green Hue Start');
-
-    display_folder.add(guiControls, 'greenHueEndThreshold', 0.0, 50.0, 0.01)
-      .onChange(function() {
-        gl.useProgram(realisticDisplayProgram);
-        gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'greenHueStartThreshold'), guiControls.greenHueStartThreshold);
-        gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'greenHueEndThreshold'), guiControls.greenHueEndThreshold);
-        gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'greenHueStrength'), guiControls.greenHueStrength);
-      })
-      .name('Green Hue End');
-
-    display_folder.add(guiControls, 'greenHueStrength', 0.0, 5.0, 0.001)
-      .onChange(function() {
-        gl.useProgram(realisticDisplayProgram);
-        gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'greenHueStrength'), guiControls.greenHueStrength);
-      })
-      .name('Green Hue Strength');
-
-    display_folder.add(guiControls, 'starVisibility', 0.0, 1.0, 0.01)
-      .onChange(function() {
-        gl.useProgram(skyBackgroundDisplayProgram);
-        gl.uniform1f(gl.getUniformLocation(skyBackgroundDisplayProgram, 'starVisibility'), guiControls.starVisibility);
-      })
-      .name('Star Visibility');
-
-    display_folder.add(guiControls, 'starLightEmitStrength', 0.0, 0.5, 0.01)
-      .onChange(function() {
-        gl.useProgram(skyBackgroundDisplayProgram);
-        gl.uniform1f(gl.getUniformLocation(skyBackgroundDisplayProgram, 'starLightEmitStrength'), guiControls.starLightEmitStrength);
-      })
-      .name('Star Light Emit Strength');
-
-    display_folder.add(guiControls, 'starDensity', 0.0, 1.0, 0.01)
-      .onChange(function() {
-        gl.useProgram(skyBackgroundDisplayProgram);
-        gl.uniform1f(gl.getUniformLocation(skyBackgroundDisplayProgram, 'starDensity'), guiControls.starDensity);
-      })
-      .name('Star Density');
-
-    display_folder.add(guiControls, 'autoMinShadowLight').name('Auto Shadow Light');
-
-    display_folder.add(guiControls, 'minShadowLight', 0.0, 0.2, 0.001)
-      .onChange(function() {
-        if (!guiControls.autoMinShadowLight) {
-          gl.useProgram(realisticDisplayProgram);
-          gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'minShadowLight'), guiControls.minShadowLight);
-          gl.useProgram(skyBackgroundDisplayProgram);
-          gl.uniform1f(gl.getUniformLocation(skyBackgroundDisplayProgram, 'minShadowLight'), guiControls.minShadowLight);
-        }
-      })
-      .name('Min Shadow Light (0=darkest)');
 
     display_folder.add(guiControls, 'twelveHourClock').name('12-hour clock');
 
@@ -5479,14 +3862,6 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
     var advanced_folder = datGui.addFolder('Advanced');
 
-    // Nukes folder
-    var nukes_folder = datGui.addFolder('Nukes');
-    nukes_folder.add(guiControls, 'nukeBlastRadius', 10, 200, 1).name('Blast Radius');
-    nukes_folder.add(guiControls, 'nukeTemperature', 0, 500, 10).name('Blast Temperature (°C)');
-    nukes_folder.add(guiControls, 'nukeSmokeAmount', 0, 10, 0.1).name('Smoke Amount');
-    nukes_folder.add(guiControls, 'nukeFallSpeed', 1, 50, 1).name('Fall Speed (m/s)');
-    nukes_folder.add(guiControls, 'nukeIgnitionEnabled').name('Ignite Vegetation');
-
     advanced_folder.add(guiControls, 'enablePrecipitation')
       .onChange(function() {
         initRainDrops();
@@ -5510,77 +3885,10 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       }
     });
 
-    advanced_folder.add(guiControls, 'enableBloom').name('Enable Bloom');
-    advanced_folder.add(guiControls, 'enableVectorField').name('Vector Field');
-    advanced_folder.add(guiControls, 'enhancedLooks')
-      .onChange(function() {
-        gl.useProgram(realisticDisplayProgram);
-        gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'enhancedLooks'), guiControls.enhancedLooks ? 1.0 : 0.0);
-      })
-      .name('Smooth Clouds');
-    advanced_folder.add(guiControls, 'displayWeatherStations')
-      .onChange(function() {
-        displayWeatherStations = guiControls.displayWeatherStations;
-        for (i = 0; i < weatherStations.length; i++) {
-          weatherStations[i].setHidden(!displayWeatherStations);
-        }
-      })
-      .name('Weather Stations');
-    advanced_folder.add(guiControls, 'displayRadars')
-      .onChange(function() {
-        displayRadars = guiControls.displayRadars;
-        for (i = 0; i < radars.length; i++) {
-          radars[i].setHidden(!displayRadars);
-        }
-      })
-      .name('Radars');
-    advanced_folder.add(guiControls, 'airplaneMode')
-      .onChange(function() {
-        airplaneMode = guiControls.airplaneMode;
-        if (airplaneMode) {
-          airplane.enableAirplaneMode(false);
-        } else {
-          airplane.disableAirplaneMode();
-        }
-      })
-      .name('Airplane Mode');
-    advanced_folder.add(guiControls, 'slowMotion')
-      .name('Realtime (Slow Motion)');
-    advanced_folder.add(guiControls, 'realDewPoint').name('Real Dew Point');
-    advanced_folder.add(guiControls, 'soundingMode')
-      .onChange(function() {
-        gl.useProgram(velocityProgram);
-        gl.uniform1f(gl.getUniformLocation(velocityProgram, 'dragMultiplier'),
-          guiControls.soundingMode ? 999.0 : guiControls.dragMultiplier);
-      })
-      .name('Sounding Mode');
-    advanced_folder.add(guiControls, 'fullscreenResolution', 
-      ['Default', '640x480', '800x600', '1024x768', '1280x720', '1280x1024', '1366x768', '1600x900', '1920x1080', '2560x1440', '3840x2160'])
-      .onChange(changeFullscreenResolution)
-      .name('Fullscreen Res');
-    advanced_folder.add(guiControls, 'skipCurlCalculation').name('Skip Curl (Faster)');
-    advanced_folder.add(guiControls, 'skipCAPECalculation').name('Skip CAPE (Faster)');
-    advanced_folder.add(guiControls, 'simulationQuality', 0.1, 25.0, 0.1).name('Sim Quality (High=Fast)');
-    advanced_folder.add(guiControls, 'skipLightingCalculation').name('Skip Lighting (Major boost)');
-    advanced_folder.add(guiControls, 'skipAdvection').name('Skip Advection (No fluid)');
-    advanced_folder.add(guiControls, 'skipChargeCalculation').name('Skip Charge (Faster)');
-    advanced_folder.add(guiControls, 'reducedWeatherStationUpdates').name('Reduce Station Updates');
-    advanced_folder.add(guiControls, 'reducedPrecipitation')
-      .onChange(function() {
-        initRainDrops();
-        setupPrecipitationBuffers();
-        guiControls.inactiveDroplets = NUM_DROPLETS;
-      })
-      .name('Reduce Precipitation');
-    advanced_folder.add(guiControls, 'disableTempChangeHistory').name('Disable Temp History');
-
     advanced_folder.add(guiControls, 'resetSettings').name('Reset all settings');
 
     datGui.add(guiControls, 'paused').onChange(handlePause).name('Paused').listen();
     datGui.add(guiControls, 'download').name('Save Simulation to File');
-    datGui.add(guiControls, 'openColorScaleEditor').name('Open Color Scale Editor');
-    datGui.add(guiControls, 'hodograph2DNodes', 5, 100, 1).name('2D Hodograph Nodes');
-    datGui.add(guiControls, 'hodographProfileNodes', 5, 100, 1).name('Profile Hodograph Nodes');
 
     datGui.width = 400;
   }
@@ -5590,14 +3898,11 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   await loadingBar.set(3, 'Initializing Sounding Graph');
   // END OF GUI
 
-  window.startSimulation = function()
+  function startSimulation()
   {
-    console.log('startSimulation called, SETUP_MODE was:', SETUP_MODE);
     SETUP_MODE = false;
     gl.useProgram(postProcessingProgram);
-    gl.uniform1f(postProc_exposure_loc, guiControls.exposure);
-    gl.uniform1f(postProc_saturation_loc, guiControls.saturation);
-    gl.uniform1f(postProc_contrast_loc, guiControls.contrast);
+    gl.uniform1f(gl.getUniformLocation(postProcessingProgram, 'exposure'), guiControls.exposure);
     datGui.show(); // unhide
 
     clockEl = document.createElement('div');
@@ -5608,11 +3913,6 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     clockEl.style.fontFamily = 'Monospace';
     clockEl.style.fontSize = '35px';
     clockEl.style.color = 'white';
-    clockEl.style.width = '100%';
-    clockEl.style.textAlign = 'center';
-    clockEl.style.top = '0';
-    clockEl.style.left = '200px';
-    clockEl.style.pointerEvents = 'none';
 
     simDateTime = new Date(2000, Math.floor(guiControls.month) - 1, (guiControls.month % 1) * 30.417);
 
@@ -5628,9 +3928,6 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   var soundingGraph = {
     graphCanvas : null,
     ctx : null,
-    saveButtonBounds : null,
-    _lastGraphX : null,
-    _windDisplaySmooth : null,
     init : function() {
       this.graphCanvas = document.getElementById('graphCanvas');
       this.graphCanvas.height = window.innerHeight;
@@ -5641,132 +3938,6 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         style.display = 'block';
       else
         style.display = 'none';
-      
-      // Add click handler for the Freeze/Save Sounding button
-      if (!this.buttonClickHandler) {
-        this.buttonClickHandler = (e) => {
-          if (!this.saveButtonBounds) {
-            console.log('Button bounds not set');
-            return;
-          }
-          const rect = this.graphCanvas.getBoundingClientRect();
-          const x = e.clientX - rect.left;
-          const y = e.clientY - rect.top;
-          
-          console.log('Click at:', x, y, 'Button bounds:', this.saveButtonBounds, this.unlockButtonBounds);
-          
-          // Check if save button was clicked
-          if (x >= this.saveButtonBounds.x && x <= this.saveButtonBounds.x + this.saveButtonBounds.width &&
-              y >= this.saveButtonBounds.y && y <= this.saveButtonBounds.y + this.saveButtonBounds.height) {
-            console.log('Save button clicked! Current fixedPosition:', guiControls.graphFixedPosition);
-            if (guiControls.graphFixedPosition) {
-              // Save sounding (stay frozen)
-              this.saveCurrentSounding();
-              console.log('Sounding saved, staying frozen');
-            } else {
-              // Freeze position
-              guiControls.graphFixedPosition = true;
-              guiControls.graphFixedX = Math.floor(Math.abs(mod(mouseXinSim * sim_res_x, sim_res_x)));
-              guiControls.graphFixedY = Math.floor(mouseYinSim * sim_res_y);
-              console.log('Frozen to position:', guiControls.graphFixedX, guiControls.graphFixedY);
-            }
-          }
-          
-          // Check if unlock button was clicked (only exists when frozen)
-          if (this.unlockButtonBounds && 
-              x >= this.unlockButtonBounds.x && x <= this.unlockButtonBounds.x + this.unlockButtonBounds.width &&
-              y >= this.unlockButtonBounds.y && y <= this.unlockButtonBounds.y + this.unlockButtonBounds.height) {
-            console.log('Unlock button clicked - unfreezing without saving');
-            guiControls.graphFixedPosition = false;
-            console.log('Unlocked - now following cursor');
-          }
-        };
-        this.graphCanvas.addEventListener('click', this.buttonClickHandler);
-      }
-    },
-    saveCurrentSounding : function() {
-      // Read the current column data from the simulation
-      const simXpos = guiControls.graphFixedX;
-      
-      gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_1);
-      gl.readBuffer(gl.COLOR_ATTACHMENT0);
-      var baseTextureValues = new Float32Array(4 * sim_res_y);
-      gl.readPixels(simXpos, 0, 1, sim_res_y, gl.RGBA, gl.FLOAT, baseTextureValues);
-      
-      gl.readBuffer(gl.COLOR_ATTACHMENT1);
-      var waterTextureValues = new Float32Array(4 * sim_res_y);
-      gl.readPixels(simXpos, 0, 1, sim_res_y, gl.RGBA, gl.FLOAT, waterTextureValues);
-      
-      gl.readBuffer(gl.COLOR_ATTACHMENT2);
-      var wallTextureValues = new Int32Array(4 * sim_res_y);
-      gl.readPixels(simXpos, 0, 1, sim_res_y, gl.RGBA_INTEGER, gl.INT, wallTextureValues);
-      
-      // Extract sounding data
-      const dz = guiControls.simHeight / sim_res_y;
-      const soundingData = [];
-      
-      console.log('saveCurrentSounding: dryLapse =', dryLapse, 'simHeight =', guiControls.simHeight, 'sim_res_y =', sim_res_y);
-      
-      for (let y = 0; y < sim_res_y; y++) {
-        if (wallTextureValues[4 * y + 1] === 0) continue; // Skip non-fluid cells
-        
-        const potentialTemp = baseTextureValues[4 * y + 3];
-        // Convert potential temperature (K) to real temperature (C)
-        // realToPotentialT does: potential = real + (y/sim_res_y) * dryLapse
-        // So to reverse: real = potential - (y/sim_res_y) * dryLapse
-        const tempK = potentialTemp - (y / sim_res_y) * dryLapse;
-        const temp = tempK - 273.15;
-        const water = waterTextureValues[4 * y];
-        const tdK = dewpoint(water);
-        const td = KtoC(tdK);
-        const rh = relativeHumd(CtoK(temp), water);
-        
-        // Calculate velocity from raw velocity
-        const velRaw = Math.sqrt(Math.pow(baseTextureValues[4 * y], 2) + Math.pow(baseTextureValues[4 * y + 1], 2));
-        const vel = rawVelocityTo_ms(velRaw) * 3.6; // Convert to km/h
-        const angle = Math.atan2(baseTextureValues[4 * y + 1], baseTextureValues[4 * y]) * 180 / Math.PI;
-        
-        // Estimate pressure (simple barometric formula)
-        const alt = y * dz;
-        const p = 1013.25 * Math.pow(1 - 2.25577e-5 * alt, 5.25588);
-        
-        // Estimate wet bulb (simplified)
-        const tw = temp - (100 - rh) / 5;
-        
-        soundingData.push({
-          alt: alt,
-          p: p,
-          t: temp,
-          tw: tw,
-          td: td,
-          rh: rh,
-          vel: vel,
-          angle: angle
-        });
-      }
-      
-      console.log('saveCurrentSounding: sample data at y=0:', soundingData[0], 'at y=100:', soundingData[100], 'at y=200:', soundingData[200]);
-      
-      // Create text file content
-      let content = "# Sounding Data Export from Simulation\n";
-      content += "# Alt(m), Pressure(hPa), Temp(C), WetBulb(C), DewPoint(C), RH(%), Velocity(km/h), Angle(deg)\n";
-      
-      soundingData.forEach(row => {
-        content += `${row.alt.toFixed(1)}, ${row.p.toFixed(1)}, ${row.t.toFixed(1)}, ${row.tw.toFixed(1)}, ${row.td.toFixed(1)}, ${row.rh.toFixed(1)}, ${row.vel.toFixed(1)}, ${row.angle.toFixed(1)}\n`;
-      });
-      
-      // Download the file
-      const blob = new Blob([content], { type: 'text/plain' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = 'simulation_sounding.txt';
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-      
-      alert('Sounding saved! You can load it from the main menu using the "Load Sounding" button (:');
     },
     draw : function(simXpos, simYpos) {
       // draw graph
@@ -5789,129 +3960,11 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
       const graphBottem = this.graphCanvas.height - 40; // in pixels
 
-      // Sounding layout: full-width skew-T with right-side overlays (wind column sized after profile is built)
-      const windBarbScale = 2.5;
-      const infoBoxWidth = 320;
-      let WIND_COL_W = 70;
-      let windBarbX = this.graphCanvas.width - 30;
-      let infoBoxX = this.graphCanvas.width - infoBoxWidth - WIND_COL_W - 12;
-      const graphCanvasW = this.graphCanvas.width;
-      const graphCanvasH = this.graphCanvas.height;
-
       var c = this.ctx;
 
-      function integrateSegment(B0, B1, dz) {
-        if (B0 >= 0 && B1 >= 0)
-          return {pos: (B0 + B1) * 0.5 * dz, neg: 0};
-        if (B0 <= 0 && B1 <= 0)
-          return {pos: 0, neg: (B0 + B1) * 0.5 * dz};
-        const factor = Math.abs(B0) / (Math.abs(B0) + Math.abs(B1));
-        const zcross = factor * dz;
-        if (B0 < 0) {
-          return {pos: B1 * (dz - zcross) * 0.5, neg: B0 * zcross * 0.5};
-        } else {
-          return {pos: B0 * zcross * 0.5, neg: B1 * (dz - zcross) * 0.5};
-        }
-      }
-
-      function computeParcelProfile(surfaceTempC, surfaceTdC, startIndex) {
-        const parcelTemps = new Float32Array(sim_res_y);
-        const mixingWater = maxWater(CtoK(surfaceTdC));
-        let prevTemp = surfaceTempC;
-        let prevCloudWater = 0.0;
-        const dz = guiControls.simHeight / sim_res_y;
-        parcelTemps.fill(NaN);
-        parcelTemps[startIndex] = surfaceTempC;
-
-        for (let y = startIndex + 1; y < sim_res_y; y++) {
-          const dT = -9.8 * dz / 1000.0;
-          const nextDry = prevTemp + dT;
-          const cloudWater = Math.max(mixingWater - maxWater(CtoK(nextDry)), 0.0);
-          const dWt = (cloudWater - prevCloudWater) * guiControls.evapHeat;
-          const deltaT = dT_saturated(dT, dWt);
-          const T = prevTemp + deltaT;
-          parcelTemps[y] = T;
-          prevTemp = T;
-          prevCloudWater = Math.max(mixingWater - maxWater(CtoK(T)), 0.0);
-        }
-
-        return parcelTemps;
-      }
-
-      function computeCAPE(envTempsC, envDewC, parcelTemps, startIndex) {
-        const dz = guiControls.simHeight / sim_res_y;
-        const altFromIndex = (index) => index * dz;
-        let lclAlt = NaN;
-        let lfcAlt = NaN;
-        let elAlt = NaN;
-        let cape = 0.0;
-        let cinh = 0.0;
-
-        const buoy = new Float32Array(sim_res_y);
-        for (let y = startIndex; y < sim_res_y; y++) {
-          const envTk = CtoK(envTempsC[y]);
-          const parcelTk = CtoK(parcelTemps[y]);
-          buoy[y] = 9.81 * (parcelTk - envTk) / envTk;
-        }
-
-        // LCL: parcel cools at dry lapse until its temp equals its own dew point.
-        // Parcel dew point is constant (fixed mixing ratio = maxWater at surface Td).
-        // Use the simple approximation: LCL_height ~ (T_sfc - Td_sfc) / 8 * 1000 m
-        const surfTdiff = parcelTemps[startIndex] - envDewC[startIndex];
-        lclAlt = surfTdiff > 0 ? (surfTdiff / 8.0) * 1000.0 : altFromIndex(startIndex);
-        lclAlt = Math.max(0, lclAlt) + altFromIndex(startIndex);
-
-        let prevBuoy = buoy[startIndex];
-
-        for (let y = startIndex + 1; y < sim_res_y; y++) {
-          const alt1 = altFromIndex(y - 1);
-          const alt2 = altFromIndex(y);
-          const seg = integrateSegment(buoy[y - 1], buoy[y], dz);
-          cape += Math.max(0, seg.pos);
-
-          if (alt2 <= 10000) {
-            cinh += Math.min(0, seg.neg);
-          } else if (alt1 < 10000) {
-            const ratio = (10000 - alt1) / (alt2 - alt1);
-            const dzBelow = dz * ratio;
-            const buoyCut = buoy[y - 1] + (buoy[y] - buoy[y - 1]) * ratio;
-            const segBelow = integrateSegment(buoy[y - 1], buoyCut, dzBelow);
-            cinh += Math.min(0, segBelow.neg);
-          }
-
-          if (isNaN(lfcAlt) && prevBuoy <= 0 && buoy[y] > 0) {
-            const ratio = prevBuoy / (prevBuoy - buoy[y]);
-            lfcAlt = altFromIndex(y - 1) + ratio * dz;
-          }
-
-          if (!isNaN(lfcAlt) && isNaN(elAlt) && prevBuoy > 0 && buoy[y] <= 0) {
-            const ratio = prevBuoy / (prevBuoy - buoy[y]);
-            elAlt = altFromIndex(y - 1) + ratio * dz;
-          }
-
-          prevBuoy = buoy[y];
-        }
-
-        return {cape, cinh, lclAlt, lfcAlt, elAlt};
-      }
-
-      function meanLayerParcel(envTempsC, envDewC, startIndex) {
-        const dz = guiControls.simHeight / sim_res_y;
-        const maxLevels = Math.max(1, Math.min(sim_res_y - startIndex, Math.round(1000 / dz)));
-        let sumT = 0.0;
-        let sumTd = 0.0;
-        for (let y = startIndex; y < startIndex + maxLevels; y++) {
-          sumT += envTempsC[y];
-          sumTd += envDewC[y];
-        }
-        const meanT = sumT / maxLevels;
-        const meanTd = sumTd / maxLevels;
-        return computeParcelProfile(meanT, meanTd, startIndex);
-      }
-
-      c.clearRect(0, 0, this.graphCanvas.width, this.graphCanvas.height);
+      c.clearRect(0, 0, graphCanvas.width, graphCanvas.height);
       c.fillStyle = '#00000055';
-      c.fillRect(0, 0, this.graphCanvas.width, this.graphCanvas.height);
+      c.fillRect(0, 0, graphCanvas.width, graphCanvas.height);
 
       drawIsotherms();
 
@@ -5976,690 +4029,24 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       c.strokeStyle = '#FF0000';
       c.stroke();
 
-      // Compute sounding stability metrics for skew-T readout
-      const envTempsC = new Float32Array(sim_res_y);
-      const envDewC = new Float32Array(sim_res_y);
-      for (let y = 0; y < sim_res_y; y++) {
-        const potentialTemp = baseTextureValues[4 * y + 3];
-        envTempsC[y] = potentialTemp - ((y / sim_res_y) * guiControls.simHeight * guiControls.dryLapseRate) / 1000.0 - 273.15;
-        envDewC[y] = KtoC(dewpoint(waterTextureValues[4 * y]));
-      }
 
-      const surfaceWindSpeed = rawVelocityTo_ms(Math.sqrt(
-        Math.pow(baseTextureValues[4 * surfaceLevel], 2) + Math.pow(baseTextureValues[4 * surfaceLevel + 1], 2)
-      ));
-
-      const parcelProfile = computeParcelProfile(envTempsC[surfaceLevel], envDewC[surfaceLevel], surfaceLevel);
-      const soundingMetrics = computeCAPE(envTempsC, envDewC, parcelProfile, surfaceLevel);
-      const meanParcelProfile = meanLayerParcel(envTempsC, envDewC, surfaceLevel);
-      const meanLayerMetrics = computeCAPE(envTempsC, envDewC, meanParcelProfile, surfaceLevel);
-
-      // Most Unstable CAPE: try every level in lowest 3km, pick max CAPE
-      let muCape = soundingMetrics.cape;
-      let muCinh = soundingMetrics.cinh;
-      let muLcl = soundingMetrics.lclAlt;
-      let muLfc = soundingMetrics.lfcAlt;
-      let muEl = soundingMetrics.elAlt;
-      const dz = guiControls.simHeight / sim_res_y;
-      const maxMUlevel = surfaceLevel + Math.round(3000 / dz);
-      for (let y = surfaceLevel; y < Math.min(maxMUlevel, sim_res_y); y++) {
-        if (wallTextureValues[4 * y + 1] === 0) continue;
-        const pp = computeParcelProfile(envTempsC[y], envDewC[y], y);
-        const m = computeCAPE(envTempsC, envDewC, pp, y);
-        if (m.cape > muCape) { muCape = m.cape; muCinh = m.cinh; muLcl = m.lclAlt; muLfc = m.lfcAlt; muEl = m.elAlt; }
-      }
-
-      // 3CAPE: CAPE in the first 3km of the atmosphere (surface-based parcel, integrate buoyancy to 3km)
-      let cape3km = 0;
-      const y3km = surfaceLevel + Math.round(3000 / dz);
-      if (y3km < sim_res_y && wallTextureValues[4 * surfaceLevel + 1] !== 0) {
-        const ppSurface = computeParcelProfile(envTempsC[surfaceLevel], envDewC[surfaceLevel], surfaceLevel);
-        // Compute buoyancy array for surface parcel
-        const buoy = new Float32Array(sim_res_y);
-        for (let y = surfaceLevel; y < sim_res_y; y++) {
-          const envTk = CtoK(envTempsC[y]);
-          const parcelTk = CtoK(ppSurface[y]);
-          buoy[y] = 9.81 * (parcelTk - envTk) / envTk;
-        }
-        // Integrate positive buoyancy only from surface to 3km
-        let prevBuoy = buoy[surfaceLevel];
-        for (let y = surfaceLevel + 1; y <= y3km && y < sim_res_y; y++) {
-          const seg = integrateSegment(buoy[y - 1], buoy[y], dz);
-          cape3km += Math.max(0, seg.pos);
-          prevBuoy = buoy[y];
-        }
-      }
-
-      // Lifted Index: difference between parcel temp and env temp at 500mb (~5.5km)
-      let liftedIndex = NaN;
-      const y500mb = surfaceLevel + Math.round(5500 / dz);
-      if (y500mb < sim_res_y && wallTextureValues[4 * y500mb + 1] !== 0) {
-        const parcelTemp500 = parcelProfile[y500mb];
-        const envTemp500 = envTempsC[y500mb];
-        if (!isNaN(parcelTemp500)) {
-          liftedIndex = envTemp500 - parcelTemp500; // Positive = stable, Negative = unstable
-        }
-      }
-
-      // Wind shear at 0-3km, 0-6km, 0-8km (bulk shear = vector difference magnitude)
-      function windSpeedAtY(y) {
-        const i = Math.min(y, sim_res_y - 1) * 4;
-        return rawVelocityTo_ms(Math.sqrt(
-          Math.pow(baseTextureValues[i], 2) + Math.pow(baseTextureValues[i + 1], 2)
-        ));
-      }
-      function windShearToAlt(altM) {
-        const targetY = surfaceLevel + Math.round(altM / dz);
-        if (targetY >= sim_res_y) return 0;
-        // bulk shear: find max speed change in the layer
-        const surfVx = rawVelocityTo_ms(baseTextureValues[surfaceLevel * 4]);
-        const surfVy = rawVelocityTo_ms(baseTextureValues[surfaceLevel * 4 + 1]);
-        const topVx  = rawVelocityTo_ms(baseTextureValues[targetY * 4]);
-        const topVy  = rawVelocityTo_ms(baseTextureValues[targetY * 4 + 1]);
-        return Math.sqrt(Math.pow(topVx - surfVx, 2) + Math.pow(topVy - surfVy, 2));
-      }
-      const shear3km = windShearToAlt(3000);
-      const shear6km = windShearToAlt(6000);
-      const shear8km = windShearToAlt(8000);
-
-      // Hodograph profile + storm motion (parcel/storm speed 30 km/h along 0-6km mean wind)
-      const STORM_MOTION_MS = 30 / 3.6;
-      const hodoPoints = [];
-      for (let y = surfaceLevel; y < sim_res_y; y++) {
-        if (wallTextureValues[4 * y + 1] === 0) continue;
-        const altM = (y - surfaceLevel) * dz;
-        hodoPoints.push({
-          altM,
-          u: rawVelocityTo_ms(baseTextureValues[4 * y]),
-          v: rawVelocityTo_ms(baseTextureValues[4 * y + 1]),
-        });
-      }
-      function windAtAltM(altM) {
-        const yT = surfaceLevel + Math.round(altM / dz);
-        if (yT >= sim_res_y || wallTextureValues[4 * yT + 1] === 0) return {u: 0, v: 0};
-        return {
-          u: rawVelocityTo_ms(baseTextureValues[4 * yT]),
-          v: rawVelocityTo_ms(baseTextureValues[4 * yT + 1]),
-        };
-      }
-      function altToHodographColor(altM) {
-        if (altM < 500) return '#FF69B4';
-        if (altM < 3000) return '#FF0000';
-        if (altM < 6000) return '#00CC00';
-        if (altM < 9000) return '#FFFF00';
-        return '#00AAFF';
-      }
-      let stormU = STORM_MOTION_MS;
-      let stormV = 0;
-      {
-        let sumU = 0, sumV = 0, n = 0;
-        for (const p of hodoPoints) {
-          if (p.altM <= 6000) { sumU += p.u; sumV += p.v; n++; }
-        }
-        if (n > 0) {
-          const mU = sumU / n, mV = sumV / n;
-          const mSpd = Math.hypot(mU, mV);
-          if (mSpd > 0.01) {
-            stormU = mU / mSpd * STORM_MOTION_MS;
-            stormV = mV / mSpd * STORM_MOTION_MS;
-          }
-        }
-      }
-      // Storm-relative inflow: mean SR wind in 0.5-3 km layer
-      let sriU = 0, sriV = 0, sriCount = 0;
-      for (const p of hodoPoints) {
-        if (p.altM >= 500 && p.altM <= 3000) {
-          sriU += p.u - stormU;
-          sriV += p.v - stormV;
-          sriCount++;
-        }
-      }
-      if (sriCount > 0) { sriU /= sriCount; sriV /= sriCount; }
-      const sriMag = Math.hypot(sriU, sriV);
-      const sfcSr = windAtAltM(0);
-      const sr3km = windAtAltM(3000);
-
-      function subsampleWindNodesByAlt(points, nodeCount) {
-        if (points.length <= nodeCount || nodeCount < 2) return points.slice();
-        const minAlt = points[0].altM;
-        const maxAlt = points[points.length - 1].altM;
-        if (maxAlt <= minAlt) return [points[0]];
-        const out = [points[0]];
-        let j = 0;
-        for (let i = 1; i < nodeCount - 1; i++) {
-          const targetAlt = minAlt + (maxAlt - minAlt) * i / (nodeCount - 1);
-          while (j + 1 < points.length && points[j + 1].altM < targetAlt) j++;
-          const p0 = points[j];
-          const p1 = points[Math.min(j + 1, points.length - 1)];
-          const t = p1.altM > p0.altM ? (targetAlt - p0.altM) / (p1.altM - p0.altM) : 0;
-          const pt = {
-            altM: targetAlt,
-            u: p0.u + (p1.u - p0.u) * t,
-            v: p0.v + (p1.v - p0.v) * t,
-          };
-          if ('scrY' in p0 && 'scrY' in p1) {
-            pt.scrY = p0.scrY + (p1.scrY - p0.scrY) * t;
-          }
-          out.push(pt);
-        }
-        out.push(points[points.length - 1]);
-        return out;
-      }
-
-      // Size wind column from profile extent so barbs/profile do not clip at canvas edge
-      {
-        let maxWindRight = 0;
-        let maxWindLeft = 0;
-        for (const p of hodoPoints) {
-          maxWindRight = Math.max(maxWindRight, p.u, p.u - stormU);
-          maxWindLeft = Math.max(maxWindLeft, -p.u, -(p.u - stormU));
-        }
-        maxWindRight = Math.max(maxWindRight, sfcSr.u, sr3km.u, sfcSr.u - stormU, sr3km.u - stormU, 0);
-        maxWindLeft = Math.max(maxWindLeft, -sfcSr.u, -sr3km.u, -(sfcSr.u - stormU), -(sr3km.u - stormU), 0);
-        const windColRightPad = 48;
-        const windColLeftPad = 14;
-        const targetRightExtent = maxWindRight * windBarbScale + windColRightPad;
-        const targetLeftExtent = maxWindLeft * windBarbScale + windColLeftPad;
-
-        if (this._lastGraphX !== simXpos) {
-          this._windDisplaySmooth = null;
-          this._lastGraphX = simXpos;
-        }
-        if (!this._windDisplaySmooth) {
-          this._windDisplaySmooth = {
-            rightExtent: targetRightExtent,
-            leftExtent: targetLeftExtent,
-            stormU: stormU,
-            stormV: stormV,
-            hodoMaxWind: 15,
-          };
-        }
-        const smooth = 0.12;
-        const ws = this._windDisplaySmooth;
-        ws.rightExtent += (targetRightExtent - ws.rightExtent) * smooth;
-        ws.leftExtent += (targetLeftExtent - ws.leftExtent) * smooth;
-        ws.stormU += (stormU - ws.stormU) * smooth;
-        ws.stormV += (stormV - ws.stormV) * smooth;
-
-        WIND_COL_W = Math.max(70, Math.ceil(ws.leftExtent + ws.rightExtent));
-        windBarbX = this.graphCanvas.width - ws.rightExtent;
-        infoBoxX = this.graphCanvas.width - infoBoxWidth - WIND_COL_W - 12;
-      }
-
-      const displayStormU = this._windDisplaySmooth.stormU;
-      const displayStormV = this._windDisplaySmooth.stormV;
-      const hodo2DNodeCount = Math.max(2, Math.round(guiControls.hodograph2DNodes || guiControls.hodographNodes || 30));
-      const hodoProfileNodeCount = Math.max(2, Math.round(guiControls.hodographProfileNodes || guiControls.hodographNodes || 30));
-      const displayHodoPoints = subsampleWindNodesByAlt(hodoPoints, hodo2DNodeCount);
-
-      // Storm-relative helicity (SRH) - 2D rotation potential for horizontal rolls
-      function calculateSRH(altM) {
-        const targetY = surfaceLevel + Math.round(altM / dz);
-        if (targetY >= sim_res_y) return 0;
-        
-        // Use storm motion as mean wind in the layer (simplified for 2D)
-        let sumU = 0, count = 0;
-        for (let y = surfaceLevel; y < targetY; y++) {
-          if (wallTextureValues[4 * y + 1] === 0) continue;
-          sumU += baseTextureValues[y * 4]; // Only horizontal component
-          count++;
-        }
-        if (count === 0) return 0;
-        const stormU = sumU / count;
-        
-        // Calculate 2D SRH based on vertical wind shear (rotation potential in x-y plane)
-        // This measures the potential for horizontal roll circulations
-        let srh = 0;
-        for (let y = surfaceLevel; y < targetY - 1; y++) {
-          if (wallTextureValues[4 * y + 1] === 0 || wallTextureValues[4 * (y+1) + 1] === 0) continue;
-          
-          const u1 = baseTextureValues[y * 4];
-          const u2 = baseTextureValues[(y+1) * 4];
-          
-          const stormRelU1 = u1 - stormU;
-          const stormRelU2 = u2 - stormU;
-          
-          // Vertical wind shear: change in storm-relative wind with height
-          const du_dz = (stormRelU2 - stormRelU1) / dz;
-          
-          // Integrate storm-relative wind times vertical shear
-          // This represents the circulation potential in the x-y plane
-          const avgU = (stormRelU1 + stormRelU2) / 2;
-          srh += avgU * du_dz * dz;
-        }
-        return Math.abs(srh); // Return magnitude
-      }
-      const srh1km = calculateSRH(1000);
-      const srh3km = calculateSRH(3000);
-
-      // Precipitable Water (integrate water vapor from surface to top)
-      let pwat_mm = 0;
-      for (let y = surfaceLevel; y < sim_res_y; y++) {
-        if (wallTextureValues[4 * y + 1] === 0) continue;
-        pwat_mm += waterTextureValues[4 * y] * dz * 0.001; // g/m3 * m -> g/m2 -> mm
-      }
-
-      // Lapse rates: 0-3km and 3-6km
-      function lapseRateLayer(altBot, altTop) {
-        const yBot = surfaceLevel + Math.round(altBot / dz);
-        const yTop = surfaceLevel + Math.round(altTop / dz);
-        if (yTop >= sim_res_y || yBot >= sim_res_y) return NaN;
-        return (envTempsC[yBot] - envTempsC[yTop]) / ((altTop - altBot) / 1000);
-      }
-      const lapse03 = lapseRateLayer(0, 3000);
-      const lapse36 = lapseRateLayer(3000, 6000);
-
-      // STP (Significant Tornado Parameter) - simplified
-      // STP = (MLCAPE/1500) * (ESRH/150) * ((2000-MLLCL)/1000) * (MLCINH+200)/150
-      // We approximate ESRH ~ 0-3km shear * 0.5 (no hodograph), LCL from ML parcel
-      const mlLcl_m = meanLayerMetrics.lclAlt || 0;
-      const mlCape = meanLayerMetrics.cape;
-      const mlCinh = meanLayerMetrics.cinh;
-      const esrh_approx = Math.max(0, shear3km * 50); // rough proxy, prevent negative
-      const stpLcl = Math.max(0, (2000 - mlLcl_m) / 1000);
-      const stpCinh = Math.min(1, (mlCinh + 200) / 150);
-      const stp = (mlCape / 1500) * (esrh_approx / 150) * stpLcl * stpCinh;
-
-      // VTP (Violent Tornado Parameter) - simplified
-      // VTP = (MUCAPE/1500) * (0-6km shear/20m/s) * (0-3km lapse/6.5) * (PWAT/1.5in)
-      const vtpLapse = isNaN(lapse03) ? 0 : Math.max(0, lapse03 / 6.5);
-      const vtpShear = shear6km / 20;
-      const vtpPwat = pwat_mm / 38; // 38mm ~ 1.5 inch
-      const vtp = (muCape / 1500) * vtpShear * vtpLapse * vtpPwat;
-
-      // Fire risk calculation based on temperature, humidity, wind, and soil moisture
-      let fireRisk = {label: 'Low', color: '#00FF00'};
-      const surfaceTemp = envTempsC[surfaceLevel];
-      const surfaceRH = relativeHumd(CtoK(surfaceTemp), waterTextureValues[4 * surfaceLevel]);
-      const surfaceWind = windSpeedAtY(surfaceLevel);
-      const soilMoisture = waterTextureValues[4 * surfaceLevel + 2]; // if land
-      
-      // Calculate fire danger index (simplified)
-      let fireIndex = 0;
-      if (surfaceTemp > 25) fireIndex += (surfaceTemp - 25) * 2; // Temperature contribution
-      if (surfaceRH < 30) fireIndex += (30 - surfaceRH) * 1.5; // Low humidity contribution
-      if (surfaceWind > 5) fireIndex += (surfaceWind - 5) * 1; // Wind contribution
-      if (soilMoisture < 10) fireIndex += (10 - soilMoisture) * 0.5; // Dry soil contribution
-      
-      if (fireIndex < 10) {
-        fireRisk = {label: 'Low', color: '#00FF00'};
-      } else if (fireIndex < 25) {
-        fireRisk = {label: 'Moderate', color: '#FFFF00'};
-      } else if (fireIndex < 45) {
-        fireRisk = {label: 'High', color: '#FF8800'};
-      } else if (fireIndex < 65) {
-        fireRisk = {label: 'Very High', color: '#FF4400'};
-      } else {
-        fireRisk = {label: 'Extreme', color: '#FF0000'};
-      }
-
-      // Generated risk category
-      function getRisk(cape, shear6, stp_val) {
-        if (cape < 100 || shear6 < 3) return {label: 'None', color: '#444444'};
-        if (cape < 300 || shear6 < 5) return {label: 'Thunderstorm', color: '#00AAFF'};
-        if (stp_val >= 10 || (cape >= 5000 && shear6 >= 40)) return {label: 'High', color: '#FF00FF'};
-        if (stp_val >= 6 || (cape >= 3500 && shear6 >= 30)) return {label: 'Moderate', color: '#FF4400'};
-        if (stp_val >= 3 || (cape >= 2500 && shear6 >= 22)) return {label: 'Enhanced', color: '#FF8800'};
-        if (cape >= 500 && shear6 >= 10) return {label: 'Slight', color: '#FFFF00'};
-        return {label: 'Marginal', color: '#00FF88'};
-      }
-      const risk = getRisk(muCape, shear6km, stp);
-
-      const altStr = (m) => isNaN(m) || m == null ? 'N/A' : printAltitude(Math.round(m));
-      // Barometric pressure from altitude: ISA formula, default surface = 1013.25 hPa
-      const altToHpa = (alt_m) => 1013.25 * Math.pow(1.0 - 2.25577e-5 * alt_m, 5.25588);
-
-      const lineHeight = 19;
-      const infoBoxY = 12;
-
-      // Pre-compute DCAPE for hazard scoring
-      let dcape = 0;
-      {
-        const y4km = surfaceLevel + Math.round(4000 / dz);
-        const y8km = Math.min(surfaceLevel + Math.round(8000 / dz), sim_res_y - 1);
-        let minThetaE = Infinity, dcapeStartY = y4km;
-        for (let y = y4km; y <= y8km; y++) {
-          const tK  = CtoK(envTempsC[y]);
-          const thetaE = tK + 2500 * Math.max(waterTextureValues[4*y], 0) / 1004;
-          if (thetaE < minThetaE) { minThetaE = thetaE; dcapeStartY = y; }
-        }
-        const startTk = CtoK(envTempsC[dcapeStartY]);
-        let parcelTk  = startTk;
-        let prevBuoy2 = 0;
-        for (let y = dcapeStartY - 1; y >= surfaceLevel; y--) {
-          const envTk = CtoK(envTempsC[y]);
-          parcelTk += 9.8 * dz / 1000.0;
-          const buoy = 9.81 * (envTk - parcelTk) / parcelTk;
-          if (buoy < 0) {
-            const avgBuoy = (Math.abs(buoy) + Math.abs(prevBuoy2)) / 2;
-            dcape += avgBuoy * dz;
-          }
-          prevBuoy2 = buoy;
-        }
-      }
-
-      // Pre-compute hazards so we can size the box dynamically
-      const hazards = [];
-      {
-        const _add = (label, color, score) => {
-          if (score > 1) hazards.push({ label, color, pct: Math.min(100, Math.round(score)) });
-        };
-        { let s = 0; if (vtp >= 4) s += map_range(vtp, 4, 10, 20, 60); if (stp >= 6) s += map_range(stp, 6, 15, 10, 30); if ((muLcl || 9999) < 500) s += 10; if (muCape >= 3000) s += map_range(muCape, 3000, 6000, 0, 20); _add('PDS Tornado', '#FF00FF', s); }
-        { let s = 0; if (vtp >= 2) s += map_range(vtp, 2, 8, 15, 50); if (stp >= 2) s += map_range(stp, 2, 10, 15, 40); if ((muLcl || 9999) < 1000) s += 10; if (shear3km >= 10) s += map_range(shear3km, 10, 25, 5, 20); _add('Tornado', '#FF0066', s); }
-        { let s = 0; if (muCape >= 500 && shear6km >= 15) { s += map_range(muCape, 500, 3000, 10, 40); s += map_range(shear6km, 15, 35, 10, 40); if (srh3km > 150) s += map_range(srh3km, 150, 500, 5, 20); } _add('Supercell', '#FF4400', s); }
-        { let s = 0; if (!isNaN(lapse03) && lapse03 >= 8.0 && muCape >= 1500 && shear6km >= 20) { s += map_range(lapse03, 8.0, 10.0, 20, 50); s += map_range(muCape, 1500, 5000, 10, 30); s += map_range(shear6km, 20, 40, 5, 20); } _add('Giant Hail', '#AA00FF', s); }
-        { let s = 0; if (!isNaN(lapse03) && lapse03 >= 7.0 && muCape >= 1000) { s += map_range(lapse03, 7.0, 9.5, 15, 45); s += map_range(muCape, 1000, 4000, 10, 30); if (shear6km >= 15) s += map_range(shear6km, 15, 30, 5, 20); } _add('Large Hail', '#FF8800', s); }
-        { let s = 0; if (!isNaN(lapse03) && lapse03 >= 6.5 && muCape >= 300) { s += map_range(lapse03, 6.5, 9.0, 10, 35); s += map_range(muCape, 300, 2000, 5, 25); } _add('Hail', '#FFCC00', s); }
-        { let s = 0; if (dcape >= 1200) s += map_range(dcape, 1200, 2500, 15, 40); if (shear6km >= 25) s += map_range(shear6km, 25, 50, 5, 20); if (muCape >= 1500) s += map_range(muCape, 1500, 5000, 5, 15); _add('Destructive Winds', '#FF4400', s); }
-        { let s = 0; if (dcape >= 800) s += map_range(dcape, 800, 1800, 10, 30); if (shear6km >= 20 && muCape >= 1000) s += map_range(shear6km, 20, 40, 5, 20); _add('Damaging Winds', '#FF8800', s); }
-        { let s = 0; if (pwat_mm >= 20 && muCape >= 200) { s += map_range(pwat_mm, 20, 55, 10, 55); s += map_range(muCape, 200, 2000, 5, 25); if (shear6km < 15) s += 15; } _add('Flooding/Heavy Rain', '#0088FF', s); }
-        { let s = 0; if (muCape >= 100) s += map_range(muCape, 100, 1000, 10, 50); _add('General Thunderstorm', '#AAAAAA', s); }
-        hazards.sort((a, b) => b.pct - a.pct);
-      }
-
-      // Dynamic box height: fixed rows + hazard section + padding
-      const numFixedRows = 25; // data rows + SRI + "Hazards:" header + "Risk:" + "Fire Risk:"
-      const hazardItemsH = hazards.length === 0
-        ? lineHeight
-        : hazards.length * (lineHeight + 4) + 2;
-      const infoBoxHeight = 16 + numFixedRows * lineHeight + hazardItemsH;
-
-      const textX = infoBoxX + 8;
-      let textY = infoBoxY + 8;
-
-      c.fillStyle = 'rgba(0, 0, 0, 0.60)';
-      c.fillRect(infoBoxX, infoBoxY, infoBoxWidth, infoBoxHeight);
-
-      c.font = '13px monospace';
-      c.textAlign = 'left';
-      c.textBaseline = 'top';
-
-      const row = (label, value, color) => {
-        c.fillStyle = '#AAAAAA';
-        c.fillText(label, textX, textY);
-        c.fillStyle = color || 'white';
-        c.fillText(value, textX + 140, textY);
-        textY += lineHeight;
-      };
-
-      row('MUcape:', Math.round(muCape) + ' J/kg', muCape > 2500 ? '#FF4400' : muCape > 1000 ? '#FFAA00' : 'white');
-      row('MLCAPE:', Math.round(mlCape) + ' J/kg');
-      row('3CAPE:', Math.round(cape3km) + ' J/kg');
-      row('CINH:', Math.round(muCinh) + ' J/kg', muCinh < -100 ? '#FF4444' : 'white');
-      row('LI:', isNaN(liftedIndex) ? 'N/A' : liftedIndex.toFixed(1) + ' °C', liftedIndex < -2 ? '#FF4400' : liftedIndex < 0 ? '#FFAA00' : 'white');
-      row('Pwat:', pwat_mm.toFixed(1) + ' mm');
-      row('LCL:', altStr(muLcl), muLcl != null && muLcl < 1000 ? '#FF8800' : 'white');
-      row('LFC:', altStr(muLfc));
-      row('EL:', altStr(muEl));
-      // Surface pressure and pressure at cursor altitude
-      const sfcAlt_m = surfaceLevel * dz;
-      const curAlt_m = simYpos * dz;
-      const sfcPressISA = 1013.25 * Math.pow(1.0 - 2.25577e-5 * sfcAlt_m, 5.25588);
-      const curPressISA = 1013.25 * Math.pow(1.0 - 2.25577e-5 * curAlt_m, 5.25588);
-      row('Sfc Pres:', sfcPressISA.toFixed(1) + ' hPa', '#AADDFF');
-      row('Cur Pres:', curPressISA.toFixed(1) + ' hPa', '#AADDFF');
-      row('0-1km SRH:', Math.round(srh1km) + ' m²/s²', srh1km > 150 ? '#FF4400' : srh1km > 100 ? '#FFAA00' : 'white');
-      row('0-3km SRH:', Math.round(srh3km) + ' m²/s²', srh3km > 400 ? '#FF4400' : srh3km > 250 ? '#FFAA00' : 'white');
-      row('0-3km Shear:', printVelocity(shear3km));
-      row('0-6km Shear:', printVelocity(shear6km), shear6km > 20 ? '#FFAA00' : 'white');
-      row('0-8km Shear:', printVelocity(shear8km));
-      row('SRI:', printVelocity(sriMag), sriMag > 12 ? '#FF8800' : sriMag > 8 ? '#FFAA00' : 'white');
-      row('Lapse 0-3km:', isNaN(lapse03) ? 'N/A' : lapse03.toFixed(1) + ' °C/km', lapse03 > 8 ? '#FF8800' : 'white');
-      row('Lapse 3-6km:', isNaN(lapse36) ? 'N/A' : lapse36.toFixed(1) + ' °C/km');
-      // dcape already pre-computed above for dynamic box sizing
-      row('STP:', stp.toFixed(2), stp >= 1 ? '#FF8800' : 'white');
-      row('VTP:', vtp.toFixed(2), vtp >= 1 ? '#FF4400' : 'white');
-      row('DCAPE:', Math.round(dcape) + ' J/kg', dcape > 1000 ? '#FF4400' : dcape > 500 ? '#FFAA00' : 'white');
-
-      // Hazard probability list — draw using pre-computed hazards array
-      {
-        c.fillStyle = '#AAAAAA';
-        c.font = '12px monospace';
-        c.fillText('Hazards:', textX, textY);
-        textY += lineHeight;
-
-        if (hazards.length === 0) {
-          c.fillStyle = '#888888';
-          c.font = '11px monospace';
-          c.fillText('  None', textX, textY);
-          textY += lineHeight;
-        } else {
-          const barMaxW = 80;
-          hazards.forEach(h => {
-            c.fillStyle = '#333333';
-            c.fillRect(textX + 4, textY + 8, barMaxW, 5);
-            c.fillStyle = h.color;
-            c.fillRect(textX + 4, textY + 8, Math.round(barMaxW * h.pct / 100), 5);
-            const pctStr = h.pct + '%';
-            c.fillStyle = '#cccccc';
-            c.font = '10px monospace';
-            c.fillText(pctStr, textX + 4, textY);
-            c.fillStyle = h.color;
-            c.font = '10px monospace';
-            c.fillText(h.label, textX + 4 + barMaxW + 4, textY);
-            textY += lineHeight + 4;
-          });
-          textY += 2;
-        }
-      }
-
-      // Risk row with colored label
-      c.fillStyle = '#AAAAAA';
-      c.font = '13px monospace';
-      c.fillText('Risk:', textX, textY);
-      c.fillStyle = risk.color;
-      c.font = 'bold 11px monospace';
-      c.fillText(risk.label, textX + 90, textY);
-      c.font = '13px monospace';
-      textY += lineHeight;
-
-      // Fire risk row with colored label
-      c.fillStyle = '#AAAAAA';
-      c.font = '13px monospace';
-      c.fillText('Fire Risk:', textX, textY);
-      c.fillStyle = fireRisk.color;
-      c.font = 'bold 11px monospace';
-      c.fillText(fireRisk.label, textX + 90, textY);
-      c.font = '13px monospace';
-      textY += lineHeight;
-
-      // Fixed 2D hodograph + wind column (right of readout panel)
-      const surfaceScrY = map_range(surfaceLevel, sim_res_y, 0, 0, graphBottem);
-      const topScrY = 24;
-      const topAltM = (sim_res_y - 1 - surfaceLevel) * dz;
-
-      const hodographRadius = Math.min(108, Math.round(this.graphCanvas.height * 0.14));
-      const hodographCx = infoBoxX - hodographRadius - 32;
-      const hodographCy = Math.round(this.graphCanvas.height * 0.38);
-      const hodoPanelPad = 14;
-      const hodoPanelSize = (hodographRadius + hodoPanelPad) * 2;
-
-      let maxHodoWind = STORM_MOTION_MS;
-      for (const p of hodoPoints) {
-        maxHodoWind = Math.max(maxHodoWind, Math.abs(p.u), Math.abs(p.v));
-      }
-      maxHodoWind = Math.max(maxHodoWind, Math.hypot(stormU, stormV), 1);
-      {
-        const ws = this._windDisplaySmooth;
-        ws.hodoMaxWind += (maxHodoWind - ws.hodoMaxWind) * 0.12;
-        maxHodoWind = ws.hodoMaxWind;
-      }
-      const hodoScale = hodographRadius / maxHodoWind;
-
-      function toHodoPx(u, v) {
-        return {x: hodographCx + u * hodoScale, y: hodographCy - v * hodoScale};
-      }
-
-      const legendEntries = [
-        ['0-0.5km', '#FF69B4'],
-        ['0.5-3km', '#FF0000'],
-        ['3-6km', '#00CC00'],
-        ['6-9km', '#FFFF00'],
-        ['9km+', '#00AAFF'],
-      ];
-
-      // Fixed hodograph panel background
-      c.fillStyle = 'rgba(0, 0, 0, 0.35)';
-      c.fillRect(
-        hodographCx - hodographRadius - hodoPanelPad,
-        hodographCy - hodographRadius - hodoPanelPad,
-        hodoPanelSize,
-        hodoPanelSize
-      );
-      c.strokeStyle = 'rgba(255, 255, 255, 0.2)';
-      c.lineWidth = 1;
-      c.strokeRect(
-        hodographCx - hodographRadius - hodoPanelPad,
-        hodographCy - hodographRadius - hodoPanelPad,
-        hodoPanelSize,
-        hodoPanelSize
-      );
-
-      // Hodograph grid
+      // Draw wind indicators
       c.beginPath();
-      c.arc(hodographCx, hodographCy, hodographRadius, 0, Math.PI * 2);
-      c.strokeStyle = 'rgba(255, 255, 255, 0.15)';
-      c.lineWidth = 1;
-      c.stroke();
-      c.beginPath();
-      c.moveTo(hodographCx - hodographRadius, hodographCy);
-      c.lineTo(hodographCx + hodographRadius, hodographCy);
-      c.moveTo(hodographCx, hodographCy - hodographRadius);
-      c.lineTo(hodographCx, hodographCy + hodographRadius);
-      c.strokeStyle = 'rgba(255, 255, 255, 0.1)';
-      c.stroke();
+      for (var y = surfaceLevel; y < sim_res_y; y++) {
 
-      c.font = 'bold 10px Arial';
-      c.fillStyle = '#CCCCCC';
-      c.fillText('Hodograph', hodographCx - 28, hodographCy - hodographRadius - hodoPanelPad + 12);
+        var scrYpos = map_range(y, sim_res_y, 0, 0, graphBottem);
 
-      // Storm motion marker (30 km/h along 0-6 km mean wind)
-      const smPx = toHodoPx(stormU, stormV);
-      c.beginPath();
-      c.arc(smPx.x, smPx.y, 4, 0, Math.PI * 2);
-      c.fillStyle = 'rgba(255, 255, 255, 0.9)';
-      c.fill();
-      c.font = '9px Arial';
-      c.fillStyle = '#CCCCCC';
-      c.fillText('SM', smPx.x + 6, smPx.y - 5);
+        var velocity = rawVelocityTo_ms(baseTextureValues[4 * y]); // horizontal wind velocity
 
-      // Altitude-colored 2D hodograph
-      if (displayHodoPoints.length >= 2) {
-        for (let i = 1; i < displayHodoPoints.length; i++) {
-          const p0 = displayHodoPoints[i - 1];
-          const p1 = displayHodoPoints[i];
-          const midAlt = (p0.altM + p1.altM) * 0.5;
-          const a = toHodoPx(p0.u, p0.v);
-          const b = toHodoPx(p1.u, p1.v);
-          c.beginPath();
-          c.moveTo(a.x, a.y);
-          c.lineTo(b.x, b.y);
-          c.strokeStyle = altToHodographColor(midAlt);
-          c.lineWidth = 3;
-          c.stroke();
-        }
-        const topPt = displayHodoPoints[displayHodoPoints.length - 1];
-        const topPx = toHodoPx(topPt.u, topPt.v);
-        c.fillStyle = altToHodographColor(topPt.altM);
-        c.beginPath();
-        c.arc(topPx.x, topPx.y, 4, 0, Math.PI * 2);
-        c.fill();
+        let Xpos = this.graphCanvas.width - 70;
+
+        c.moveTo(Xpos, scrYpos);
+        c.lineTo(Xpos + velocity * 2.5, scrYpos); // draw line segment
       }
 
-      // SRI on 2D hodograph
-      const sfcPx = toHodoPx(sfcSr.u, sfcSr.v);
-      const km3Px = toHodoPx(sr3km.u, sr3km.v);
-      c.beginPath();
-      c.moveTo(smPx.x, smPx.y);
-      c.lineTo(sfcPx.x, sfcPx.y);
-      c.moveTo(smPx.x, smPx.y);
-      c.lineTo(km3Px.x, km3Px.y);
-      c.strokeStyle = '#000000';
-      c.lineWidth = 2.5;
-      c.stroke();
-
-      // Legend inside fixed hodograph panel
-      let legendY = hodographCy + hodographRadius + 6;
-      const legendX = hodographCx - hodographRadius;
-      c.font = '8px Arial';
-      legendEntries.forEach(([label, color]) => {
-        c.fillStyle = color;
-        c.fillRect(legendX, legendY, 10, 4);
-        c.fillStyle = '#AAAAAA';
-        c.fillText(label, legendX + 13, legendY + 4);
-        legendY += 11;
-      });
-
-      // Wind column: barbs + vertical profile trace (hodograph-like, same colors)
-      const profilePoints = [];
-      for (let y = surfaceLevel; y < sim_res_y; y++) {
-        if (wallTextureValues[4 * y + 1] === 0) continue;
-        const scrYpos = map_range(y, sim_res_y, 0, 0, graphBottem);
-        const u = rawVelocityTo_ms(baseTextureValues[4 * y]);
-        const v = rawVelocityTo_ms(baseTextureValues[4 * y + 1]);
-        profilePoints.push({
-          scrY: scrYpos,
-          altM: (y - surfaceLevel) * dz,
-          u, v,
-        });
-      }
-
-      const displayProfilePoints = subsampleWindNodesByAlt(profilePoints, hodoProfileNodeCount);
-
-      // Grey wind barbs behind profile trace (always full resolution)
-      c.beginPath();
-      for (const pt of profilePoints) {
-        const barbX = windBarbX + pt.u * windBarbScale;
-        c.moveTo(windBarbX, pt.scrY);
-        c.lineTo(barbX, pt.scrY);
-      }
-      c.lineWidth = 2.0;
+      c.lineWidth = 2.0; // 3
       c.strokeStyle = '#666666';
       c.stroke();
-
-      // Vertical profile trace overlaid on wind vectors (storm-relative u offset)
-      if (displayProfilePoints.length >= 2) {
-        for (let i = 1; i < displayProfilePoints.length; i++) {
-          const p0 = displayProfilePoints[i - 1];
-          const p1 = displayProfilePoints[i];
-          const midAlt = (p0.altM + p1.altM) * 0.5;
-          const x0 = windBarbX + (p0.u - displayStormU) * windBarbScale;
-          const x1 = windBarbX + (p1.u - displayStormU) * windBarbScale;
-          c.beginPath();
-          c.moveTo(x0, p0.scrY);
-          c.lineTo(x1, p1.scrY);
-          c.strokeStyle = altToHodographColor(midAlt);
-          c.lineWidth = 3;
-          c.stroke();
-        }
-      }
-
-      // SRI on vertical profile trace
-      const y3kmIdx = surfaceLevel + Math.round(3000 / dz);
-      const sfcProfileY = surfaceScrY;
-      const sfcProfileX = windBarbX + (sfcSr.u - displayStormU) * windBarbScale;
-      const km3ProfileY = map_range(Math.min(y3kmIdx, sim_res_y - 1), sim_res_y, 0, 0, graphBottem);
-      const km3ProfileX = windBarbX + (sr3km.u - displayStormU) * windBarbScale;
-      const sriVertexX = Math.max(sfcProfileX, km3ProfileX) + 18;
-      const sriVertexY = (sfcProfileY + km3ProfileY) * 0.5;
-      c.beginPath();
-      c.moveTo(sfcProfileX, sfcProfileY);
-      c.lineTo(sriVertexX, sriVertexY);
-      c.lineTo(km3ProfileX, km3ProfileY);
-      c.strokeStyle = '#000000';
-      c.lineWidth = 2.5;
-      c.stroke();
-      c.fillStyle = '#000000';
-      c.font = 'bold 9px Arial';
-      c.fillText('SRI', sriVertexX + 4, sriVertexY - 4);
-
-      // Wind column labels
-      c.fillStyle = '#FFFF00';
-      c.font = 'bold 11px Arial';
-      c.fillText(printAltitude(Math.round(topAltM)), windBarbX - 28, topScrY + 4);
-      c.fillStyle = '#888888';
-      c.font = '9px Arial';
-      c.fillText('Profile', windBarbX - 22, topScrY + 16);
 
 
       // Draw Dew point line
@@ -6670,9 +4057,9 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
           var dewPoint = KtoC(dewpoint(waterTextureValues[4 * y]));
 
-          var temp = baseTextureValues[4 * y + 3] - ((y / sim_res_y) * guiControls.simHeight * guiControls.dryLapseRate) / 1000.0 - 273.15;
+          var temp = baseTextureValues[4 * y + 3] - ((y / sim_res_y) * guiControls.simHeight * guiControls.dryLapseRate) / 1000.0;
           if (guiControls.realDewPoint) {
-            dewPoint = Math.min(temp, dewPoint);
+            dewPoint = Math.min(KtoC(temp), dewPoint);
           }
 
           var scrYpos = map_range(y, sim_res_y, 0, 0, graphBottem);
@@ -6686,7 +4073,15 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
           if (y == simYpos) {
             c.fillText('' + printAltitude(map_range(y - 1, 0, sim_res_y, 0, guiControls.simHeight)), 5, scrYpos + 5);
 
-            c.fillText('' + printVelocity(velocity), windBarbX - 45, scrYpos + 20);
+            let rh = relativeHumd(temp, waterTextureValues[4 * y]);
+
+            if (guiControls.realDewPoint) {
+              rh = Math.min(rh, 100.0);
+            }
+
+            c.fillText(rh.toFixed(1) + ' %', this.graphCanvas.width - 180, scrYpos + 20);
+
+            c.fillText('' + printVelocity(velocity), this.graphCanvas.width - 113, scrYpos + 20);
 
 
             c.strokeStyle = '#FFF';
@@ -6772,107 +4167,15 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
       c.stroke();
 
-      // Draw LCL, LFC, EL markers on the parcel line
-      function drawMarker(altitude, label, color) {
-        if (isNaN(altitude) || altitude == null) return;
-        const yIndex = Math.round(altitude / dz);
-        if (yIndex < surfaceLevel || yIndex >= sim_res_y) return;
-        const scrYpos = map_range(yIndex, sim_res_y, 0, 0, graphBottem);
-        
-        // Get the parcel temperature at this altitude
-        const parcelTemp = parcelProfile[yIndex];
-        if (isNaN(parcelTemp)) return;
-        
-        const xPos = T_to_Xpos(parcelTemp, scrYpos);
-        
-        // Draw shorter horizontal line marker
-        c.beginPath();
-        c.moveTo(xPos - 15, scrYpos);
-        c.lineTo(xPos + 15, scrYpos);
-        c.strokeStyle = color;
-        c.lineWidth = 2;
-        c.stroke();
-        
-        // Draw label to the left to avoid overlap
-        c.fillStyle = color;
-        c.font = 'bold 11px Arial';
-        c.fillText(label, xPos - 50, scrYpos + 4);
-      }
-      
-      drawMarker(muLcl, 'LCL', '#00FFFF');
-      drawMarker(muLfc, 'LFC', '#FF00FF');
-      drawMarker(muEl, 'EL', '#FFFF00');
 
-
-      c.fillText('' + printDistance(map_range(simXpos, 0, sim_res_y, 0, guiControls.simHeight)), windBarbX - 10, 20);
-
-      // Draw buttons
-      const btnY = this.graphCanvas.height - 40;
-      const btnHeight = 25;
-      
-      if (guiControls.graphFixedPosition) {
-        // When frozen: show "Save Sounding" and "Unlock" buttons
-        const saveBtnX = this.graphCanvas.width - WIND_COL_W - 252;
-        const saveBtnWidth = 120;
-        
-        c.fillStyle = 'rgba(0, 100, 200, 0.7)';
-        c.fillRect(saveBtnX, btnY, saveBtnWidth, btnHeight);
-        c.strokeStyle = '#0088FF';
-        c.lineWidth = 2;
-        c.strokeRect(saveBtnX, btnY, saveBtnWidth, btnHeight);
-        c.fillStyle = 'white';
-        c.font = 'bold 12px Arial';
-        c.textAlign = 'center';
-        c.textBaseline = 'middle';
-        c.fillText('Save Sounding', saveBtnX + saveBtnWidth/2, btnY + btnHeight/2);
-        
-        // Store save button bounds
-        this.saveButtonBounds = {x: saveBtnX, y: btnY, width: saveBtnWidth, height: btnHeight};
-        
-        // Unlock button
-        const unlockBtnX = this.graphCanvas.width - WIND_COL_W - 125;
-        const unlockBtnWidth = 110;
-        
-        c.fillStyle = 'rgba(200, 100, 0, 0.7)';
-        c.fillRect(unlockBtnX, btnY, unlockBtnWidth, btnHeight);
-        c.strokeStyle = '#FF8800';
-        c.lineWidth = 2;
-        c.strokeRect(unlockBtnX, btnY, unlockBtnWidth, btnHeight);
-        c.fillStyle = 'white';
-        c.fillText('Unlock', unlockBtnX + unlockBtnWidth/2, btnY + btnHeight/2);
-        
-        // Store unlock button bounds
-        this.unlockButtonBounds = {x: unlockBtnX, y: btnY, width: unlockBtnWidth, height: btnHeight};
-      } else {
-        // When not frozen: show "Freeze" button
-        const freezeBtnX = this.graphCanvas.width - WIND_COL_W - 128;
-        const freezeBtnWidth = 120;
-        
-        c.fillStyle = 'rgba(0, 100, 200, 0.7)';
-        c.fillRect(freezeBtnX, btnY, freezeBtnWidth, btnHeight);
-        c.strokeStyle = '#0088FF';
-        c.lineWidth = 2;
-        c.strokeRect(freezeBtnX, btnY, freezeBtnWidth, btnHeight);
-        c.fillStyle = 'white';
-        c.font = 'bold 12px Arial';
-        c.textAlign = 'center';
-        c.textBaseline = 'middle';
-        c.fillText('Freeze', freezeBtnX + freezeBtnWidth/2, btnY + btnHeight/2);
-        
-        // Store freeze button bounds
-        this.saveButtonBounds = {x: freezeBtnX, y: btnY, width: freezeBtnWidth, height: btnHeight};
-        this.unlockButtonBounds = null;
-      }
-      
-      c.textAlign = 'left';
-      c.textBaseline = 'top';
+      c.fillText('' + printDistance(map_range(simXpos, 0, sim_res_y, 0, guiControls.simHeight)), this.graphCanvas.width - 70, 20);
 
 
       function T_to_Xpos(T, y)
       {
-        // temperature to horizontal position (skew-T: parallel isotherms, skewed with height)
-        var normX = T * 0.0115 + 0.9 - (y / graphBottem) * 0.8;
-        return normX * graphCanvasW;
+        // temperature to horizontal position
+        var normX = T * 0.0115 + 1.18 - (y / graphBottem) * 0.8; // -30 to 50
+        return normX * this.graphCanvas.width;                   // T * 7.5 + 780.0 - 600.0 * (y / graphBottem);
       }
 
       function drawIsotherms()
@@ -6886,7 +4189,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
           c.lineTo(T_to_Xpos(T, 0), 0);
 
           if (T >= -30.0)
-            c.fillText(printTemp(Math.round(T)), T_to_Xpos(T, graphBottem) - 20, graphCanvasH - 5);
+            c.fillText(printTemp(Math.round(T)), T_to_Xpos(T, graphBottem) - 20, this.graphCanvas.height - 5);
         }
         c.lineWidth = 1.0;
         c.stroke();
@@ -6913,7 +4216,6 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   canvas.height = window.innerHeight;
   canvas.style.display = 'block';
   canvas_aspect = canvas.width / canvas.height;
-  updateNukeOverlaySize();
 
   var mouseXinSim, mouseYinSim;
   var prevMouseXinSim, prevMouseYinSim;
@@ -6929,64 +4231,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     // Render output framebuffers need to match canvas resolution
     createBloomFBOs(); // recreate bloom framebuffers
     createHdrFBO();    // recreate hdr framebuffer
-
-    // Recreate radar cache texture at new screen size
-    if (typeof radarTexture !== 'undefined' && radarTexture) {
-      gl.bindTexture(gl.TEXTURE_2D, radarTexture);
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, canvas.width, canvas.height, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
-    }
-
-    updateNukeOverlaySize();
   });
-
-  function updateNukeOverlaySize()
-  {
-    if (!nukeOverlayCanvas || !canvas) return;
-    const rect = canvas.getBoundingClientRect();
-    nukeOverlayCanvas.width = canvas.width;
-    nukeOverlayCanvas.height = canvas.height;
-    nukeOverlayCanvas.style.width = rect.width + 'px';
-    nukeOverlayCanvas.style.height = rect.height + 'px';
-    nukeOverlayCanvas.style.left = rect.left + 'px';
-    nukeOverlayCanvas.style.top = rect.top + 'px';
-  }
-
-  function drawNukeOverlay()
-  {
-    if (!nukeOverlayCtx || !nukeOverlayCanvas) return;
-    nukeOverlayCtx.clearRect(0, 0, nukeOverlayCanvas.width, nukeOverlayCanvas.height);
-    if (!nukes || nukes.length === 0) return;
-
-    for (let i = 0; i < nukes.length; i++) {
-      const nuke = nukes[i];
-      if (nuke.isExploded()) continue;
-      const sx = simToScreenX(nuke.getX());
-      const sy = simToScreenY(nuke.getY());
-      if (sx < -40 || sx > canvas.width + 40 || sy < -40 || sy > canvas.height + 40) continue;
-
-      nukeOverlayCtx.save();
-      nukeOverlayCtx.translate(sx, sy);
-      nukeOverlayCtx.strokeStyle = 'rgba(255, 190, 0, 0.95)';
-      nukeOverlayCtx.fillStyle = 'rgba(255, 100, 10, 0.95)';
-      nukeOverlayCtx.lineWidth = 2;
-      nukeOverlayCtx.beginPath();
-      nukeOverlayCtx.moveTo(0, -10);
-      nukeOverlayCtx.lineTo(-8, 10);
-      nukeOverlayCtx.lineTo(8, 10);
-      nukeOverlayCtx.closePath();
-      nukeOverlayCtx.fill();
-      nukeOverlayCtx.stroke();
-
-      nukeOverlayCtx.beginPath();
-      nukeOverlayCtx.moveTo(-5, 10);
-      nukeOverlayCtx.lineTo(0, 18);
-      nukeOverlayCtx.lineTo(5, 10);
-      nukeOverlayCtx.strokeStyle = 'rgba(255, 255, 100, 0.85)';
-      nukeOverlayCtx.lineWidth = 3;
-      nukeOverlayCtx.stroke();
-      nukeOverlayCtx.restore();
-    }
-  }
 
   function logSample()
   {
@@ -7120,252 +4365,10 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       prevMouseX = mouseX;
       prevMouseY = mouseY;
     }
-
-    if (guiControls.readoutCursor && !SETUP_MODE) {
-      updateCursorReadout(event);
-    }
   });
 
   canvas.addEventListener('mousedown', function(e) { mouseDownEvent(e); });
   graphCanvas.addEventListener('mousedown', function(e) { mouseDownEvent(e); });
-
-  function updateCursorReadout(event)
-  {
-    if (!guiControls.readoutCursor || SETUP_MODE) return;
-
-    let simXpos = clamp(Math.floor(mouseXinSim * sim_res_x), 0, sim_res_x - 1);
-    let simYpos = clamp(Math.floor(mouseYinSim * sim_res_y), 0, sim_res_y - 1);
-
-    let readoutText = '';
-    let unit = '';
-
-    switch (guiControls.displayMode) {
-      case 'DISP_TEMPERATURE':
-        gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_0);
-        gl.readBuffer(gl.COLOR_ATTACHMENT0);
-        var baseTextureValues = new Float32Array(4);
-        gl.readPixels(simXpos, simYpos, 1, 1, gl.RGBA, gl.FLOAT, baseTextureValues);
-        let T = potentialToRealT(baseTextureValues[3], simYpos);
-        readoutText = KtoC(T).toFixed(1);
-        unit = '°C';
-        break;
-
-      case 'DISP_WATER':
-        gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_0);
-        gl.readBuffer(gl.COLOR_ATTACHMENT1);
-        var waterTextureValues = new Float32Array(4);
-        gl.readPixels(simXpos, simYpos, 1, 1, gl.RGBA, gl.FLOAT, waterTextureValues);
-        let dp = KtoC(dewpoint(waterTextureValues[0]));
-        let rh = relativeHumd(KtoC(potentialToRealT(waterTextureValues[3], simYpos)), waterTextureValues[0]);
-        rh = Math.max(0, Math.min(rh, 100)); // Safety clamp to ensure RH is between 0 and 100%
-        readoutText = `DP: ${dp.toFixed(1)}°C\nRH: ${rh.toFixed(1)}%`;
-        unit = '';
-        break;
-
-      case 'DISP_HUMD':
-        gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_0);
-        gl.readBuffer(gl.COLOR_ATTACHMENT1);
-        var waterTextureValues = new Float32Array(4);
-        gl.readPixels(simXpos, simYpos, 1, 1, gl.RGBA, gl.FLOAT, waterTextureValues);
-        gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_0);
-        gl.readBuffer(gl.COLOR_ATTACHMENT0);
-        var baseTextureValues = new Float32Array(4);
-        gl.readPixels(simXpos, simYpos, 1, 1, gl.RGBA, gl.FLOAT, baseTextureValues);
-        let rh_cursor = relativeHumd(KtoC(potentialToRealT(baseTextureValues[3], simYpos)), waterTextureValues[0]);
-        rh_cursor = Math.max(0, Math.min(rh_cursor, 100)); // Safety clamp
-        readoutText = rh_cursor.toFixed(1);
-        unit = '% RH';
-        break;
-
-      case 'DISP_HORIVEL':
-        gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_0);
-        gl.readBuffer(gl.COLOR_ATTACHMENT0);
-        var baseTextureValues = new Float32Array(4);
-        gl.readPixels(simXpos, simYpos, 1, 1, gl.RGBA, gl.FLOAT, baseTextureValues);
-        let hVel = rawVelocityTo_ms(Math.sqrt(Math.pow(baseTextureValues[0], 2) + Math.pow(baseTextureValues[1], 2)));
-        readoutText = hVel.toFixed(1);
-        unit = 'm/s';
-        break;
-
-      case 'DISP_VERTVEL':
-        gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_0);
-        gl.readBuffer(gl.COLOR_ATTACHMENT0);
-        var baseTextureValues = new Float32Array(4);
-        gl.readPixels(simXpos, simYpos, 1, 1, gl.RGBA, gl.FLOAT, baseTextureValues);
-        let vVel = rawVelocityTo_ms(baseTextureValues[2]);
-        readoutText = vVel.toFixed(1);
-        unit = 'm/s';
-        break;
-
-      case 'DISP_IRHEATING':
-        gl.bindFramebuffer(gl.FRAMEBUFFER, lightFrameBuff_0);
-        gl.readBuffer(gl.COLOR_ATTACHMENT0);
-        var lightTextureValues = new Float32Array(4);
-        gl.readPixels(simXpos, simYpos, 1, 1, gl.RGBA, gl.FLOAT, lightTextureValues);
-        let irHeat = lightTextureValues[2] - lightTextureValues[3];
-        readoutText = irHeat.toFixed(2);
-        unit = 'K/day';
-        break;
-
-      case 'DISP_IRDOWNTEMP':
-        gl.bindFramebuffer(gl.FRAMEBUFFER, lightFrameBuff_0);
-        gl.readBuffer(gl.COLOR_ATTACHMENT0);
-        var lightTextureValues = new Float32Array(4);
-        gl.readPixels(simXpos, simYpos, 1, 1, gl.RGBA, gl.FLOAT, lightTextureValues);
-        let irDown = lightTextureValues[2];
-        readoutText = KtoC(irDown).toFixed(1);
-        unit = '°C';
-        break;
-
-      case 'DISP_IRUPTEMP':
-        gl.bindFramebuffer(gl.FRAMEBUFFER, lightFrameBuff_0);
-        gl.readBuffer(gl.COLOR_ATTACHMENT0);
-        var lightTextureValues = new Float32Array(4);
-        gl.readPixels(simXpos, simYpos, 1, 1, gl.RGBA, gl.FLOAT, lightTextureValues);
-        let irUp = lightTextureValues[3];
-        readoutText = KtoC(irUp).toFixed(1);
-        unit = '°C';
-        break;
-
-      case 'DISP_TEMPERATURE_CHANGE':
-        gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_0);
-        gl.readBuffer(gl.COLOR_ATTACHMENT0);
-        var baseTextureValues = new Float32Array(4);
-        gl.readPixels(simXpos, simYpos, 1, 1, gl.RGBA, gl.FLOAT, baseTextureValues);
-        let tempChange = baseTextureValues[3] * 100.0;
-        readoutText = tempChange.toFixed(2);
-        unit = '°C/10min';
-        break;
-
-      case 'DISP_PRECIPFEEDBACK_MASS':
-        gl.bindFramebuffer(gl.FRAMEBUFFER, precipFeedbackFrameBuff);
-        gl.readBuffer(gl.COLOR_ATTACHMENT0);
-        var precipValues = new Float32Array(4);
-        gl.readPixels(simXpos, simYpos, 1, 1, gl.RGBA, gl.FLOAT, precipValues);
-        readoutText = precipValues[0].toFixed(3);
-        unit = 'kg/m²';
-        break;
-
-      case 'DISP_PRECIPFEEDBACK_HEAT':
-        gl.bindFramebuffer(gl.FRAMEBUFFER, precipFeedbackFrameBuff);
-        gl.readBuffer(gl.COLOR_ATTACHMENT1);
-        var precipValues = new Float32Array(4);
-        gl.readPixels(simXpos, simYpos, 1, 1, gl.RGBA, gl.FLOAT, precipValues);
-        readoutText = precipValues[0].toFixed(2);
-        unit = 'K/h';
-        break;
-
-      case 'DISP_PRECIPFEEDBACK_VAPOR':
-        gl.bindFramebuffer(gl.FRAMEBUFFER, precipFeedbackFrameBuff);
-        gl.readBuffer(gl.COLOR_ATTACHMENT2);
-        var precipValues = new Float32Array(4);
-        gl.readPixels(simXpos, simYpos, 1, 1, gl.RGBA, gl.FLOAT, precipValues);
-        readoutText = precipValues[0].toFixed(3);
-        unit = 'kg/m²/h';
-        break;
-
-      case 'DISP_PRECIPFEEDBACK_RAIN':
-        gl.bindFramebuffer(gl.FRAMEBUFFER, precipFeedbackFrameBuff);
-        gl.readBuffer(gl.COLOR_ATTACHMENT3);
-        var precipValues = new Float32Array(4);
-        gl.readPixels(simXpos, simYpos, 1, 1, gl.RGBA, gl.FLOAT, precipValues);
-        readoutText = precipValues[0].toFixed(3);
-        unit = 'mm/h';
-        break;
-
-      case 'DISP_PRECIPFEEDBACK_SNOW':
-        gl.bindFramebuffer(gl.FRAMEBUFFER, precipFeedbackFrameBuff);
-        gl.readBuffer(gl.COLOR_ATTACHMENT4);
-        var precipValues = new Float32Array(4);
-        gl.readPixels(simXpos, simYpos, 1, 1, gl.RGBA, gl.FLOAT, precipValues);
-        readoutText = precipValues[0].toFixed(3);
-        unit = 'mm/h';
-        break;
-
-      case 'DISP_SOILMOISTURE':
-        gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_0);
-        gl.readBuffer(gl.COLOR_ATTACHMENT1);
-        var waterTextureValues = new Float32Array(4);
-        gl.readPixels(simXpos, simYpos, 1, 1, gl.RGBA, gl.FLOAT, waterTextureValues);
-        readoutText = waterTextureValues[1].toFixed(3);
-        unit = 'm³/m³';
-        break;
-
-      case 'DISP_CURL':
-        gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_0);
-        gl.readBuffer(gl.COLOR_ATTACHMENT0);
-        var baseTextureValues = new Float32Array(4);
-        gl.readPixels(simXpos, simYpos, 1, 1, gl.RGBA, gl.FLOAT, baseTextureValues);
-        let curl = baseTextureValues[3] * 10000.0;
-        readoutText = curl.toFixed(2);
-        unit = 's⁻¹';
-        break;
-
-      case 'DISP_CAPE':
-        gl.bindFramebuffer(gl.FRAMEBUFFER, capeFrameBuff);
-        gl.readBuffer(gl.COLOR_ATTACHMENT0);
-        var capeValues = new Float32Array(1);
-        gl.readPixels(simXpos, simYpos, 1, 1, gl.RED, gl.FLOAT, capeValues);
-        readoutText = capeValues[0].toFixed(0);
-        unit = 'J/kg';
-        break;
-
-      case 'DISP_AIRQUALITY':
-        gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_0);
-        gl.readBuffer(gl.COLOR_ATTACHMENT1);
-        var waterTextureValues = new Float32Array(4);
-        gl.readPixels(simXpos, simYpos, 1, 1, gl.RGBA, gl.FLOAT, waterTextureValues);
-        let airQuality = waterTextureValues[3] * 300.0;
-        readoutText = airQuality.toFixed(1);
-        unit = 'µg/m³';
-        break;
-
-      case 'DISP_RADAR':
-        readoutText = 'Radar Imagery';
-        unit = '';
-        break;
-
-      case 'DISP_RADAR_COMPOSITE':
-        readoutText = 'Composite Radar';
-        unit = '';
-        break;
-
-      case 'DISP_RADAR_WORLD':
-        readoutText = 'World Radar';
-        unit = '';
-        break;
-
-      case 'DISP_RISK':
-        readoutText = 'Convective Risk';
-        unit = '';
-        break;
-
-      default:
-        readoutText = '';
-        unit = '';
-    }
-
-    if (readoutText) {
-      let readoutEl = document.getElementById('cursorReadout');
-      if (!readoutEl) {
-        readoutEl = document.createElement('div');
-        readoutEl.id = 'cursorReadout';
-        readoutEl.style.position = 'absolute';
-        readoutEl.style.backgroundColor = 'rgba(0, 0, 0, 0.7)';
-        readoutEl.style.color = 'white';
-        readoutEl.style.padding = '5px 10px';
-        readoutEl.style.borderRadius = '4px';
-        readoutEl.style.pointerEvents = 'none';
-        readoutEl.style.fontSize = '12px';
-        readoutEl.style.zIndex = '1000';
-        readoutEl.style.whiteSpace = 'pre';
-        document.body.appendChild(readoutEl);
-      }
-      readoutEl.textContent = readoutText + (unit ? ' ' + unit : '');
-      readoutEl.style.left = (event.clientX + 15) + 'px';
-      readoutEl.style.top = (event.clientY + 15) + 'px';
-    }
-  }
 
 
   function findSimYposAboveSurfaceAtMouseX() // find the lowest location that is not underground
@@ -7405,39 +4408,6 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
         if (simXpos >= 0 && simXpos < sim_res_x)
           weatherStations.push(new Weatherstation(simXpos, simYpos)); // add weather station
-      } else if (guiControls.tool == 'TOOL_RADAR') {
-        let simXpos = Math.floor(mouseXinSim * sim_res_x);
-        let simYpos = findSimYposAboveSurfaceAtMouseX();
-
-        if (simXpos >= 0 && simXpos < sim_res_x) {
-          let newRadar = new Radar(simXpos, simYpos);
-          // Only init cache FBO if GL context is ready (simulation is running)
-          if (typeof gl !== 'undefined') {
-            newRadar.initCacheFBO();
-          }
-          radars.push(newRadar); // add radar
-        }
-      } else if (guiControls.tool == 'TOOL_MARKER') {
-        let simXpos = Math.floor(mouseXinSim * sim_res_x);
-        let simYpos = findSimYposAboveSurfaceAtMouseX();
-
-        if (simXpos >= 0 && simXpos < sim_res_x)
-          markers.push(new Marker(simXpos, simYpos)); // add marker
-      } else if (guiControls.tool == 'TOOL_NUKE') {
-        let simXpos = Math.floor(mouseXinSim * sim_res_x);
-        let cursorYpos = Math.floor(mouseYinSim * sim_res_y);
-        let surfaceYpos = findSimYposAboveSurfaceAtMouseX();
-        let startYpos;
-
-        if (surfaceYpos !== undefined) {
-          startYpos = Math.min(cursorYpos, surfaceYpos - 5);
-          startYpos = Math.max(0, startYpos);
-        } else {
-          startYpos = Math.max(0, cursorYpos);
-        }
-
-        if (simXpos >= 0 && simXpos < sim_res_x)
-          nukes.push(new Nuke(simXpos, startYpos)); // add nuke
       }
     } else if (e.button == 1) {
       // middle mouse button
@@ -7526,96 +4496,12 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
   function handlePause()
   {
-    if (guiControls.paused && soundSystem) {
-      soundSystem.mute();
-    }
-  }
-
-  function changeFullscreenResolution()
-  {
-    const resolution = guiControls.fullscreenResolution;
-    
-    if (resolution === 'Default') {
-      // Exit fullscreen and restore original window size
-      if (document.fullscreenElement) {
-        document.exitFullscreen();
-      }
-      return;
-    }
-
-    // Parse resolution string (e.g., "1920x1080")
-    const [width, height] = resolution.split('x').map(Number);
-    
-    // Request fullscreen with the specified resolution
-    const canvas = document.getElementById('mainCanvas');
-    
-    if (!document.fullscreenElement) {
-      canvas.requestFullscreen({ navigationUI: 'hide' })
-        .then(() => {
-          // Try to set the resolution using Screen Orientation API
-          if (screen.orientation && screen.orientation.lock) {
-            // Get available refresh rates for the resolution
-            const isLandscape = width > height;
-            const orientation = isLandscape ? 'landscape-primary' : 'portrait-primary';
-            
-            // Try to lock orientation (this may prompt user permission)
-            screen.orientation.lock(orientation).catch(() => {
-              console.log('Could not lock screen orientation');
-            });
-          }
-          
-          // Resize the canvas to the desired resolution
-          canvas.width = width;
-          canvas.height = height;
-          
-          // Update canvas aspect ratio
-          canvas_aspect = canvas.width / canvas.height;
-          
-          // Recreate framebuffers at new resolution
-          createBloomFBOs();
-          createHdrFBO();
-          
-          // Recreate radar cache texture at new screen size
-          if (typeof radarTexture !== 'undefined' && radarTexture) {
-            gl.bindTexture(gl.TEXTURE_2D, radarTexture);
-            gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, canvas.width, canvas.height, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
-          }
-          updateNukeOverlaySize();
-
-          // Ensure dat.GUI menu remains visible
-          if (datGui) {
-            datGui.show();
-          }
-        })
-        .catch(err => {
-          console.error('Error entering fullscreen:', err);
-          alert('Could not enter fullscreen mode. Please check your browser permissions.');
-        });
-    } else {
-      // Already in fullscreen, just resize
-      canvas.width = width;
-      canvas.height = height;
-      canvas_aspect = canvas.width / canvas.height;
-      createBloomFBOs();
-      createHdrFBO();
-      if (typeof radarTexture !== 'undefined' && radarTexture) {
-        gl.bindTexture(gl.TEXTURE_2D, radarTexture);
-        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, canvas.width, canvas.height, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
-      }
-      updateNukeOverlaySize();
-
-      // Ensure dat.GUI menu remains visible
-      if (datGui) {
-        datGui.show();
-      }
+    if (guiControls.paused) {
+      soundSystem?.mute();
     }
   }
 
   document.addEventListener('keydown', (event) => {
-    // Don't fire keybinds when typing in an input or textarea
-    const tag = document.activeElement.tagName;
-    if (tag === 'INPUT' || tag === 'TEXTAREA') return;
-
     if (event.code == 'ControlLeft') {
       ctrlPressed = true;
     }
@@ -7639,32 +4525,22 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       // lastBpressTime = new Date().getTime();
     } else if (event.code == 'KeyF') {
       airplane.toggleCamFollow();
-    } else if (event.code == 'KeyJ') {
-      guiControls.displayMode = 'DISP_TEMPERATURE_CHANGE';
     } else if (event.code == 'KeyV') {
       // V: reset view to full simulation area
       cam.center();
     } else if (event.code == 'KeyG') {
       // G
       guiControls.showGraph = !guiControls.showGraph;
-      if (guiControls.showGraph) {
-        // When opening graph, start in cursor-following mode
-        guiControls.graphFixedPosition = false;
-      } else {
-        // When closing graph, reset to cursor-following mode
-        guiControls.graphFixedPosition = false;
-      }
       hideOrShowGraph();
     } else if (event.code == 'Tab') {
       // TAB
       event.preventDefault();
-      guiControls.enableVectorField = !guiControls.enableVectorField;
+      displayVectorField = !displayVectorField;
     } else if (event.code == 'KeyS') {
-      // S: toggle radar overlay on realistic view
-      guiControls.radarOverlay = !guiControls.radarOverlay;
+      // S: log sample at mouse location
+      logSample();
     } else if (event.code == 'KeyZ') {
-      // Z: display risk view
-      guiControls.displayMode = 'DISP_RISK';
+      zPressed = true;
     } else if (event.code == 'KeyX') {
       // Sample droplets around mouse location
       logDropletsAndToggleFollow();
@@ -7678,15 +4554,6 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         airplane.setAutopilot(event.getModifierState('CapsLock'));
     } else if (event.code == 'ShiftLeft') {
       airplane.toggleGear();
-    } else if (event.code == 'Slash') {
-      // Slash: cycle radar products backward for enabled radars
-      cycleRadarProducts(-1);
-    } else if (event.code == 'Enter') {
-      // Enter: cycle radar products forward for enabled radars
-      cycleRadarProducts(1);
-    } else if (event.code == 'KeyC') {
-      // C: humidity display
-      guiControls.displayMode = 'DISP_HUMD';
     } else if (event.key == 1) { // number keys for displaymodes
       guiControls.displayMode = 'DISP_TEMPERATURE';
     } else if (event.key == 2) {
@@ -7707,12 +4574,10 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       guiControls.displayMode = 'DISP_PRECIPFEEDBACK_MASS';
     } else if (event.key == 0) {
       guiControls.displayMode = 'DISP_PRECIPFEEDBACK_HEAT';
-    } else if (event.key == '`') {
-      guiControls.displayMode = 'DISP_PRESSURE';
     } else if (event.code == 'KeyK') {
       guiControls.displayMode = 'DISP_AIRQUALITY';
-    } else if (event.code === 'Backspace') {
-      guiControls.displayMode = 'DISP_CHARGE';
+    } else if (event.code == 'KeyC') {
+      guiControls.displayMode = 'DISP_HUMD';
     } else if (event.key == 'ArrowLeft') {
       leftPressed = true; // <
     } else if (event.key == 'ArrowUp') {
@@ -7764,20 +4629,29 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       guiControls.tool = 'TOOL_WALL_RUNWAY';
     } else if (event.code == 'Backslash') {
       guiControls.tool = 'TOOL_WALL_INDUSTRIAL';
-    } else if (event.code == 'Period') {
-      if (airplaneMode) {
-        airplane.setBrakes(true);
+    } else if (event.code == 'KeyN') {
+      if (displayWeatherStations) {
+        displayWeatherStations = false;
+        for (i = 0; i < weatherStations.length; i++) {
+          weatherStations[i].setHidden(true);
+        }
       } else {
-        guiControls.displayMode = 'DISP_RADAR';
+        displayWeatherStations = true;
+        for (i = 0; i < weatherStations.length; i++) {
+          weatherStations[i].setHidden(false);
+        }
       }
+
+      if (guiControls.tool == 'TOOL_STATION') // prevent placing weather stations when not visible
+        guiControls.tool = 'TOOL_NONE';
     } else if (event.code == 'KeyM') {
       guiControls.tool = 'TOOL_STATION';
       displayWeatherStations = true;
       for (i = 0; i < weatherStations.length; i++) {
         weatherStations[i].setHidden(false);
       }
-    } else if (event.code == 'KeyN') {
-      guiControls.tool = 'TOOL_MARKER';
+    } else if (event.code == 'Period') {
+      airplane.setBrakes(true);
     } else if (event.code == 'Slash') {
       airplane.toggleEngine();
     } else if (event.code == 'KeyL') {
@@ -7863,10 +4737,6 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   const velocityShader = await loadShader('velocityShader.frag');
   const advectionShader = await loadShader('advectionShader.frag');
   const curlShader = await loadShader('curlShader.frag');
-  const capeShader = await loadShader('capeShader.frag');
-  const chargeShader = await loadShader('chargeShader.frag');
-  const lightningSummaryShader = await loadShader('lightningSummaryShader.frag');
-  const chargeDisplayShader = await loadShader('chargeDisplayShader.frag');
   const vorticityShader = await loadShader('vorticityShader.frag');
   const boundaryShader = await loadShader('boundaryShader.frag');
 
@@ -7877,7 +4747,6 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   const setupShader = await loadShader('setupShader.frag');
 
   const temperatureDisplayShader = await loadShader('temperatureDisplayShader.frag');
-  const temperatureChangeDisplayShader = await loadShader('temperatureChangeDisplayShader.frag');
   const airQualityDisplayShader = await loadShader('airQualityDisplayShader.frag');
   const humidityDisplayShader = await loadShader('humidityDisplayShader.frag');
   const precipDisplayShader = await loadShader('precipDisplayShader.frag');
@@ -7896,10 +4765,6 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   const velocityProgram = createProgram(simVertexShader, velocityShader);
   const advectionProgram = createProgram(simVertexShader, advectionShader);
   const curlProgram = createProgram(simVertexShader, curlShader);
-  const capeProgram = createProgram(simVertexShader, capeShader);
-  const chargeProgram = createProgram(simVertexShader, chargeShader);
-  const lightningSummaryProgram = createProgram(simVertexShader, lightningSummaryShader);
-  const chargeDisplayProgram = createProgram(dispVertexShader, chargeDisplayShader);
   const vorticityProgram = createProgram(simVertexShader, vorticityShader);
   const boundaryProgram = createProgram(simVertexShader, boundaryShader);
 
@@ -7910,7 +4775,6 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   const setupProgram = createProgram(simVertexShader, setupShader);
 
   const temperatureDisplayProgram = createProgram(dispVertexShader, temperatureDisplayShader);
-  const temperatureChangeDisplayProgram = createProgram(dispVertexShader, temperatureChangeDisplayShader);
   const airQualityDisplayProgram = createProgram(dispVertexShader, airQualityDisplayShader);
   const humidityDisplayProgram = createProgram(dispVertexShader, humidityDisplayShader);
   const precipDisplayProgram = createProgram(precipDisplayVertexShader, precipDisplayShader);
@@ -7960,10 +4824,10 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   var fluidVertexBufferObject = gl.createBuffer();
   gl.bindBuffer(gl.ARRAY_BUFFER, fluidVertexBufferObject);
   gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(fluidQuadVertices), gl.STATIC_DRAW);
-  var positionAttribLocation = gl.getAttribLocation(velocityProgram,
+  var positionAttribLocation = gl.getAttribLocation(pressureProgram,
                                                     'vertPosition'); // 0 these positions are the same for every program,
   // since they all use the same vertex shader
-  var texCoordAttribLocation = gl.getAttribLocation(velocityProgram, 'vertTexCoord'); // 1
+  var texCoordAttribLocation = gl.getAttribLocation(pressureProgram, 'vertTexCoord'); // 1
   gl.enableVertexAttribArray(positionAttribLocation);
   gl.enableVertexAttribArray(texCoordAttribLocation);
   gl.vertexAttribPointer(
@@ -8046,20 +4910,6 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   const precipitationVertexShader = await loadShader('precipitationShader.vert');
   const precipitationShader = await loadShader('precipitationShader.frag');
   const precipitationProgram = createProgram(precipitationVertexShader, precipitationShader, [ 'position_out', 'mass_out', 'density_out' ]);
-
-  // Radar display setup
-  const radarVertexShader = await loadShader('radarDisplayShader.vert');
-  const radarFragmentShader = await loadShader('radarDisplayShader.frag');
-  let radarDisplayProgram; try { radarDisplayProgram = createProgram(radarVertexShader, radarFragmentShader, []); } catch(e) { loadingBar.showError("Radar link error: " + e.message); throw e; }
-
-  const compositeRadarFragmentShader = await loadShader('compositeRadarDisplayShader.frag');
-  let compositeRadarDisplayProgram; try { compositeRadarDisplayProgram = createProgram(radarVertexShader, compositeRadarFragmentShader, []); } catch(e) { loadingBar.showError("Composite radar link error: " + e.message); throw e; }
-
-  const worldRadarFragmentShader = await loadShader('worldRadarDisplayShader.frag');
-  let worldRadarDisplayProgram; try { worldRadarDisplayProgram = createProgram(radarVertexShader, worldRadarFragmentShader, []); } catch(e) { loadingBar.showError("World radar link error: " + e.message); throw e; }
-
-  const passthroughFragmentShader = await loadShader('passthroughShader.frag');
-  let passthroughProgram; try { passthroughProgram = createProgram(postProcessingVertexShader, passthroughFragmentShader, []); } catch(e) { loadingBar.showError("Passthrough link error: " + e.message); throw e; }
 
   gl.useProgram(precipitationProgram);
 
@@ -8334,33 +5184,14 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   const wallTexture_0 = gl.createTexture();
   const wallTexture_1 = gl.createTexture();
 
-  window.baseTexture_0 = baseTexture_0;
-  window.baseTexture_1 = baseTexture_1;
-  window.waterTexture_0 = waterTexture_0;
-  window.waterTexture_1 = waterTexture_1;
-  window.wallTexture_0 = wallTexture_0;
-  window.wallTexture_1 = wallTexture_1;
-
   const curlTexture = gl.createTexture();
-  const capeTexture = gl.createTexture();
-  // Charge texture: RG32F — R=air charge, G=ground/surface charge (bipolar, ±1.0 = ±100 MV)
-  const chargeTexture_0 = gl.createTexture();
-  const chargeTexture_1 = gl.createTexture();
   const vortForceTexture = gl.createTexture();
 
   const lightTexture_0 = gl.createTexture();
   const lightTexture_1 = gl.createTexture();
   const precipitationFeedbackTexture = gl.createTexture();
   const precipitationDepositionTexture = gl.createTexture();
-  const lightningDataTexture = gl.createTexture();
-  const radarTexture = gl.createTexture();
-
-  // Cache textures for radar display (to freeze all input textures)
-  const cachedBaseTexture = gl.createTexture();
-  const cachedWaterTexture = gl.createTexture();
-  const cachedWallTexture = gl.createTexture();
-  const cachedPrecipFeedbackTexture = gl.createTexture();
-  const cachedPrecipDepositionTexture = gl.createTexture();
+  const lightningDataTexture = gl.createTexture(); // single pixel texture holding location and timing of current lightning strike
 
   // Static texures:
   const noiseTexture = gl.createTexture();
@@ -8370,31 +5201,20 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   const surfaceTextureMap = gl.createTexture();
   const colorScalesTexture = gl.createTexture();
 
-  const temperatureChangeHistoryTextures = [
-    gl.createTexture(),
-    gl.createTexture(),
-    gl.createTexture(),
-    gl.createTexture(),
-    gl.createTexture(),
-    gl.createTexture(),
-  ];
-  let temperatureChangeHistoryIndex = 0;
+  const lightningTextures = [];
+  const numLightningTextures = 10;
+
 
   frameBuff_0 = gl.createFramebuffer(); // global for weather stations
   const frameBuff_1 = gl.createFramebuffer();
 
   const curlFrameBuff = gl.createFramebuffer();
-  const capeFrameBuff = gl.createFramebuffer();
-  const chargeFrameBuff_0 = gl.createFramebuffer();
-  const chargeFrameBuff_1 = gl.createFramebuffer();
   const vortForceFrameBuff = gl.createFramebuffer();
 
   lightFrameBuff_0 = gl.createFramebuffer();
   const lightFrameBuff_1 = gl.createFramebuffer();
   const precipitationFeedbackFrameBuff = gl.createFramebuffer();
   const lightningDataFrameBuff = gl.createFramebuffer();
-  const radarFrameBuff = gl.createFramebuffer();
-  window.frameBuff_1 = frameBuff_1;
 
   // Set up Textures
   async function setupTextures()
@@ -8403,28 +5223,28 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, sim_res_x, sim_res_y, 0, gl.RGBA, gl.FLOAT, initialBaseTex);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-    //  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    //	gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
 
 
     gl.bindTexture(gl.TEXTURE_2D, baseTexture_1);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, sim_res_x, sim_res_y, 0, gl.RGBA, gl.FLOAT, initialBaseTex);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-    //  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    //	gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
 
 
     gl.bindTexture(gl.TEXTURE_2D, waterTexture_0);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, sim_res_x, sim_res_y, 0, gl.RGBA, gl.FLOAT, initialWaterTex);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-    //  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    //	gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
 
 
     gl.bindTexture(gl.TEXTURE_2D, waterTexture_1);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, sim_res_x, sim_res_y, 0, gl.RGBA, gl.FLOAT, initialWaterTex);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-    //  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    //	gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
 
 
     gl.bindTexture(gl.TEXTURE_2D, wallTexture_0);
@@ -8440,12 +5260,6 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
     // gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
 
-    for (let i = 0; i < temperatureChangeHistoryTextures.length; i++) {
-      gl.bindTexture(gl.TEXTURE_2D, temperatureChangeHistoryTextures[i]);
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, sim_res_x, sim_res_y, 0, gl.RGBA, gl.FLOAT, initialBaseTex);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-    }
 
     lastSaveTime = new Date();
   }
@@ -8453,9 +5267,6 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   setupTextures();
 
   createAmbientLightFBOs();
-
-  // Initialize radar cache FBOs
-  radars.forEach(radar => radar.initCacheFBO());
 
   // Set up Framebuffers
 
@@ -8481,45 +5292,6 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, curlTexture,
                           0); // attach the texture as the first color attachment
 
-  gl.bindTexture(gl.TEXTURE_2D, capeTexture);
-  gl.texImage2D(gl.TEXTURE_2D, 0, gl.R32F, sim_res_x, sim_res_y, 0, gl.RED, gl.FLOAT, null);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-
-  gl.bindFramebuffer(gl.FRAMEBUFFER, capeFrameBuff);
-  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, capeTexture,
-                          0); // attach the texture as the first color attachment
-
-  // Charge textures: RG32F ping-ponged (R=air charge, G=ground charge), bipolar ±1.0
-  gl.bindTexture(gl.TEXTURE_2D, chargeTexture_0);
-  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RG32F, sim_res_x, sim_res_y, 0, gl.RG, gl.FLOAT, null);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-  gl.bindFramebuffer(gl.FRAMEBUFFER, chargeFrameBuff_0);
-  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, chargeTexture_0, 0);
-
-  gl.bindTexture(gl.TEXTURE_2D, chargeTexture_1);
-  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RG32F, sim_res_x, sim_res_y, 0, gl.RG, gl.FLOAT, null);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-  gl.bindFramebuffer(gl.FRAMEBUFFER, chargeFrameBuff_1);
-  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, chargeTexture_1, 0);
-
-  lightningCacheW = Math.max(1, Math.ceil(sim_res_x / LIGHTNING_CACHE_SCALE));
-  lightningCacheH = Math.max(1, Math.ceil(sim_res_y / LIGHTNING_CACHE_SCALE));
-  if (!lightningSummaryTexture)
-    lightningSummaryTexture = gl.createTexture();
-  if (!lightningSummaryFrameBuff)
-    lightningSummaryFrameBuff = gl.createFramebuffer();
-  gl.bindTexture(gl.TEXTURE_2D, lightningSummaryTexture);
-  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, lightningCacheW, lightningCacheH, 0, gl.RGBA, gl.FLOAT, null);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-  gl.bindFramebuffer(gl.FRAMEBUFFER, lightningSummaryFrameBuff);
-  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, lightningSummaryTexture, 0);
-  lightningSummaryBuffer = new Float32Array(lightningCacheW * lightningCacheH * 4);
-  lightningFieldCacheFrame = -1;
-  lightningFieldCache = null;
 
   gl.bindTexture(gl.TEXTURE_2D, vortForceTexture);
   gl.texImage2D(gl.TEXTURE_2D, 0, gl.RG32F, sim_res_x, sim_res_y, 0, gl.RG, gl.FLOAT, null);
@@ -8574,40 +5346,6 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
   gl.bindFramebuffer(gl.FRAMEBUFFER, lightningDataFrameBuff);
   gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, lightningDataTexture, 0);
-
-  gl.bindTexture(gl.TEXTURE_2D, radarTexture);
-  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, canvas.width, canvas.height, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-
-  gl.bindFramebuffer(gl.FRAMEBUFFER, radarFrameBuff);
-  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, radarTexture, 0);
-
-  // Initialize cache textures for radar display (frozen sim snapshots)
-  gl.bindTexture(gl.TEXTURE_2D, cachedBaseTexture);
-  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, sim_res_x, sim_res_y, 0, gl.RGBA, gl.FLOAT, null);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-
-  gl.bindTexture(gl.TEXTURE_2D, cachedWaterTexture);
-  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, sim_res_x, sim_res_y, 0, gl.RGBA, gl.FLOAT, null);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-
-  gl.bindTexture(gl.TEXTURE_2D, cachedWallTexture);
-  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8I, sim_res_x, sim_res_y, 0, gl.RGBA_INTEGER, gl.BYTE, null);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-
-  gl.bindTexture(gl.TEXTURE_2D, cachedPrecipFeedbackTexture);
-  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, sim_res_x, sim_res_y, 0, gl.RGBA, gl.FLOAT, null);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-
-  gl.bindTexture(gl.TEXTURE_2D, cachedPrecipDepositionTexture);
-  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RG32F, sim_res_x, sim_res_y, 0, gl.RG, gl.FLOAT, null);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
 
   // load images
   imgElement = await loadImage('resources/img/noise_texture.jpg');
@@ -8668,1109 +5406,57 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE); // vertical
 
 
-  // ========================= Color Scale System =========================
-  const COLOR_SCALE_CONFIGS = [
-    { id: 'temperature',      name: 'Temperature',      col: 0,  stops: 71, interpolate: true },
-    { id: 'airQuality',       name: 'Air Quality',      col: 1,  stops: 27, interpolate: false },
-    { id: 'irDown',           name: 'IR Down Temp',     col: 2,  stops: 30, interpolate: false },
-    { id: 'irUp',             name: 'IR Up Temp',       col: 3,  stops: 30, interpolate: false },
-    { id: 'universal',        name: 'Universal',        col: 4,  stops: 33, interpolate: false },
-    { id: 'waterVapor',       name: 'Water Vapor',      col: 5,  stops: 33, interpolate: true },
-    { id: 'horizontalVelocity', name: 'Horizontal Velocity', col: 6,  stops: 33, interpolate: false },
-    { id: 'verticalVelocity',   name: 'Vertical Velocity',   col: 7,  stops: 33, interpolate: false },
-    { id: 'irHeating',        name: 'IR Heating/Cooling', col: 8,  stops: 33, interpolate: false },
-    { id: 'precipMass',       name: 'Precip Mass',      col: 9,  stops: 33, interpolate: false },
-    { id: 'precipHeat',       name: 'Precip Heat',      col: 10, stops: 33, interpolate: false },
-    { id: 'precipVapor',      name: 'Precip Vapor',     col: 11, stops: 33, interpolate: false },
-    { id: 'precipRain',       name: 'Rain Deposition',  col: 12, stops: 33, interpolate: false },
-    { id: 'precipSnow',       name: 'Snow Deposition',  col: 13, stops: 33, interpolate: false },
-    { id: 'soilMoisture',     name: 'Soil Moisture',    col: 14, stops: 33, interpolate: false },
-    { id: 'curl',             name: 'Curl',             col: 15, stops: 33, interpolate: false },
-    { id: 'temperatureChange',name: 'Temperature Change',col:16, stops: 33, interpolate: false },
-    { id: 'cape',             name: 'CAPE',             col:17, stops: 72, interpolate: false },
-    { id: 'radarReflectivity', name: 'Radar Reflectivity', col:18, stops: 36, interpolate: false },
-    { id: 'radarVelocity',     name: 'Radar Velocity',     col: 19, stops: 33, interpolate: false },
-    { id: 'radarCorrelation',  name: 'Radar Correlation',  col:20, stops: 22, interpolate: false },
-    { id: 'radarEchoTops',     name: 'Radar Echo Tops',    col:21, stops: 32, interpolate: false },
-    { id: 'pressure',          name: 'Pressure',           col:22, stops: 33, interpolate: false },
-    { id: 'charge',            name: 'Charge',             col:23, stops: 33, interpolate: false },
-    { id: 'relativeHumidity',  name: 'Relative Humidity',  col:24, stops: 33, interpolate: true },
-  ];
-
-  const DEFAULT_IR_PALETTE = [
-    [255,178,255],[255,128,255],[255, 77,255],[204,  0,204],[166,  0,153],
-    [128,  0,128],[ 89,  0,153],[  0,  0,178],[  0,  0,255],[  0, 77,255],
-    [  0,112,255],[  0,158,255],[  0,204,255],[  0,255,255],[  0,128,  0],
-    [  0,156,  0],[  0,184,  0],[  0,217,  0],[  0,255,  0],[128,255,  0],
-    [204,255,  0],[255,255,  0],[255,204,  0],[255,153,  0],[255,102,  0],
-    [255,  0,  0],[217,  0,  0],[184,  0,  0],[156,  0,  0],[133,  0,  0]
-  ];
-
-  let colorScaleData = {};
-  let colorScaleValues = {};
-
-  function initColorScaleData(img) {
-    const offC = document.createElement('canvas');
-    offC.width = img.width; offC.height = img.height;
-    const ctx2d = offC.getContext('2d');
-    ctx2d.drawImage(img, 0, 0);
-    function readCol(col, n) {
-      const arr = [];
-      for (let i = 0; i < n; i++) {
-        const px = ctx2d.getImageData(col, i, 1, 1).data;
-        arr.push([px[0], px[1], px[2]]);
-      }
-      return arr;
-    }
-    colorScaleData.temperature = readCol(0, 71);
-    colorScaleValues.temperature = Array.from({length: 71}, (_, i) => i);
-    colorScaleData.airQuality  = readCol(1, 27);
-    colorScaleValues.airQuality = Array.from({length: 27}, (_, i) => i);
-    colorScaleData.irDown      = DEFAULT_IR_PALETTE.map(c => [...c]);
-    colorScaleValues.irDown = Array.from({length: DEFAULT_IR_PALETTE.length}, (_, i) => i);
-    colorScaleData.irUp        = DEFAULT_IR_PALETTE.map(c => [...c]);
-    colorScaleValues.irUp = Array.from({length: DEFAULT_IR_PALETTE.length}, (_, i) => i);
-    const univ = [];
-    for (let i = 0; i <= 32; i++) {
-      if      (i <  16) univ.push([Math.round(i / 16 * 255), Math.round(i / 16 * 255), 255]);
-      else if (i == 16) univ.push([255, 255, 255]);
-      else              univ.push([255, Math.round((32 - i) / 16 * 255), Math.round((32 - i) / 16 * 255)]);
-    }
-    colorScaleData.universal = univ;
-    colorScaleValues.universal = Array.from({length: 33}, (_, i) => i);
-    const cloneScale = s => s.map(c => [...c]);
-    const cloneValues = n => Array.from({length: n}, (_, i) => i);
-    colorScaleData.horizontalVelocity = cloneScale(univ);
-    colorScaleValues.horizontalVelocity = cloneValues(33);
-    colorScaleData.verticalVelocity = cloneScale(univ);
-    colorScaleValues.verticalVelocity = cloneValues(33);
-    colorScaleData.irHeating = cloneScale(univ);
-    colorScaleValues.irHeating = cloneValues(33);
-    colorScaleData.precipMass = cloneScale(univ);
-    colorScaleValues.precipMass = cloneValues(33);
-    colorScaleData.precipHeat = cloneScale(univ);
-    colorScaleValues.precipHeat = cloneValues(33);
-    colorScaleData.precipVapor = cloneScale(univ);
-    colorScaleValues.precipVapor = cloneValues(33);
-    colorScaleData.precipRain = cloneScale(univ);
-    colorScaleValues.precipRain = cloneValues(33);
-    colorScaleData.precipSnow = cloneScale(univ);
-    colorScaleValues.precipSnow = cloneValues(33);
-    colorScaleData.soilMoisture = cloneScale(univ);
-    colorScaleValues.soilMoisture = cloneValues(33);
-    colorScaleData.curl = cloneScale(univ);
-    colorScaleValues.curl = cloneValues(33);
-
-    // Water vapor: idx 0 = dry (black) → idx 32 = saturated (white/cyan)
-    // Used with unipolar mapping: val = water * 0.06, idx = clamp(val,0,1)*32
-    const wv = [];
-    for (let i = 0; i <= 32; i++) {
-      const t = i / 32; // 0=dry, 1=saturated
-      if (t < 0.25) {
-        const f = t / 0.25;
-        wv.push([0, 0, Math.round(f * 120)]);           // black → dark blue
-      } else if (t < 0.55) {
-        const f = (t - 0.25) / 0.30;
-        wv.push([0, Math.round(f * 60), Math.round(120 + f * 110)]);  // dark blue → medium blue
-      } else if (t < 0.80) {
-        const f = (t - 0.55) / 0.25;
-        wv.push([0, Math.round(60 + f * 170), Math.round(230 + f * 25)]);  // medium blue → cyan
-      } else {
-        const f = (t - 0.80) / 0.20;
-        wv.push([Math.round(f * 255), 230, 255]);       // cyan → white
-      }
-    }
-    colorScaleData.waterVapor = wv;
-    colorScaleValues.waterVapor = Array.from({length: 33}, (_, i) => i);
-
-    const tempChange = [];
-    for (let i = 0; i <= 32; i++) {
-      const t = (i / 32) * 2.0 - 1.0;
-      if (t < 0.0) {
-        const f = 1.0 + t;
-        tempChange.push([Math.round(f * 255), Math.round(f * 255), 255]);
-      } else {
-        const f = 1.0 - t;
-        tempChange.push([255, Math.round(f * 255), Math.round(f * 255)]);
-      }
-    }
-    colorScaleData.temperatureChange = tempChange;
-    colorScaleValues.temperatureChange = Array.from({length: 33}, (_, i) => i);
-
-    // CAPE color scale: 0-10000 J/Kg mapped to 72 stops
-    // Colors: White -> Pale light blue -> Dark desat blue -> Lime Green -> Yellow -> Red -> Dark red -> Pink -> Dark Grey -> Bright sat light blue
-    const cape = [];
-    const capeStops = [
-      { idx: 0,   val: 0,    col: [10,  10,  20]  },    // Near black (no CAPE)
-      { idx: 1,   val: 100,  col: [20,  40,  80]  },    // Dark blue
-      { idx: 4,   val: 500,  col: [0,   100, 200] },    // Blue
-      { idx: 6,   val: 750,  col: [50,  205, 50]  },    // Lime Green
-      { idx: 7,   val: 1000, col: [255, 255, 0]   },    // Yellow
-      { idx: 18,  val: 2500, col: [255, 0,   0]   },    // Red
-      { idx: 22,  val: 3000, col: [139, 0,   0]   },    // Dark red
-      { idx: 29,  val: 4000, col: [255, 105, 180] },    // Pink
-      { idx: 36,  val: 5000, col: [80,  80,  80]  },    // Dark Grey
-      { idx: 71,  val: 10000,col: [0,   191, 255] },    // DeepSkyBlue
-    ];
-    for (let i = 0; i < 72; i++) {
-      // Find which segment this stop belongs to
-      let segStart = capeStops[0], segEnd = capeStops[capeStops.length - 1];
-      for (let j = 0; j < capeStops.length - 1; j++) {
-        if (i >= capeStops[j].idx && i <= capeStops[j + 1].idx) {
-          segStart = capeStops[j];
-          segEnd = capeStops[j + 1];
-          break;
-        }
-      }
-      // Interpolate
-      const t = segStart.idx === segEnd.idx ? 0 : (i - segStart.idx) / (segEnd.idx - segStart.idx);
-      const r = Math.round(segStart.col[0] + t * (segEnd.col[0] - segStart.col[0]));
-      const g = Math.round(segStart.col[1] + t * (segEnd.col[1] - segStart.col[1]));
-      const b = Math.round(segStart.col[2] + t * (segEnd.col[2] - segStart.col[2]));
-      cape.push([r, g, b]);
-    }
-    colorScaleData.cape = cape;
-    // Initialize CAPE values based on the capeStops definition
-    colorScaleValues.cape = [];
-    for (let i = 0; i < 72; i++) {
-      // Find which segment this index belongs to and interpolate the value
-      let segStart = capeStops[0], segEnd = capeStops[capeStops.length - 1];
-      for (let j = 0; j < capeStops.length - 1; j++) {
-        if (i >= capeStops[j].idx && i <= capeStops[j + 1].idx) {
-          segStart = capeStops[j];
-          segEnd = capeStops[j + 1];
-          break;
-        }
-      }
-      const t = segStart.idx === segEnd.idx ? 0 : (i - segStart.idx) / (segEnd.idx - segStart.idx);
-      const value = segStart.val + t * (segEnd.val - segStart.val);
-      colorScaleValues.cape.push(value);
-    }
-
-    // Radar reflectivity: 36 stops with integer dBZ values (0-87 dBZ, 3 dBZ/stop)
-    colorScaleData.radarReflectivity = [
-      [  4,  4,  4],  //  0 dBZ  ND
-      [  2,120,120],  //  3 dBZ  (gradient)
-      [  0,236,236],  //  6 dBZ  light cyan
-      [  1,198,241],  //  9 dBZ  (gradient)
-      [  1,160,246],  // 12 dBZ  sky blue
-      [  1, 80,246],  // 15 dBZ  (gradient)
-      [  0,  0,246],  // 18 dBZ  blue
-      [  0,128,  0],  // 21 dBZ  (gradient - jump to green family)
-      [  0,255,  0],  // 24 dBZ  green
-      [  0,228,  0],  // 27 dBZ  (gradient)
-      [  0,200,  0],  // 30 dBZ  medium green
-      [  0,172,  0],  // 33 dBZ  (gradient)
-      [  0,144,  0],  // 36 dBZ  dark green
-      [128,200,  0],  // 39 dBZ  (gradient)
-      [255,255,  0],  // 42 dBZ  yellow
-      [243,224,  0],  // 45 dBZ  (gradient)
-      [231,192,  0],  // 48 dBZ  dark yellow
-      [243,168,  0],  // 51 dBZ  (gradient)
-      [255,144,  0],  // 54 dBZ  orange
-      [255, 72,  0],  // 57 dBZ  (gradient)
-      [255,  0,  0],  // 60 dBZ  red
-      [235,  0,  0],  // 63 dBZ  (gradient)
-      [214,  0,  0],  // 66 dBZ  dark red
-      [203,  0,  0],  // 69 dBZ  (gradient)
-      [192,  0,  0],  // 72 dBZ  darker red
-      [224,  0,128],  // 75 dBZ  (gradient)
-      [255,  0,255],  // 78 dBZ  magenta
-      [204, 43,228],  // 81 dBZ  (gradient)
-      [153, 85,201],  // 84 dBZ  purple
-      [194,160,218],  // 87 dBZ  light grey
-      [245,245,245],  // 90 dBZ  (gradient)
-      [255,255,255],  // 93 dBZ  white
-      [255,255,255],  // 96 dBZ
-      [255,255,255],  // 99 dBZ
-      [255,255,255],  // 102 dBZ
-      [255,255,255],  // 105 dBZ
-    ];
-    colorScaleValues.radarReflectivity = Array.from({length: 36}, (_, i) => i * 3); // 0-105 dBZ in 3 dBZ steps
-
-    // Radar velocity: 33 stops with gradients (odd number so center is at index 16)
-    colorScaleData.radarVelocity = [
-      [ 49,  0,196],  // strong inbound
-      [ 25,  0,221],  // (gradient)
-      [  0,  0,246],
-      [  0, 72,246],  // (gradient)
-      [  0,144,246],
-      [  0,190,241],  // (gradient)
-      [  0,236,236],
-      [  0,246,118],  // (gradient)
-      [  0,255,  0],
-      [  0,228,  0],  // (gradient)
-      [  0,200,  0],
-      [  0,172,  0],  // (gradient)
-      [  0,144,  0],
-      [  0,117,  0],  // (gradient)
-      [  0, 90,  0],
-      [ 64, 96, 64],  // (gradient to grey)
-      [128,128,128],  // zero / no data (center at index 16)
-      [128,128,128],  // duplicate zero for exact center at t=0.5
-      [136, 64, 64],  // (gradient)
-      [144,  0,  0],
-      [172,  0,  0],  // (gradient)
-      [200,  0,  0],
-      [228,  0,  0],  // (gradient)
-      [255,  0,  0],
-      [246, 77,  0],  // (gradient)
-      [236,154,  0],
-      [241,177,  0],  // (gradient)
-      [246,200,  0],
-      [251,228,  0],  // (gradient)
-      [255,255,255],
-      [255,128,255],  // (gradient)
-      [255,  0,255],
-      [255,  0,255],  // strong outbound
-    ];
-    colorScaleValues.radarVelocity = Array.from({length: 33}, (_, i) => i);
-
-    // Radar correlation coefficient: doubled to 22 stops
-    colorScaleData.radarCorrelation = [
-      [ 50, 50, 50],  // <0.20
-      [ 25, 25, 89],  // (gradient)
-      [  0,  0,128],  // 0.30
-      [  0,  0,192],  // (gradient)
-      [  0,  0,255],  // 0.50
-      [  0, 64,255],  // (gradient)
-      [  0,128,255],  // 0.65
-      [  0,192,255],  // (gradient)
-      [  0,255,255],  // 0.75
-      [  0,255,128],  // (gradient)
-      [  0,255,  0],  // 0.85
-      [128,255,  0],  // (gradient)
-      [255,255,  0],  // 0.90
-      [255,192,  0],  // (gradient)
-      [255,128,  0],  // 0.95
-      [255, 64,  0],  // (gradient)
-      [255,  0,  0],  // 0.97
-      [255,  0,128],  // (gradient)
-      [255,  0,255],  // 1.00
-      [255,128,255],  // (gradient)
-      [255,255,255],  // 1.05
-      [255,255,255],
-    ];
-    colorScaleValues.radarCorrelation = Array.from({length: 22}, (_, i) => i);
-
-    // Radar echo tops: doubled to 32 stops (0-60 kft)
-    colorScaleData.radarEchoTops = [
-      [  0,  0,  0],  //  0 kft
-      [  0,  0, 50],  // (gradient)
-      [  0,  0,100],  //  4 kft
-      [  0,  0,150],  // (gradient)
-      [  0,  0,200],  //  8 kft
-      [  0, 30,228],  // (gradient)
-      [  0, 60,255],  // 12 kft
-      [  0,110,255],  // (gradient)
-      [  0,160,255],  // 16 kft
-      [  0,208,228],  // (gradient)
-      [  0,255,200],  // 20 kft
-      [  0,255,150],  // (gradient)
-      [  0,255,100],  // 24 kft
-      [  0,255, 50],  // (gradient)
-      [  0,255,  0],  // 28 kft
-      [ 50,255,  0],  // (gradient)
-      [100,255,  0],  // 32 kft
-      [150,255,  0],  // (gradient)
-      [200,255,  0],  // 36 kft
-      [228,255,  0],  // (gradient)
-      [255,255,  0],  // 40 kft
-      [255,218,  0],  // (gradient)
-      [255,180,  0],  // 44 kft
-      [255,140,  0],  // (gradient)
-      [255,100,  0],  // 48 kft
-      [255, 65,  0],  // (gradient)
-      [255, 30,  0],  // 52 kft
-      [228, 15, 40],  // (gradient)
-      [200,  0, 80],  // 56 kft
-      [170,  0,130],  // (gradient)
-      [140,  0,180],  // 60 kft
-      [140,  0,180],
-    ];
-    colorScaleValues.radarEchoTops = Array.from({length: 32}, (_, i) => i * 2); // 0-60 kft in ~2 kft steps
-
-    // Pressure: blue (low) → white (neutral) → red (high), bipolar 33 stops
-    const pressureScale = [];
-    for (let i = 0; i <= 32; i++) {
-      const t = i / 32; // 0=low, 0.5=neutral, 1=high
-      if (t < 0.5) {
-        const f = t / 0.5;
-        pressureScale.push([Math.round(f * 255), Math.round(f * 255), 255]); // blue → white
-      } else {
-        const f = (t - 0.5) / 0.5;
-        pressureScale.push([255, Math.round((1 - f) * 255), Math.round((1 - f) * 255)]); // white → red
-      }
-    }
-    colorScaleData.pressure = pressureScale;
-    colorScaleValues.pressure = Array.from({length: 33}, (_, i) => i);
-
-    // Charge: deep blue (strong negative) → cyan → white (neutral) → yellow → deep red (strong positive)
-    // Bipolar 33 stops. Negative = blue family, positive = red/orange family.
-    const chargeScale = [];
-    for (let i = 0; i <= 32; i++) {
-      const t = i / 32; // 0=max negative, 0.5=neutral, 1=max positive
-      if (t < 0.5) {
-        // Negative side: deep blue → cyan → white
-        const f = t / 0.5; // 0→1 as charge goes from max-neg to neutral
-        if (f < 0.5) {
-          // deep blue → cyan
-          const g = f / 0.5;
-          chargeScale.push([0, Math.round(g * 220), 255]);
-        } else {
-          // cyan → white
-          const g = (f - 0.5) / 0.5;
-          chargeScale.push([Math.round(g * 255), 220 + Math.round(g * 35), 255]);
-        }
-      } else {
-        // Positive side: white → yellow → deep red
-        const f = (t - 0.5) / 0.5; // 0→1 as charge goes from neutral to max-pos
-        if (f < 0.5) {
-          // white → yellow/orange
-          const g = f / 0.5;
-          chargeScale.push([255, Math.round(255 - g * 100), Math.round(255 - g * 255)]);
-        } else {
-          // orange → deep red
-          const g = (f - 0.5) / 0.5;
-          chargeScale.push([255, Math.round(155 - g * 155), 0]);
-        }
-      }
-    }
-    colorScaleData.charge = chargeScale;
-    colorScaleValues.charge = Array.from({length: 33}, (_, i) => i);
-
-    // Relative Humidity: 0% (dry) → 100% (saturated), with distinct cloud density above 100%
-    // Uses blue-cyan gradient for humidity, transitioning to white/gray for clouds
-    const rhScale = [];
-    for (let i = 0; i <= 32; i++) {
-      const t = i / 32; // 0=dry, 1=saturated
-      if (t < 0.3) {
-        // Dry: dark blue to medium blue
-        const f = t / 0.3;
-        rhScale.push([0, Math.round(f * 100), Math.round(50 + f * 150)]);
-      } else if (t < 0.6) {
-        // Medium humidity: blue to cyan
-        const f = (t - 0.3) / 0.3;
-        rhScale.push([0, Math.round(100 + f * 155), Math.round(200 + f * 55)]);
-      } else if (t < 0.9) {
-        // High humidity: cyan to white
-        const f = (t - 0.6) / 0.3;
-        rhScale.push([Math.round(f * 255), 255, 255]);
-      } else {
-        // Saturated/cloudy: white to light gray
-        const f = (t - 0.9) / 0.1;
-        const gray = Math.round(255 - f * 40);
-        rhScale.push([gray, gray, gray]);
-      }
-    }
-    colorScaleData.relativeHumidity = rhScale;
-    colorScaleValues.relativeHumidity = Array.from({length: 33}, (_, i) => i * 3.125); // 0-100%
-  }
-
-  function uploadColorScaleTexture() {
-    // radarReflectivity is initialized in initColorScaleData, not here
-    const TEX_W = COLOR_SCALE_CONFIGS.length, TEX_H = 72;
-    const offC = document.createElement('canvas');
-    offC.width = TEX_W; offC.height = TEX_H;
-    const ctx2d = offC.getContext('2d');
-    COLOR_SCALE_CONFIGS.forEach(cfg => {
-      const stops = colorScaleData[cfg.id];
-      const values = colorScaleValues[cfg.id];
-      // If interpolation is enabled for this scale, interpolate across full texture height based on value range
-      if (cfg.interpolate) {
-        const minValue = Math.min(...values);
-        const maxValue = Math.max(...values);
-        const valueRange = maxValue - minValue || 1;
-        for (let row = 0; row < TEX_H; row++) {
-          const t = row / (TEX_H - 1);
-          const targetValue = minValue + t * valueRange;
-          
-          // Find the two stops to interpolate between based on targetValue
-          let idxFloor = 0;
-          let idxCeil = stops.length - 1;
-          for (let i = 0; i < values.length - 1; i++) {
-            if (targetValue >= values[i] && targetValue <= values[i + 1]) {
-              idxFloor = i;
-              idxCeil = i + 1;
-              break;
-            }
-          }
-          
-          const localT = valueRange > 0 ? (targetValue - values[idxFloor]) / (values[idxCeil] - values[idxFloor] || 1) : 0;
-          const c1 = stops[idxFloor];
-          const c2 = stops[idxCeil];
-          const r = Math.round(c1[0] + localT * (c2[0] - c1[0]));
-          const g = Math.round(c1[1] + localT * (c2[1] - c1[1]));
-          const b = Math.round(c1[2] + localT * (c2[2] - c1[2]));
-          ctx2d.fillStyle = `rgb(${r},${g},${b})`;
-          ctx2d.fillRect(cfg.col, row, 1, 1);
-        }
-      } else {
-        // Original behavior: place colors at their index positions
-        for (let row = 0; row < stops.length; row++) {
-          const [r, g, b] = stops[row];
-          ctx2d.fillStyle = `rgb(${r},${g},${b})`;
-          ctx2d.fillRect(cfg.col, row, 1, 1);
-        }
-      }
-    });
-    gl.bindTexture(gl.TEXTURE_2D, colorScalesTexture);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, offC);
-    // Use LINEAR filtering for scales with interpolation enabled, NEAREST otherwise
-    const anyInterpolate = COLOR_SCALE_CONFIGS.some(cfg => cfg.interpolate);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, anyInterpolate ? gl.LINEAR : gl.NEAREST);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, anyInterpolate ? gl.LINEAR : gl.NEAREST);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-  }
-
-  function buildColorScaleEditor() {
-    const styleEl = document.createElement('style');
-    styleEl.textContent = `
-      #colorScalePanel{display:none;position:fixed;top:50px;right:420px;width:520px;
-        background:#13131f;border:1px solid #252540;border-radius:10px;
-        z-index:10000;font-family:Arial,sans-serif;color:#eee;max-height:92vh;
-        overflow:hidden;box-shadow:0 8px 32px rgba(0,0,0,0.75);}
-      .cse-hdr{display:flex;align-items:center;gap:8px;padding:11px 15px;
-        background:linear-gradient(135deg,#191930,#0e0e22);
-        border-bottom:1px solid #252540;cursor:move;user-select:none;flex-shrink:0;}
-      .cse-hdr span{font-size:14px;font-weight:700;flex:1;}
-      .cse-close{background:rgba(255,255,255,0.07);border:none;color:#777;cursor:pointer;
-        font-size:12px;padding:3px 8px;border-radius:5px;line-height:1;flex-shrink:0;}
-      .cse-close:hover{background:rgba(220,60,60,0.35);color:#fff;}
-      .cse-body{padding:14px 15px 16px;overflow-y:auto;max-height:calc(92vh - 46px);
-        scrollbar-width:thin;scrollbar-color:#252540 #0d0d18;}
-      .cse-body::-webkit-scrollbar{width:4px;}
-      .cse-body::-webkit-scrollbar-thumb{background:#252540;border-radius:2px;}
-      .cse-tabs{display:flex;gap:3px;flex-wrap:wrap;margin-bottom:12px;}
-      .cse-tab{padding:5px 11px;border:1px solid #252540;border-radius:20px;
-        background:#13131f;color:#5a6070;cursor:pointer;font-size:11px;
-        font-weight:600;transition:all 0.15s;}
-      .cse-tab:hover{background:#1e1e38;color:#aaa;border-color:#3a3a60;}
-      .cse-tab.active{background:#1e3080;color:#a0c0ff;border-color:#3050c0;}
-      .cse-grad{height:32px;border-radius:6px;margin-bottom:12px;border:1px solid #252540;}
-      .cse-stops{display:flex;flex-direction:column;gap:2px;margin-bottom:12px;
-        max-height:240px;overflow-y:auto;
-        scrollbar-width:thin;scrollbar-color:#252540 #0d0d18;}
-      .cse-stops::-webkit-scrollbar{width:4px;}
-      .cse-stops::-webkit-scrollbar-thumb{background:#252540;border-radius:2px;}
-      .cse-stop{display:flex;align-items:center;gap:6px;padding:3px 6px;
-        border-radius:5px;cursor:pointer;border:1px solid transparent;}
-      .cse-stop:hover{background:#191930;}
-      .cse-stop.selected{background:#121c40;border-color:#2a3a80;}
-      .cse-stop-idx{width:22px;font-size:10px;color:#3a3a60;text-align:right;
-        flex-shrink:0;font-weight:600;}
-      .cse-stop input[type=color]{width:38px;height:24px;border:1px solid #252540;
-        border-radius:4px;padding:1px;cursor:pointer;flex-shrink:0;background:#0d0d18;}
-      .cse-stop-val{flex:1;height:24px;border:1px solid #252540;border-radius:4px;
-        background:#0d0d18;color:#c0c0d0;font-size:11px;text-align:right;
-        padding:2px 7px;min-width:0;box-sizing:border-box;}
-      .cse-stop-val:focus{outline:none;border-color:#3050c0;}
-      .cse-stop-btns{display:flex;gap:3px;flex-shrink:0;}
-      .cse-btn-sm{padding:2px 8px;border:1px solid #252540;border-radius:4px;
-        background:#181828;color:#666;cursor:pointer;font-size:10px;
-        font-weight:600;transition:all 0.12s;}
-      .cse-btn-sm:hover{background:#1e3080;color:#a0c0ff;border-color:#3050c0;}
-      .cse-btn-sm.active{background:#1e3080;color:#a0c0ff;border-color:#3050c0;}
-      .cse-controls{display:flex;gap:6px;margin-bottom:8px;}
-      .cse-ctrl-btn{flex:1;padding:7px 4px;border:1px solid #252540;border-radius:5px;
-        background:#181828;color:#777;cursor:pointer;font-size:11px;font-weight:600;
-        transition:all 0.12s;text-align:center;}
-      .cse-ctrl-btn:hover{background:#1e3080;color:#a0c0ff;border-color:#3050c0;}
-      .cse-ctrl-btn.add{background:#1a4030;border-color:#2a6040;color:#70c090;}
-      .cse-ctrl-btn.add:hover{background:#1e5038;color:#90e0b0;}
-      .cse-ctrl-btn.remove{background:#401828;border-color:#602030;color:#c06070;}
-      .cse-ctrl-btn.remove:hover{background:#501830;color:#e08090;}
-      .cse-ctrl-btn.copy{background:#182840;border-color:#203860;color:#6090c0;}
-      .cse-ctrl-btn.copy:hover{background:#203050;color:#80b0e0;}
-      .cse-ctrl-btn.paste{background:#282040;border-color:#382860;color:#8070c0;}
-      .cse-ctrl-btn.paste:hover{background:#302850;color:#a090e0;}
-      .cse-offset-row{display:flex;gap:4px;margin-bottom:8px;align-items:center;}
-      .cse-offset-lbl{font-size:10px;color:#4a5060;text-transform:uppercase;
-        letter-spacing:1px;font-weight:600;flex-shrink:0;margin-right:2px;}
-      .cse-offset-btn{flex:1;padding:5px 2px;border:1px solid #252540;border-radius:4px;
-        background:#181828;color:#666;cursor:pointer;font-size:10px;font-weight:700;
-        text-align:center;transition:all 0.12s;}
-      .cse-offset-btn:hover{background:#1e3080;color:#a0c0ff;border-color:#3050c0;}
-      .cse-offset-btn.neg{color:#c06070;}
-      .cse-offset-btn.neg:hover{background:#401828;color:#e08090;border-color:#602030;}
-      .cse-divider{border-top:1px solid #1c1c30;margin:10px -15px 12px;}
-      .cse-opt-row{display:flex;align-items:center;margin-bottom:10px;padding:8px 10px;
-        background:#0e0e1a;border:1px solid #1e1e38;border-radius:6px;}
-      .cse-opt-lbl{display:flex;align-items:center;gap:8px;color:#888;font-size:12px;cursor:pointer;}
-      .cse-opt-lbl input[type=checkbox]{width:15px;height:15px;cursor:pointer;accent-color:#4a90e2;}
-      .cse-io-lbl{font-size:10px;color:#4a5060;text-transform:uppercase;
-        letter-spacing:1.2px;font-weight:600;margin-bottom:6px;}
-      .cse-format-row{display:flex;gap:8px;margin-bottom:8px;align-items:center;}
-      .cse-format-sel{flex:1;padding:6px 9px;border:1px solid #252540;border-radius:5px;
-        background:#0b0b17;color:#c0c0d0;font-size:11px;outline:none;}
-      .cse-json{width:100%;height:110px;background:#080812;color:#b0c0b0;
-        border:1px solid #252540;border-radius:5px;padding:7px;font-size:11px;
-        resize:vertical;box-sizing:border-box;font-family:monospace;}
-      .cse-json:focus{outline:none;border-color:#3050c0;}
-      .cse-btns{display:flex;gap:8px;margin-top:8px;}
-      .cse-btn{flex:1;padding:8px;border:none;border-radius:5px;cursor:pointer;
-        font-size:12px;font-weight:700;color:#fff;transition:filter 0.12s;}
-      .cse-btn:hover{filter:brightness(1.2);}
-      .cse-btn-imp{background:#1a5030;} .cse-btn-exp{background:#182040;}
-    `;
-    document.head.appendChild(styleEl);
-
-    const panel = document.createElement('div');
-    panel.id = 'colorScalePanel';
-    panel.innerHTML = `
-      <div class="cse-hdr"><span>🎨 Color Scale Editor</span>
-        <button class="cse-close" title="Close">✕</button></div>
-      <div class="cse-body">
-        <div class="cse-tabs" id="cse-tabs"></div>
-        <div class="cse-grad" id="cse-grad"></div>
-        <div class="cse-controls">
-          <button class="cse-ctrl-btn add" id="cse-add">+ Add</button>
-          <button class="cse-ctrl-btn remove" id="cse-remove">− Remove</button>
-          <button class="cse-ctrl-btn copy" id="cse-copy">Copy</button>
-          <button class="cse-ctrl-btn paste" id="cse-paste">Paste</button>
-          <button class="cse-ctrl-btn" id="cse-update">↺ Apply</button>
-        </div>
-        <div class="cse-offset-row">
-          <span class="cse-offset-lbl">Offset:</span>
-          <button class="cse-offset-btn neg" id="cse-sub50">−50</button>
-          <button class="cse-offset-btn neg" id="cse-sub20">−20</button>
-          <button class="cse-offset-btn neg" id="cse-sub10">−10</button>
-          <button class="cse-offset-btn neg" id="cse-sub5">−5</button>
-          <button class="cse-offset-btn" id="cse-add5">+5</button>
-          <button class="cse-offset-btn" id="cse-add10">+10</button>
-          <button class="cse-offset-btn" id="cse-add20">+20</button>
-          <button class="cse-offset-btn" id="cse-add50">+50</button>
-        </div>
-        <div class="cse-opt-row">
-          <label class="cse-opt-lbl">
-            <input type="checkbox" id="cse-interpolate"> Smooth interpolation
-          </label>
-        </div>
-        <div class="cse-offset-row" style="margin-top:8px;">
-          <span class="cse-offset-lbl">View:</span>
-          <button class="cse-offset-btn" id="cse-view-rh" style="flex:2;">Relative Humidity</button>
-          <button class="cse-offset-btn" id="cse-view-water">Water Vapor</button>
-          <button class="cse-offset-btn" id="cse-view-temp">Temperature</button>
-          <button class="cse-offset-btn" id="cse-view-cape">CAPE</button>
-        </div>
-        <div class="cse-stops" id="cse-stops"></div>
-        <div class="cse-divider"></div>
-        <div class="cse-io-lbl">Import / Export</div>
-        <div class="cse-format-row">
-          <span class="cse-io-lbl" style="margin-bottom:0;white-space:nowrap">Format:</span>
-          <select class="cse-format-sel" id="cse-format">
-            <option value="json">JSON hex array</option>
-            <option value="windy">Windy format</option>
-            <option value="radarscope">RadarScope format</option>
-            <option value="wxtools">wxtools.org / GR2 format</option>
-          </select>
-        </div>
-        <textarea class="cse-json" id="cse-json"></textarea>
-        <div class="cse-btns">
-          <button class="cse-btn cse-btn-imp" id="cse-import">↓ Import</button>
-          <button class="cse-btn cse-btn-exp" id="cse-export">⎘ Copy to Clipboard</button>
-        </div>
-      </div>`;
-    document.body.appendChild(panel);
-    panel.querySelector('.cse-close').onclick = () => { panel.style.display = 'none'; };
-
-    // Drag support for CSE panel
-    {
-      let cseDragX = 0, cseDragY = 0, cseDragging = false;
-      const cseHdr = panel.querySelector('.cse-hdr');
-      cseHdr.addEventListener('mousedown', (e) => {
-        if (e.target.classList.contains('cse-close')) return;
-        cseDragging = true;
-        const r = panel.getBoundingClientRect();
-        cseDragX = e.clientX - r.left;
-        cseDragY = e.clientY - r.top;
-        e.preventDefault();
-      });
-      document.addEventListener('mousemove', (e) => {
-        if (!cseDragging) return;
-        panel.style.right = 'auto';
-        panel.style.bottom = 'auto';
-        panel.style.left = (e.clientX - cseDragX) + 'px';
-        panel.style.top  = (e.clientY - cseDragY) + 'px';
-      });
-      document.addEventListener('mouseup', () => { cseDragging = false; });
-    }
-
-    let activeId = 'temperature';
-    const rgb2hex = (r, g, b) => '#' + [r, g, b].map(v => v.toString(16).padStart(2, '0')).join('');
-    const hex2rgb = h => {
-      const m = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(h);
-      return m ? [parseInt(m[1],16), parseInt(m[2],16), parseInt(m[3],16)] : [0,0,0];
-    };
-
-    // Conversion functions for different formats
-    function toJsonFormat(colors) {
-      return JSON.stringify(colors.map(c => rgb2hex(...c)));
-    }
-
-    function toWindyFormat(colors, values) {
-      // Windy format: [[value, [r,g,b]], [value, [r,g,b]], ...]
-      return JSON.stringify(colors.map((c, i) => [values[i], c]));
-    }
-
-    function toRadarScopeFormat(colors, values) {
-      // RadarScope format: SolidColor: value r g b (one per line)
-      return colors.map((c, i) => `SolidColor: ${values[i]} ${c[0]} ${c[1]} ${c[2]}`).join('\n');
-    }
-
-    function fromJsonFormat(text) {
-      const parsed = JSON.parse(text);
-      if (!Array.isArray(parsed)) throw new Error('Expected array of hex colors');
-      return parsed.map(h => hex2rgb(h));
-    }
-
-    function fromWindyFormat(text) {
-      const parsed = JSON.parse(text);
-      if (!Array.isArray(parsed)) throw new Error('Expected Windy format array');
-      // Windy format: [[value, [r,g,b]], [value, [r,g,b]], ...]
-      // Return both colors and values
-      const colors = [];
-      const values = [];
-      parsed.forEach(entry => {
-        if (!Array.isArray(entry) || entry.length < 2) {
-          throw new Error('Invalid Windy format entry');
-        }
-        const value = entry[0];
-        const color = entry[1];
-        if (!Array.isArray(color) || color.length < 3) {
-          throw new Error('Invalid color in Windy format');
-        }
-        values.push(value);
-        colors.push([color[0], color[1], color[2]]);
-      });
-      return { colors, values };
-    }
-
-    function fromRadarScopeFormat(text) {
-      const lines = text.trim().split('\n');
-      const colors = [];
-      const values = [];
-      for (const line of lines) {
-        const match = line.match(/SolidColor:\s*(\d+)\s+(\d+)\s+(\d+)\s+(\d+)/i);
-        if (match) {
-          values.push(parseFloat(match[1]));
-          colors.push([parseInt(match[2]), parseInt(match[3]), parseInt(match[4])]);
-        }
-      }
-      if (colors.length === 0) throw new Error('No valid RadarScope color entries found');
-      return { colors, values };
-    }
-
-    function fromWxtoolsFormat(text) {
-      const lines = text.trim().split('\n');
-      const colors = [];
-      const values = [];
-      for (const line of lines) {
-        // Match both "Color: value r g b" and "Color4: value r g b a" formats
-        const match = line.match(/Color4?:\s*(-?\d+(?:\.\d+)?)\s+(\d+)\s+(\d+)\s+(\d+)/i);
-        if (match) {
-          values.push(parseFloat(match[1]));
-          colors.push([parseInt(match[2]), parseInt(match[3]), parseInt(match[4])]);
-        }
-      }
-      if (colors.length === 0) throw new Error('No valid wxtools color entries found');
-      return { colors, values };
-    }
-
-    function toWxtoolsFormat(colors, values) {
-      // wxtools format: Color: value r g b (one per line)
-      return colors.map((c, i) => `Color:  ${values[i]} ${c[0]} ${c[1]} ${c[2]}`).join('\n');
-    }
-
-    function refreshGrad(cfg) {
-      const colors = colorScaleData[cfg.id];
-      const values = colorScaleValues[cfg.id];
-      const minVal = Math.min(...values);
-      const maxVal = Math.max(...values);
-      const range = maxVal - minVal || 1;
-      document.getElementById('cse-grad').style.background =
-        'linear-gradient(to right,' + colors.map((c,i) =>
-          `rgb(${c[0]},${c[1]},${c[2]}) ${(((values[i] - minVal) / range) * 100).toFixed(1)}%`).join(',') + ')';
-    }
-    function refreshJson(cfg) {
-      const format = document.getElementById('cse-format').value;
-      const colors = colorScaleData[cfg.id];
-      const values = colorScaleValues[cfg.id];
-      let output;
-      switch (format) {
-        case 'windy':
-          output = toWindyFormat(colors, values);
-          break;
-        case 'radarscope':
-          output = toRadarScopeFormat(colors, values);
-          break;
-        case 'wxtools':
-          output = toWxtoolsFormat(colors, values);
-          break;
-        default:
-          output = toJsonFormat(colors);
-      }
-      document.getElementById('cse-json').value = output;
-    }
-    let selectedStopIndex = -1;
-    let copiedColor = null;
-
-    function renderStops(cfg) {
-      const container = document.getElementById('cse-stops');
-      container.innerHTML = '';
-      const colors = colorScaleData[cfg.id];
-      const values = colorScaleValues[cfg.id];
-      colors.forEach((color, i) => {
-        const item = document.createElement('div');
-        item.className = 'cse-stop' + (i === selectedStopIndex ? ' selected' : '');
-        item.onclick = () => { selectedStopIndex = i; renderStops(cfg); };
-
-        // Index badge
-        const idx = document.createElement('span');
-        idx.className = 'cse-stop-idx';
-        idx.textContent = i;
-
-        // Color picker
-        const picker = document.createElement('input');
-        picker.type = 'color';
-        picker.value = rgb2hex(...color);
-        picker.title = 'Stop ' + i + ' color';
-        picker.addEventListener('input', (e) => {
-          e.stopPropagation();
-          colorScaleData[cfg.id][i] = hex2rgb(picker.value);
-          refreshGrad(cfg);
-          refreshJson(cfg);
-          uploadColorScaleTexture();
-        });
-        picker.addEventListener('click', (e) => e.stopPropagation());
-        picker.addEventListener('mousedown', (e) => e.stopPropagation());
-
-        // Value input
-        const valInput = document.createElement('input');
-        valInput.type = 'number';
-        valInput.className = 'cse-stop-val';
-        valInput.value = values[i];
-        valInput.step = '0.1';
-        valInput.title = 'Value for stop ' + i;
-        valInput.addEventListener('input', (e) => {
-          e.stopPropagation();
-          colorScaleValues[cfg.id][i] = parseFloat(valInput.value) || 0;
-          refreshGrad(cfg);
-          refreshJson(cfg);
-          uploadColorScaleTexture();
-        });
-        valInput.addEventListener('click', (e) => e.stopPropagation());
-        valInput.addEventListener('mousedown', (e) => e.stopPropagation());
-
-        // Action buttons
-        const btns = document.createElement('div');
-        btns.className = 'cse-stop-btns';
-
-        const copyBtn = document.createElement('button');
-        copyBtn.className = 'cse-btn-sm';
-        copyBtn.textContent = 'Copy';
-        copyBtn.onclick = (e) => {
-          e.stopPropagation();
-          copiedColor = [...color];
-          copyBtn.textContent = '✓';
-          setTimeout(() => copyBtn.textContent = 'Copy', 1000);
-        };
-
-        const pasteBtn = document.createElement('button');
-        pasteBtn.className = 'cse-btn-sm';
-        pasteBtn.textContent = 'Paste';
-        pasteBtn.onclick = (e) => {
-          e.stopPropagation();
-          if (copiedColor) {
-            colorScaleData[cfg.id][i] = [...copiedColor];
-            picker.value = rgb2hex(...copiedColor);
-            refreshGrad(cfg);
-            refreshJson(cfg);
-            uploadColorScaleTexture();
-          }
-        };
-
-        const selBtn = document.createElement('button');
-        selBtn.className = 'cse-btn-sm' + (i === selectedStopIndex ? ' active' : '');
-        selBtn.textContent = 'Sel';
-        selBtn.onclick = (e) => {
-          e.stopPropagation();
-          selectedStopIndex = i;
-          renderStops(cfg);
-        };
-
-        btns.appendChild(copyBtn);
-        btns.appendChild(pasteBtn);
-        btns.appendChild(selBtn);
-
-        item.appendChild(idx);
-        item.appendChild(picker);
-        item.appendChild(valInput);
-        item.appendChild(btns);
-        container.appendChild(item);
-      });
-    }
-    function showScale(cfgId) {
-      activeId = cfgId;
-      const cfg = COLOR_SCALE_CONFIGS.find(c => c.id === cfgId);
-      document.querySelectorAll('.cse-tab').forEach(t =>
-        t.classList.toggle('active', t.dataset.id === cfgId));
-      refreshGrad(cfg);
-      renderStops(cfg);
-      refreshJson(cfg);
-      // Update interpolation checkbox state
-      document.getElementById('cse-interpolate').checked = cfg.interpolate || false;
-    }
-
-    const tabContainer = document.getElementById('cse-tabs');
-    COLOR_SCALE_CONFIGS.forEach(cfg => {
-      const tab = document.createElement('button');
-      tab.className = 'cse-tab';
-      tab.textContent = cfg.name;
-      tab.dataset.id = cfg.id;
-      tab.onclick = () => showScale(cfg.id);
-      tabContainer.appendChild(tab);
-    });
-
-    document.getElementById('cse-import').onclick = () => {
-      try {
-        const cfg = COLOR_SCALE_CONFIGS.find(c => c.id === activeId);
-        const format = document.getElementById('cse-format').value;
-        const text = document.getElementById('cse-json').value;
-        let colors, values;
-        switch (format) {
-          case 'windy':
-            const windyResult = fromWindyFormat(text);
-            colors = windyResult.colors;
-            values = windyResult.values;
-            break;
-          case 'radarscope':
-            const radarResult = fromRadarScopeFormat(text);
-            colors = radarResult.colors;
-            values = radarResult.values;
-            break;
-          case 'wxtools':
-            const wxtoolsResult = fromWxtoolsFormat(text);
-            colors = wxtoolsResult.colors;
-            values = wxtoolsResult.values;
-            break;
-          default:
-            colors = fromJsonFormat(text);
-            values = Array.from({length: colors.length}, (_, i) => i);
-        }
-        if (!Array.isArray(colors)) throw new Error('Expected array of colors');
-        colorScaleData[activeId] = colors.slice(0, cfg.stops);
-        colorScaleValues[activeId] = values.slice(0, cfg.stops);
-        uploadColorScaleTexture();
-        showScale(activeId);
-      } catch(e) { alert('Import error: ' + e.message); }
-    };
-    document.getElementById('cse-format').onchange = () => {
-      const cfg = COLOR_SCALE_CONFIGS.find(c => c.id === activeId);
-      refreshJson(cfg);
-    };
-
-    document.getElementById('cse-interpolate').onchange = () => {
-      const cfg = COLOR_SCALE_CONFIGS.find(c => c.id === activeId);
-      cfg.interpolate = document.getElementById('cse-interpolate').checked;
-      uploadColorScaleTexture();
-    };
-
-    // View mode buttons
-    document.getElementById('cse-view-rh').onclick = () => {
-      guiControls.displayMode = 'DISP_HUMD';
-    };
-    document.getElementById('cse-view-water').onclick = () => {
-      guiControls.displayMode = 'DISP_WATER';
-    };
-    document.getElementById('cse-view-temp').onclick = () => {
-      guiControls.displayMode = 'DISP_TEMPERATURE';
-    };
-    document.getElementById('cse-view-cape').onclick = () => {
-      guiControls.displayMode = 'DISP_CAPE';
-      showScale('cape');
-    };
-
-    document.getElementById('cse-add').onclick = () => {
-      const cfg = COLOR_SCALE_CONFIGS.find(c => c.id === activeId);
-      const colors = colorScaleData[cfg.id];
-      const values = colorScaleValues[cfg.id];
-      const insertIndex = selectedStopIndex >= 0 ? selectedStopIndex + 1 : colors.length;
-      const prevColor = colors[insertIndex - 1] || [128, 128, 128];
-      const prevValue = values[insertIndex - 1] || 0;
-      const nextColor = colors[insertIndex] || prevColor;
-      const nextValue = values[insertIndex] || prevValue + 1;
-      const newColor = [
-        Math.round((prevColor[0] + nextColor[0]) / 2),
-        Math.round((prevColor[1] + nextColor[1]) / 2),
-        Math.round((prevColor[2] + nextColor[2]) / 2)
-      ];
-      const newValue = (prevValue + nextValue) / 2;
-      colors.splice(insertIndex, 0, newColor);
-      values.splice(insertIndex, 0, newValue);
-      selectedStopIndex = insertIndex;
-      renderStops(cfg);
-      refreshGrad(cfg);
-      refreshJson(cfg);
-      uploadColorScaleTexture();
-    };
-
-    document.getElementById('cse-remove').onclick = () => {
-      const cfg = COLOR_SCALE_CONFIGS.find(c => c.id === activeId);
-      const colors = colorScaleData[cfg.id];
-      const values = colorScaleValues[cfg.id];
-      if (selectedStopIndex >= 0 && colors.length > 2) {
-        colors.splice(selectedStopIndex, 1);
-        values.splice(selectedStopIndex, 1);
-        selectedStopIndex = Math.min(selectedStopIndex, colors.length - 1);
-        renderStops(cfg);
-        refreshGrad(cfg);
-        refreshJson(cfg);
-        uploadColorScaleTexture();
-      }
-    };
-
-    document.getElementById('cse-copy').onclick = () => {
-      if (selectedStopIndex >= 0) {
-        const cfg = COLOR_SCALE_CONFIGS.find(c => c.id === activeId);
-        copiedColor = [...colorScaleData[cfg.id][selectedStopIndex]];
-        const btn = document.getElementById('cse-copy');
-        btn.textContent = '✓ Copied!';
-        setTimeout(() => btn.textContent = 'Copy Color', 1500);
-      }
-    };
-
-    document.getElementById('cse-paste').onclick = () => {
-      if (selectedStopIndex >= 0 && copiedColor) {
-        const cfg = COLOR_SCALE_CONFIGS.find(c => c.id === activeId);
-        colorScaleData[cfg.id][selectedStopIndex] = [...copiedColor];
-        renderStops(cfg);
-        refreshGrad(cfg);
-        refreshJson(cfg);
-        uploadColorScaleTexture();
-      }
-    };
-
-    document.getElementById('cse-update').onclick = () => {
-      const cfg = COLOR_SCALE_CONFIGS.find(c => c.id === activeId);
-      uploadColorScaleTexture();
-      refreshJson(cfg);
-    };
-
-    document.getElementById('cse-add5').onclick = () => {
-      const cfg = COLOR_SCALE_CONFIGS.find(c => c.id === activeId);
-      const values = colorScaleValues[cfg.id];
-      for (let i = 0; i < values.length; i++) {
-        values[i] += 5;
-      }
-      renderStops(cfg);
-      refreshGrad(cfg);
-      refreshJson(cfg);
-      uploadColorScaleTexture();
-    };
-
-    document.getElementById('cse-add10').onclick = () => {
-      const cfg = COLOR_SCALE_CONFIGS.find(c => c.id === activeId);
-      const values = colorScaleValues[cfg.id];
-      for (let i = 0; i < values.length; i++) {
-        values[i] += 10;
-      }
-      renderStops(cfg);
-      refreshGrad(cfg);
-      refreshJson(cfg);
-      uploadColorScaleTexture();
-    };
-
-    document.getElementById('cse-add20').onclick = () => {
-      const cfg = COLOR_SCALE_CONFIGS.find(c => c.id === activeId);
-      const values = colorScaleValues[cfg.id];
-      for (let i = 0; i < values.length; i++) {
-        values[i] += 20;
-      }
-      renderStops(cfg);
-      refreshGrad(cfg);
-      refreshJson(cfg);
-      uploadColorScaleTexture();
-    };
-
-    document.getElementById('cse-add50').onclick = () => {
-      const cfg = COLOR_SCALE_CONFIGS.find(c => c.id === activeId);
-      const values = colorScaleValues[cfg.id];
-      for (let i = 0; i < values.length; i++) {
-        values[i] += 50;
-      }
-      renderStops(cfg);
-      refreshGrad(cfg);
-      refreshJson(cfg);
-      uploadColorScaleTexture();
-    };
-
-    document.getElementById('cse-sub5').onclick = () => {
-      const cfg = COLOR_SCALE_CONFIGS.find(c => c.id === activeId);
-      const values = colorScaleValues[cfg.id];
-      for (let i = 0; i < values.length; i++) {
-        values[i] -= 5;
-      }
-      renderStops(cfg);
-      refreshGrad(cfg);
-      refreshJson(cfg);
-      uploadColorScaleTexture();
-    };
-
-    document.getElementById('cse-sub10').onclick = () => {
-      const cfg = COLOR_SCALE_CONFIGS.find(c => c.id === activeId);
-      const values = colorScaleValues[cfg.id];
-      for (let i = 0; i < values.length; i++) {
-        values[i] -= 10;
-      }
-      renderStops(cfg);
-      refreshGrad(cfg);
-      refreshJson(cfg);
-      uploadColorScaleTexture();
-    };
-
-    document.getElementById('cse-sub20').onclick = () => {
-      const cfg = COLOR_SCALE_CONFIGS.find(c => c.id === activeId);
-      const values = colorScaleValues[cfg.id];
-      for (let i = 0; i < values.length; i++) {
-        values[i] -= 20;
-      }
-      renderStops(cfg);
-      refreshGrad(cfg);
-      refreshJson(cfg);
-      uploadColorScaleTexture();
-    };
-
-    document.getElementById('cse-sub50').onclick = () => {
-      const cfg = COLOR_SCALE_CONFIGS.find(c => c.id === activeId);
-      const values = colorScaleValues[cfg.id];
-      for (let i = 0; i < values.length; i++) {
-        values[i] -= 50;
-      }
-      renderStops(cfg);
-      refreshGrad(cfg);
-      refreshJson(cfg);
-      uploadColorScaleTexture();
-    };
-    document.getElementById('cse-export').onclick = () => {
-      navigator.clipboard.writeText(document.getElementById('cse-json').value)
-        .then(() => {
-          const btn = document.getElementById('cse-export');
-          const orig = btn.textContent;
-          btn.textContent = 'Copied!';
-          setTimeout(() => { btn.textContent = orig; }, 1500);
-        });
-    };
-
-    showScale('temperature');
-  }
-  // ========================= End Color Scale System =========================
-
   imgElement = await loadImage('resources/img/ColorScales.png');
-  initColorScaleData(imgElement);
-  uploadColorScaleTexture();
 
+  gl.bindTexture(gl.TEXTURE_2D, colorScalesTexture);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, imgElement.width, imgElement.height, 0, gl.RGBA, gl.UNSIGNED_BYTE, imgElement);
+  // gl.generateMipmap(gl.TEXTURE_2D);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); // horizontal
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE); // vertical
+
+
+  function downloadImageData(imgData)
+  {
+    var canvas = document.createElement('canvas');
+    var ctx = canvas.getContext('2d');
+    canvas.width = imgData.width;
+    canvas.height = imgData.height
+    ctx.putImageData(imgData, 0, 0);
+    var dataUrl = canvas.toDataURL('image/png');
+    var link = document.createElement('a');
+    link.href = dataUrl;
+    link.download = 'Lightning_image.png';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  }
+
+
+  function generateLightningTexture(i, imgData)
+  {
+    lightningTextures[i] = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, lightningTextures[i]);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.LUMINANCE, imgData.width, imgData.height, 0, gl.LUMINANCE, gl.UNSIGNED_BYTE, imgData);
+    // gl.generateMipmap(gl.TEXTURE_2D);                                                // optional
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); // LINEAR_MIPMAP_LINEAR
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  }
+
+
+  for (let i = 0; i < numLightningTextures; i++) {
+    const lightningGeneratorWorker = new Worker('./lightningGenerator.js');
+    lightningGeneratorWorker.onmessage = (imgElement) => {
+      // downloadImageData(imgElement.data); // for debugging
+
+      generateLightningTexture(i, imgElement.data);
+    };
+
+    lightningGeneratorWorker.postMessage({width : 2500, height : 5000}); // 10000 5000
+  }
 
   await loadingBar.set(90, 'Setting up FBO`s');
 
@@ -9786,12 +5472,10 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
   // generate sounding data for forcing in sim
 
-  realWorldSounding_T = new Float32Array(504);   // sim_res_y + 1
-  realWorldSounding_W = new Float32Array(504);   // sim_res_y + 1
-  realWorldSounding_Vel = new Float32Array(504); // sim_res_y + 1
+  var realWorldSounding_T = new Float32Array(504);   // sim_res_y + 1
+  var realWorldSounding_W = new Float32Array(504);   // sim_res_y + 1
+  var realWorldSounding_Vel = new Float32Array(504); // sim_res_y + 1
   if (soundingData && soundingData.length > 10) {
-    console.log('mainScript: Initializing with sounding data. customSoundingLoaded =', customSoundingLoaded);
-    console.log('mainScript: soundingData sample:', soundingData[0], soundingData[Math.floor(soundingData.length/2)], soundingData[soundingData.length-1]);
     var soundingForSim = rawSoundingToSimSounding(soundingData, guiControls.simHeight, sim_res_y + 1);
 
     for (var y = 0; y < sim_res_y + 1; y++) {
@@ -9802,20 +5486,11 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       realWorldSounding_W[y] = maxWater(CtoK(soundingSample.td), y);        // initial temperature profile
       realWorldSounding_Vel[y] = soundingSample.vel;
     }
-    console.log('mainScript: Initialized sounding arrays. realWorldSounding_T[0]:', realWorldSounding_T[0], 'realWorldSounding_T[100]:', realWorldSounding_T[100]);
+    // console.log(realWorldSounding_T);
+    // console.log(realWorldSounding_W);
+    // console.log(realWorldSounding_Vel);
   } else {
-    console.log('No valid sounding loaded! Using default profile.');
-    // Initialize with default atmospheric profile to prevent infinite cooling
-    // Use warmer temperatures to match typical simulation conditions
-    for (var y = 0; y < sim_res_y + 1; y++) {
-      let altitude = y / (sim_res_y + 1) * guiControls.simHeight;
-      var realTemp = Math.max(map_range(altitude, 0, 12000, 25.0, -50.0), -50);
-      var td = realTemp - 5; // Dew point 5°C colder
-      
-      realWorldSounding_T[y] = realToPotentialT(CtoK(realTemp), y);
-      realWorldSounding_W[y] = maxWater(CtoK(td), y);
-      realWorldSounding_Vel[y] = 0.01; // Minimal wind
-    }
+    console.log('No valid sounding loaded!');
   }
 
   // generate Initial temperature profile
@@ -9897,44 +5572,6 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   gl.uniform2f(gl.getUniformLocation(curlProgram, 'texelSize'), texelSizeX, texelSizeY);
   gl.uniform1i(gl.getUniformLocation(curlProgram, 'baseTex'), 0);
 
-  gl.useProgram(capeProgram);
-  gl.uniform2f(gl.getUniformLocation(capeProgram, 'resolution'), sim_res_x, sim_res_y);
-  gl.uniform2f(gl.getUniformLocation(capeProgram, 'texelSize'), texelSizeX, texelSizeY);
-  gl.uniform1i(gl.getUniformLocation(capeProgram, 'baseTex'), 0);
-  gl.uniform1i(gl.getUniformLocation(capeProgram, 'waterTex'), 1);
-  gl.uniform1i(gl.getUniformLocation(capeProgram, 'wallTex'), 2);
-  gl.uniform1f(gl.getUniformLocation(capeProgram, 'dryLapse'), dryLapse);
-  gl.uniform1f(gl.getUniformLocation(capeProgram, 'simHeight'), guiControls.simHeight);
-  gl.uniform1f(gl.getUniformLocation(capeProgram, 'evapHeat'), guiControls.evapHeat);
-
-  gl.useProgram(chargeProgram);
-  gl.uniform2f(gl.getUniformLocation(chargeProgram, 'resolution'), sim_res_x, sim_res_y);
-  gl.uniform2f(gl.getUniformLocation(chargeProgram, 'texelSize'), texelSizeX, texelSizeY);
-  gl.uniform1i(gl.getUniformLocation(chargeProgram, 'baseTex'),   0);
-  gl.uniform1i(gl.getUniformLocation(chargeProgram, 'waterTex'),  1);
-  gl.uniform1i(gl.getUniformLocation(chargeProgram, 'wallTex'),   2);
-  gl.uniform1i(gl.getUniformLocation(chargeProgram, 'chargeTex'), 3);
-  gl.uniform1f(gl.getUniformLocation(chargeProgram, 'dryLapse'),  dryLapse);
-  const uloc_charge_ltDischargeCount = gl.getUniformLocation(chargeProgram, 'ltDischargeCount');
-  const uloc_charge_ltDischarge      = gl.getUniformLocation(chargeProgram, 'ltDischarge');
-  const uloc_charge_ltDischargeMeta  = gl.getUniformLocation(chargeProgram, 'ltDischargeMeta');
-
-  gl.useProgram(lightningSummaryProgram);
-  gl.uniform2f(gl.getUniformLocation(lightningSummaryProgram, 'texelSize'), texelSizeX, texelSizeY);
-  gl.uniform1i(gl.getUniformLocation(lightningSummaryProgram, 'chargeTex'), 0);
-  gl.uniform1i(gl.getUniformLocation(lightningSummaryProgram, 'waterTex'), 1);
-
-  gl.useProgram(chargeDisplayProgram);
-  gl.uniform2f(gl.getUniformLocation(chargeDisplayProgram, 'resolution'), sim_res_x, sim_res_y);
-  gl.uniform2f(gl.getUniformLocation(chargeDisplayProgram, 'texelSize'), texelSizeX, texelSizeY);
-  gl.uniform2f(gl.getUniformLocation(chargeDisplayProgram, 'aspectRatios'), sim_aspect, canvas_aspect);
-  gl.uniform1f(gl.getUniformLocation(chargeDisplayProgram, 'Xmult'), horizontalDisplayMult);
-  gl.uniform1i(gl.getUniformLocation(chargeDisplayProgram, 'chargeTex'),      0);
-  gl.uniform1i(gl.getUniformLocation(chargeDisplayProgram, 'wallTex'),        2);
-  gl.uniform1i(gl.getUniformLocation(chargeDisplayProgram, 'colorScalesTex'), 9);
-  gl.uniform1i(gl.getUniformLocation(chargeDisplayProgram, 'colorScaleColumn'), 23);
-  gl.uniform1i(gl.getUniformLocation(chargeDisplayProgram, 'colorScaleStops'),  33);
-
   gl.useProgram(lightingProgram);
   gl.uniform2f(gl.getUniformLocation(lightingProgram, 'resolution'), sim_res_x, sim_res_y);
   gl.uniform2f(gl.getUniformLocation(lightingProgram, 'texelSize'), texelSizeX, texelSizeY);
@@ -9953,15 +5590,6 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   gl.uniform1i(gl.getUniformLocation(temperatureDisplayProgram, 'wallTex'), 2);
   gl.uniform1i(gl.getUniformLocation(temperatureDisplayProgram, 'colorScalesTex'), 9);
   gl.uniform1f(gl.getUniformLocation(temperatureDisplayProgram, 'dryLapse'), dryLapse);
-
-  gl.useProgram(temperatureChangeDisplayProgram);
-  gl.uniform2f(gl.getUniformLocation(temperatureChangeDisplayProgram, 'resolution'), sim_res_x, sim_res_y);
-  gl.uniform2f(gl.getUniformLocation(temperatureChangeDisplayProgram, 'texelSize'), texelSizeX, texelSizeY);
-  gl.uniform1i(gl.getUniformLocation(temperatureChangeDisplayProgram, 'baseTex'), 0);
-  gl.uniform1i(gl.getUniformLocation(temperatureChangeDisplayProgram, 'prevBaseTex'), 1);
-  gl.uniform1i(gl.getUniformLocation(temperatureChangeDisplayProgram, 'wallTex'), 2);
-  gl.uniform1i(gl.getUniformLocation(temperatureChangeDisplayProgram, 'colorScalesTex'), 9);
-  gl.uniform1f(gl.getUniformLocation(temperatureChangeDisplayProgram, 'dryLapse'), dryLapse);
 
   gl.useProgram(airQualityDisplayProgram);
   gl.uniform2f(gl.getUniformLocation(airQualityDisplayProgram, 'resolution'), sim_res_x, sim_res_y);
@@ -9992,10 +5620,6 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   gl.uniform2f(gl.getUniformLocation(skyBackgroundDisplayProgram, 'texelSize'), texelSizeX, texelSizeY);
   gl.uniform1f(gl.getUniformLocation(skyBackgroundDisplayProgram, 'simHeight'), guiControls.simHeight);
   gl.uniform1f(gl.getUniformLocation(skyBackgroundDisplayProgram, 'minShadowLight'), minShadowLight);
-  gl.uniform1f(gl.getUniformLocation(skyBackgroundDisplayProgram, 'sunAngle'), (90 - guiControls.sunAngle) * degToRad);
-  gl.uniform1f(gl.getUniformLocation(skyBackgroundDisplayProgram, 'starVisibility'), guiControls.starVisibility);
-  gl.uniform1f(gl.getUniformLocation(skyBackgroundDisplayProgram, 'starLightEmitStrength'), guiControls.starLightEmitStrength);
-  gl.uniform1f(gl.getUniformLocation(skyBackgroundDisplayProgram, 'starDensity'), guiControls.starDensity);
   gl.uniform1i(gl.getUniformLocation(skyBackgroundDisplayProgram, 'lightTex'), 3);
   gl.uniform1i(gl.getUniformLocation(skyBackgroundDisplayProgram, 'ambientLightTex'), 9);
   gl.uniform1i(gl.getUniformLocation(skyBackgroundDisplayProgram, 'precipFeedbackTex'), 7);
@@ -10007,7 +5631,6 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   gl.uniform2f(gl.getUniformLocation(universalDisplayProgram, 'texelSize'), texelSizeX, texelSizeY);
   gl.uniform1i(gl.getUniformLocation(universalDisplayProgram, 'anyTex'), 0);
   gl.uniform1i(gl.getUniformLocation(universalDisplayProgram, 'wallTex'), 2);
-  gl.uniform1i(gl.getUniformLocation(universalDisplayProgram, 'colorScalesTex'), 9);
 
   gl.useProgram(realisticDisplayProgram);
   gl.uniform2f(gl.getUniformLocation(realisticDisplayProgram, 'resolution'), sim_res_x, sim_res_y);
@@ -10020,23 +5643,11 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   gl.uniform1i(gl.getUniformLocation(realisticDisplayProgram, 'noiseTex'), 4);
   gl.uniform1i(gl.getUniformLocation(realisticDisplayProgram, 'surfaceTextureMap'), 5);
   gl.uniform1i(gl.getUniformLocation(realisticDisplayProgram, 'curlTex'), 6);
-  gl.uniform1i(gl.getUniformLocation(realisticDisplayProgram, 'ambientLightTex'), 7);
+  gl.uniform1i(gl.getUniformLocation(realisticDisplayProgram, 'lightningTex'), 7);
+  gl.uniform1i(gl.getUniformLocation(realisticDisplayProgram, 'lightningDataTex'), 8);
+  gl.uniform1i(gl.getUniformLocation(realisticDisplayProgram, 'ambientLightTex'), 9);
   gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'dryLapse'), dryLapse);
   gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'cellHeight'), cellHeight);
-  const realDisp_enhancedLooks_loc = gl.getUniformLocation(realisticDisplayProgram, 'enhancedLooks');
-  gl.uniform1f(realDisp_enhancedLooks_loc, 0.0);
-  const realDisp_enableCloudLightning_loc = gl.getUniformLocation(realisticDisplayProgram, 'enableCloudLightning');
-  gl.uniform1f(realDisp_enableCloudLightning_loc, 0.0);
-  const realDisp_cloudLightningIntensity_loc = gl.getUniformLocation(realisticDisplayProgram, 'cloudLightningIntensity');
-  gl.uniform1f(realDisp_cloudLightningIntensity_loc, 2.0);
-  const realDisp_cloudLightningThreshold_loc = gl.getUniformLocation(realisticDisplayProgram, 'cloudLightningThreshold');
-  gl.uniform1f(realDisp_cloudLightningThreshold_loc, 0.5);
-  const realDisp_iterNum_loc = gl.getUniformLocation(realisticDisplayProgram, 'iterNum');
-
-  gl.useProgram(lightningLocationProgram);
-  gl.uniform1i(gl.getUniformLocation(lightningLocationProgram, 'precipFeedbackTex'), 0);
-  gl.uniform2f(gl.getUniformLocation(lightningLocationProgram, 'resolution'), sim_res_x, sim_res_y);
-  gl.uniform2f(gl.getUniformLocation(lightningLocationProgram, 'texelSize'), texelSizeX, texelSizeY);
 
   gl.useProgram(precipitationProgram);
   gl.uniform1i(gl.getUniformLocation(precipitationProgram, 'baseTex'), 0);
@@ -10050,24 +5661,24 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   gl.uniform2f(gl.getUniformLocation(IRtempDisplayProgram, 'texelSize'), texelSizeX, texelSizeY);
   gl.uniform1i(gl.getUniformLocation(IRtempDisplayProgram, 'lightTex'), 0);
   gl.uniform1i(gl.getUniformLocation(IRtempDisplayProgram, 'wallTex'), 2);
-  gl.uniform1i(gl.getUniformLocation(IRtempDisplayProgram, 'colorScalesTex'), 9);
 
   gl.useProgram(postProcessingProgram);
   gl.uniform1i(gl.getUniformLocation(postProcessingProgram, 'hdrTex'), 0);
   gl.uniform1i(gl.getUniformLocation(postProcessingProgram, 'bloomTex'), 1);
-  const postProc_exposure_loc   = gl.getUniformLocation(postProcessingProgram, 'exposure');
-  const postProc_saturation_loc = gl.getUniformLocation(postProcessingProgram, 'saturation');
-  const postProc_contrast_loc   = gl.getUniformLocation(postProcessingProgram, 'contrast');
 
 
   gl.useProgram(isolateBrightPartsProgram);
   gl.uniform1i(gl.getUniformLocation(isolateBrightPartsProgram, 'hdrTex'), 0);
 
+  gl.useProgram(lightningLocationProgram);
+  gl.uniform1i(gl.getUniformLocation(lightningLocationProgram, 'precipFeedbackTex'), 0);
+  gl.uniform2f(gl.getUniformLocation(lightningLocationProgram, 'resolution'), sim_res_x, sim_res_y);
+  gl.uniform2f(gl.getUniformLocation(lightningLocationProgram, 'texelSize'), texelSizeX, texelSizeY);
+
+
   // console.time('Set uniforms');
   setGuiUniforms(); // all uniforms changed by gui
   // console.timeEnd('Set uniforms')
-
-  buildColorScaleEditor();
 
   gl.bindVertexArray(fluidVao);
 
@@ -10095,211 +5706,15 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     soundSystem = new SoundSystem();
   }
 
-  await loadingBar.set(95, 'Loading sounds'); // loading complete
+  await loadingBar.set(95, 'Loading sounds and generating lightning textures'); // loading complete
   await loadingBar.remove();
 
   var srcVAO;
   var destVAO;
   var destTF;
 
-  // preload uniform locations - avoids expensive driver roundtrips every frame
+  // preload uniform locations for tiny performance gain
   var uniformLocation_boundaryProgram_iterNum = gl.getUniformLocation(boundaryProgram, 'iterNum');
-  var ulocsReady = false; // flag so updateSunlight skips GPU calls before cache is built
-
-  // updateSunlight uniforms
-  const uloc_boundary_sunAngle         = gl.getUniformLocation(boundaryProgram,            'sunAngle');
-  const uloc_lighting_sunIntensity     = gl.getUniformLocation(lightingProgram,             'sunIntensity');
-  const uloc_lighting_sunAngle         = gl.getUniformLocation(lightingProgram,             'sunAngle');
-  const uloc_realistic_sunAngle        = gl.getUniformLocation(realisticDisplayProgram,     'sunAngle');
-  const uloc_realistic_minShadowLight  = gl.getUniformLocation(realisticDisplayProgram,     'minShadowLight');
-  const uloc_sky_minShadowLight        = gl.getUniformLocation(skyBackgroundDisplayProgram, 'minShadowLight');
-  const uloc_sky_sunAngle              = gl.getUniformLocation(skyBackgroundDisplayProgram, 'sunAngle');
-  const uloc_sky_starDensity           = gl.getUniformLocation(skyBackgroundDisplayProgram, 'starDensity');
-
-  // per-frame lighting
-  const uloc_lighting_IR_rate          = gl.getUniformLocation(lightingProgram,             'IR_rate');
-
-  // per-frame user input
-  const uloc_adv_userInputValues       = gl.getUniformLocation(advectionProgram, 'userInputValues');
-  const uloc_adv_userInputMove         = gl.getUniformLocation(advectionProgram, 'userInputMove');
-  const uloc_adv_wrapHorizontally      = gl.getUniformLocation(advectionProgram, 'wrapHorizontally');
-  const uloc_adv_userInputType         = gl.getUniformLocation(advectionProgram, 'userInputType');
-
-  // per-frame precipitation
-  const uloc_precip_iterNum            = gl.getUniformLocation(precipitationProgram,     'iterNum');
-  const uloc_precip_inactiveDroplets   = gl.getUniformLocation(precipitationProgram,     'inactiveDroplets');
-
-  // bloom blur
-  const uloc_bloom_bloomTexture        = gl.getUniformLocation(bloomBlurProgram, 'bloomTexture');
-  const uloc_bloom_texelSize           = gl.getUniformLocation(bloomBlurProgram, 'texelSize');
-
-  // passthrough
-  const uloc_passthrough_texture       = gl.getUniformLocation(passthroughProgram, 'tex');
-
-  // skyBackground per-frame
-  const uloc_sky_aspectRatios          = gl.getUniformLocation(skyBackgroundDisplayProgram, 'aspectRatios');
-  const uloc_sky_view                  = gl.getUniformLocation(skyBackgroundDisplayProgram, 'view');
-  const uloc_sky_Xmult                 = gl.getUniformLocation(skyBackgroundDisplayProgram, 'Xmult');
-  const uloc_sky_iterNum               = gl.getUniformLocation(skyBackgroundDisplayProgram, 'iterNum');
-
-  // realistic display per-frame
-  const uloc_real_aspectRatios         = gl.getUniformLocation(realisticDisplayProgram, 'aspectRatios');
-  const uloc_real_view                 = gl.getUniformLocation(realisticDisplayProgram, 'view');
-  const uloc_real_cursor               = gl.getUniformLocation(realisticDisplayProgram, 'cursor');
-  const uloc_real_Xmult                = gl.getUniformLocation(realisticDisplayProgram, 'Xmult');
-  const uloc_real_iterNum              = gl.getUniformLocation(realisticDisplayProgram, 'iterNum');
-  const uloc_real_greenHueStart        = gl.getUniformLocation(realisticDisplayProgram, 'greenHueStartThreshold');
-  const uloc_real_greenHueEnd          = gl.getUniformLocation(realisticDisplayProgram, 'greenHueEndThreshold');
-  const uloc_real_greenHueStrength     = gl.getUniformLocation(realisticDisplayProgram, 'greenHueStrength');
-  const uloc_real_displayVectorField   = gl.getUniformLocation(realisticDisplayProgram, 'displayVectorField');
-  const uloc_real_enableCloudLightning = gl.getUniformLocation(realisticDisplayProgram, 'enableCloudLightning');
-  const uloc_real_cloudLightningIntensity = gl.getUniformLocation(realisticDisplayProgram, 'cloudLightningIntensity');
-  const uloc_real_cloudLightningThreshold = gl.getUniformLocation(realisticDisplayProgram, 'cloudLightningThreshold');
-  const uloc_real_cloudLightningFrequency = gl.getUniformLocation(realisticDisplayProgram, 'cloudLightningFrequency');
-  const uloc_real_enableCloudGroundLightning = gl.getUniformLocation(realisticDisplayProgram, 'enableCloudGroundLightning');
-  const uloc_real_cloudGroundLightningIntensity = gl.getUniformLocation(realisticDisplayProgram, 'cloudGroundLightningIntensity');
-  const uloc_real_cloudGroundLightningThreshold = gl.getUniformLocation(realisticDisplayProgram, 'cloudGroundLightningThreshold');
-  const uloc_real_cloudGroundLightningFrequency = gl.getUniformLocation(realisticDisplayProgram, 'cloudGroundLightningFrequency');
-  const uloc_real_enableStrobeLightning = gl.getUniformLocation(realisticDisplayProgram, 'enableStrobeLightning');
-  const uloc_real_strobeLightningIntensity = gl.getUniformLocation(realisticDisplayProgram, 'strobeLightningIntensity');
-  const uloc_real_strobeLightningThreshold = gl.getUniformLocation(realisticDisplayProgram, 'strobeLightningThreshold');
-  const uloc_real_strobeLightningFrequency = gl.getUniformLocation(realisticDisplayProgram, 'strobeLightningFrequency');
-  const uloc_real_lightningRepeat       = gl.getUniformLocation(realisticDisplayProgram, 'lightningRepeat');
-  const uloc_real_lightningCrossTrigger = gl.getUniformLocation(realisticDisplayProgram, 'lightningCrossTrigger');
-  const uloc_real_invertSun             = gl.getUniformLocation(realisticDisplayProgram, 'invertSun');
-  const uloc_real_ltEventAge            = gl.getUniformLocation(realisticDisplayProgram, 'ltEventAge');
-  const uloc_real_ltNumStrikes          = gl.getUniformLocation(realisticDisplayProgram, 'ltNumStrikes');
-  const uloc_real_ltStrikePos           = gl.getUniformLocation(realisticDisplayProgram, 'ltStrikePos');
-  const uloc_real_ltStrikeMeta          = gl.getUniformLocation(realisticDisplayProgram, 'ltStrikeMeta');
-
-  // precipDisplay per-frame
-  const uloc_precipDisp_aspectRatios   = gl.getUniformLocation(precipDisplayProgram, 'aspectRatios');
-  const uloc_precipDisp_view           = gl.getUniformLocation(precipDisplayProgram, 'view');
-
-  // radarDisplay per-frame
-  const uloc_radar_aspectRatios        = gl.getUniformLocation(radarDisplayProgram, 'aspectRatios');
-  const uloc_radar_view                = gl.getUniformLocation(radarDisplayProgram, 'view');
-  const uloc_radar_Xmult               = gl.getUniformLocation(radarDisplayProgram, 'Xmult');
-  const uloc_radar_resolution          = gl.getUniformLocation(radarDisplayProgram, 'resolution');
-  const uloc_radar_texelSize           = gl.getUniformLocation(radarDisplayProgram, 'texelSize');
-  const uloc_radar_opacity             = gl.getUniformLocation(radarDisplayProgram, 'opacity');
-  const uloc_radar_dbzOpacityEnabled   = gl.getUniformLocation(radarDisplayProgram, 'dbzOpacityEnabled');
-  const uloc_radar_dbzOpacityStrength  = gl.getUniformLocation(radarDisplayProgram, 'dbzOpacityStrength');
-  const uloc_radar_colorScaleColumn    = gl.getUniformLocation(radarDisplayProgram, 'colorScaleColumn');
-  const uloc_radar_colorScaleStops     = gl.getUniformLocation(radarDisplayProgram, 'colorScaleStops');
-  const uloc_radar_radarPos            = gl.getUniformLocation(radarDisplayProgram, 'radarPos');
-  const uloc_radar_radarRange          = gl.getUniformLocation(radarDisplayProgram, 'radarRange');
-  const uloc_radar_radarResolution     = gl.getUniformLocation(radarDisplayProgram, 'radarResolution');
-  const uloc_radar_productType         = gl.getUniformLocation(radarDisplayProgram, 'productType');
-  const uloc_radar_sensitivity         = gl.getUniformLocation(radarDisplayProgram, 'sensitivity');
-
-  // temperature display per-frame
-  const uloc_temp_aspectRatios         = gl.getUniformLocation(temperatureDisplayProgram, 'aspectRatios');
-  const uloc_temp_view                 = gl.getUniformLocation(temperatureDisplayProgram, 'view');
-  const uloc_temp_cursor               = gl.getUniformLocation(temperatureDisplayProgram, 'cursor');
-  const uloc_temp_Xmult                = gl.getUniformLocation(temperatureDisplayProgram, 'Xmult');
-  const uloc_temp_displayVectorField   = gl.getUniformLocation(temperatureDisplayProgram, 'displayVectorField');
-  const uloc_temp_surfacePressure      = gl.getUniformLocation(temperatureDisplayProgram, 'surfacePressure');
-
-  // temperatureChange display per-frame
-  const uloc_tempChg_aspectRatios      = gl.getUniformLocation(temperatureChangeDisplayProgram, 'aspectRatios');
-  const uloc_tempChg_view              = gl.getUniformLocation(temperatureChangeDisplayProgram, 'view');
-  const uloc_tempChg_cursor            = gl.getUniformLocation(temperatureChangeDisplayProgram, 'cursor');
-  const uloc_tempChg_Xmult             = gl.getUniformLocation(temperatureChangeDisplayProgram, 'Xmult');
-  const uloc_tempChg_tempUnit          = gl.getUniformLocation(temperatureChangeDisplayProgram, 'tempUnit');
-  const uloc_tempChg_displayVectorField= gl.getUniformLocation(temperatureChangeDisplayProgram, 'displayVectorField');
-
-  // airQuality display per-frame
-  const uloc_airQ_aspectRatios         = gl.getUniformLocation(airQualityDisplayProgram, 'aspectRatios');
-  const uloc_airQ_view                 = gl.getUniformLocation(airQualityDisplayProgram, 'view');
-  const uloc_airQ_cursor               = gl.getUniformLocation(airQualityDisplayProgram, 'cursor');
-  const uloc_airQ_Xmult                = gl.getUniformLocation(airQualityDisplayProgram, 'Xmult');
-
-  // humidity display per-frame
-  const uloc_humd_aspectRatios         = gl.getUniformLocation(humidityDisplayProgram, 'aspectRatios');
-  const uloc_humd_view                 = gl.getUniformLocation(humidityDisplayProgram, 'view');
-  const uloc_humd_cursor               = gl.getUniformLocation(humidityDisplayProgram, 'cursor');
-  const uloc_humd_Xmult                = gl.getUniformLocation(humidityDisplayProgram, 'Xmult');
-  const uloc_humd_displayVectorField   = gl.getUniformLocation(humidityDisplayProgram, 'displayVectorField');
-
-  // IR temp display per-frame
-  const uloc_IR_aspectRatios           = gl.getUniformLocation(IRtempDisplayProgram, 'aspectRatios');
-  const uloc_IR_view                   = gl.getUniformLocation(IRtempDisplayProgram, 'view');
-  const uloc_IR_cursor                 = gl.getUniformLocation(IRtempDisplayProgram, 'cursor');
-  const uloc_IR_upOrDown               = gl.getUniformLocation(IRtempDisplayProgram, 'upOrDown');
-  const uloc_IR_Xmult                  = gl.getUniformLocation(IRtempDisplayProgram, 'Xmult');
-
-  // universal display per-frame
-  const uloc_univ_aspectRatios         = gl.getUniformLocation(universalDisplayProgram, 'aspectRatios');
-  const uloc_univ_view                 = gl.getUniformLocation(universalDisplayProgram, 'view');
-  const uloc_univ_cursor               = gl.getUniformLocation(universalDisplayProgram, 'cursor');
-  const uloc_univ_Xmult                = gl.getUniformLocation(universalDisplayProgram, 'Xmult');
-  const uloc_univ_colorScaleColumn     = gl.getUniformLocation(universalDisplayProgram, 'colorScaleColumn');
-  const uloc_univ_useUnipolarScale     = gl.getUniformLocation(universalDisplayProgram, 'useUnipolarScale');
-  const uloc_univ_quantityIndex        = gl.getUniformLocation(universalDisplayProgram, 'quantityIndex');
-  const uloc_univ_dispMultiplier       = gl.getUniformLocation(universalDisplayProgram, 'dispMultiplier');
-  const uloc_univ_colorScaleStops      = gl.getUniformLocation(universalDisplayProgram, 'colorScaleStops');
-
-  // airplane per-frame
-  const uloc_sky_planeDirectionAndGearPos = gl.getUniformLocation(skyBackgroundDisplayProgram, 'planeDirectionAndGearPos');
-  const uloc_sky_planePos                 = gl.getUniformLocation(skyBackgroundDisplayProgram, 'planePos');
-  const uloc_adv_airplaneValues           = gl.getUniformLocation(advectionProgram,            'airplaneValues');
-
-  // radar texture slot uniforms
-  const uloc_radar_baseTexture         = gl.getUniformLocation(radarDisplayProgram, 'baseTexture');
-  const uloc_radar_waterTexture        = gl.getUniformLocation(radarDisplayProgram, 'waterTexture');
-  const uloc_radar_wallTexture         = gl.getUniformLocation(radarDisplayProgram, 'wallTexture');
-  const uloc_radar_colorScalesTex      = gl.getUniformLocation(radarDisplayProgram, 'colorScalesTex');
-  const uloc_radar_precipFeedbackTex   = gl.getUniformLocation(radarDisplayProgram, 'precipFeedbackTexture');
-  const uloc_radar_precipDepositionTex = gl.getUniformLocation(radarDisplayProgram, 'precipDepositionTexture');
-
-  const MAX_COMPOSITE_RADARS = 32;
-  const uloc_comp_aspectRatios        = gl.getUniformLocation(compositeRadarDisplayProgram, 'aspectRatios');
-  const uloc_comp_view                = gl.getUniformLocation(compositeRadarDisplayProgram, 'view');
-  const uloc_comp_Xmult               = gl.getUniformLocation(compositeRadarDisplayProgram, 'Xmult');
-  const uloc_comp_resolution          = gl.getUniformLocation(compositeRadarDisplayProgram, 'resolution');
-  const uloc_comp_texelSize           = gl.getUniformLocation(compositeRadarDisplayProgram, 'texelSize');
-  const uloc_comp_opacity             = gl.getUniformLocation(compositeRadarDisplayProgram, 'opacity');
-  const uloc_comp_dbzOpacityEnabled   = gl.getUniformLocation(compositeRadarDisplayProgram, 'dbzOpacityEnabled');
-  const uloc_comp_dbzOpacityStrength  = gl.getUniformLocation(compositeRadarDisplayProgram, 'dbzOpacityStrength');
-  const uloc_comp_colorScaleColumn    = gl.getUniformLocation(compositeRadarDisplayProgram, 'colorScaleColumn');
-  const uloc_comp_colorScaleStops     = gl.getUniformLocation(compositeRadarDisplayProgram, 'colorScaleStops');
-  const uloc_comp_radarCount          = gl.getUniformLocation(compositeRadarDisplayProgram, 'radarCount');
-  const uloc_comp_radarPositions      = gl.getUniformLocation(compositeRadarDisplayProgram, 'radarPositions');
-  const uloc_comp_radarRanges         = gl.getUniformLocation(compositeRadarDisplayProgram, 'radarRanges');
-  const uloc_comp_radarResolutions    = gl.getUniformLocation(compositeRadarDisplayProgram, 'radarResolutions');
-  const uloc_comp_radarSensitivities  = gl.getUniformLocation(compositeRadarDisplayProgram, 'radarSensitivities');
-  const uloc_comp_baseTexture         = gl.getUniformLocation(compositeRadarDisplayProgram, 'baseTexture');
-  const uloc_comp_waterTexture        = gl.getUniformLocation(compositeRadarDisplayProgram, 'waterTexture');
-  const uloc_comp_wallTexture         = gl.getUniformLocation(compositeRadarDisplayProgram, 'wallTexture');
-  const uloc_comp_colorScalesTex      = gl.getUniformLocation(compositeRadarDisplayProgram, 'colorScalesTex');
-  const uloc_comp_precipFeedbackTex   = gl.getUniformLocation(compositeRadarDisplayProgram, 'precipFeedbackTexture');
-  const uloc_comp_precipDepositionTex = gl.getUniformLocation(compositeRadarDisplayProgram, 'precipDepositionTexture');
-
-  const uloc_world_aspectRatios        = gl.getUniformLocation(worldRadarDisplayProgram, 'aspectRatios');
-  const uloc_world_view                = gl.getUniformLocation(worldRadarDisplayProgram, 'view');
-  const uloc_world_cursor              = gl.getUniformLocation(worldRadarDisplayProgram, 'cursor');
-  const uloc_world_Xmult               = gl.getUniformLocation(worldRadarDisplayProgram, 'Xmult');
-  const uloc_world_resolution          = gl.getUniformLocation(worldRadarDisplayProgram, 'resolution');
-  const uloc_world_texelSize           = gl.getUniformLocation(worldRadarDisplayProgram, 'texelSize');
-  const uloc_world_opacity             = gl.getUniformLocation(worldRadarDisplayProgram, 'opacity');
-  const uloc_world_dbzOpacityEnabled   = gl.getUniformLocation(worldRadarDisplayProgram, 'dbzOpacityEnabled');
-  const uloc_world_dbzOpacityStrength  = gl.getUniformLocation(worldRadarDisplayProgram, 'dbzOpacityStrength');
-  const uloc_world_colorScaleColumn    = gl.getUniformLocation(worldRadarDisplayProgram, 'colorScaleColumn');
-  const uloc_world_colorScaleStops     = gl.getUniformLocation(worldRadarDisplayProgram, 'colorScaleStops');
-  const uloc_world_blockSize           = gl.getUniformLocation(worldRadarDisplayProgram, 'blockSize');
-  const uloc_world_sensitivity         = gl.getUniformLocation(worldRadarDisplayProgram, 'sensitivity');
-  const uloc_world_waterTexture        = gl.getUniformLocation(worldRadarDisplayProgram, 'waterTexture');
-  const uloc_world_wallTexture         = gl.getUniformLocation(worldRadarDisplayProgram, 'wallTexture');
-  const uloc_world_colorScalesTex      = gl.getUniformLocation(worldRadarDisplayProgram, 'colorScalesTex');
-
-  // temperatureChange texture slot uniforms
-  const uloc_tempChg_baseTex           = gl.getUniformLocation(temperatureChangeDisplayProgram, 'baseTex');
-  const uloc_tempChg_prevBaseTex       = gl.getUniformLocation(temperatureChangeDisplayProgram, 'prevBaseTex');
-  const uloc_tempChg_wallTex           = gl.getUniformLocation(temperatureChangeDisplayProgram, 'wallTex');
-  const uloc_tempChg_colorScalesTex    = gl.getUniformLocation(temperatureChangeDisplayProgram, 'colorScalesTex');
-  const uloc_tempChg_colorScaleColumn  = gl.getUniformLocation(temperatureChangeDisplayProgram, 'colorScaleColumn');
-  ulocsReady = true; // all uniform locations cached, updateSunlight can now use them
 
 
   for (i = 0; i < weatherStations.length; i++) { // initial measurement at weather stations
@@ -10309,770 +5724,8 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   setInterval(calcFps, 1000); // log fps
   requestAnimationFrame(draw);
 
-  function onUpdateTimeOfDaySlider()
-  {
-    let minutes = (guiControls.timeOfDay % 1) * 60;
-    simDateTime.setHours(guiControls.timeOfDay, minutes);
-    updateSunlight();
-  }
-
-  function onUpdateMonthSlider()
-  {
-    let month = guiControls.month - 0.96;
-    let date = (month % 1) * 30;
-    simDateTime.setMonth(month, date);
-    updateSunlight();
-  }
-
-  function updateSunlight(deltaT_hours)
-  {
-    if (deltaT_hours != 'MANUAL_ANGLE') {
-      if (deltaT_hours != null) {                                                   // increment time
-        simDateTime = new Date(simDateTime.getTime() + deltaT_hours * 3600 * 1000); // convert hours to ms and add to current date
-        guiControls.timeOfDay = simDateTime.getHours() + simDateTime.getMinutes() / 60. + simDateTime.getSeconds() / 3600.;
-        guiControls.month = simDateTime.getMonth() + 1 + simDateTime.getDate() / 30.5 + simDateTime.getHours() / 720.;
-      } else {
-        for (i = 0; i < weatherStations.length; i++) {
-          weatherStations[i].clearChart();
-        }
-      }
-
-      // More accurate solar position calculation
-      let dayOfYear = Math.floor((guiControls.month - 1) * 30.44 + 1); // Approximate day of year
-      
-      // Solar declination (more accurate formula)
-      let declination = 23.45 * Math.sin(degToRad * (360 / 365 * (dayOfYear - 81)));
-      
-      // Hour angle from time of day (solar noon at 12:00)
-      let hourAngle = (guiControls.timeOfDay - 12) * 15; // degrees, 15 degrees per hour
-      
-      // Convert to radians
-      let declinationRad = declination * degToRad;
-      let latitudeRad = guiControls.latitude * degToRad;
-      let hourAngleRad = hourAngle * degToRad;
-      
-      // Calculate solar elevation angle
-      let sinElevation = Math.sin(latitudeRad) * Math.sin(declinationRad) + 
-                         Math.cos(latitudeRad) * Math.cos(declinationRad) * Math.cos(hourAngleRad);
-      let elevationRad = Math.asin(sinElevation);
-      
-      // Convert to degrees (0 = horizon, 90 = directly overhead)
-      guiControls.sunAngle = elevationRad * radToDeg;
-    }
-    let solarZenithAngleDeg = (90 - guiControls.sunAngle);
-    let solarZenithAngle = solarZenithAngleDeg * degToRad; // Solar zenith angle centered around 0. (0 = vertical)
-    // Calculations visualized: https://www.desmos.com/calculator/kzr76zj5hq
-    if (Math.abs(solarZenithAngle) < 85.0 * degToRad) {
-      sunIsUp = true;
-    } else {
-      sunIsUp = false;
-    }
-    //          console.log(solarZenithAngle, sunIsUp);
-    //  let sunIntensity = guiControls.sunIntensity *
-    // Math.pow(Math.max(Math.sin((90.0 - Math.abs(guiControls.sunAngle)) *
-    // degToRad) - 0.1, 0.0) * 1.111, 0.4);
-    let sunIntensity = guiControls.sunIntensity * Math.pow(Math.max(Math.sin(guiControls.sunAngle * degToRad), 0.0), 0.1) * 1300.0; // max 1300 w/m2 at 12 km
-    // console.log('sunIntensity: ', sunIntensity);
-
-    // minShadowLight = clamp(((90 + 10) - Math.abs(solarZenithAngleDeg)) * 0.006, 0.005, 0.040); // decrease until the sun goes 10 deg below the horizon
-
-    if (guiControls.autoMinShadowLight) {
-      minShadowLight = map_range_C(Math.abs(solarZenithAngleDeg), 100.0, 85.0, 0.005, 0.040); // decrease until the sun goes 10 deg below the horizon
-    } else {
-      minShadowLight = guiControls.minShadowLight;
-    }
-
-    if (ulocsReady) {
-      gl.useProgram(boundaryProgram);
-      gl.uniform1f(uloc_boundary_sunAngle, solarZenithAngle);
-      gl.useProgram(lightingProgram);
-      gl.uniform1f(uloc_lighting_sunIntensity, sunIntensity);
-      gl.uniform1f(uloc_lighting_sunAngle, solarZenithAngle);
-      gl.useProgram(realisticDisplayProgram);
-      gl.uniform1f(uloc_realistic_sunAngle, solarZenithAngle);
-      gl.uniform1f(uloc_realistic_minShadowLight, minShadowLight);
-      gl.useProgram(skyBackgroundDisplayProgram);
-      gl.uniform1f(uloc_sky_minShadowLight, minShadowLight);
-      gl.uniform1f(uloc_sky_sunAngle, solarZenithAngle);
-    }
-
-    if (guiControls.dayNightCycle)
-      clockEl.innerHTML = dateTimeStr(); // update clock
-    else
-      clockEl.innerHTML = '';
-  }
-
-  function isRadarDisplayMode(mode)
-  {
-    return mode === 'DISP_RADAR' || mode === 'DISP_RADAR_COMPOSITE' || mode === 'DISP_RADAR_WORLD';
-  }
-
-  function shouldUpdateRadarDisplayCache()
-  {
-    let updateFreq = Math.max(1, Math.round(guiControls.radarUpdateFrequency || 1));
-    if (lastRadarCacheIterNum === -1)
-      return true;
-    return (iterNum - lastRadarCacheIterNum) >= updateFreq;
-  }
-
-  function updateRadarDisplayCache()
-  {
-    if (!shouldUpdateRadarDisplayCache())
-      return;
-
-    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, frameBuff_1);
-    gl.readBuffer(gl.COLOR_ATTACHMENT0);
-    gl.bindTexture(gl.TEXTURE_2D, cachedBaseTexture);
-    gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, sim_res_x, sim_res_y);
-    gl.readBuffer(gl.COLOR_ATTACHMENT1);
-    gl.bindTexture(gl.TEXTURE_2D, cachedWaterTexture);
-    gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, sim_res_x, sim_res_y);
-    gl.readBuffer(gl.COLOR_ATTACHMENT2);
-    gl.bindTexture(gl.TEXTURE_2D, cachedWallTexture);
-    gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, sim_res_x, sim_res_y);
-    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, null);
-
-    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, precipitationFeedbackFrameBuff);
-    gl.readBuffer(gl.COLOR_ATTACHMENT0);
-    gl.bindTexture(gl.TEXTURE_2D, cachedPrecipFeedbackTexture);
-    gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, sim_res_x, sim_res_y);
-    gl.readBuffer(gl.COLOR_ATTACHMENT1);
-    gl.bindTexture(gl.TEXTURE_2D, cachedPrecipDepositionTexture);
-    gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, sim_res_x, sim_res_y);
-    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, null);
-
-    lastRadarCacheIterNum = iterNum;
-  }
-
-  function bindRadarCachedSimTextures(baseLoc, waterLoc, wallLoc, precipFbLoc, precipDepLoc)
-  {
-    gl.activeTexture(gl.TEXTURE0);
-    gl.bindTexture(gl.TEXTURE_2D, cachedBaseTexture);
-    gl.uniform1i(baseLoc, 0);
-    gl.activeTexture(gl.TEXTURE1);
-    gl.bindTexture(gl.TEXTURE_2D, cachedWaterTexture);
-    gl.uniform1i(waterLoc, 1);
-    gl.activeTexture(gl.TEXTURE2);
-    gl.bindTexture(gl.TEXTURE_2D, cachedWallTexture);
-    gl.uniform1i(wallLoc, 2);
-    gl.activeTexture(gl.TEXTURE4);
-    gl.bindTexture(gl.TEXTURE_2D, cachedPrecipFeedbackTexture);
-    gl.uniform1i(precipFbLoc, 4);
-    gl.activeTexture(gl.TEXTURE5);
-    gl.bindTexture(gl.TEXTURE_2D, cachedPrecipDepositionTexture);
-    gl.uniform1i(precipDepLoc, 5);
-  }
-
-  function uploadCompositeRadarArrays()
-  {
-    const positions = new Float32Array(MAX_COMPOSITE_RADARS * 2);
-    const ranges = new Float32Array(MAX_COMPOSITE_RADARS);
-    const resolutions = new Float32Array(MAX_COMPOSITE_RADARS);
-    const sensitivities = new Float32Array(MAX_COMPOSITE_RADARS);
-    const count = Math.min(radars.length, MAX_COMPOSITE_RADARS);
-    for (let i = 0; i < count; i++) {
-      positions[i * 2] = radars[i].getXpos();
-      positions[i * 2 + 1] = radars[i].getYpos();
-      ranges[i] = radars[i].getRange();
-      resolutions[i] = radars[i].getResolution();
-      sensitivities[i] = radars[i].getSensitivity();
-    }
-    gl.uniform1i(uloc_comp_radarCount, count);
-    gl.uniform2fv(uloc_comp_radarPositions, positions);
-    gl.uniform1fv(uloc_comp_radarRanges, ranges);
-    gl.uniform1fv(uloc_comp_radarResolutions, resolutions);
-    gl.uniform1fv(uloc_comp_radarSensitivities, sensitivities);
-  }
-
-  function getRadarLightningIconDurationMs()
-  {
-    return Math.max(500, guiControls.radarLightningIconDuration * 1000);
-  }
-
-  function shaderRand(n)
-  {
-    return Math.sin(n) * 43758.5453123 - Math.floor(Math.sin(n) * 43758.5453123);
-  }
-
-  function posMod(a, b)
-  {
-    return ((a % b) + b) % b;
-  }
-
-  function isProceduralLightningEnabled()
-  {
-    return guiControls.enableCloudLightning || guiControls.enableCloudGroundLightning
-      || guiControls.enableStrobeLightning;
-  }
-
-  function refreshLightningFieldCache()
-  {
-    if (!isProceduralLightningEnabled())
-      return;
-    if (lightningFieldCacheFrame === frameNum && lightningFieldCache)
-      return;
-    if (!lightningSummaryBuffer || lightningCacheW < 1)
-      return;
-
-    lightningFieldCacheFrame = frameNum;
-
-    gl.useProgram(lightningSummaryProgram);
-    gl.bindVertexArray(fluidVao);
-    gl.bindFramebuffer(gl.FRAMEBUFFER, lightningSummaryFrameBuff);
-    gl.viewport(0, 0, lightningCacheW, lightningCacheH);
-    gl.drawBuffers([ gl.COLOR_ATTACHMENT0 ]);
-    gl.activeTexture(gl.TEXTURE0);
-    gl.bindTexture(gl.TEXTURE_2D, even ? chargeTexture_0 : chargeTexture_1);
-    gl.activeTexture(gl.TEXTURE1);
-    gl.bindTexture(gl.TEXTURE_2D, waterTexture_0);
-    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
-
-    gl.readPixels(0, 0, lightningCacheW, lightningCacheH, gl.RGBA, gl.FLOAT, lightningSummaryBuffer);
-    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-    gl.viewport(0, 0, sim_res_x, sim_res_y);
-
-    lightningFieldCache = {
-      data: lightningSummaryBuffer,
-      cacheW: lightningCacheW,
-      cacheH: lightningCacheH,
-      scale: LIGHTNING_CACHE_SCALE
-    };
-  }
-
-  function readChargeCached(simX, simY)
-  {
-    if (!lightningFieldCache)
-      return 0;
-    const px = Math.max(0, Math.min(lightningFieldCache.cacheW - 1, Math.floor(simX / lightningFieldCache.scale)));
-    const py = Math.max(0, Math.min(lightningFieldCache.cacheH - 1, Math.floor(simY / lightningFieldCache.scale)));
-    return lightningFieldCache.data[(py * lightningFieldCache.cacheW + px) * 4];
-  }
-
-  function readCloudCached(simX, simY)
-  {
-    if (!lightningFieldCache)
-      return 0;
-    const px = Math.max(0, Math.min(lightningFieldCache.cacheW - 1, Math.floor(simX / lightningFieldCache.scale)));
-    const py = Math.max(0, Math.min(lightningFieldCache.cacheH - 1, Math.floor(simY / lightningFieldCache.scale)));
-    return lightningFieldCache.data[(py * lightningFieldCache.cacheW + px) * 4 + 1];
-  }
-
-  function chargeThresholdForType(ltType)
-  {
-    let t = guiControls.cloudLightningThreshold;
-    if (ltType >= 5)
-      t = guiControls.cloudGroundLightningThreshold;
-    else if (ltType >= 3)
-      t = guiControls.strobeLightningThreshold;
-    return 0.12 + t * 0.38;
-  }
-
-  function lightningStrikeInterval(freq)
-  {
-    if (freq <= 0)
-      return Infinity;
-    return Math.max(6, 80 / (freq + 0.08));
-  }
-
-  function lightningStrikeChance(freq)
-  {
-    const interval = lightningStrikeInterval(freq);
-    return interval === Infinity ? 0 : 1 / interval;
-  }
-
-  function getLightningChannels()
-  {
-    return [
-      {
-        id: 'cc',
-        salt: 911,
-        typeMin: 1,
-        typeMax: 2,
-        enabled: () => guiControls.enableCloudLightning,
-        freq: () => guiControls.cloudLightningFrequency
-      },
-      {
-        id: 'strobe',
-        salt: 1913,
-        typeMin: 3,
-        typeMax: 4,
-        enabled: () => guiControls.enableStrobeLightning,
-        freq: () => guiControls.strobeLightningFrequency
-      },
-      {
-        id: 'cg',
-        salt: 2917,
-        typeMin: 5,
-        typeMax: 6,
-        enabled: () => guiControls.enableCloudGroundLightning,
-        freq: () => guiControls.cloudGroundLightningFrequency
-      }
-    ];
-  }
-
-  function getActiveLightningChannels()
-  {
-    return getLightningChannels().filter(ch => ch.enabled() && ch.freq() > 0);
-  }
-
-  function findActiveLightningEventJS(frameIter)
-  {
-    if (!lightningFieldCache)
-      return { eventAge: -1, eventId: 0, channel: null };
-
-    const channels = getActiveLightningChannels();
-    if (channels.length === 0)
-      return { eventAge: -1, eventId: 0, channel: null };
-
-    const maxLook = 11;
-    for (let k = 0; k < maxLook; k++) {
-      const startIter = frameIter - k;
-      if (startIter < 0)
-        break;
-
-      const hits = [];
-      for (const ch of channels) {
-        const strikeChance = lightningStrikeChance(ch.freq());
-        if (strikeChance <= 0)
-          continue;
-        if (shaderRand(startIter * 1.37 + ch.salt) >= strikeChance)
-          continue;
-        if (!isStrikeStartChargeValidForChannel(startIter, ch))
-          continue;
-        hits.push(ch);
-      }
-      if (hits.length > 0) {
-        const pick = hits[Math.floor(shaderRand(startIter * 7.31 + 613.0) * hits.length)];
-        return { eventAge: k, eventId: startIter, channel: pick };
-      }
-    }
-    return { eventAge: -1, eventId: 0, channel: null };
-  }
-
-  function isStrikeStartChargeValidForChannel(eventId, channel)
-  {
-    for (let s = 0; s < 3; s++) {
-      const pick = pickLightningOriginCached(eventId, s, 3);
-      const strike = evaluateProceduralStrikeCached(pick.originX, pick.originY, channel);
-      if (!strike)
-        continue;
-      if (strike.originMag >= chargeThresholdForType(strike.ltType))
-        return true;
-    }
-    return false;
-  }
-
-  function readCloudAtSimPixel(simX, simY)
-  {
-    if (lightningFieldCache)
-      return readCloudCached(simX, simY);
-    const px = Math.max(0, Math.min(sim_res_x - 1, Math.floor(simX)));
-    const py = Math.max(0, Math.min(sim_res_y - 1, Math.floor(simY)));
-    const data = new Float32Array(4);
-    gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_1);
-    gl.readBuffer(gl.COLOR_ATTACHMENT1);
-    gl.readPixels(px, py, 1, 1, gl.RGBA, gl.FLOAT, data);
-    gl.readBuffer(gl.COLOR_ATTACHMENT0);
-    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-    return data[1];
-  }
-
-  function cloudGateFromDensity(originCloud)
-  {
-    return clamp(1.0 - 1.0 / (1.0 + originCloud * 13.0), 0.0, 1.0);
-  }
-
-  function selectLightningTypeJS(chargeVal, cloudGate)
-  {
-    const chargeMag = Math.abs(chargeVal);
-    const chargeNeg = Math.max(-chargeVal, 0);
-    if (cloudGate < 0.15 || chargeMag < 0.20) return 0;
-    if (chargeNeg >= 0.12 && chargeMag >= 0.28) {
-      if (chargeMag >= 0.42 || chargeNeg >= 0.30) return 6;
-      return 5;
-    }
-    if (chargeMag >= 0.52) return 4;
-    if (chargeMag >= 0.38) return 3;
-    if (chargeMag < 0.35) return 1;
-    return 2;
-  }
-
-  function lightningStrikeSeedJS(eventId, strikeSlot, originX, originY)
-  {
-    const h1 = shaderRand(eventId * 12.9898 + strikeSlot * 78.233 + 911.7);
-    const h2 = shaderRand(originX * 0.017 + originY * 0.013 + eventId * 0.031 + strikeSlot * 503.7);
-    const h3 = shaderRand(h1 * 9100.3 + h2 * 5321.1 + strikeSlot * 91.17);
-    // Keep in float32-safe range — never scale by eventId directly
-    return 500 + h1 * 5500 + h2 * 5500 + h3 * 3500 + strikeSlot * 317;
-  }
-
-  function pickLightningOriginCached(eventId, strikeSlot, numStrikeSlots)
-  {
-    let bestScore = -1;
-    let bestO = { x: sim_res_x * 0.5, y: sim_res_y * 0.35 };
-    let bestCloud = 0;
-    let bestCharge = 0;
-    const slots = Math.max(numStrikeSlots, 1);
-
-    for (let c = 0; c < 6; c++) {
-      const cs = c * 503 + strikeSlot * 131;
-      const xSlot = (strikeSlot + shaderRand(eventId * 1.37 + cs + 1) * 0.80) / slots;
-      const ox = (xSlot * 0.72 + shaderRand(eventId * 2.11 + cs + 10) * 0.20 + 0.04) * sim_res_x;
-      const probeY = (shaderRand(eventId * 3.07 + cs + 20) * 0.78 + 0.10) * sim_res_y;
-
-      let bestLocalScore = -1;
-      let bestLocalO = { x: ox, y: probeY };
-      let bestLocalCloud = 0;
-      let bestLocalCharge = 0;
-
-      for (let v = 0; v < 3; v++) {
-        const vy = Math.max(sim_res_y * 0.06,
-          Math.min(sim_res_y * 0.94, probeY + (v - 1) * sim_res_y * 0.055));
-        const cloud = readCloudCached(ox, vy);
-        const charge = readChargeCached(ox, vy);
-        const cg = cloudGateFromDensity(cloud);
-        const localScore = Math.abs(charge) * cg * (0.45 + cloud * 0.35);
-        if (localScore > bestLocalScore) {
-          bestLocalScore = localScore;
-          bestLocalO = { x: ox, y: vy };
-          bestLocalCloud = cloud;
-          bestLocalCharge = charge;
-        }
-      }
-
-      const score = bestLocalScore * (0.65 + shaderRand(eventId * 5.03 + cs + 30) * 0.70);
-      if (score > bestScore) {
-        bestScore = score;
-        bestO = bestLocalO;
-        bestCloud = bestLocalCloud;
-        bestCharge = bestLocalCharge;
-      }
-    }
-    return {
-      originX: bestO.x,
-      originY: bestO.y,
-      cloudGate: cloudGateFromDensity(bestCloud),
-      chargeVal: bestCharge
-    };
-  }
-
-  function evaluateProceduralStrikeCached(originX, originY, channel)
-  {
-    const cloudGate = cloudGateFromDensity(readCloudCached(originX, originY));
-    const chargeVal = readChargeCached(originX, originY);
-    const originMag = Math.abs(chargeVal);
-    const ltType = selectLightningTypeJS(chargeVal, cloudGate);
-    if (ltType === 0)
-      return null;
-    if (channel && (ltType < channel.typeMin || ltType > channel.typeMax))
-      return null;
-    const threshold = (ltType >= 3 && ltType <= 4)
-      ? guiControls.strobeLightningThreshold
-      : guiControls.cloudLightningThreshold;
-    if (cloudGate < threshold * 0.35)
-      return null;
-    if (ltType >= 1 && ltType <= 2 && !guiControls.enableCloudLightning)
-      return null;
-    if (ltType >= 3 && ltType <= 4 && !guiControls.enableStrobeLightning)
-      return null;
-    if (ltType >= 5 && !guiControls.enableCloudGroundLightning)
-      return null;
-    return { ltType, chargeVal, originMag, cloudGate };
-  }
-
-  function dischargeAmountForStrike(ltType, originMag)
-  {
-    let amount = originMag * 0.68 + 0.10;
-    if (ltType >= 5)
-      amount *= 1.20;
-    else if (ltType >= 3)
-      amount *= 0.90;
-    else
-      amount *= 0.82;
-    return Math.min(amount, 0.92);
-  }
-
-  function dischargeRadiusForStrike(ltType)
-  {
-    if (ltType >= 5)
-      return 18;
-    if (ltType >= 3)
-      return 11;
-    return 14;
-  }
-
-  function queueChargeDischargeForStrike(strike)
-  {
-    if (chargeDischargesThisIter.length >= 4)
-      return;
-    chargeDischargesThisIter.push({
-      u: strike.originX / sim_res_x,
-      v: strike.originY / sim_res_y,
-      amount: dischargeAmountForStrike(strike.ltType, strike.originMag),
-      radius: dischargeRadiusForStrike(strike.ltType),
-      ltType: strike.ltType
-    });
-  }
-
-  function uploadChargeDischargeUniforms()
-  {
-    const count = Math.min(chargeDischargesThisIter.length, 4);
-    gl.uniform1i(uloc_charge_ltDischargeCount, count);
-    const disArr = new Float32Array(16);
-    const metaArr = new Float32Array(16);
-    for (let i = 0; i < count; i++) {
-      const d = chargeDischargesThisIter[i];
-      disArr[i * 4] = d.u;
-      disArr[i * 4 + 1] = d.v;
-      disArr[i * 4 + 2] = d.amount;
-      disArr[i * 4 + 3] = d.radius;
-      metaArr[i * 4] = d.ltType;
-    }
-    gl.uniform4fv(uloc_charge_ltDischarge, disArr);
-    gl.uniform4fv(uloc_charge_ltDischargeMeta, metaArr);
-  }
-
-  function buildProceduralStrikesForEvent(eventId, channel)
-  {
-    const freq = channel.freq();
-    const numStrikes = 1 + Math.floor(shaderRand(eventId * 29 + 401 + channel.salt)
-      * Math.min(Math.max(freq + 0.35, 1), 3));
-    const strikes = [];
-    for (let s = 0; s < numStrikes; s++) {
-      const pick = pickLightningOriginCached(eventId, s, numStrikes);
-      const strike = evaluateProceduralStrikeCached(pick.originX, pick.originY, channel);
-      if (!strike)
-        continue;
-      if (strike.originMag < chargeThresholdForType(strike.ltType))
-        continue;
-      const seed = lightningStrikeSeedJS(eventId, s, pick.originX, pick.originY);
-      let numFlashes = 1;
-      if (guiControls.lightningRepeat && strike.originMag > 0.55 && shaderRand(seed + 888) > 0.88)
-        numFlashes = 2;
-      strikes.push({
-        originX: pick.originX,
-        originY: pick.originY,
-        ltType: strike.ltType,
-        chargeVal: strike.chargeVal,
-        seed,
-        originMag: strike.originMag,
-        cloudGate: strike.cloudGate,
-        numFlashes
-      });
-    }
-    return strikes;
-  }
-
-  function updateProceduralLightningState()
-  {
-    if (!isProceduralLightningEnabled()) {
-      proceduralLightningState.eventAge = -1;
-      proceduralLightningState.strikes = [];
-      proceduralLightningState.builtEventId = -1;
-      proceduralLightningState.channelId = null;
-      proceduralLightningState.trackedEventId = -1;
-      proceduralLightningState.trackedChannel = null;
-      return;
-    }
-
-    // Fast path: skip expensive lookback while an active flash is playing out
-    if (proceduralLightningState.trackedEventId >= 0 && proceduralLightningState.trackedChannel) {
-      const age = iterNum - proceduralLightningState.trackedEventId;
-      if (age >= 0 && age < LIGHTNING_FLASH_DURATION) {
-        proceduralLightningState.eventAge = age;
-        proceduralLightningState.eventId = proceduralLightningState.trackedEventId;
-        proceduralLightningState.channelId = proceduralLightningState.trackedChannel.id;
-        return;
-      }
-      proceduralLightningState.trackedEventId = -1;
-      proceduralLightningState.trackedChannel = null;
-    }
-
-    const active = findActiveLightningEventJS(iterNum);
-    proceduralLightningState.eventAge = active.eventAge;
-    proceduralLightningState.eventId = active.eventId;
-    proceduralLightningState.channelId = active.channel ? active.channel.id : null;
-
-    if (active.eventAge < 0 || !active.channel) {
-      proceduralLightningState.strikes = [];
-      proceduralLightningState.builtEventId = -1;
-      return;
-    }
-
-    proceduralLightningState.trackedEventId = active.eventId;
-    proceduralLightningState.trackedChannel = active.channel;
-
-    if (proceduralLightningState.builtEventId !== active.eventId
-        || proceduralLightningState.channelId !== active.channel.id) {
-      proceduralLightningState.builtEventId = active.eventId;
-      proceduralLightningState.strikes = buildProceduralStrikesForEvent(active.eventId, active.channel);
-
-      if (active.eventAge <= 0.5) {
-        for (let s = 0; s < proceduralLightningState.strikes.length; s++) {
-          const st = proceduralLightningState.strikes[s];
-          queueChargeDischargeForStrike(st);
-          const eventKey = 'lt-' + active.eventId + '-s' + s;
-          if (guiControls.radarLightningIcons)
-            registerRadarLightningStrike(eventKey, st.originX, st.originY);
-          playThunderForStrike(eventKey, st.originX / sim_res_x, st.originY / sim_res_y,
-            thunderIntensityForType(st.ltType, st.originMag));
-        }
-      }
-    }
-  }
-
-  function uploadProceduralLightningUniforms()
-  {
-    const st = proceduralLightningState;
-    gl.uniform1f(uloc_real_ltEventAge, st.eventAge >= 0 ? st.eventAge : -1);
-    gl.uniform1i(uloc_real_ltNumStrikes, st.strikes.length);
-
-    const posArr = procLightningPosArr;
-    const metaArr = procLightningMetaArr;
-    posArr.fill(0);
-    metaArr.fill(0);
-    for (let i = 0; i < 4; i++) {
-      if (i < st.strikes.length) {
-        const s = st.strikes[i];
-        posArr[i * 4] = s.originX;
-        posArr[i * 4 + 1] = s.originY;
-        posArr[i * 4 + 2] = s.ltType;
-        posArr[i * 4 + 3] = s.seed;
-        metaArr[i * 4] = s.originMag;
-        metaArr[i * 4 + 1] = s.cloudGate;
-        metaArr[i * 4 + 2] = s.numFlashes;
-      }
-    }
-    gl.uniform4fv(uloc_real_ltStrikePos, posArr);
-    gl.uniform4fv(uloc_real_ltStrikeMeta, metaArr);
-  }
-
-  function thunderIntensityForType(ltType, originMag)
-  {
-    if (ltType >= 5) return 0.65 + originMag * 0.45;
-    if (ltType === 4) return 0.32 + originMag * 0.25;
-    if (ltType === 3) return 0.16 + originMag * 0.12;
-    if (ltType === 2) return 0.42 + originMag * 0.28;
-    return 0.32 + originMag * 0.20;
-  }
-
-  function playThunderForStrike(eventKey, normX, normY, intensity)
-  {
-    if (!guiControls.soundThunderEnabled || !soundSystem || registeredThunderEvents.has(eventKey))
-      return;
-    registeredThunderEvents.add(eventKey);
-    if (registeredThunderEvents.size > 500)
-      registeredThunderEvents.clear();
-    soundSystem.soundThunder(normX, normY, intensity);
-  }
-
-  function registerRadarLightningStrike(eventKey, simX, simY)
-  {
-    if (!guiControls.radarLightningIcons || registeredLightningEvents.has(eventKey))
-      return;
-    registeredLightningEvents.add(eventKey);
-    radarLightningStrikes.push({
-      simX,
-      simY,
-      expireAt: performance.now() + getRadarLightningIconDurationMs()
-    });
-    if (registeredLightningEvents.size > 500)
-      registeredLightningEvents.clear();
-  }
-
-  function detectParticleLightningStrike()
-  {
-    if (!guiControls.enablePrecipitation)
-      return;
-    if (!guiControls.soundThunderEnabled && !guiControls.radarLightningIcons)
-      return;
-    gl.bindFramebuffer(gl.FRAMEBUFFER, lightningDataFrameBuff);
-    gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.FLOAT, particleLightningReadBuffer);
-    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-    const data = particleLightningReadBuffer;
-    const startIter = data[2];
-    // Only react to a strike written this exact iteration (ignore stale texture data)
-    if (Math.floor(startIter + 0.5) !== iterNum)
-      return;
-    const simX = data[0] * sim_res_x;
-    const simY = data[1] * sim_res_y;
-    const cloudGate = cloudGateFromDensity(readCloudAtSimPixel(simX, simY));
-    if (cloudGate < guiControls.cloudLightningThreshold * 0.35 || data[3] < 0.05)
-      return;
-    const eventKey = 'particle-' + Math.floor(startIter);
-    if (guiControls.radarLightningIcons)
-      registerRadarLightningStrike(eventKey, simX, simY);
-    const intensity = Math.max(data[3], 1.2);
-    playThunderForStrike(eventKey, data[0], data[1], intensity);
-  }
-
-  function shouldShowRadarLightningOverlay()
-  {
-    return isRadarDisplayMode(guiControls.displayMode)
-      || (guiControls.displayMode === 'DISP_REAL' && guiControls.radarOverlay);
-  }
-
-  function drawRadarLightningIcon(ctx, x, y, size, alpha)
-  {
-    ctx.save();
-    ctx.globalAlpha = alpha;
-    ctx.translate(x, y);
-    ctx.scale(size / 12, size / 12);
-    ctx.beginPath();
-    ctx.moveTo(0, -10);
-    ctx.lineTo(4, -2);
-    ctx.lineTo(1, -2);
-    ctx.lineTo(5, 10);
-    ctx.lineTo(-1, 0);
-    ctx.lineTo(2, 0);
-    ctx.closePath();
-    ctx.fillStyle = '#FFE066';
-    ctx.strokeStyle = '#FFFFFF';
-    ctx.lineWidth = 1.5;
-    ctx.stroke();
-    ctx.fill();
-    ctx.restore();
-  }
-
-  function drawRadarLightningOverlay()
-  {
-    if (!shouldShowRadarLightningOverlay() || !guiControls.radarLightningIcons) {
-      if (radarLightningCanvas)
-        radarLightningCanvas.style.display = 'none';
-      return;
-    }
-
-    if (!radarLightningCanvas) {
-      radarLightningCanvas = document.createElement('canvas');
-      radarLightningCanvas.style.cssText = 'position:fixed;top:0;left:0;pointer-events:none;z-index:2;';
-      document.body.appendChild(radarLightningCanvas);
-    }
-    if (radarLightningCanvas.width !== canvas.width || radarLightningCanvas.height !== canvas.height) {
-      radarLightningCanvas.width = canvas.width;
-      radarLightningCanvas.height = canvas.height;
-    }
-    radarLightningCanvas.style.display = 'block';
-
-    const now = performance.now();
-    radarLightningStrikes = radarLightningStrikes.filter(strike => strike.expireAt > now);
-
-    const ctx = radarLightningCanvas.getContext('2d');
-    ctx.clearRect(0, 0, radarLightningCanvas.width, radarLightningCanvas.height);
-
-    for (const strike of radarLightningStrikes) {
-      const sx = simToScreenX(strike.simX);
-      const sy = simToScreenY(strike.simY);
-      if (sx < -30 || sx > canvas.width + 30 || sy < -30 || sy > canvas.height + 30)
-        continue;
-      const fadeMs = Math.max(200, getRadarLightningIconDurationMs() * 0.16);
-      const fade = Math.min(1, (strike.expireAt - now) / fadeMs);
-      drawRadarLightningIcon(ctx, sx, sy, 16, fade);
-    }
-  }
-
   function draw()
   { // Runs for every frame
-    var inputType = -1;
     let camPanSpeed = guiControls.camSpeed;
 
     if (rightCtrlPressed) {
@@ -11157,8 +5810,6 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
           inputType = 13;
         else if (guiControls.tool == 'TOOL_WALL_URBAN')
           inputType = 14;
-        else if (guiControls.tool == 'TOOL_WALL_SUBURBAN')
-          inputType = 17;
         else if (guiControls.tool == 'TOOL_WALL_RUNWAY')
           inputType = 15;
         else if (guiControls.tool == 'TOOL_WALL_INDUSTRIAL')
@@ -11191,11 +5842,11 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         let moveX = mouseXinSim - prevMouseXinSim;
         let moveY = mouseYinSim - prevMouseYinSim;
 
-        gl.uniform4f(uloc_adv_userInputValues, posXinSim, mouseYinSim, intensity, guiControls.brushSize * 0.5);
-        gl.uniform2f(uloc_adv_userInputMove, moveX, moveY);
-        gl.uniform1i(uloc_adv_wrapHorizontally, guiControls.wrapHorizontally);
+        gl.uniform4f(gl.getUniformLocation(advectionProgram, 'userInputValues'), posXinSim, mouseYinSim, intensity, guiControls.brushSize * 0.5);
+        gl.uniform2f(gl.getUniformLocation(advectionProgram, 'userInputMove'), moveX, moveY);
+        gl.uniform1i(gl.getUniformLocation(advectionProgram, 'wrapHorizontally'), guiControls.wrapHorizontally);
       }
-        gl.uniform1i(uloc_adv_userInputType, inputType);
+      gl.uniform1i(gl.getUniformLocation(advectionProgram, 'userInputType'), inputType);
 
 
       // guiControls.IterPerFrame = 1.0 / timePerIteration * 3600 / 60.0;
@@ -11203,17 +5854,10 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
       if (!guiControls.paused) { // Simulation part
 
-        let nightAccelerationActive = !airplaneMode && !guiControls.slowMotion && guiControls.dayNightCycle && guiControls.accelerateNight && guiControls.sunAngle < 0.;
+        let nightAccelerationActive = !airplaneMode && guiControls.dayNightCycle && guiControls.accelerateNight && guiControls.sunAngle < 0.;
 
         if (guiControls.dayNightCycle) {
-          if (guiControls.realtimeMode) {
-            // Sync to real wall-clock time — advance simDateTime to match now
-            const now = new Date();
-            const realDeltaHours = (now - simDateTime) / 3600000; // ms → hours
-            if (Math.abs(realDeltaHours) > 0.0001) {
-              updateSunlight(realDeltaHours);
-            }
-          } else if (airplaneMode || guiControls.slowMotion) {
+          if (airplaneMode) {
             updateSunlight(1.0 / 3600.0 / 60);                                                                    // increase solar time at real speed: 1/60 seconds per frame
           } else {
             updateSunlight(timePerIteration * guiControls.IterPerFrame * (nightAccelerationActive ? 10.0 : 1.0)); // increase solar time
@@ -11221,16 +5865,15 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         }
 
         gl.useProgram(lightingProgram);
-        gl.uniform1f(uloc_lighting_IR_rate, guiControls.IR_rate * (nightAccelerationActive ? 10.0 : 1.0));
+        gl.uniform1f(gl.getUniformLocation(lightingProgram, 'IR_rate'), guiControls.IR_rate * (nightAccelerationActive ? 10.0 : 1.0));
 
         gl.viewport(0, 0, sim_res_x, sim_res_y);
         gl.clearColor(0.0, 0.0, 0.0, 0.0);
 
         if (!airplaneMode || airplane.hasCrashed() || frameNum % 17 == 0) { // update every 17 frames because 60 * 0.288 secs per iteration = 17.28
           let numIterations = guiControls.IterPerFrame;
-          if (airplaneMode || guiControls.slowMotion)
+          if (airplaneMode)
             numIterations = 1;
-          refreshLightningFieldCache();
           for (var i = 0; i < numIterations; i++) { // Simulation loop
             // calc and apply velocity
             gl.useProgram(velocityProgram);
@@ -11243,62 +5886,20 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
             gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
 
             // calc curl
-            if (!guiControls.skipCurlCalculation) {
-              gl.useProgram(curlProgram);
-              gl.activeTexture(gl.TEXTURE0);
-              gl.bindTexture(gl.TEXTURE_2D, baseTexture_1);
-              gl.bindFramebuffer(gl.FRAMEBUFFER, curlFrameBuff);
-              gl.drawBuffers([ gl.COLOR_ATTACHMENT0 ]);
-              gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
-            }
-
-            // calc CAPE
-            if (!guiControls.skipCAPECalculation) {
-              gl.useProgram(capeProgram);
-              gl.activeTexture(gl.TEXTURE0);
-              gl.bindTexture(gl.TEXTURE_2D, baseTexture_1);
-              gl.activeTexture(gl.TEXTURE1);
-              gl.bindTexture(gl.TEXTURE_2D, waterTexture_0);
-              gl.activeTexture(gl.TEXTURE2);
-              gl.bindTexture(gl.TEXTURE_2D, wallTexture_0);
-              gl.bindFramebuffer(gl.FRAMEBUFFER, capeFrameBuff);
-              gl.drawBuffers([ gl.COLOR_ATTACHMENT0 ]);
-              gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
-            }
-
-            const runChargePass = isProceduralLightningEnabled() && !guiControls.skipChargeCalculation;
-
-            if (isProceduralLightningEnabled()) {
-              chargeDischargesThisIter.length = 0;
-              updateProceduralLightningState();
-            }
-
-            // calc atmospheric charge (drives physics-based lightning)
-            if (runChargePass) {
-              gl.useProgram(chargeProgram);
-              uploadChargeDischargeUniforms();
-              gl.activeTexture(gl.TEXTURE0);
-              gl.bindTexture(gl.TEXTURE_2D, baseTexture_1);
-              gl.activeTexture(gl.TEXTURE1);
-              gl.bindTexture(gl.TEXTURE_2D, waterTexture_0);
-              gl.activeTexture(gl.TEXTURE2);
-              gl.bindTexture(gl.TEXTURE_2D, wallTexture_0);
-              gl.activeTexture(gl.TEXTURE3);
-              gl.bindTexture(gl.TEXTURE_2D, even ? chargeTexture_0 : chargeTexture_1);
-              gl.bindFramebuffer(gl.FRAMEBUFFER, even ? chargeFrameBuff_1 : chargeFrameBuff_0);
-              gl.drawBuffers([ gl.COLOR_ATTACHMENT0 ]);
-              gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
-            }
+            gl.useProgram(curlProgram);
+            gl.activeTexture(gl.TEXTURE0);
+            gl.bindTexture(gl.TEXTURE_2D, baseTexture_1);
+            gl.bindFramebuffer(gl.FRAMEBUFFER, curlFrameBuff);
+            gl.drawBuffers([ gl.COLOR_ATTACHMENT0 ]);
+            gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
 
             // calculate vorticity
-            if (!guiControls.skipCurlCalculation) {
-              gl.useProgram(vorticityProgram);
-              gl.activeTexture(gl.TEXTURE0);
-              gl.bindTexture(gl.TEXTURE_2D, curlTexture);
-              gl.bindFramebuffer(gl.FRAMEBUFFER, vortForceFrameBuff);
-              gl.drawBuffers([ gl.COLOR_ATTACHMENT0 ]);
-              gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
-            }
+            gl.useProgram(vorticityProgram);
+            gl.activeTexture(gl.TEXTURE0);
+            gl.bindTexture(gl.TEXTURE_2D, curlTexture);
+            gl.bindFramebuffer(gl.FRAMEBUFFER, vortForceFrameBuff);
+            gl.drawBuffers([ gl.COLOR_ATTACHMENT0 ]);
+            gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
 
             // apply vorticity, boundary conditions and user input
             gl.useProgram(boundaryProgram);
@@ -11324,71 +5925,56 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
             gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
 
             // calc and apply advection
-            if (!guiControls.skipAdvection) {
-              gl.useProgram(advectionProgram);
-              gl.activeTexture(gl.TEXTURE0);
-              gl.bindTexture(gl.TEXTURE_2D, baseTexture_0);
-              gl.activeTexture(gl.TEXTURE1);
-              gl.bindTexture(gl.TEXTURE_2D, waterTexture_0);
-              gl.activeTexture(gl.TEXTURE2);
-              gl.bindTexture(gl.TEXTURE_2D, wallTexture_0);
-              gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_1);
-              gl.drawBuffers([ gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1, gl.COLOR_ATTACHMENT2 ]);
-              gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+            gl.useProgram(advectionProgram);
+            gl.activeTexture(gl.TEXTURE0);
+            gl.bindTexture(gl.TEXTURE_2D, baseTexture_0);
+            gl.activeTexture(gl.TEXTURE1);
+            gl.bindTexture(gl.TEXTURE_2D, waterTexture_0);
+            gl.activeTexture(gl.TEXTURE2);
+            gl.bindTexture(gl.TEXTURE_2D, wallTexture_0);
+            gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_1);
+            gl.drawBuffers([ gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1, gl.COLOR_ATTACHMENT2 ]);
+            gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
 
-              // calc and apply pressure (divergence correction)
-              gl.useProgram(pressureProgram);
-              gl.activeTexture(gl.TEXTURE0);
-              gl.bindTexture(gl.TEXTURE_2D, baseTexture_1);
-              gl.activeTexture(gl.TEXTURE1);
-              gl.bindTexture(gl.TEXTURE_2D, wallTexture_1);
-              gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_0);
-              gl.drawBuffers([ gl.COLOR_ATTACHMENT0, gl.NONE, gl.COLOR_ATTACHMENT2 ]);
-              gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
-            }
-
-            // capture current temperature state for the temperature-change display
-            if (!guiControls.disableTempChangeHistory) {
-              gl.bindFramebuffer(gl.READ_FRAMEBUFFER, frameBuff_1);
-              gl.readBuffer(gl.COLOR_ATTACHMENT0);
-              gl.activeTexture(gl.TEXTURE0);
-              gl.bindTexture(gl.TEXTURE_2D, temperatureChangeHistoryTextures[temperatureChangeHistoryIndex]);
-              gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, sim_res_x, sim_res_y);
-              gl.bindFramebuffer(gl.READ_FRAMEBUFFER, null);
-              temperatureChangeHistoryIndex = (temperatureChangeHistoryIndex + 1) % temperatureChangeHistoryTextures.length;
-            }
+            // calc and apply pressure
+            gl.useProgram(pressureProgram);
+            gl.activeTexture(gl.TEXTURE0);
+            gl.bindTexture(gl.TEXTURE_2D, baseTexture_1);
+            gl.activeTexture(gl.TEXTURE1);
+            gl.bindTexture(gl.TEXTURE_2D, wallTexture_1);
+            gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_0);
+            gl.drawBuffers([ gl.COLOR_ATTACHMENT0, gl.NONE, gl.COLOR_ATTACHMENT2 ]);
+            gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
 
             // calc light
-            if (!guiControls.skipLightingCalculation) {
-              gl.useProgram(lightingProgram);
-              gl.activeTexture(gl.TEXTURE0);
-              gl.bindTexture(gl.TEXTURE_2D, baseTexture_1);
-              gl.activeTexture(gl.TEXTURE1);
-              gl.bindTexture(gl.TEXTURE_2D, waterTexture_1);
-              gl.activeTexture(gl.TEXTURE2);
-              gl.bindTexture(gl.TEXTURE_2D, wallTexture_1);
-              gl.activeTexture(gl.TEXTURE3);
+            gl.useProgram(lightingProgram);
+            gl.activeTexture(gl.TEXTURE0);
+            gl.bindTexture(gl.TEXTURE_2D, baseTexture_1);
+            gl.activeTexture(gl.TEXTURE1);
+            gl.bindTexture(gl.TEXTURE_2D, waterTexture_1);
+            gl.activeTexture(gl.TEXTURE2);
+            gl.bindTexture(gl.TEXTURE_2D, wallTexture_1);
+            gl.activeTexture(gl.TEXTURE3);
 
-              if (even) {
-                gl.bindTexture(gl.TEXTURE_2D, lightTexture_0);
-                gl.bindFramebuffer(gl.FRAMEBUFFER, lightFrameBuff_1);
+            if (even) {
+              gl.bindTexture(gl.TEXTURE_2D, lightTexture_0);
+              gl.bindFramebuffer(gl.FRAMEBUFFER, lightFrameBuff_1);
 
-                srcVAO = precipitationVao_0;
-                destTF = precipitationTF_1;
-                destVAO = precipitationVao_1;
-              } else {
-                gl.bindTexture(gl.TEXTURE_2D, lightTexture_1);
-                gl.bindFramebuffer(gl.FRAMEBUFFER, lightFrameBuff_0);
+              srcVAO = precipitationVao_0;
+              destTF = precipitationTF_1;
+              destVAO = precipitationVao_1;
+            } else {
+              gl.bindTexture(gl.TEXTURE_2D, lightTexture_1);
+              gl.bindFramebuffer(gl.FRAMEBUFFER, lightFrameBuff_0);
 
-                srcVAO = precipitationVao_1;
-                destTF = precipitationTF_0;
-                destVAO = precipitationVao_0;
-              }
-              even = !even;
-
-              gl.drawBuffers([ gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1 ]); // calc light
-              gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+              srcVAO = precipitationVao_1;
+              destTF = precipitationTF_0;
+              destVAO = precipitationVao_0;
             }
+            even = !even;
+
+            gl.drawBuffers([ gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1 ]); // calc light
+            gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
 
 
             gl.bindFramebuffer(gl.FRAMEBUFFER, precipitationFeedbackFrameBuff);
@@ -11397,7 +5983,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
             if (guiControls.enablePrecipitation) { // move precipitation, HUGE PERFORMANCE BOTTLENECK!
 
               gl.useProgram(precipitationProgram);
-              gl.uniform1f(uloc_precip_iterNum, iterNum);
+              gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'iterNum'), iterNum);
               gl.enable(gl.BLEND);
               gl.blendFunc(gl.ONE, gl.ONE); // add everything together
               gl.activeTexture(gl.TEXTURE0);
@@ -11424,25 +6010,38 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
                 // console.log(sampleValues[0]);  // number of inactive droplets
                 guiControls.inactiveDroplets = sampleValues[0];
                 // gl.useProgram(precipitationProgram); // already set
-                gl.uniform1f(uloc_precip_inactiveDroplets, sampleValues[0]);
+                gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'inactiveDroplets'), sampleValues[0]);
               }
 
               gl.bindTransformFeedback(gl.TRANSFORM_FEEDBACK, null);
               gl.disable(gl.BLEND);
               gl.bindVertexArray(fluidVao); // set screenfilling rect again
 
+
+              // Extract lightningLocation from precipitationfeedback
               gl.useProgram(lightningLocationProgram);
               gl.uniform1f(gl.getUniformLocation(lightningLocationProgram, 'iterNum'), iterNum);
+
               gl.activeTexture(gl.TEXTURE0);
               gl.bindTexture(gl.TEXTURE_2D, precipitationFeedbackTexture);
+
               gl.bindFramebuffer(gl.FRAMEBUFFER, lightningDataFrameBuff);
               gl.drawBuffers([ gl.COLOR_ATTACHMENT0 ]);
               gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
-              detectParticleLightningStrike();
 
+              if (guiControls.sound) {
+                gl.readBuffer(gl.COLOR_ATTACHMENT0);
+                var lightningDataValues = new Float32Array(4);
+                gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.FLOAT, lightningDataValues);
+                // console.log('lightningDataValues: ', lightningDataValues[0], lightningDataValues[1], lightningDataValues[2], iterNum, lightningDataValues[3]);
+
+                if (Math.round(lightningDataValues[2]) == iterNum) {
+                  soundSystem.soundThunder(lightningDataValues[0], lightningDataValues[1], Math.pow(lightningDataValues[3], 2.0));
+                }
+              }
             }
 
-            if (displayWeatherStations && iterNum % (guiControls.reducedWeatherStationUpdates ? 416 : 208) == 0) { // ~every 60 in game seconds:  0.00008 *3600 * 208 = 59.9, reduced = every 120 seconds
+            if (displayWeatherStations && iterNum % 208 == 0) { // ~every 60 in game seconds:  0.00008 *3600 * 208 = 59.9
               for (i = 0; i < weatherStations.length; i++) {
                 weatherStations[i].measure();
               }
@@ -11454,27 +6053,15 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         }
 
         if (airplaneMode) {
-          refreshLightningFieldCache();
-          updateProceduralLightningState();
-          iterNum++;
+          iterNum++; // make sure iterNum increases every frame for nice lightning
           airplane.takeUserInput();
           airplane.move();
-        }
-
-        // Update nukes
-        for (let i = nukes.length - 1; i >= 0; i--) {
-          nukes[i].move();
-          if (nukes[i].isExploded()) {
-            nukes.splice(i, 1);
-          }
         }
 
       } // end of simulation part
 
       if (guiControls.showGraph) {
-        const graphX = guiControls.graphFixedPosition ? guiControls.graphFixedX : Math.floor(Math.abs(mod(mouseXinSim * sim_res_x, sim_res_x)));
-        const graphY = guiControls.graphFixedPosition ? guiControls.graphFixedY : Math.floor(mouseYinSim * sim_res_y);
-        soundingGraph.draw(graphX, graphY);
+        soundingGraph.draw(Math.floor(Math.abs(mod(mouseXinSim * sim_res_x, sim_res_x))), Math.floor(mouseYinSim * sim_res_y));
       }
 
     } // END OF NOT SETUP MODE
@@ -11483,7 +6070,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     let cursorType = 1.0; // normal circular brush
     if (guiControls.wholeWidth) {
       cursorType = 2.0;   // cursor whole width brush
-    } else if (SETUP_MODE || (inputType <= 0 && !bPressed && (guiControls.tool == 'TOOL_NONE' || guiControls.tool == 'TOOL_STATION' || guiControls.tool == 'TOOL_RADAR' || guiControls.tool == 'TOOL_MARKER'))) {
+    } else if (SETUP_MODE || (inputType <= 0 && !bPressed && (guiControls.tool == 'TOOL_NONE' || guiControls.tool == 'TOOL_STATION'))) {
       cursorType = 0;     // cursor off sig
     }
 
@@ -11491,9 +6078,9 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
     if (cursorType != 0 && !sunIsUp) {
       // working at night
-      gl.uniform1f(postProc_exposure_loc, 2.0);
+      gl.uniform1f(gl.getUniformLocation(postProcessingProgram, 'exposure'), 2.0);
     } else {
-      gl.uniform1f(postProc_exposure_loc, guiControls.exposure);
+      gl.uniform1f(gl.getUniformLocation(postProcessingProgram, 'exposure'), guiControls.exposure);
     }
 
     if (inputType == 0) {
@@ -11556,14 +6143,14 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         let prevFBO = emittedLightFBO; // the previous FBO
 
         gl.useProgram(bloomBlurProgram);
-        gl.uniform1i(uloc_bloom_bloomTexture, 0);
+        gl.uniform1i(gl.getUniformLocation(bloomBlurProgram, 'bloomTexture'), 0);
 
         for (let blurTimes = 0; blurTimes < 2; blurTimes++) { // blur twice for smoother result
 
           // downsample
           for (let i = 1; i < ambientLightFBOs.length; i++) {
             let destFBO = ambientLightFBOs[i];
-            gl.uniform2f(uloc_bloom_texelSize, prevFBO.texelSizeX, prevFBO.texelSizeY);
+            gl.uniform2f(gl.getUniformLocation(bloomBlurProgram, 'texelSize'), prevFBO.texelSizeX, prevFBO.texelSizeY);
 
             gl.viewport(0, 0, destFBO.width, destFBO.height);
 
@@ -11585,7 +6172,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
           for (let i = ambientLightFBOs.length - 2; i >= 0; i--) {
             let destFBO = ambientLightFBOs[i];
 
-            gl.uniform2f(uloc_bloom_texelSize, prevFBO.texelSizeX, prevFBO.texelSizeY);
+            gl.uniform2f(gl.getUniformLocation(bloomBlurProgram, 'texelSize'), prevFBO.texelSizeX, prevFBO.texelSizeY);
 
             gl.activeTexture(gl.TEXTURE0);
             gl.bindTexture(gl.TEXTURE_2D, prevFBO.texture);
@@ -11602,21 +6189,18 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         gl.bindVertexArray(fluidVao);
       }
 
-      gl.activeTexture(gl.TEXTURE0);
-      gl.bindTexture(gl.TEXTURE_2D, baseTexture_1);
-      gl.activeTexture(gl.TEXTURE2);
-      gl.bindTexture(gl.TEXTURE_2D, wallTexture_1);
-
-
       gl.bindFramebuffer(gl.FRAMEBUFFER, hdrFBO.frameBuffer); // render to hdr framebuffer
       // gl.viewport(0, 0, sim_res_x, sim_res_y);
       gl.viewport(0, 0, canvas.width, canvas.height);
       gl.clearColor(0.0, 0.0, 0.0, 1.0); // background color
       gl.clear(gl.COLOR_BUFFER_BIT);
 
-
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, baseTexture_1);
       gl.activeTexture(gl.TEXTURE1);
       gl.bindTexture(gl.TEXTURE_2D, waterTexture_1);
+      gl.activeTexture(gl.TEXTURE2);
+      gl.bindTexture(gl.TEXTURE_2D, wallTexture_1);
       gl.activeTexture(gl.TEXTURE3);
       gl.bindTexture(gl.TEXTURE_2D, lightTexture_0);
       gl.activeTexture(gl.TEXTURE4);
@@ -11638,10 +6222,10 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       gl.bindTexture(gl.TEXTURE_2D, A380GearTexture);
 
       gl.useProgram(skyBackgroundDisplayProgram);
-      gl.uniform2f(uloc_sky_aspectRatios, sim_aspect, canvas_aspect);
-      gl.uniform3f(uloc_sky_view, cam.curXpos, cam.curYpos, cam.curZoom);
-      gl.uniform1f(uloc_sky_Xmult, horizontalDisplayMult);
-      gl.uniform1f(uloc_sky_iterNum, iterNum);
+      gl.uniform2f(gl.getUniformLocation(skyBackgroundDisplayProgram, 'aspectRatios'), sim_aspect, canvas_aspect);
+      gl.uniform3f(gl.getUniformLocation(skyBackgroundDisplayProgram, 'view'), cam.curXpos, cam.curYpos, cam.curZoom);
+      gl.uniform1f(gl.getUniformLocation(skyBackgroundDisplayProgram, 'Xmult'), horizontalDisplayMult);
+      gl.uniform1f(gl.getUniformLocation(skyBackgroundDisplayProgram, 'iterNum'), iterNum);
 
       gl.drawBuffers([ gl.COLOR_ATTACHMENT0 ]);
 
@@ -11653,44 +6237,31 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
       // draw clouds and terrain
       gl.useProgram(realisticDisplayProgram);
-      gl.uniform2f(uloc_real_aspectRatios, sim_aspect, canvas_aspect);
-      gl.uniform3f(uloc_real_view, cam.curXpos, cam.curYpos, cam.curZoom);
-      gl.uniform4f(uloc_real_cursor, mouseXinSim, mouseYinSim, guiControls.brushSize * 0.5, cursorType);
-      gl.uniform1f(uloc_real_Xmult, horizontalDisplayMult);
-      gl.uniform1f(uloc_real_iterNum, iterNum);
-      gl.uniform1f(uloc_real_greenHueStart, guiControls.greenHueStartThreshold);
-      gl.uniform1f(uloc_real_greenHueEnd, guiControls.greenHueEndThreshold);
-      gl.uniform1f(uloc_real_greenHueStrength, guiControls.greenHueStrength);
+      gl.uniform2f(gl.getUniformLocation(realisticDisplayProgram, 'aspectRatios'), sim_aspect, canvas_aspect);
+      gl.uniform3f(gl.getUniformLocation(realisticDisplayProgram, 'view'), cam.curXpos, cam.curYpos, cam.curZoom);
+      gl.uniform4f(gl.getUniformLocation(realisticDisplayProgram, 'cursor'), mouseXinSim, mouseYinSim, guiControls.brushSize * 0.5, cursorType);
+      gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'Xmult'), horizontalDisplayMult);
+      gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'iterNum'), iterNum);
 
       // Don't display vectors when zoomed out because you would just see noise
       if (cam.curZoom / sim_res_x > 0.003) {
-        gl.uniform1f(uloc_real_displayVectorField, guiControls.enableVectorField ? 1.0 : 0.0);
+        gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'displayVectorField'), displayVectorField);
       } else {
-        gl.uniform1f(uloc_real_displayVectorField, 0.0);
+        gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'displayVectorField'), 0.0);
       }
 
-      // Cloud-CC Lightning uniforms
-      gl.uniform1f(uloc_real_enableCloudLightning, guiControls.enableCloudLightning ? 1.0 : 0.0);
-      gl.uniform1f(uloc_real_cloudLightningIntensity, guiControls.cloudLightningIntensity);
-      gl.uniform1f(uloc_real_cloudLightningThreshold, guiControls.cloudLightningThreshold);
-      gl.uniform1f(uloc_real_cloudLightningFrequency, guiControls.cloudLightningFrequency);
-      // Cloud-Ground Lightning uniforms
-      gl.uniform1f(uloc_real_enableCloudGroundLightning, guiControls.enableCloudGroundLightning ? 1.0 : 0.0);
-      gl.uniform1f(uloc_real_cloudGroundLightningIntensity, guiControls.cloudGroundLightningIntensity);
-      gl.uniform1f(uloc_real_cloudGroundLightningThreshold, guiControls.cloudGroundLightningThreshold);
-      gl.uniform1f(uloc_real_cloudGroundLightningFrequency, guiControls.cloudGroundLightningFrequency);
-      gl.uniform1f(uloc_real_enableStrobeLightning, guiControls.enableStrobeLightning ? 1.0 : 0.0);
-      gl.uniform1f(uloc_real_strobeLightningIntensity, guiControls.strobeLightningIntensity);
-      gl.uniform1f(uloc_real_strobeLightningThreshold, guiControls.strobeLightningThreshold);
-      gl.uniform1f(uloc_real_strobeLightningFrequency, guiControls.strobeLightningFrequency);
-      gl.uniform1i(uloc_real_lightningRepeat,       guiControls.lightningRepeat       ? 1 : 0);
-      gl.uniform1i(uloc_real_lightningCrossTrigger, guiControls.lightningCrossTrigger ? 1 : 0);
-      gl.uniform1i(uloc_real_invertSun,             guiControls.invertSun             ? 1 : 0);
-      uploadProceduralLightningUniforms();
-      gl.uniform1f(uloc_real_iterNum, iterNum);
+
+      let lightningTexNum = Math.floor(iterNum / 400) % numLightningTextures;
+      // console.log(lightningTexNum)
 
       gl.activeTexture(gl.TEXTURE7);
+      gl.bindTexture(gl.TEXTURE_2D, lightningTextures[lightningTexNum]);
+      gl.activeTexture(gl.TEXTURE8);
+      gl.bindTexture(gl.TEXTURE_2D, lightningDataTexture);
+
+      gl.activeTexture(gl.TEXTURE9);
       gl.bindTexture(gl.TEXTURE_2D, ambientLightFBOs[0].texture);
+
 
       gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4); // draw to hdr framebuffer
 
@@ -11715,52 +6286,52 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
 
       // BLOOM
-      if (guiControls.enableBloom) {
-        let prevFBO = bloomFBOs[0]; // the previous FBO
 
-        gl.useProgram(bloomBlurProgram);
-        gl.uniform1i(uloc_bloom_bloomTexture, 0);
+      let prevFBO = bloomFBOs[0]; // the previous FBO
 
-        // downsample
-        for (let i = 1; i < bloomFBOs.length; i++) {
-          let destFBO = bloomFBOs[i];
-          gl.uniform2f(uloc_bloom_texelSize, prevFBO.texelSizeX, prevFBO.texelSizeY);
+      gl.useProgram(bloomBlurProgram);
+      gl.uniform1i(gl.getUniformLocation(bloomBlurProgram, 'bloomTexture'), 0);
 
-          gl.viewport(0, 0, destFBO.width, destFBO.height);
 
-          // bind texture
-          gl.activeTexture(gl.TEXTURE0);
-          gl.bindTexture(gl.TEXTURE_2D, prevFBO.texture);
+      // downsample
+      for (let i = 1; i < bloomFBOs.length; i++) {
+        let destFBO = bloomFBOs[i];
+        gl.uniform2f(gl.getUniformLocation(bloomBlurProgram, 'texelSize'), prevFBO.texelSizeX, prevFBO.texelSizeY);
 
-          gl.bindFramebuffer(gl.FRAMEBUFFER, destFBO.frameBuffer);
-          // gl.drawBuffers([ gl.BACK ]);
-          gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4); // draw to destFBO
+        gl.viewport(0, 0, destFBO.width, destFBO.height);
 
-          prevFBO = destFBO;
-        }
+        // bind texture
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, prevFBO.texture);
 
-        // upsample and add
-        gl.blendFunc(gl.ONE, gl.ONE); // add to the existing texture in the framebuffer
-        gl.enable(gl.BLEND);
+        gl.bindFramebuffer(gl.FRAMEBUFFER, destFBO.frameBuffer);
+        // gl.drawBuffers([ gl.BACK ]);
+        gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4); // draw to destFBO
 
-        for (let i = bloomFBOs.length - 2; i >= 0; i--) {
-          let destFBO = bloomFBOs[i];
-
-          gl.uniform2f(uloc_bloom_texelSize, prevFBO.texelSizeX, prevFBO.texelSizeY);
-
-          gl.activeTexture(gl.TEXTURE0);
-          gl.bindTexture(gl.TEXTURE_2D, prevFBO.texture);
-
-          gl.viewport(0, 0, destFBO.width, destFBO.height);
-          gl.bindFramebuffer(gl.FRAMEBUFFER, destFBO.frameBuffer);
-          // gl.drawBuffers([ gl.BACK ]);
-          gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4); // draw to destFBO
-
-          prevFBO = destFBO;
-        }
-
-        gl.disable(gl.BLEND);
+        prevFBO = destFBO;
       }
+
+      // upsample and add
+      gl.blendFunc(gl.ONE, gl.ONE); // add to the existing texture in the framebuffer
+      gl.enable(gl.BLEND);
+
+      for (let i = bloomFBOs.length - 2; i >= 0; i--) {
+        let destFBO = bloomFBOs[i];
+
+        gl.uniform2f(gl.getUniformLocation(bloomBlurProgram, 'texelSize'), prevFBO.texelSizeX, prevFBO.texelSizeY);
+
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, prevFBO.texture);
+
+        gl.viewport(0, 0, destFBO.width, destFBO.height);
+        gl.bindFramebuffer(gl.FRAMEBUFFER, destFBO.frameBuffer);
+        // gl.drawBuffers([ gl.BACK ]);
+        gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4); // draw to destFBO
+
+        prevFBO = destFBO;
+      }
+
+      gl.disable(gl.BLEND);
 
       gl.useProgram(postProcessingProgram);
       gl.activeTexture(gl.TEXTURE0);
@@ -11772,7 +6343,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
 
       if (SETUP_MODE) {
-        gl.uniform1f(postProc_exposure_loc, 50.0);
+        gl.uniform1f(gl.getUniformLocation(postProcessingProgram, 'exposure'), 50.0);
       }
 
       gl.bindFramebuffer(gl.FRAMEBUFFER, null); // null is canvas
@@ -11791,741 +6362,160 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         // draw drops over clouds
         // draw precipitation
         gl.useProgram(precipDisplayProgram);
-        gl.uniform2f(uloc_precipDisp_aspectRatios, sim_aspect, canvas_aspect);
-        gl.uniform3f(uloc_precipDisp_view, cam.curXpos, cam.curYpos, cam.curZoom);
+        gl.uniform2f(gl.getUniformLocation(precipDisplayProgram, 'aspectRatios'), sim_aspect, canvas_aspect);
+        gl.uniform3f(gl.getUniformLocation(precipDisplayProgram, 'view'), cam.curXpos, cam.curYpos, cam.curZoom);
         gl.bindVertexArray(destVAO);
         gl.drawArrays(gl.POINTS, 0, NUM_DROPLETS);
         gl.bindVertexArray(fluidVao); // set screenfilling rect again
         gl.disable(gl.BLEND);
       }
 
-      // Radar overlay on realistic view
-      if (guiControls.radarOverlay && radars.length > 0) {
-        updateRadarDisplayCache();
-
-        gl.enable(gl.BLEND);
-        gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
-        gl.useProgram(radarDisplayProgram);
-        gl.uniform2f(uloc_radar_aspectRatios, sim_aspect, canvas_aspect);
-        gl.uniform3f(uloc_radar_view, cam.curXpos, cam.curYpos, cam.curZoom);
-        gl.uniform1f(uloc_radar_Xmult, horizontalDisplayMult);
-        gl.uniform2f(uloc_radar_resolution, sim_res_x, sim_res_y);
-        gl.uniform2f(uloc_radar_texelSize, 1.0 / sim_res_x, 1.0 / sim_res_y);
-        gl.uniform1f(uloc_radar_opacity, guiControls.radarOpacity);
-        gl.uniform1i(uloc_radar_dbzOpacityEnabled, guiControls.dbzOpacityEnabled);
-        gl.uniform1f(uloc_radar_dbzOpacityStrength, guiControls.dbzOpacityStrength);
-        gl.activeTexture(gl.TEXTURE3);
-        gl.bindTexture(gl.TEXTURE_2D, colorScalesTexture);
-        gl.uniform1i(uloc_radar_colorScalesTex, 3);
-        gl.uniform1i(uloc_radar_colorScaleColumn, 18);
-        gl.uniform1i(uloc_radar_colorScaleStops, 18);
-        bindRadarCachedSimTextures(uloc_radar_baseTexture, uloc_radar_waterTexture, uloc_radar_wallTexture,
-                                   uloc_radar_precipFeedbackTex, uloc_radar_precipDepositionTex);
-        
-        for (let r = 0; r < radars.length; r++) {
-          const radar = radars[r];
-          if (!radar.getEnabled()) continue;
-
-          let productType = 0;
-          if (radar.getProduct() === 'velocity') productType = 1;
-          else if (radar.getProduct() === 'correlation') productType = 2;
-          else if (radar.getProduct() === 'echotops') productType = 3;
-          if (productType === 0) {
-            gl.uniform1i(uloc_radar_colorScaleColumn, 18);
-            gl.uniform1i(uloc_radar_colorScaleStops, 36);
-          } else if (productType === 1) {
-            gl.uniform1i(uloc_radar_colorScaleColumn, 19);
-            gl.uniform1i(uloc_radar_colorScaleStops, 33);
-          } else if (productType === 2) {
-            gl.uniform1i(uloc_radar_colorScaleColumn, 20);
-            gl.uniform1i(uloc_radar_colorScaleStops, 22);
-          } else {
-            gl.uniform1i(uloc_radar_colorScaleColumn, 21);
-            gl.uniform1i(uloc_radar_colorScaleStops, 32);
-          }
-          gl.uniform2f(uloc_radar_radarPos, radar.getXpos(), radar.getYpos());
-          gl.uniform1f(uloc_radar_radarRange, radar.getRange());
-          gl.uniform1f(uloc_radar_radarResolution, radar.getResolution());
-          gl.uniform1f(uloc_radar_sensitivity, radar.getSensitivity());
-          gl.uniform1i(uloc_radar_productType, productType);
-          gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
-        }
-        gl.disable(gl.BLEND);
-        gl.bindVertexArray(fluidVao);
-      }
-
 
     } else {
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, baseTexture_1);
+      gl.activeTexture(gl.TEXTURE1);
+      gl.bindTexture(gl.TEXTURE_2D, waterTexture_1);
+      gl.activeTexture(gl.TEXTURE2);
+      gl.bindTexture(gl.TEXTURE_2D, wallTexture_1);
       gl.activeTexture(gl.TEXTURE9);
       gl.bindTexture(gl.TEXTURE_2D, colorScalesTexture);
 
       if (guiControls.displayMode == 'DISP_TEMPERATURE') {
         gl.useProgram(temperatureDisplayProgram);
-        gl.uniform2f(uloc_temp_aspectRatios, sim_aspect, canvas_aspect);
-        gl.uniform3f(uloc_temp_view, cam.curXpos, cam.curYpos, cam.curZoom);
-        gl.uniform4f(uloc_temp_cursor, mouseXinSim, mouseYinSim, guiControls.brushSize * 0.5, cursorType);
-        gl.uniform1f(uloc_temp_Xmult, horizontalDisplayMult);
-        gl.uniform1f(uloc_temp_surfacePressure, guiControls.surfacePressure);
+        gl.uniform2f(gl.getUniformLocation(temperatureDisplayProgram, 'aspectRatios'), sim_aspect, canvas_aspect);
+        gl.uniform3f(gl.getUniformLocation(temperatureDisplayProgram, 'view'), cam.curXpos, cam.curYpos, cam.curZoom);
+        gl.uniform4f(gl.getUniformLocation(temperatureDisplayProgram, 'cursor'), mouseXinSim, mouseYinSim, guiControls.brushSize * 0.5, cursorType);
+        gl.uniform1f(gl.getUniformLocation(temperatureDisplayProgram, 'Xmult'), horizontalDisplayMult);
+
 
         // Don't display vectors when zoomed out because you would just see
         // noise
         if (cam.curZoom / sim_res_x > 0.003) {
-          gl.uniform1f(uloc_temp_displayVectorField, guiControls.enableVectorField ? 1.0 : 0.0);
+          gl.uniform1f(gl.getUniformLocation(temperatureDisplayProgram, 'displayVectorField'), displayVectorField);
         } else {
-          gl.uniform1f(uloc_temp_displayVectorField, 0.0);
+          gl.uniform1f(gl.getUniformLocation(temperatureDisplayProgram, 'displayVectorField'), 0.0);
         }
 
-      } else if (guiControls.displayMode == 'DISP_TEMPERATURE_CHANGE') {
-        gl.useProgram(temperatureChangeDisplayProgram);
-        gl.uniform2f(uloc_tempChg_aspectRatios, sim_aspect, canvas_aspect);
-        gl.uniform3f(uloc_tempChg_view, cam.curXpos, cam.curYpos, cam.curZoom);
-        gl.uniform4f(uloc_tempChg_cursor, mouseXinSim, mouseYinSim, guiControls.brushSize * 0.5, cursorType);
-        gl.uniform1f(uloc_tempChg_Xmult, horizontalDisplayMult);
-        gl.uniform1i(uloc_tempChg_baseTex, 0);
-        gl.uniform1i(uloc_tempChg_prevBaseTex, 1);
-        gl.uniform1i(uloc_tempChg_wallTex, 2);
-        gl.uniform1i(uloc_tempChg_colorScalesTex, 9);
-        gl.uniform1i(uloc_tempChg_colorScaleColumn, 16);
-        let tempUnitCode = 0;
-        if (guiControls.tempUnit == 'TEMP_UNIT_F') tempUnitCode = 1;
-        else if (guiControls.tempUnit == 'TEMP_UNIT_K') tempUnitCode = 2;
-        gl.uniform1i(uloc_tempChg_tempUnit, tempUnitCode);
-
-        gl.activeTexture(gl.TEXTURE0);
-        gl.bindTexture(gl.TEXTURE_2D, baseTexture_1);
-        gl.activeTexture(gl.TEXTURE1);
-        const historyOffset = Math.min(Math.max(Math.round(guiControls.temperatureChangeIterations), 1), temperatureChangeHistoryTextures.length - 1);
-        const historyIndex = (temperatureChangeHistoryIndex - historyOffset + temperatureChangeHistoryTextures.length) % temperatureChangeHistoryTextures.length;
-        gl.bindTexture(gl.TEXTURE_2D, temperatureChangeHistoryTextures[historyIndex]);
-        gl.activeTexture(gl.TEXTURE2);
-        gl.bindTexture(gl.TEXTURE_2D, wallTexture_1);
-
-        if (cam.curZoom / sim_res_x > 0.003) {
-          gl.uniform1f(uloc_tempChg_displayVectorField, guiControls.enableVectorField ? 1.0 : 0.0);
-        } else {
-          gl.uniform1f(uloc_tempChg_displayVectorField, 0.0);
-        }
       } else if (guiControls.displayMode == 'DISP_AIRQUALITY') {
         gl.useProgram(airQualityDisplayProgram);
-        gl.uniform2f(uloc_airQ_aspectRatios, sim_aspect, canvas_aspect);
-        gl.uniform3f(uloc_airQ_view, cam.curXpos, cam.curYpos, cam.curZoom);
-        gl.uniform4f(uloc_airQ_cursor, mouseXinSim, mouseYinSim, guiControls.brushSize * 0.5, cursorType);
-        gl.uniform1f(uloc_airQ_Xmult, horizontalDisplayMult);
+        gl.uniform2f(gl.getUniformLocation(airQualityDisplayProgram, 'aspectRatios'), sim_aspect, canvas_aspect);
+        gl.uniform3f(gl.getUniformLocation(airQualityDisplayProgram, 'view'), cam.curXpos, cam.curYpos, cam.curZoom);
+        gl.uniform4f(gl.getUniformLocation(airQualityDisplayProgram, 'cursor'), mouseXinSim, mouseYinSim, guiControls.brushSize * 0.5, cursorType);
+        gl.uniform1f(gl.getUniformLocation(airQualityDisplayProgram, 'Xmult'), horizontalDisplayMult);
 
       } else if (guiControls.displayMode == 'DISP_HUMD') {
         gl.useProgram(humidityDisplayProgram);
-        gl.uniform2f(uloc_humd_aspectRatios, sim_aspect, canvas_aspect);
-        gl.uniform3f(uloc_humd_view, cam.curXpos, cam.curYpos, cam.curZoom);
-        gl.uniform4f(uloc_humd_cursor, mouseXinSim, mouseYinSim, guiControls.brushSize * 0.5, cursorType);
-        gl.uniform1f(uloc_humd_Xmult, horizontalDisplayMult);
-        if (cam.curZoom / sim_res_x > 0.003) {
-          gl.uniform1f(uloc_humd_displayVectorField, guiControls.enableVectorField ? 1.0 : 0.0);
-        } else {
-          gl.uniform1f(uloc_humd_displayVectorField, 0.0);
-        }
+        gl.uniform2f(gl.getUniformLocation(humidityDisplayProgram, 'aspectRatios'), sim_aspect, canvas_aspect);
+        gl.uniform3f(gl.getUniformLocation(humidityDisplayProgram, 'view'), cam.curXpos, cam.curYpos, cam.curZoom);
+        gl.uniform4f(gl.getUniformLocation(humidityDisplayProgram, 'cursor'), mouseXinSim, mouseYinSim, guiControls.brushSize * 0.5, cursorType);
+        gl.uniform1f(gl.getUniformLocation(humidityDisplayProgram, 'Xmult'), horizontalDisplayMult);
 
       } else if (guiControls.displayMode == 'DISP_IRDOWNTEMP') {
         gl.useProgram(IRtempDisplayProgram);
-        gl.uniform2f(uloc_IR_aspectRatios, sim_aspect, canvas_aspect);
-        gl.uniform3f(uloc_IR_view, cam.curXpos, cam.curYpos, cam.curZoom);
-        gl.uniform4f(uloc_IR_cursor, mouseXinSim, mouseYinSim, guiControls.brushSize * 0.5, cursorType);
-        gl.uniform1i(uloc_IR_upOrDown, 0);
-        gl.uniform1f(uloc_IR_Xmult, horizontalDisplayMult);
+        gl.uniform2f(gl.getUniformLocation(IRtempDisplayProgram, 'aspectRatios'), sim_aspect, canvas_aspect);
+        gl.uniform3f(gl.getUniformLocation(IRtempDisplayProgram, 'view'), cam.curXpos, cam.curYpos, cam.curZoom);
+        gl.uniform4f(gl.getUniformLocation(IRtempDisplayProgram, 'cursor'), mouseXinSim, mouseYinSim, guiControls.brushSize * 0.5, cursorType);
+        gl.uniform1i(gl.getUniformLocation(IRtempDisplayProgram, 'upOrDown'), 0);
+        gl.uniform1f(gl.getUniformLocation(IRtempDisplayProgram, 'Xmult'), horizontalDisplayMult);
 
         gl.activeTexture(gl.TEXTURE0);
         gl.bindTexture(gl.TEXTURE_2D, lightTexture_0);
       } else if (guiControls.displayMode == 'DISP_IRUPTEMP') {
         gl.useProgram(IRtempDisplayProgram);
-        gl.uniform2f(uloc_IR_aspectRatios, sim_aspect, canvas_aspect);
-        gl.uniform3f(uloc_IR_view, cam.curXpos, cam.curYpos, cam.curZoom);
-        gl.uniform4f(uloc_IR_cursor, mouseXinSim, mouseYinSim, guiControls.brushSize * 0.5, cursorType);
-        gl.uniform1i(uloc_IR_upOrDown, 1);
-        gl.uniform1f(uloc_IR_Xmult, horizontalDisplayMult);
+        gl.uniform2f(gl.getUniformLocation(IRtempDisplayProgram, 'aspectRatios'), sim_aspect, canvas_aspect);
+        gl.uniform3f(gl.getUniformLocation(IRtempDisplayProgram, 'view'), cam.curXpos, cam.curYpos, cam.curZoom);
+        gl.uniform4f(gl.getUniformLocation(IRtempDisplayProgram, 'cursor'), mouseXinSim, mouseYinSim, guiControls.brushSize * 0.5, cursorType);
+        gl.uniform1i(gl.getUniformLocation(IRtempDisplayProgram, 'upOrDown'), 1);
+        gl.uniform1f(gl.getUniformLocation(IRtempDisplayProgram, 'Xmult'), horizontalDisplayMult);
 
         gl.activeTexture(gl.TEXTURE0);
         gl.bindTexture(gl.TEXTURE_2D, lightTexture_0);
       } else {
         gl.useProgram(universalDisplayProgram);
-        gl.uniform2f(uloc_univ_aspectRatios, sim_aspect, canvas_aspect);
-        gl.uniform3f(uloc_univ_view, cam.curXpos, cam.curYpos, cam.curZoom);
-        gl.uniform4f(uloc_univ_cursor, mouseXinSim, mouseYinSim, guiControls.brushSize * 0.5, cursorType);
-        gl.uniform1f(uloc_univ_Xmult, horizontalDisplayMult);
-        gl.activeTexture(gl.TEXTURE9);
-        gl.bindTexture(gl.TEXTURE_2D, colorScalesTexture);
-        gl.uniform1i(gl.getUniformLocation(universalDisplayProgram, 'colorScalesTex'), 9);
-        gl.uniform1i(uloc_univ_colorScaleColumn, 4);
-        gl.uniform1i(uloc_univ_useUnipolarScale, 0);
+        gl.uniform2f(gl.getUniformLocation(universalDisplayProgram, 'aspectRatios'), sim_aspect, canvas_aspect);
+        gl.uniform3f(gl.getUniformLocation(universalDisplayProgram, 'view'), cam.curXpos, cam.curYpos, cam.curZoom);
+        gl.uniform4f(gl.getUniformLocation(universalDisplayProgram, 'cursor'), mouseXinSim, mouseYinSim, guiControls.brushSize * 0.5, cursorType);
+        gl.uniform1f(gl.getUniformLocation(universalDisplayProgram, 'Xmult'), horizontalDisplayMult);
 
-        let colorScaleStops = 33;
         switch (guiControls.displayMode) {
         case 'DISP_HORIVEL':
-          gl.uniform1i(uloc_univ_quantityIndex, 0);
-          gl.uniform1f(uloc_univ_dispMultiplier, 10.0);
-          gl.uniform1i(uloc_univ_colorScaleColumn, 6);
-          colorScaleStops = 33;
+          gl.uniform1i(gl.getUniformLocation(universalDisplayProgram, 'quantityIndex'), 0);
+          gl.uniform1f(gl.getUniformLocation(universalDisplayProgram, 'dispMultiplier'), 10.0); // 20.0
           break;
         case 'DISP_VERTVEL':
-          gl.uniform1i(uloc_univ_quantityIndex, 1);
-          gl.uniform1f(uloc_univ_dispMultiplier, 10.0);
-          gl.uniform1i(uloc_univ_colorScaleColumn, 7);
-          colorScaleStops = 33;
+          gl.uniform1i(gl.getUniformLocation(universalDisplayProgram, 'quantityIndex'), 1);
+          gl.uniform1f(gl.getUniformLocation(universalDisplayProgram, 'dispMultiplier'), 10.0); // 20.0
           break;
         case 'DISP_WATER':
           gl.activeTexture(gl.TEXTURE0);
           gl.bindTexture(gl.TEXTURE_2D, waterTexture_1);
-          gl.uniform1i(uloc_univ_quantityIndex, 0);
-          gl.uniform1f(uloc_univ_dispMultiplier, 0.06);
-          gl.uniform1i(uloc_univ_colorScaleColumn, 5);
-          gl.uniform1i(uloc_univ_useUnipolarScale, 1);
-          colorScaleStops = 33;
+          gl.uniform1i(gl.getUniformLocation(universalDisplayProgram, 'quantityIndex'), 0);
+          gl.uniform1f(gl.getUniformLocation(universalDisplayProgram, 'dispMultiplier'), -0.06); // negative number so positive amount is blue
           break;
         case 'DISP_IRHEATING':
           gl.activeTexture(gl.TEXTURE0);
           gl.bindTexture(gl.TEXTURE_2D, lightTexture_0);
-          gl.uniform1i(uloc_univ_quantityIndex, 1);
-          gl.uniform1f(uloc_univ_dispMultiplier, 50000.0);
-          gl.uniform1i(uloc_univ_colorScaleColumn, 8);
-          gl.uniform1i(uloc_univ_useUnipolarScale, 0);
-          colorScaleStops = 33;
+          gl.uniform1i(gl.getUniformLocation(universalDisplayProgram, 'quantityIndex'), 1);
+          gl.uniform1f(gl.getUniformLocation(universalDisplayProgram, 'dispMultiplier'), 50000.0);
           break;
         case 'DISP_PRECIPFEEDBACK_MASS':
           gl.activeTexture(gl.TEXTURE0);
           gl.bindTexture(gl.TEXTURE_2D, precipitationFeedbackTexture);
-          gl.uniform1i(uloc_univ_quantityIndex, 0);
-          gl.uniform1f(uloc_univ_dispMultiplier, 0.06);
-          gl.uniform1i(uloc_univ_colorScaleColumn, 9);
-          gl.uniform1i(uloc_univ_useUnipolarScale, 1);
-          colorScaleStops = 33;
+          gl.uniform1i(gl.getUniformLocation(universalDisplayProgram, 'quantityIndex'), 0);
+          gl.uniform1f(gl.getUniformLocation(universalDisplayProgram, 'dispMultiplier'), 0.3);
           break;
         case 'DISP_PRECIPFEEDBACK_HEAT':
           gl.activeTexture(gl.TEXTURE0);
           gl.bindTexture(gl.TEXTURE_2D, precipitationFeedbackTexture);
-          gl.uniform1i(uloc_univ_quantityIndex, 1);
-          gl.uniform1f(uloc_univ_dispMultiplier, 500.0);
-          gl.uniform1i(uloc_univ_colorScaleColumn, 10);
-          gl.uniform1i(uloc_univ_useUnipolarScale, 0);
-          colorScaleStops = 33;
+          gl.uniform1i(gl.getUniformLocation(universalDisplayProgram, 'quantityIndex'), 1);
+          gl.uniform1f(gl.getUniformLocation(universalDisplayProgram, 'dispMultiplier'), 500.0);
           break;
         case 'DISP_PRECIPFEEDBACK_VAPOR':
           gl.activeTexture(gl.TEXTURE0);
           gl.bindTexture(gl.TEXTURE_2D, precipitationFeedbackTexture);
-          gl.uniform1i(uloc_univ_quantityIndex, 2);
-          gl.uniform1f(uloc_univ_dispMultiplier, 500.0);
-          gl.uniform1i(uloc_univ_colorScaleColumn, 11);
-          gl.uniform1i(uloc_univ_useUnipolarScale, 0);
-          colorScaleStops = 33;
+          gl.uniform1i(gl.getUniformLocation(universalDisplayProgram, 'quantityIndex'), 2);
+          gl.uniform1f(gl.getUniformLocation(universalDisplayProgram, 'dispMultiplier'), 500.0);
           break;
         case 'DISP_PRECIPFEEDBACK_RAIN':
           gl.activeTexture(gl.TEXTURE0);
           gl.bindTexture(gl.TEXTURE_2D, precipitationDepositionTexture);
-          gl.uniform1i(uloc_univ_quantityIndex, 0);
-          gl.uniform1f(uloc_univ_dispMultiplier, 1.0);
-          gl.uniform1i(uloc_univ_colorScaleColumn, 12);
-          gl.uniform1i(uloc_univ_useUnipolarScale, 1);
-          colorScaleStops = 33;
+          gl.uniform1i(gl.getUniformLocation(universalDisplayProgram, 'quantityIndex'), 0);
+          gl.uniform1f(gl.getUniformLocation(universalDisplayProgram, 'dispMultiplier'), 1.0);
           break;
         case 'DISP_PRECIPFEEDBACK_SNOW':
           gl.activeTexture(gl.TEXTURE0);
           gl.bindTexture(gl.TEXTURE_2D, precipitationDepositionTexture);
-          gl.uniform1i(uloc_univ_quantityIndex, 1);
-          gl.uniform1f(uloc_univ_dispMultiplier, 1.0);
-          gl.uniform1i(uloc_univ_colorScaleColumn, 13);
-          gl.uniform1i(uloc_univ_useUnipolarScale, 1);
-          colorScaleStops = 33;
+          gl.uniform1i(gl.getUniformLocation(universalDisplayProgram, 'quantityIndex'), 1);
+          gl.uniform1f(gl.getUniformLocation(universalDisplayProgram, 'dispMultiplier'), 1.0);
           break;
         case 'DISP_SOIL_MOISTURE':
           gl.activeTexture(gl.TEXTURE0);
           gl.bindTexture(gl.TEXTURE_2D, waterTexture_0);
-          gl.uniform1i(uloc_univ_quantityIndex, 2);
-          gl.uniform1f(uloc_univ_dispMultiplier, 0.02);
-          gl.uniform1i(uloc_univ_colorScaleColumn, 14);
-          gl.uniform1i(uloc_univ_useUnipolarScale, 1);
-          colorScaleStops = 33;
-          break;
-        case 'DISP_PRESSURE':
-          // base[PRESSURE] is dimensionless fluid pressure, now clamped to ±1.0
-          // multiplier of 1.0 maps ±1.0 to ±1.0 for the full bipolar color scale (blue to red)
-          gl.uniform1i(uloc_univ_quantityIndex, 2);
-          gl.uniform1f(uloc_univ_dispMultiplier, 1.0);
-          gl.uniform1i(uloc_univ_colorScaleColumn, 22);
-          gl.uniform1i(uloc_univ_useUnipolarScale, 0);
-          colorScaleStops = 33;
+          gl.uniform1i(gl.getUniformLocation(universalDisplayProgram, 'quantityIndex'), 2);
+          gl.uniform1f(gl.getUniformLocation(universalDisplayProgram, 'dispMultiplier'), 0.02);
           break;
         case 'DISP_CURL':
           gl.activeTexture(gl.TEXTURE0);
           gl.bindTexture(gl.TEXTURE_2D, curlTexture);
-          gl.uniform1i(uloc_univ_quantityIndex, 0);
-          gl.uniform1f(uloc_univ_dispMultiplier, 7.0);
-          gl.uniform1i(uloc_univ_colorScaleColumn, 15);
-          gl.uniform1i(uloc_univ_useUnipolarScale, 0);
-          colorScaleStops = 33;
-          break;
-        case 'DISP_RADAR':
-        case 'DISP_RADAR_COMPOSITE':
-        case 'DISP_RADAR_WORLD':
-          break;
-        case 'DISP_CAPE':
-          gl.activeTexture(gl.TEXTURE0);
-          gl.bindTexture(gl.TEXTURE_2D, capeTexture);
-          gl.uniform1i(uloc_univ_quantityIndex, 0);
-          gl.uniform1f(uloc_univ_dispMultiplier, 1.0 / 10000.0);
-          gl.uniform1i(uloc_univ_colorScaleColumn, 17);
-          gl.uniform1i(uloc_univ_useUnipolarScale, 1);
-          colorScaleStops = 72;
-          break;
-        case 'DISP_CHARGE':
-          // Charge view uses its own dedicated display shader (not universalDisplayProgram)
-          // so we break out early after drawing
-          {
-            gl.useProgram(chargeDisplayProgram);
-            gl.uniform3f(gl.getUniformLocation(chargeDisplayProgram, 'view'), cam.curXpos, cam.curYpos, cam.curZoom);
-            gl.uniform4f(gl.getUniformLocation(chargeDisplayProgram, 'cursor'), mouseXinSim, mouseYinSim, guiControls.brushSize * 0.5, cursorType);
-            gl.uniform1f(gl.getUniformLocation(chargeDisplayProgram, 'Xmult'), horizontalDisplayMult);
-            gl.uniform2f(gl.getUniformLocation(chargeDisplayProgram, 'aspectRatios'), sim_aspect, canvas_aspect);
-            gl.activeTexture(gl.TEXTURE0);
-            gl.bindTexture(gl.TEXTURE_2D, even ? chargeTexture_1 : chargeTexture_0);
-            gl.activeTexture(gl.TEXTURE2);
-            gl.bindTexture(gl.TEXTURE_2D, wallTexture_1);
-            gl.activeTexture(gl.TEXTURE9);
-            gl.bindTexture(gl.TEXTURE_2D, colorScalesTexture);
-            gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
-          }
-          break;
-        case 'DISP_RISK':
+          gl.uniform1i(gl.getUniformLocation(universalDisplayProgram, 'quantityIndex'), 0);
+          gl.uniform1f(gl.getUniformLocation(universalDisplayProgram, 'dispMultiplier'), 7.0);
           break;
         }
-        gl.uniform1i(uloc_univ_colorScaleStops, colorScaleStops);
       }
 
-      if (!isRadarDisplayMode(guiControls.displayMode) && guiControls.displayMode != 'DISP_RISK' && guiControls.displayMode != 'DISP_CHARGE') {
-        gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4); // draw to canvas
-      }
-
-      // Radar display modes: render every frame with cached precipitation textures
-      if (isRadarDisplayMode(guiControls.displayMode)) {
-        if (radarOverlayCanvas) {
-          radarOverlayCanvas.style.display = 'none';
-        }
-
-        updateRadarDisplayCache();
-
-        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-        gl.viewport(0, 0, canvas.width, canvas.height);
-        gl.clearColor(0.0, 0.0, 0.0, 0.0);
-        gl.clear(gl.COLOR_BUFFER_BIT);
-        gl.bindVertexArray(fluidVao);
-
-        if (guiControls.displayMode === 'DISP_RADAR_WORLD') {
-          gl.useProgram(worldRadarDisplayProgram);
-
-          gl.uniform2f(uloc_world_aspectRatios, sim_aspect, canvas_aspect);
-          gl.uniform3f(uloc_world_view, cam.curXpos, cam.curYpos, cam.curZoom);
-          gl.uniform4f(uloc_world_cursor, mouseXinSim, mouseYinSim, guiControls.brushSize * 0.5, cursorType);
-          gl.uniform1f(uloc_world_Xmult, horizontalDisplayMult);
-          gl.uniform2f(uloc_world_resolution, sim_res_x, sim_res_y);
-          gl.uniform2f(uloc_world_texelSize, 1.0 / sim_res_x, 1.0 / sim_res_y);
-          gl.uniform1f(uloc_world_opacity, guiControls.radarOpacity);
-          gl.uniform1i(uloc_world_dbzOpacityEnabled, guiControls.dbzOpacityEnabled);
-          gl.uniform1f(uloc_world_dbzOpacityStrength, guiControls.dbzOpacityStrength);
-          gl.uniform1i(uloc_world_colorScaleColumn, 18);
-          gl.uniform1i(uloc_world_colorScaleStops, 36);
-          gl.uniform1f(uloc_world_blockSize, Math.max(2.0, sim_res_x / (guiControls.worldRadarResolution * 6.0)));
-          gl.uniform1f(uloc_world_sensitivity, guiControls.worldRadarSensitivity);
-
-          gl.activeTexture(gl.TEXTURE0);
-          gl.bindTexture(gl.TEXTURE_2D, cachedWaterTexture);
-          gl.uniform1i(uloc_world_waterTexture, 0);
-          gl.activeTexture(gl.TEXTURE1);
-          gl.bindTexture(gl.TEXTURE_2D, cachedWallTexture);
-          gl.uniform1i(uloc_world_wallTexture, 1);
-          gl.activeTexture(gl.TEXTURE2);
-          gl.bindTexture(gl.TEXTURE_2D, colorScalesTexture);
-          gl.uniform1i(uloc_world_colorScalesTex, 2);
-
-          gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
-        } else if (guiControls.displayMode === 'DISP_RADAR_COMPOSITE') {
-          gl.useProgram(compositeRadarDisplayProgram);
-
-          gl.uniform2f(uloc_comp_aspectRatios, sim_aspect, canvas_aspect);
-          gl.uniform3f(uloc_comp_view, cam.curXpos, cam.curYpos, cam.curZoom);
-          gl.uniform1f(uloc_comp_Xmult, horizontalDisplayMult);
-          gl.uniform2f(uloc_comp_resolution, sim_res_x, sim_res_y);
-          gl.uniform2f(uloc_comp_texelSize, 1.0 / sim_res_x, 1.0 / sim_res_y);
-          gl.uniform1f(uloc_comp_opacity, guiControls.radarOpacity);
-          gl.uniform1i(uloc_comp_dbzOpacityEnabled, guiControls.dbzOpacityEnabled);
-          gl.uniform1f(uloc_comp_dbzOpacityStrength, guiControls.dbzOpacityStrength);
-          gl.uniform1i(uloc_comp_colorScaleColumn, 18);
-          gl.uniform1i(uloc_comp_colorScaleStops, 36);
-
-          gl.activeTexture(gl.TEXTURE3);
-          gl.bindTexture(gl.TEXTURE_2D, colorScalesTexture);
-          gl.uniform1i(uloc_comp_colorScalesTex, 3);
-          bindRadarCachedSimTextures(uloc_comp_baseTexture, uloc_comp_waterTexture, uloc_comp_wallTexture,
-                                     uloc_comp_precipFeedbackTex, uloc_comp_precipDepositionTex);
-
-          uploadCompositeRadarArrays();
-          gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
-        } else {
-          gl.useProgram(radarDisplayProgram);
-
-          gl.uniform2f(uloc_radar_aspectRatios, sim_aspect, canvas_aspect);
-          gl.uniform3f(uloc_radar_view, cam.curXpos, cam.curYpos, cam.curZoom);
-          gl.uniform1f(uloc_radar_Xmult, horizontalDisplayMult);
-          gl.uniform2f(uloc_radar_resolution, sim_res_x, sim_res_y);
-          gl.uniform2f(uloc_radar_texelSize, 1.0 / sim_res_x, 1.0 / sim_res_y);
-          gl.uniform1f(uloc_radar_opacity, guiControls.radarOpacity);
-          gl.uniform1i(uloc_radar_dbzOpacityEnabled, guiControls.dbzOpacityEnabled);
-          gl.uniform1f(uloc_radar_dbzOpacityStrength, guiControls.dbzOpacityStrength);
-
-          gl.activeTexture(gl.TEXTURE3);
-          gl.bindTexture(gl.TEXTURE_2D, colorScalesTexture);
-          gl.uniform1i(uloc_radar_colorScalesTex, 3);
-          bindRadarCachedSimTextures(uloc_radar_baseTexture, uloc_radar_waterTexture, uloc_radar_wallTexture,
-                                     uloc_radar_precipFeedbackTex, uloc_radar_precipDepositionTex);
-
-          gl.enable(gl.BLEND);
-          gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
-
-          for (let r = 0; r < radars.length; r++) {
-            let radar = radars[r];
-            if (!radar.getEnabled()) continue;
-
-            let productType = 0;
-            if (radar.getProduct() === 'velocity') productType = 1;
-            else if (radar.getProduct() === 'correlation') productType = 2;
-            else if (radar.getProduct() === 'echotops') productType = 3;
-
-            if (productType === 0) {
-              gl.uniform1i(uloc_radar_colorScaleColumn, 18);
-              gl.uniform1i(uloc_radar_colorScaleStops, 36);
-            } else if (productType === 1) {
-              gl.uniform1i(uloc_radar_colorScaleColumn, 19);
-              gl.uniform1i(uloc_radar_colorScaleStops, 33);
-            } else if (productType === 2) {
-              gl.uniform1i(uloc_radar_colorScaleColumn, 20);
-              gl.uniform1i(uloc_radar_colorScaleStops, 22);
-            } else {
-              gl.uniform1i(uloc_radar_colorScaleColumn, 21);
-              gl.uniform1i(uloc_radar_colorScaleStops, 32);
-            }
-
-            gl.uniform2f(uloc_radar_radarPos, radar.getXpos(), radar.getYpos());
-            gl.uniform1f(uloc_radar_radarRange, radar.getRange());
-            gl.uniform1f(uloc_radar_radarResolution, radar.getResolution());
-            gl.uniform1f(uloc_radar_sensitivity, radar.getSensitivity());
-            gl.uniform1i(uloc_radar_productType, productType);
-
-            gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
-          }
-
-          gl.disable(gl.BLEND);
-        }
-
-        gl.bindVertexArray(fluidVao);
-      }
-
-      // Risk display: draw per-column risk as colored canvas overlay
-      if (guiControls.displayMode === 'DISP_RISK') {
-        if (!riskCanvas) {
-          riskCanvas = document.createElement('canvas');
-          riskCanvas.style.cssText = 'position:fixed;top:0;left:0;pointer-events:none;z-index:1;';
-          document.body.appendChild(riskCanvas);
-        }
-        if (riskCanvas.width !== canvas.width || riskCanvas.height !== canvas.height) {
-          riskCanvas.width = canvas.width;
-          riskCanvas.height = canvas.height;
-        }
-        riskCanvas.style.display = 'block';
-
-        // Recompute risk data on frequency interval
-        if (iterNum % guiControls.riskUpdateFrequency === 0) {
-          riskData = [];
-          const step = Math.max(1, Math.round(sim_res_x / 200));
-          const dzR  = guiControls.simHeight / sim_res_y;
-          const dT   = -9.8 * dzR / 1000.0;
-
-          gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_1);
-          gl.readBuffer(gl.COLOR_ATTACHMENT0);
-          const baseAll = new Float32Array(4 * sim_res_x * sim_res_y);
-          gl.readPixels(0, 0, sim_res_x, sim_res_y, gl.RGBA, gl.FLOAT, baseAll);
-          gl.readBuffer(gl.COLOR_ATTACHMENT1);
-          const waterAll = new Float32Array(4 * sim_res_x * sim_res_y);
-          gl.readPixels(0, 0, sim_res_x, sim_res_y, gl.RGBA, gl.FLOAT, waterAll);
-          gl.readBuffer(gl.COLOR_ATTACHMENT2);
-          const wallAll = new Int8Array(4 * sim_res_x * sim_res_y);
-          gl.readPixels(0, 0, sim_res_x, sim_res_y, gl.RGBA_INTEGER, gl.BYTE, wallAll);
-
-          function getRisk(muCape, shear6, stp) {
-            if (muCape < 100 || shear6 < 3)                   return null;
-            if (muCape < 300 || shear6 < 5)                   return 'rgba(0,170,255,0.55)';
-            if (stp >= 4 || (muCape >= 3000 && shear6 >= 25)) return 'rgba(255,0,255,0.65)';
-            if (stp >= 2 || (muCape >= 2000 && shear6 >= 20)) return 'rgba(255,68,0,0.65)';
-            if (stp >= 1 || (muCape >= 1500 && shear6 >= 15)) return 'rgba(255,136,0,0.65)';
-            if (muCape >= 500 && shear6 >= 10)                return 'rgba(255,255,0,0.55)';
-            return 'rgba(0,255,136,0.50)';
-          }
-
-          for (let sx = 0; sx < sim_res_x; sx += step) {
-            const b  = (y, c) => baseAll[ (y * sim_res_x + sx) * 4 + c];
-            const w  = (y, c) => waterAll[(y * sim_res_x + sx) * 4 + c];
-            let sfcY = -1;
-            for (let y = 0; y < sim_res_y; y++) {
-              if (wallAll[(y * sim_res_x + sx) * 4 + 1] !== 0) { sfcY = y; break; }
-            }
-            if (sfcY < 0) continue;
-            const maxMUlevel = Math.min(sfcY + Math.round(3000 / dzR), sim_res_y - 1);
-            let muCape = 0;
-            for (let startY = sfcY; startY <= maxMUlevel; startY++) {
-              if (wallAll[(startY * sim_res_x + sx) * 4 + 1] === 0) continue;
-              const startTempC = b(startY,3) - ((startY/sim_res_y)*guiControls.simHeight*guiControls.dryLapseRate)/1000.0 - 273.15;
-              const mixW = maxWater(CtoK(KtoC(dewpoint(Math.max(w(startY,0), 0)))));
-              let prevT = startTempC, prevCW = 0, parcelCape = 0;
-              for (let y = startY + 1; y < sim_res_y; y++) {
-                const envTk = CtoK(b(y,3) - ((y/sim_res_y)*guiControls.simHeight*guiControls.dryLapseRate)/1000.0 - 273.15);
-                const cw = Math.max(mixW - maxWater(CtoK(prevT + dT)), 0);
-                const dWt = (cw - prevCW) * guiControls.evapHeat;
-                const mult = dT / (dT - dWt) || 1;
-                prevT = prevT + dT * mult;
-                prevCW = Math.max(mixW - maxWater(CtoK(prevT)), 0);
-                if (9.81 * (CtoK(prevT) - envTk) / envTk > 0)
-                  parcelCape += 9.81 * (CtoK(prevT) - envTk) / envTk * dzR;
-              }
-              if (parcelCape > muCape) muCape = parcelCape;
-            }
-            if (muCape < 100) continue;
-            const mlLevels = Math.max(1, Math.min(sim_res_y - sfcY, Math.round(1000 / dzR)));
-            let sumT = 0, sumTd = 0;
-            for (let y = sfcY; y < sfcY + mlLevels; y++) {
-              sumT  += b(y,3) - ((y/sim_res_y)*guiControls.simHeight*guiControls.dryLapseRate)/1000.0 - 273.15;
-              sumTd += KtoC(dewpoint(Math.max(w(y,0), 0)));
-            }
-            const mlMixW = maxWater(CtoK(sumTd / mlLevels));
-            let mlPrevT = sumT/mlLevels, mlPrevCW = 0, mlCape = 0, mlCinh = 0;
-            for (let y = sfcY + 1; y < sim_res_y; y++) {
-              const envTk = CtoK(b(y,3) - ((y/sim_res_y)*guiControls.simHeight*guiControls.dryLapseRate)/1000.0 - 273.15);
-              const cw = Math.max(mlMixW - maxWater(CtoK(mlPrevT + dT)), 0);
-              const dWt = (cw - mlPrevCW) * guiControls.evapHeat;
-              const mult = dT / (dT - dWt) || 1;
-              mlPrevT = mlPrevT + dT * mult;
-              mlPrevCW = Math.max(mlMixW - maxWater(CtoK(mlPrevT)), 0);
-              const buoy = 9.81 * (CtoK(mlPrevT) - envTk) / envTk;
-              if (buoy > 0) mlCape += buoy * dzR;
-              else if (y * dzR < 10000) mlCinh += buoy * dzR;
-            }
-            const sfcTempC = b(sfcY,3) - ((sfcY/sim_res_y)*guiControls.simHeight*guiControls.dryLapseRate)/1000.0 - 273.15;
-            const mlLcl = Math.max(0, (sfcTempC - KtoC(dewpoint(Math.max(w(sfcY,0),0)))) / 8.0 * 1000.0);
-            const t3y = Math.min(sfcY + Math.round(3000/dzR), sim_res_y-1);
-            const t6y = Math.min(sfcY + Math.round(6000/dzR), sim_res_y-1);
-            const shear3 = Math.hypot(rawVelocityTo_ms(b(t3y,0))-rawVelocityTo_ms(b(sfcY,0)), rawVelocityTo_ms(b(t3y,1))-rawVelocityTo_ms(b(sfcY,1)));
-            const shear6 = Math.hypot(rawVelocityTo_ms(b(t6y,0))-rawVelocityTo_ms(b(sfcY,0)), rawVelocityTo_ms(b(t6y,1))-rawVelocityTo_ms(b(sfcY,1)));
-            const stp = (mlCape/1500) * (shear3*50/150) * Math.max(0,(2000-mlLcl)/1000) * Math.min(1,(mlCinh+200)/150);
-            const color = getRisk(muCape, shear6, stp);
-            if (color) riskData.push({sx, sfcY, step, color});
-          }
-        }
-
-        // Redraw every frame from stored data (positions update with camera)
-        const rc = riskCanvas.getContext('2d');
-        rc.clearRect(0, 0, riskCanvas.width, riskCanvas.height);
-        const screenTop = simToScreenY(sim_res_y - 1);
-        const screenBot = simToScreenY(0);
-        rc.fillStyle = 'rgba(80,80,80,0.5)';
-        for (const d of riskData) {
-          const x0 = simToScreenX(d.sx - 0.5), x1 = simToScreenX(d.sx + d.step - 0.5);
-          rc.fillRect(x0, simToScreenY(d.sfcY), x1 - x0, screenBot - simToScreenY(d.sfcY));
-        }
-        for (const d of riskData) {
-          rc.fillStyle = d.color;
-          rc.fillRect(simToScreenX(d.sx - 0.5), screenTop,
-                      simToScreenX(d.sx + d.step - 0.5) - simToScreenX(d.sx - 0.5),
-                      simToScreenY(d.sfcY) - screenTop);
-        }
-        const legend = [
-          {label:'High',color:'#FF00FF'},{label:'Moderate',color:'#FF4400'},
-          {label:'Enhanced',color:'#FF8800'},{label:'Slight',color:'#FFFF00'},
-          {label:'Marginal',color:'#00FF88'},{label:'Thunderstorm',color:'#00AAFF'},
-        ];
-        rc.font = 'bold 13px monospace'; rc.textBaseline = 'middle';
-        let ly = 20;
-        legend.forEach(e => {
-          rc.fillStyle = e.color; rc.fillRect(10, ly-7, 16, 14);
-          rc.fillStyle = 'white'; rc.fillText(e.label, 32, ly); ly += 20;
-        });
-      }
-
-  } // end of display mode else block
-
-  // Always hide risk canvas when not in DISP_RISK
-  if (guiControls.displayMode !== 'DISP_RISK' && guiControls.displayMode !== 'DISP_PRESSURE' && riskCanvas) {
-    riskCanvas.style.display = 'none';
-  }
-
-  // Draw H/L pressure labels when in pressure display mode
-  if (guiControls.displayMode === 'DISP_PRESSURE') {
-    if (!riskCanvas) {
-      riskCanvas = document.createElement('canvas');
-      riskCanvas.style.cssText = 'position:fixed;top:0;left:0;pointer-events:none;z-index:1;';
-      document.body.appendChild(riskCanvas);
+      gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4); // draw to canvas
     }
-    if (riskCanvas.width !== canvas.width || riskCanvas.height !== canvas.height) {
-      riskCanvas.width = canvas.width;
-      riskCanvas.height = canvas.height;
-    }
-    riskCanvas.style.display = 'block';
 
-    if (iterNum % 30 === 0) {
-      gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_1);
-      gl.readBuffer(gl.COLOR_ATTACHMENT2);
-      const wallRow = new Int8Array(4 * sim_res_x);
-      let sfcRow = 1;
-      for (let y = 1; y < sim_res_y; y++) {
-        gl.readPixels(0, y, sim_res_x, 1, gl.RGBA_INTEGER, gl.BYTE, wallRow);
-        let allAir = true;
-        for (let x = 0; x < sim_res_x; x++) {
-          if (wallRow[x * 4 + 1] === 0) { allAir = false; break; }
-        }
-        if (allAir) { sfcRow = y; break; }
-      }
-      gl.readBuffer(gl.COLOR_ATTACHMENT0);
-      const pressRow = new Float32Array(4 * sim_res_x);
-      gl.readPixels(0, Math.min(sfcRow + 2, sim_res_y - 1), sim_res_x, 1, gl.RGBA, gl.FLOAT, pressRow);
-
-      const minSep = Math.max(8, Math.floor(sim_res_x / 20));
-      riskData = [];
-      for (let x = 0; x < sim_res_x; x++) {
-        const p = pressRow[x * 4 + 2];
-        if (Math.abs(p) < 0.002) continue;
-        let isMax = true, isMin = true;
-        for (let dx = -minSep; dx <= minSep; dx++) {
-          if (dx === 0) continue;
-          const np = pressRow[((x + dx + sim_res_x) % sim_res_x) * 4 + 2];
-          if (np >= p) isMax = false;
-          if (np <= p) isMin = false;
-        }
-        if (isMax) riskData.push({x, sfcY: sfcRow + 2, type: 'H'});
-        if (isMin) riskData.push({x, sfcY: sfcRow + 2, type: 'L'});
+    if (displayWeatherStations) {
+      for (i = 0; i < weatherStations.length; i++) {
+        weatherStations[i].updateCanvas(); // update weather stations
       }
     }
 
-    const rc = riskCanvas.getContext('2d');
-    rc.clearRect(0, 0, riskCanvas.width, riskCanvas.height);
-    rc.font = 'bold 22px monospace';
-    rc.textAlign = 'center';
-    rc.textBaseline = 'middle';
-    for (const lbl of riskData) {
-      const sx = simToScreenX(lbl.x);
-      const sy = simToScreenY(lbl.sfcY + 3);
-      rc.fillStyle = lbl.type === 'H' ? '#FF4444' : '#4488FF';
-      rc.strokeStyle = '#000000';
-      rc.lineWidth = 3;
-      rc.strokeText(lbl.type, sx, sy);
-      rc.fillText(lbl.type, sx, sy);
-    }
-  }
-
-  // Draw H/L pressure labels when in pressure display mode
-  if (guiControls.displayMode === 'DISP_PRESSURE') {
-    if (!riskCanvas) {
-      riskCanvas = document.createElement('canvas');
-      riskCanvas.style.cssText = 'position:fixed;top:0;left:0;pointer-events:none;z-index:1;';
-      document.body.appendChild(riskCanvas);
-    }
-    if (riskCanvas.width !== canvas.width || riskCanvas.height !== canvas.height) {
-      riskCanvas.width = canvas.width;
-      riskCanvas.height = canvas.height;
-    }
-    riskCanvas.style.display = 'block';
-
-    if (iterNum % 30 === 0) { // update every 30 iterations
-      gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_1);
-      gl.readBuffer(gl.COLOR_ATTACHMENT0);
-      gl.readBuffer(gl.COLOR_ATTACHMENT2);
-      const wallRow = new Int8Array(4 * sim_res_x);
-      // find surface row (first non-wall row from bottom)
-      let sfcRow = 1;
-      for (let y = 1; y < sim_res_y; y++) {
-        gl.readPixels(0, y, sim_res_x, 1, gl.RGBA_INTEGER, gl.BYTE, wallRow);
-        let allAir = true;
-        for (let x = 0; x < sim_res_x; x++) {
-          if (wallRow[x * 4 + 1] === 0) { allAir = false; break; }
-        }
-        if (allAir) { sfcRow = y; break; }
-      }
-      // read pressure at surface+1
-      gl.readBuffer(gl.COLOR_ATTACHMENT0);
-      const pressRow = new Float32Array(4 * sim_res_x);
-      gl.readPixels(0, sfcRow + 1, sim_res_x, 1, gl.RGBA, gl.FLOAT, pressRow);
-
-      // find local maxima (H) and minima (L) with minimum separation
-      const minSep = Math.max(10, Math.floor(sim_res_x / 20));
-      const hlLabels = [];
-      for (let x = minSep; x < sim_res_x - minSep; x++) {
-        const p = pressRow[x * 4 + 2];
-        let isMax = true, isMin = true;
-        for (let dx = -minSep; dx <= minSep; dx++) {
-          if (dx === 0) continue;
-          const nx = (x + dx + sim_res_x) % sim_res_x;
-          const np = pressRow[nx * 4 + 2];
-          if (np >= p) isMax = false;
-          if (np <= p) isMin = false;
-        }
-        if (isMax && Math.abs(p) > 0.002) hlLabels.push({x, type: 'H', p});
-        if (isMin && Math.abs(p) > 0.002) hlLabels.push({x, type: 'L', p});
-      }
-
-      const rc = riskCanvas.getContext('2d');
-      rc.clearRect(0, 0, riskCanvas.width, riskCanvas.height);
-      rc.font = 'bold 22px monospace';
-      rc.textAlign = 'center';
-      rc.textBaseline = 'middle';
-      for (const lbl of hlLabels) {
-        const sx = simToScreenX(lbl.x);
-        const sy = simToScreenY(sfcRow + 4);
-        rc.fillStyle = lbl.type === 'H' ? '#FF4444' : '#4488FF';
-        rc.strokeStyle = '#000';
-        rc.lineWidth = 3;
-        rc.strokeText(lbl.type, sx, sy);
-        rc.fillText(lbl.type, sx, sy);
-      }
-    }
-  }
-
-  if (!isRadarDisplayMode(guiControls.displayMode) && radarOverlayCanvas) {
-    radarOverlayCanvas.style.display = 'none';
-  }
-
-  drawRadarLightningOverlay();
-
-  if (displayWeatherStations) {
-    for (i = 0; i < weatherStations.length; i++) {
-      const sx = simToScreenX(weatherStations[i].getXpos());
-      const sy = simToScreenY(weatherStations[i].getYpos());
-      if (sx > -200 && sx < canvas.width + 200 && sy > -200 && sy < canvas.height + 200)
-        weatherStations[i].updateCanvas();
-    }
-  }
-
-  if (displayRadars) {
-    for (i = 0; i < radars.length; i++) {
-      const sx = simToScreenX(radars[i].getXpos());
-      const sy = simToScreenY(radars[i].getYpos());
-      if (sx > -200 && sx < canvas.width + 200 && sy > -200 && sy < canvas.height + 200)
-        radars[i].updateCanvas();
-    }
-  }
-
-  // Update markers
-  for (i = 0; i < markers.length; i++) {
-    const sx = simToScreenX(markers[i].getXpos());
-    const sy = simToScreenY(markers[i].getYpos());
-    if (sx > -200 && sx < canvas.width + 200 && sy > -200 && sy < canvas.height + 200)
-      markers[i].updateCanvas();
-  }
-
-drawNukeOverlay();
     frameNum++;
-  requestAnimationFrame(draw);
-} // end of draw() outer
+    requestAnimationFrame(draw);
+  }
 
   //////////////////////////////////////////////////////// functions:
 
@@ -12557,6 +6547,85 @@ drawNukeOverlay();
 
     const monthStr = simDateTime.toLocaleString('en-us', {month : 'short', day : 'numeric'});
     return timeStr + '&nbsp; ' + monthStr;
+  }
+
+  function onUpdateTimeOfDaySlider()
+  {
+    let minutes = (guiControls.timeOfDay % 1) * 60;
+    simDateTime.setHours(guiControls.timeOfDay, minutes);
+    updateSunlight();
+  }
+
+  function onUpdateMonthSlider()
+  {
+    let month = guiControls.month - 0.96;
+    let date = (month % 1) * 30;
+    simDateTime.setMonth(month, date);
+    updateSunlight();
+  }
+
+  function updateSunlight(deltaT_hours)
+  {
+    if (deltaT_hours != 'MANUAL_ANGLE') {
+      if (deltaT_hours != null) {                                                   // increment time
+        simDateTime = new Date(simDateTime.getTime() + deltaT_hours * 3600 * 1000); // convert hours to ms and add to current date
+        guiControls.timeOfDay = simDateTime.getHours() + simDateTime.getMinutes() / 60. + simDateTime.getSeconds() / 3600.;
+        guiControls.month = simDateTime.getMonth() + 1 + simDateTime.getDate() / 30.5 + simDateTime.getHours() / 720.;
+      } else {
+        for (i = 0; i < weatherStations.length; i++) {
+          weatherStations[i].clearChart();
+        }
+      }
+
+      let timeOfDayRad = (guiControls.timeOfDay / 24.0) * 2.0 * Math.PI; // convert to radians
+
+      timeOfDayRad -= Math.PI / 2.0;
+
+      let tiltDeg = Math.sin(guiControls.month * 0.5236 - 1.92) * 23.5; // axis tilt
+      let t = tiltDeg * degToRad;                                       // axis tilt in radians
+      let l = guiControls.latitude * degToRad;                          // latitude
+
+      guiControls.sunAngle = Math.asin(Math.sin(t) * Math.sin(l) + Math.cos(t) * Math.cos(l) * Math.sin(timeOfDayRad)) * radToDeg;
+
+      if (guiControls.latitude - tiltDeg < 0.0) {
+        // If sun is to the north, flip angle
+        guiControls.sunAngle = 180.0 - guiControls.sunAngle;
+      }
+    }
+    let solarZenithAngleDeg = (guiControls.sunAngle - 90);
+    let solarZenithAngle = solarZenithAngleDeg * degToRad; // Solar zenith angle centered around 0. (0 = vertical)
+    // Calculations visualized: https://www.desmos.com/calculator/kzr76zj5hq
+    if (Math.abs(solarZenithAngle) < 85.0 * degToRad) {
+      sunIsUp = true;
+    } else {
+      sunIsUp = false;
+    }
+    //		console.log(solarZenithAngle, sunIsUp);
+    //	let sunIntensity = guiControls.sunIntensity *
+    // Math.pow(Math.max(Math.sin((90.0 - Math.abs(guiControls.sunAngle)) *
+    // degToRad) - 0.1, 0.0) * 1.111, 0.4);
+    let sunIntensity = guiControls.sunIntensity * Math.pow(Math.max(Math.sin((180.0 - guiControls.sunAngle) * degToRad), 0.0), 0.1) * 1300.0; // max 1300 w/m2 at 12 km
+    // console.log('sunIntensity: ', sunIntensity);
+
+    // minShadowLight = clamp(((90 + 10) - Math.abs(solarZenithAngleDeg)) * 0.006, 0.005, 0.040); // decrease until the sun goes 10 deg below the horizon
+
+    minShadowLight = map_range_C(Math.abs(solarZenithAngleDeg), 100.0, 85.0, 0.005, 0.040); // decrease until the sun goes 10 deg below the horizon
+
+    gl.useProgram(boundaryProgram);
+    gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'sunAngle'), solarZenithAngle);
+    gl.useProgram(lightingProgram);
+    gl.uniform1f(gl.getUniformLocation(lightingProgram, 'sunIntensity'), sunIntensity);
+    gl.uniform1f(gl.getUniformLocation(lightingProgram, 'sunAngle'), solarZenithAngle);
+    gl.useProgram(realisticDisplayProgram);
+    gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'sunAngle'), solarZenithAngle);
+    gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'minShadowLight'), minShadowLight);
+    gl.useProgram(skyBackgroundDisplayProgram);
+    gl.uniform1f(gl.getUniformLocation(skyBackgroundDisplayProgram, 'minShadowLight'), minShadowLight);
+
+    if (guiControls.dayNightCycle)
+      clockEl.innerHTML = dateTimeStr(); // update clock
+    else
+      clockEl.innerHTML = '';
   }
 
 
@@ -12592,21 +6661,12 @@ drawNukeOverlay();
           weatherStationsPositions[i * 2 + 1] = weatherStations[i].getYpos();
         }
 
-        let radarsPositions = new Int16Array(radars.length * 2);
-        let radarsSettings = [];
-        for (i = 0; i < radars.length; i++) {
-          radarsPositions[i * 2] = radars[i].getXpos();
-          radarsPositions[i * 2 + 1] = radars[i].getYpos();
-          radarsSettings.push(radars[i].getSettings());
-        }
-
 
         let strGuiControls = JSON.stringify(guiControls);
-        let strRadarSettings = JSON.stringify(radarsSettings);
 
         let saveDataArray = [
-          Uint16Array.of(sim_res_x), Uint16Array.of(sim_res_y), baseTextureValues, waterTextureValues, wallTextureValues, Uint32Array.of(rainDrops.length / 5), precipBufferValues, Uint16Array.of(weatherStations.length),
-          weatherStationsPositions, Uint16Array.of(radars.length), radarsPositions, Uint32Array.of(strGuiControls.length), strGuiControls, strRadarSettings
+          Uint16Array.of(sim_res_x), Uint16Array.of(sim_res_y), baseTextureValues, waterTextureValues, wallTextureValues, precipBufferValues, Uint16Array.of(weatherStations.length),
+          weatherStationsPositions, strGuiControls
         ];
         let blob = new Blob(saveDataArray);        // combine everything into a single blob
         let arrBuff = await blob.arrayBuffer();    // turn into array for pako
@@ -12638,28 +6698,28 @@ drawNukeOverlay();
     if (gl.getProgramParameter(program, gl.LINK_STATUS)) {
       return program; // linked succesfully
     } else {
-      const infoLog = gl.getProgramInfoLog(program);
+      throw 'ERROR: ' + gl.getProgramInfoLog(program);
       gl.deleteProgram(program);
-      console.error('Program link error:', infoLog);
-      throw new Error('Program link error: ' + infoLog);
     }
   }
 
   async function loadSourceFile(fileName)
   {
     try {
-      const response = await fetch(fileName);
-      if (!response.ok) {
-        if (response.status === 404)
-          throw new Error('File not found: ' + fileName);
-        throw new Error('File loading error: ' + response.status + ' ' + response.statusText + ' for ' + fileName);
-      }
-      return await response.text();
+      var request = new XMLHttpRequest();
+      request.open('GET', fileName, false);
+      request.send(null);
     } catch (error) {
       await loadingBar.showError('ERROR loading shader files! If you just opened index.html, try again using a local server!');
-      console.error('Shader source load failed:', fileName, error);
       throw error;
     }
+
+    if (request.status === 200)
+      return request.responseText;
+    else if (request.status === 404)
+      throw 'File not found: ' + fileName;
+    else
+      throw 'File loading error' + request.status;
   }
 
   async function loadShader(nameIn)
@@ -12699,15 +6759,13 @@ drawNukeOverlay();
     // console.timeEnd('compileShader')
 
     if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
-      const infoLog = gl.getShaderInfoLog(shader);
-      await loadingBar.showError('ERROR compiling shader: ' + nameIn + '\n' + infoLog);
-      console.error('Shader compile error:', nameIn, infoLog);
-      gl.deleteShader(shader);
-      throw new Error(filename + ' COMPILATION ' + infoLog);
+      // Compile error
+      throw filename + ' COMPILATION ' + gl.getShaderInfoLog(shader);
     }
-
-    await loadingBar.add(3, 'Loading shader: ' + nameIn);
-    return shader;
+    return new Promise(async (resolve) => {
+      await loadingBar.add(3, 'Loading shader: ' + nameIn);
+      resolve(shader);
+    });
   }
 
   function adjIterPerFrame(adj) { guiControls.IterPerFrame = Math.round(clamp(guiControls.IterPerFrame + adj, 1, 50)); }
@@ -12724,7 +6782,7 @@ drawNukeOverlay();
       if (!guiControls.paused) {
         console.log(FPS + ' FPS   ' + guiControls.IterPerFrame + ' Iterations / frame      ' + FPS * guiControls.IterPerFrame + ' Iterations / second');
 
-        if (guiControls.auto_IterPerFrame && !airplaneMode && !guiControls.slowMotion) {
+        if (guiControls.auto_IterPerFrame && !airplaneMode) {
           const fpsTarget = 60;
           adjIterPerFrame((FPS / fpsTarget - 1.0) * 5.0); // example: ((30 / 60)-1.0) = -0.5
 
