@@ -267,7 +267,7 @@
 <body id="body" onload="updateSetupSliders();">
     <nav class="main-nav">
         <div class="nav-title">
-            <h1>2D Weather Sandbox</h1>
+            <h1>2D Weather Sandbox EXTRA</h1>
         </div>
         <div class="nav-icons">
             <a href="https://github.com/niels747/2D-Weather-Sandbox" target="_blank" rel="noopener noreferrer">
@@ -306,13 +306,18 @@
                         <option value="18">18H</option>
                     </select>
                     <p>Select a real world sounding to use as forcing in the simulation</p>
+                    <div style="margin-top: 10px;">
+                        <button onclick="saveSoundingToFile();" style="margin-right: 10px; padding: 5px 10px;">Save Sounding</button>
+                        <button onclick="document.getElementById('soundingFileInput').click();" style="padding: 5px 10px;">Load Sounding</button>
+                        <input type="file" id="soundingFileInput" accept=".txt" style="display: none;" onchange="loadSoundingFromFile(this.files[0]);">
+                    </div>
                 </div>
             </div>
             <img style="float: left; height: 500px;" id="soundingPreview"
                 alt="Sounding not available, Please select a different time.">
         </div>
 
-        <form id="startBtn" oninput="updateSetupSliders();">
+        <div id="startBtn">
             <div class="resolution-warning">
                 <p>Choose a resolution - Higher resolutions provide more detail but significantly impact performance
                 </p>
@@ -323,6 +328,7 @@
                     <td><b>Horizontal resolution</b></td>
                     <td style="width: 30%">
                         <input type="range" min="100" max="16000" value="3000" step="100" id="simResSelX" />
+                        <input type="number" min="100" max="16000" value="3000" step="100" id="simResInputX" style="width: 80px; margin-left: 10px;" />
                         <output id="simResShowX"></output>
                     </td>
                     <td id="simWorldProperties" style="color:rgb(255, 255, 255); width: 50%"> Cellheight: 40m Sim
@@ -332,7 +338,8 @@
                 <tr>
                     <td><b>Vertical resolution</b></td>
                     <td>
-                        <input type="range" min="100" max="500" value="300" step="10" id="simResSelY" />
+                        <input type="range" min="50" max="1000" value="300" step="10" id="simResSelY" />
+                        <input type="number" min="50" max="1000" value="300" step="10" id="simResInputY" style="width: 80px; margin-left: 10px;" />
                         <output id="simResShowY"></output>
                     </td>
                     <td><i id="simResYWarning" style="color:rgb(255, 61, 61); display: none;">Vertical resolutions
@@ -342,7 +349,8 @@
                 <tr>
                     <td><b>Simulation height</b></td>
                     <td>
-                        <input type="range" min="5000" max="15000" value="12000" step="100" id="simHeightSel" />
+                        <input type="range" min="5000" max="30000" value="12000" step="100" id="simHeightSel" />
+                        <input type="number" min="5000" max="30000" value="12000" step="100" id="simHeightInput" style="width: 80px; margin-left: 10px;" />
                         <output id="simHeightShow"></output>
                     </td>
                     <td><i id="simHeightWarning" style="color:rgb(255, 61, 61); display: none;">Sim heights other
@@ -350,9 +358,9 @@
                             12000 m are not optimized and may be buggy!</i></td>
                 </tr>
             </table>
-            <input type="button" value="Create New Simulation" onclick="loadData ()" />
+            <input type="button" value="Create New Simulation" onclick="loadData()" />
             <i>Move the mouse until you see a terrain you like, then just click to start.</i>
-        </form>
+        </div>
 
 
         <p style="margin-top: 70px;">
@@ -422,14 +430,6 @@
                     <td>Display Modes</td>
                 </tr>
                 <tr>
-                    <td>K</td>
-                    <td>Air Quality Display</td>
-                </tr>
-                <tr>
-                    <td>C</td>
-                    <td>Relative Humidity & Cloud Density Display</td>
-                </tr>
-                <tr>
                     <td>QWERTYUIOP [ ] \</td>
                     <td>Tools</td>
                 </tr>
@@ -475,7 +475,7 @@
                 </tr>
                 <tr>
                     <td>Z</td>
-                    <td>Drop water from airplane to extinguish fires</td>
+                    <td>Display Risk View</td>
                 </tr>
                 <tr>
                     <td>CapsLk</td>
@@ -483,11 +483,19 @@
                 </tr>
                 <tr>
                     <td>.</td>
-                    <td>Brakes</td>
+                    <td>Radar View (or Brakes in airplane mode)</td>
                 </tr>
                 <tr>
                     <td>/</td>
-                    <td>Toggle Engine</td>
+                    <td>Cycle Radar Products Backward</td>
+                </tr>
+                <tr>
+                    <td>Enter</td>
+                    <td>Cycle Radar Products Forward</td>
+                </tr>
+                <tr>
+                    <td>S</td>
+                    <td>Toggle Radar Overlay on Realistic View</td>
                 </tr>
                 <tr>
                     <td>D</td>
@@ -500,10 +508,6 @@
                 <tr>
                     <td>G</td>
                     <td>Show / Hide Sounding Graph</td>
-                </tr>
-                <tr>
-                    <td>N</td>
-                    <td>Show / Hide Weather Stations</td>
                 </tr>
                 <tr>
                     <td>M</td>
