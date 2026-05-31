@@ -11,9 +11,13 @@ uniform vec2 texelSize;
 
 uniform sampler2D anyTex; // can be any RGBW32F texture
 uniform isampler2D wallTex;
+uniform sampler2D colorScalesTex;
 
 uniform int quantityIndex; // wich quantity to display
 uniform float dispMultiplier;
+uniform int colorScaleColumn; // which column of colorScalesTex to sample (4=universal, 5=waterVapor)
+uniform int useUnipolarScale;  // 1 = clamp(val,0,1), 0 = bipolar (val+1)*0.5
+uniform int colorScaleStops;  // number of palette stops in colorScalesTex
 
 uniform vec3 view;   // Xpos  Ypos    Zoom
 uniform vec4 cursor; // xpos   Ypos  Size   type
@@ -44,10 +48,14 @@ void main()
       fragmentColor = vec4(1.0, 0.5, 0.0, 1);
       break;
     }
-  } else if (val > 0.0) {
-    fragmentColor = vec4(1.0, 1.0 - val, 1.0 - val, 1.0);
   } else {
-    fragmentColor = vec4(1.0 + val, 1.0 + val, 1.0, 1.0);
+    int palIdx;
+    float normalized = (useUnipolarScale == 1)
+      ? clamp(val, 0.0, 1.0)
+      : clamp((val + 1.0) * 0.5, 0.0, 1.0);
+    palIdx = int(normalized * float(colorScaleStops - 1));
+    palIdx = clamp(palIdx, 0, colorScaleStops - 1);
+    fragmentColor = texelFetch(colorScalesTex, ivec2(colorScaleColumn, palIdx), 0);
   }
   drawCursor(cursor, view);
 }

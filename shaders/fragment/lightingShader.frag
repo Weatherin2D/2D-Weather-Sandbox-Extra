@@ -95,6 +95,7 @@ void main()
         switch (wall[TYPE]) {
         case WALLTYPE_RUNWAY:
         case WALLTYPE_URBAN:
+        case WALLTYPE_SUBURBAN:
         case WALLTYPE_INDUSTRIAL:
           if (abs(sunAngle) > 85. * deg2rad)
             reflectedLight.rgb += vec3(1.00, 0.97, 0.57) * 0.03; // Urban area emits light

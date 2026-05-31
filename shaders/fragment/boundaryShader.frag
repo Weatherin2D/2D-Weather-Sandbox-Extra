@@ -228,6 +228,8 @@ void main()
           albedoTotal = map_range(float(wallX0Ym[VEGETATION]), 0., 127., albedoSoil, fullVegetationAlbedo);
         } else if (wall[TYPE] == WALLTYPE_URBAN) {
           albedoTotal = ALBEDO_URBAN;
+        } else if (wall[TYPE] == WALLTYPE_SUBURBAN) {
+          albedoTotal = ALBEDO_SUBURBAN;
         } else if (wall[TYPE] == WALLTYPE_INDUSTRIAL) {
           albedoTotal = ALBEDO_INDUSTRIAL;
         } else if (wall[TYPE] == WALLTYPE_RUNWAY) {

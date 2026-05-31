@@ -14,6 +14,8 @@ uniform vec2 resolution; // sim resolution
 uniform vec2 texelSize;
 
 uniform float exposure;
+uniform float saturation;
+uniform float contrast;
 
 uniform sampler2D hdrTex;
 uniform sampler2D bloomTex;
@@ -30,27 +32,18 @@ void main()
 
   outputCol += bloom * 0.990; // apply bloom
 
-  // outputCol = outputCol / (outputCol + vec3(1.0)) * 1.1; // Tone mapping
-
   outputCol *= exposure;
 
   outputCol = pow(outputCol, ONE_OVER_GAMMA); // gamma correction
 
+  // Contrast: centered at 0.5 in display space
+  outputCol = (outputCol - 0.5) * contrast + 0.5;
 
-  /*
-    { // Gamma correction test: left without, right with gamma correction
-      float modTexCoordx = mod(texCoord.x, 0.5);
-      // outputCol = vec3(pow(texCoord.y, 2.)); // light input
+  // Saturation: luminance-preserving desaturation/oversaturation
+  float lum = dot(outputCol, vec3(0.2126, 0.7152, 0.0722));
+  outputCol = mix(vec3(lum), outputCol, saturation);
 
-      outputCol = vec3(pow(0.9, (1. - texCoord.y) * 50.)); // simulate light coming down and being absorbed by clouds
-
-      if (texCoord.x > 0.5)
-        outputCol = pow(outputCol, GAMMA);              // gamma correction
-
-      if (abs(outputCol.r - modTexCoordx * 2.) < 0.001) // plot brightness
-        outputCol = vec3(1.0, 0., 0.);
-    }
-  */
+  outputCol = clamp(outputCol, 0.0, 1.0);
 
   fragmentColor = vec4(outputCol, 1.0);
 }
