@@ -28,7 +28,7 @@ uniform sampler2D ambientLightTex;
 uniform float ltEventAge;
 uniform int ltNumStrikes;
 uniform vec4 ltStrikePos[MAX_LT_STRIKES];  // xy=origin px, z=ltType, w=seedSalt
-uniform vec4 ltStrikeMeta[MAX_LT_STRIKES]; // x=originMag, y=cloudGate, z=numFlashes
+uniform vec4 ltStrikeMeta[MAX_LT_STRIKES]; // x=originMag, y=cloudGate, z=numFlashes, w=flashSize (type 3)
 
 uniform vec2 aspectRatios; // [0] Sim       [1] canvas
 
@@ -68,11 +68,20 @@ uniform float cloudGroundLightningIntensity;
 uniform float cloudGroundLightningThreshold;
 uniform float cloudGroundLightningFrequency;
 
-// Strobe lightning uniforms (types 3 & 4)
+// Strobe lightning uniforms (type 4 bolts)
 uniform float enableStrobeLightning;
 uniform float strobeLightningIntensity;
 uniform float strobeLightningThreshold;
 uniform float strobeLightningFrequency;
+
+// Cloud flash uniforms (type 3 — no bolt core)
+uniform float enableCloudFlash;
+uniform float cloudFlashIntensity;
+uniform float cloudFlashThreshold;
+uniform float cloudFlashFrequency;
+
+// Bolt width multiplier (all bolt types)
+uniform float lightningBoltWidth;
 
 // Repeat & cross-trigger
 uniform int lightningRepeat;       // 1 = allow repeat strikes driven by charge
@@ -322,18 +331,78 @@ float boltLineThick(float baseThick, float wideHalo) {
   return baseThick * (wideHalo > 0.5 ? 5.5 : 1.75);
 }
 
-// Strobe: type 3 = flash only; type 4 = flash + thin in-cloud bolts (same thickness as other types)
+// Diffuse in-cloud flash — soft circular bloom inside cloud, no bolt paths (type 3)
+float cloudDiffuseFlashGlow(vec2 p, vec2 center, float seed, float prog, float sizeScale) {
+  vec2 off = p - center;
+  float aspect = 0.80 + rand(seed + 3.0) * 0.32;
+  off.x /= aspect;
+  float dist = length(off);
+
+  float baseR = resolution.x * (0.028 + sizeScale * 0.072) * prog;
+  float coreR = baseR * 0.42;
+  float midR  = baseR * 1.05;
+  float haloR = baseR * 2.35;
+
+  float core = exp(-dist * dist / (coreR * coreR * 0.50));
+  float mid  = exp(-dist * dist / (midR * midR)) * 0.38;
+  float halo = exp(-dist * dist / (haloR * haloR)) * 0.14;
+
+  return clamp(core + mid + halo, 0.0, 1.0);
+}
+
+// Scatter flash size — type 3 uses CPU flashSize; bolts scale with charge / type
+float boltScatterFlashSize(int ltType, float originMag, float flashMeta) {
+  if (ltType == 3)
+    return max(flashMeta, 0.55);
+  float chargeScale = clamp(originMag * 1.35, 0.22, 1.0);
+  if (ltType >= 5)
+    return 0.58 + chargeScale * 0.62;
+  if (ltType == 4)
+    return 0.36 + chargeScale * 0.44;
+  if (ltType == 2)
+    return 0.40 + chargeScale * 0.40;
+  if (ltType == 1)
+    return 0.08 + chargeScale * 0.10;
+  return 0.30 + chargeScale * 0.34;
+}
+
+// Atmospheric scatter from bolt — same diffuse glow as cloud flash, cloud-interior masked
+void addBoltScatterFlash(inout vec3 emitted, inout vec3 onLit,
+                         vec2 fragCoord, vec2 origin, float boltSeed, float prog,
+                         int ltType, float originMag, float flashMeta,
+                         float envFade, float chargeFlash, float opacity, float cloudClip,
+                         float boltIntensity, float cloudFlashInt) {
+  float scatterSize = boltScatterFlashSize(ltType, originMag, flashMeta);
+  float scatterG = cloudDiffuseFlashGlow(fragCoord, origin, boltSeed, prog, scatterSize);
+  if (scatterG < 0.003 || cloudClip < 0.01)
+    return;
+
+  float cloudMask = opacity * opacity * cloudClip;
+  float useIntensity = (ltType == 3) ? cloudFlashInt : boltIntensity;
+  float flashBright = useIntensity * 0.095 * envFade * chargeFlash * scatterG * cloudMask;
+  if (ltType == 1)
+    flashBright *= 0.50;
+  vec3 flashCol = mix(vec3(0.78, 0.82, 0.92), vec3(0.95, 0.96, 1.0),
+                      clamp(scatterG * 0.85, 0.0, 1.0)) * flashBright;
+  emitted += flashCol;
+  onLit   += flashCol * 0.10;
+}
+
+// Strobe bolts (type 4) — thin in-cloud bolt paths + optional wide halo
 float strobeCloudGlow(vec2 p, vec2 center, float seed, float prog,
                       float baseThick, float baseDisp, float wideHalo, int ltType) {
   float lineThick = boltLineThick(baseThick, wideHalo);
 
-  // Flash channel follows a short in-cloud stub so bloom matches other types
+  if (wideHalo > 0.5) {
+    float sheetReach = resolution.x * 0.08 * prog;
+    vec2 sheetDir = deviateDir(vec2(1.0, -0.06), seed + 11.0, BOLT_MAX_TURN_RAD);
+    return cgBoltGlow(p, center, center + sheetDir * sheetReach, seed + 50.0,
+                      lineThick, baseDisp, prog, 1.0);
+  }
+
   vec2  stubDir = deviateDir(vec2(0.0, -1.0), seed + 11.0, BOLT_MAX_TURN_RAD);
   vec2  stubEnd = center + stubDir * resolution.y * 0.045 * prog;
   float flashStub = cgBoltGlow(p, center, stubEnd, seed + 50.0, lineThick, baseDisp, prog, wideHalo);
-
-  if (ltType == 3 || wideHalo > 0.5)
-    return flashStub;
 
   float maxG = flashStub * 0.15;
   vec2 baseDir = normalize(vec2(1.0, -0.30));
@@ -369,7 +438,7 @@ float anvilCrawlerGlow(vec2 p, vec2 center, float seed, float prog,
 
   // Crawler flash channel — strobe-like horizontal glow extended through cloud
   if (ltType <= 2 && wideHalo > 0.5) {
-    float flashReach = resolution.x * (ltType == 1 ? 0.10 : 0.13);
+    float flashReach = resolution.x * (ltType == 1 ? 0.055 : 0.13);
     float driftF   = (rand(seed + 4.0) - 0.5) * tan(BOLT_MAX_TURN_RAD) * 0.55;
     vec2  hDirF    = normalize(vec2(1.0, driftF));
     maxG = cgBoltGlow(p, center, center + hDirF * flashReach * prog, seed + 800.0,
@@ -377,8 +446,48 @@ float anvilCrawlerGlow(vec2 p, vec2 center, float seed, float prog,
     return maxG;
   }
 
-  // CC / spider crawlers (types 1 & 2) — bolt paths
-  float mainLen = resolution.x * (ltType == 1 ? 0.10 : 0.12) * sizeScale;
+  // Spider (type 1) — same branch layout as CC, much shorter segments
+  if (ltType == 1) {
+    float mainLen   = resolution.x * 0.026 * sizeScale;
+    float drift     = (rand(seed + 4.0) - 0.5) * tan(BOLT_MAX_TURN_RAD) * 0.22;
+    vec2  hDir      = normalize(vec2(1.0, drift));
+    float crawlDisp = dispVar * 0.26;
+    float sThick    = lineThick * 0.62;
+    float sBranch   = branchThick * 0.62;
+
+    vec2 hEndR = center + hDir * mainLen;
+    vec2 hEndL = center + deviateDir(-hDir, seed + 50.0, BOLT_MAX_TURN_RAD * 0.82) * mainLen * 0.50;
+    maxG = max(cgBoltGlow(p, center, hEndR, seed,               sThick, crawlDisp, prog, wideHalo),
+               cgBoltGlow(p, center, hEndL, seed + 100.0, sThick * 0.82, crawlDisp, prog, wideHalo));
+
+    int numSpider = 1 + int(floor(rand(seed + 601.0) * 1.0 + 0.001));
+
+    for (int b = 0; b < 2; b++) {
+      if (b >= numSpider) continue;
+      float bs = seed + float(b) * 131.0 + 500.0;
+      float useRight = step(0.5, rand(bs + 0.5));
+      vec2  trunk = mix(hEndL, hEndR, useRight);
+      float trunkSeed = mix(seed + 100.0, seed, useRight);
+      vec2  trunkDir = normalize(trunk - center);
+      float tAlong = 0.18 + rand(bs + 1.0) * 0.65;
+      vec2  junc   = boltPosAtT(center, trunk, trunkSeed, tAlong * prog, crawlDisp * 0.65);
+      vec2  bDir   = deviateDir(trunkDir, bs + 3.0, BOLT_MAX_TURN_RAD * 0.82);
+      float bLen   = mainLen * 0.17;
+      vec2  bEnd   = junc + bDir * bLen * prog;
+      maxG = max(maxG, cgBoltGlow(p, junc, bEnd, bs, sBranch, crawlDisp * 0.80, prog, wideHalo));
+    }
+
+    float ts = seed + 300.0;
+    vec2  tDir  = deviateDir(hDir, ts + 2.0, BOLT_MAX_TURN_RAD * 0.82);
+    float tLen  = mainLen * 0.20;
+    vec2  tEnd  = center + tDir * tLen;
+    maxG = max(maxG, cgBoltGlow(p, center, tEnd, ts, sBranch * 1.05, crawlDisp, prog, wideHalo));
+
+    return maxG;
+  }
+
+  // CC crawlers (type 2) — bolt paths
+  float mainLen = resolution.x * 0.12 * sizeScale;
   float drift   = (rand(seed + 4.0) - 0.5) * tan(BOLT_MAX_TURN_RAD) * 0.55;
   vec2  hDir    = normalize(vec2(1.0, drift));
   float crawlDisp = dispVar * 1.15;
@@ -388,8 +497,7 @@ float anvilCrawlerGlow(vec2 p, vec2 center, float seed, float prog,
   maxG = max(cgBoltGlow(p, center, hEndR, seed,       lineThick, crawlDisp, prog, wideHalo),
              cgBoltGlow(p, center, hEndL, seed + 100.0, lineThick * 0.82, crawlDisp, prog, wideHalo));
 
-  int maxSpider = (ltType == 1) ? 1 : 2;
-  int numSpider = 1 + int(floor(rand(seed + 601.0) * float(maxSpider) + 0.001));
+  int numSpider = 1 + int(floor(rand(seed + 601.0) * 2.0 + 0.001));
 
   for (int b = 0; b < 2; b++) {
     if (b >= numSpider) continue;
@@ -704,9 +812,10 @@ void main()
     opacity = airColor.a;
     color = airColor.rgb;
 
-    // Types: 1=spider 2=CC 3=strobe flash 4=strobe lightning 5=CG 6=CG heavy
+    // Types: 1=spider 2=CC 3=cloud flash 4=strobe bolt 5=CG 6=CG heavy
     if (ltNumStrikes > 0 && ltEventAge >= 0.0
-        && (enableCloudLightning > 0.5 || enableCloudGroundLightning > 0.5 || enableStrobeLightning > 0.5)) {
+        && (enableCloudLightning > 0.5 || enableCloudGroundLightning > 0.5
+            || enableStrobeLightning > 0.5 || enableCloudFlash > 0.5)) {
       float fadeTail     = 6.0;
       float flashCore    = 4.0;
       float eventAge     = ltEventAge;
@@ -726,30 +835,43 @@ void main()
           float originMag  = ltStrikeMeta[s].x;
           float cloudGate  = ltStrikeMeta[s].y;
           int   numFlashes = int(ltStrikeMeta[s].z + 0.5);
+          float flashSize  = ltStrikeMeta[s].w;
 
-          bool isStrobe = (ltType == 3 || ltType == 4);
+          bool isStrobe = (ltType == 4);
+          bool isCloudFlash = (ltType == 3);
+          bool isSpider = (ltType == 1);
           bool isCrawler = (ltType == 1 || ltType == 2);
           bool isCG     = (ltType >= 5);
-          float typeThreshold = isStrobe ? strobeLightningThreshold : cloudLightningThreshold;
+          if (isCloudFlash && flashSize < 0.01)
+            flashSize = 0.55;
+          float scatterSize = boltScatterFlashSize(ltType, originMag, flashSize);
+          float typeThreshold = isCG ? cloudGroundLightningThreshold
+                              : (isCloudFlash ? cloudFlashThreshold
+                              : (isStrobe ? strobeLightningThreshold : cloudLightningThreshold));
           if (ltType == 0
-              || cloudGate < typeThreshold * 0.35
+              || cloudGate < typeThreshold * 0.30
               || ((ltType >= 1 && ltType <= 2) && enableCloudLightning < 0.5)
+              || (isCloudFlash && enableCloudFlash < 0.5)
               || (isStrobe && enableStrobeLightning < 0.5)
               || (isCG && enableCloudGroundLightning < 0.5))
             continue;
 
           // Uniform bolt size for all strikes
           float cloudScale = 1.0;
+          float widthScale = max(lightningBoltWidth, 0.25);
 
-          float strikeReach = resolution.x * (isCrawler ? 0.18 : (isStrobe ? 0.12 : 0.15));
+          float boltReach = resolution.x * (isSpider ? 0.050 : (isCrawler ? 0.18 : (isStrobe ? 0.12 : 0.15)));
+          float scatterReach = resolution.x * (0.06 + scatterSize * 0.14);
+          float strikeReach = isCloudFlash ? scatterReach : max(boltReach, scatterReach);
           float distOrigin  = length(fragCoord - bOrigin);
           if (distOrigin <= strikeReach) {
             float reachFade = 1.0 - smoothstep(strikeReach * 0.78, strikeReach, distOrigin);
 
-            float crawlThick = resolution.x * 0.000068;
+            float crawlThick = resolution.x * 0.000068 * widthScale;
             float crawlDisp  = resolution.x * 0.012;
             float intensity  = isCG ? cloudGroundLightningIntensity
-                            : (isStrobe ? strobeLightningIntensity : cloudLightningIntensity);
+                            : (isCloudFlash ? cloudFlashIntensity
+                            : (isStrobe ? strobeLightningIntensity : cloudLightningIntensity));
             // Mild charge boost for flash/bolt brightness (capped)
             float chargeFlash = 1.0 + min(originMag * 0.28, 0.22);
             float cloudClip  = isCG ? 1.0
@@ -761,7 +883,9 @@ void main()
               float fAge   = eventAge - fDelay;
               if (fAge < 0.0) continue;
 
-              float growFrames  = 1.2 + rand(seed + 903.0 + float(f)) * 1.0;
+              float growFrames  = isCloudFlash
+                ? (2.2 + rand(seed + 903.0 + float(f)) * 1.6)
+                : (1.2 + rand(seed + 903.0 + float(f)) * 1.0);
               float repFade     = pow(0.50, float(f));
 
               float boltProg = clamp(fAge / growFrames, 0.0, 1.0);
@@ -772,15 +896,18 @@ void main()
               float flick = 0.88 + 0.12 * rand(iterNum * 1.9 + seed + float(f) * 131.0);
               float envFade = riseFade * repFade * globalFade * flick * reachFade;
 
-              // Strobe + crawler pulse within flash window
+              // Cloud flash: gentle swell; strobe/crawler keep sharper pulse
               if (isStrobe || isCrawler) {
                 float strobeT = mod(fAge + seed * 0.017, 2.2);
                 float pulse = 0.50 + 0.50 * max(sin(strobeT * 10.0 + rand(seed + 77.0) * 6.28), 0.0);
                 if (isCrawler)
                   pulse = 0.62 + 0.38 * max(sin(strobeT * 7.5 + rand(seed + 88.0) * 6.28), 0.0);
-                if (isStrobe && ltType == 4)
+                if (isStrobe)
                   pulse *= 0.55 + 0.45 * step(0.25, sin(strobeT * 16.0));
                 envFade *= pulse;
+              } else if (isCloudFlash) {
+                float swell = 0.82 + 0.18 * sin(fAge * 0.55 + seed * 0.01);
+                envFade *= swell;
               }
 
               if (envFade < 0.003) continue;
@@ -788,17 +915,16 @@ void main()
               float boltSeed = seed + float(f) * 8191.0;
 
               float tG = 0.0;
-              float flashG = 0.0;
-              if (isStrobe) {
-                tG     = strobeCloudGlow(fragCoord, bOrigin, boltSeed, boltProg,
-                                         crawlThick, crawlDisp, 0.0, ltType);
-                flashG = tG;
-              } else {
-                tG = anvilCrawlerGlow(fragCoord, bOrigin, boltSeed,
-                                      boltProg, crawlThick, crawlDisp, ltType, 0.0, cloudScale);
-                if (envFade > 0.02 && opacity > typeThreshold * 0.4 && cloudClip > 0.01)
-                  flashG = anvilCrawlerGlow(fragCoord, bOrigin, boltSeed,
-                                            boltProg, crawlThick, crawlDisp, ltType, 1.0, cloudScale);
+              if (!isCloudFlash) {
+                if (isStrobe) {
+                  tG = strobeCloudGlow(fragCoord, bOrigin, boltSeed, boltProg,
+                                       crawlThick, crawlDisp, 0.0, ltType);
+                } else {
+                  float boltThick = crawlThick * (isSpider ? 0.62 : 1.0);
+                  float boltDisp  = crawlDisp  * (isSpider ? 0.26 : 1.0);
+                  tG = anvilCrawlerGlow(fragCoord, bOrigin, boltSeed,
+                                        boltProg, boltThick, boltDisp, ltType, 0.0, cloudScale);
+                }
               }
 
               if (isCG && boltProg > 0.75) {
@@ -811,7 +937,7 @@ void main()
                 onLight      += impactCol * 0.45;
               }
 
-              // Bolts — same brightness for every type (strobe type 3 has no core bolt)
+              // Bolts — cloud flash (type 3) has no core bolt
               if (tG > 0.003 && cloudClip > 0.01 && ltType != 3) {
                 float bright = intensity * 1.08 * flick * envFade * chargeFlash * cloudClip;
                 vec3 col = boltColorForType(ltType, tG, bOrigin, fragCoord) * bright * tG;
@@ -819,15 +945,10 @@ void main()
                 onLight      += col * 0.52;
               }
 
-              // Flash / bloom — same for every type, mild charge scaling
-              if (flashG > 0.008 && cloudClip > 0.01) {
-                float flashBright = intensity * 0.022 * envFade * chargeFlash
-                                  * flashG * opacity * cloudClip;
-                vec3 flashCol = mix(vec3(0.45, 0.52, 0.72), vec3(0.72, 0.76, 0.88), clamp(flashG * 0.7, 0.0, 1.0))
-                                * flashBright;
-                emittedLight += flashCol;
-                onLight      += flashCol * 0.07;
-              }
+              // Diffuse atmospheric scatter — all types (simulates light on cloud particles)
+              addBoltScatterFlash(emittedLight, onLight, fragCoord, bOrigin, boltSeed, boltProg,
+                                  ltType, originMag, flashSize, envFade, chargeFlash,
+                                  opacity, cloudClip, intensity, cloudFlashIntensity);
             }
           }
         }

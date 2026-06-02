@@ -8,7 +8,6 @@ in vec2 fragCoord;
 uniform sampler2D baseTex;
 uniform sampler2D waterTex;
 uniform isampler2D wallTex;
-uniform sampler2D colorScalesTex;
 
 uniform vec2 resolution;
 uniform vec2 texelSize;
@@ -24,7 +23,6 @@ out vec4 fragmentColor;
 
 #include "common.glsl"
 #include "commonDisplay.glsl"
-
 
 void main()
 {
@@ -55,16 +53,10 @@ void main()
 
     float relativeHumidity = relativeHumd(realTemp, water[TOTAL]);
 
-    if (relativeHumidity < 1.0) {
-
-      float pallettePos = map_range(relativeHumidity, 0.0, 1.0, 0., 10. / 131.);
-
-      fragmentColor = texture(colorScalesTex, vec2(2. / 4. + (1. / 8.), pallettePos)); // sample 3rd column (2)
+    if (relativeHumidity <= 1.0) {
+      fragmentColor = vec4(sampleRhColor(relativeHumidity), 1.0);
     } else {
-      // float cloudDens = relativeHumidity;
-      float cloudDens = water[CLOUD];
-      fragmentColor = texture(colorScalesTex, vec2(1.0, map_range(cloudDens, 0.0, 10.0, 0.5 / 131., 15. / 131.)));
-      //   fragmentColor = vec4(vec3(1.-cloudDens* 0.20), 1.); // simple grayscale
+      fragmentColor = vec4(sampleRhCloudColor(water[CLOUD]), 1.0);
     }
 
     drawVectorField(base.xy, displayVectorField);
