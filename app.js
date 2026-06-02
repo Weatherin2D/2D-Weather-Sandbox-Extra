@@ -466,8 +466,9 @@ const guiControls_default = {
   enablePrecipitation : true,
   showDrops : false,
   paused : false,
-  IterPerFrame : 10,
+  IterPerFrame : 30,
   auto_IterPerFrame : true,
+  simBudgetMs : 20,
   sound : true,
   enableBloom : true,
   // Sound volume controls
@@ -483,13 +484,22 @@ const guiControls_default = {
   cloudLightningIntensity : 2.0,
   cloudLightningThreshold : 0.3,
   cloudLightningFrequency : 0.8,
+  cloudLightningDischarge : 1.0,
+  enableCloudFlash : true,
+  cloudFlashIntensity : 2.5,
+  cloudFlashThreshold : 0.25,
+  cloudFlashFrequency : 1.2,
+  cloudFlashDischarge : 1.0,
   enableStrobeLightning : true,
   strobeLightningIntensity : 2.0,
   strobeLightningThreshold : 0.3,
   strobeLightningFrequency : 0.8,
+  strobeLightningDischarge : 1.0,
   enableCloudGroundLightning : true,  cloudGroundLightningIntensity : 2.0,
   cloudGroundLightningThreshold : 0.3,
   cloudGroundLightningFrequency : 0.8,
+  cloudGroundLightningDischarge : 1.0,
+  lightningBoltWidth : 1.0,
   lightningRepeat : true,          // allow repeat strikes driven by charge
   lightningCrossTrigger : true,    // CG can trigger CC crawlers and vice versa
   enableVectorField : false,
@@ -533,7 +543,7 @@ const guiControls_default = {
   fullscreenResolution : 'Default',
   skipCurlCalculation : false,
   skipCAPECalculation : false,
-  simulationQuality : 1.0,
+  simulationQuality : 2.0,
   reducedPrecipitation : false,
   disableTempChangeHistory : false,
   skipLightingCalculation : false,
@@ -599,6 +609,38 @@ var airplaneMode = false;
 
 var dropletFollowID = -1;
 
+const DROPLET_WIDTH_CM_THRESHOLD_MM = 10;
+
+/** Equivalent oblate spheroid widths (mm) from droplet mass, phase, and density. */
+function computeDropletWidths(water, ice, density)
+{
+  const totalMass = Math.max(water, 0) + Math.max(ice, 0);
+  if (totalMass < 0.001)
+    return { horiz: 0, vert: 0, horizStr: '0 mm', vertStr: '0 mm' };
+
+  const radius = Math.pow(totalMass, 1 / 3);
+  const mmPerRadius = 8.0;
+  const baseDiam = radius * 2 * mmPerRadius;
+  const liquidFrac = water / totalMass;
+  const oblate = liquidFrac * 0.38 + (density >= 0.82 ? 0.12 : 0) + (density < 0.45 ? 0.08 : 0);
+  const aspect = 1 + clamp(oblate, 0, 0.55);
+  const horiz = baseDiam * aspect;
+  const vert = baseDiam / aspect;
+  return {
+    horiz,
+    vert,
+    horizStr: formatDropletWidthMm(horiz),
+    vertStr: formatDropletWidthMm(vert)
+  };
+}
+
+function formatDropletWidthMm(mm)
+{
+  if (mm >= DROPLET_WIDTH_CM_THRESHOLD_MM)
+    return (mm / 10).toFixed(2) + ' cm';
+  return mm.toFixed(2) + ' mm';
+}
+
 var minShadowLight = 0.02;
 
 var saveFileName = '';
@@ -627,6 +669,14 @@ var dryLapse;
 
 
 const timePerIteration = 0.00008; // in hours (0.00008 = 0.288 sec, at 40m cell size that means the speed of light & sound = 138.88 m/s = 500 km/h)
+const MAX_ITER_PER_FRAME = 300;
+const TARGET_ITERS_PER_SECOND = 4500;
+const HIDDEN_TAB_ITER_MULT = 2;
+const UNPAUSE_GUARD_FRAMES = 2;
+const UNPAUSE_MAX_ITERS_PER_FRAME = 16;
+const DEFAULT_SIM_BUDGET_MS = 20;
+const MIN_SIM_BUDGET_MS = 8;
+const MAX_SIM_BUDGET_MS = 32;
 
 var NUM_DROPLETS;
 const NUM_DROPLETS_DEVIDER = 25; // 25
@@ -1177,6 +1227,7 @@ function computeColumnSoundingMetrics(envTempsC, envDewC, isFluid, vxRaw, vyRaw,
   let muLcl = sbMetrics.lclAlt;
   let muLfc = sbMetrics.lfcAlt;
   let muEl = sbMetrics.elAlt;
+  let muParcelLevel = surfaceLevel;
   for (let y = surfaceLevel; y < simResY - 1; y++) {
     if (!isFluid[y]) continue;
     const pp = computeParcelProfileForColumn(envTempsC[y], envDewC[y], y, simResY, dz);
@@ -1187,6 +1238,7 @@ function computeColumnSoundingMetrics(envTempsC, envDewC, isFluid, vxRaw, vyRaw,
       muLcl = m.lclAlt;
       muLfc = m.lfcAlt;
       muEl = m.elAlt;
+      muParcelLevel = y;
     }
   }
   if (muCape < sbCape) {
@@ -1195,6 +1247,17 @@ function computeColumnSoundingMetrics(envTempsC, envDewC, isFluid, vxRaw, vyRaw,
     muLcl = sbMetrics.lclAlt;
     muLfc = sbMetrics.lfcAlt;
     muEl = sbMetrics.elAlt;
+    muParcelLevel = surfaceLevel;
+  }
+  const muParcelAgl = (muParcelLevel - surfaceLevel) * dz;
+
+  let elevatedCape = 0;
+  const elevOriginMin = surfaceLevel + Math.round(1500 / dz);
+  for (let y = elevOriginMin; y < simResY - 1; y++) {
+    if (!isFluid[y]) continue;
+    const pp = computeParcelProfileForColumn(envTempsC[y], envDewC[y], y, simResY, dz);
+    const m = computeCAPEForColumn(envTempsC, envDewC, pp, y, isFluid, simResY, dz);
+    if (m.cape > elevatedCape) elevatedCape = m.cape;
   }
 
   let cape3km = 0;
@@ -1441,6 +1504,9 @@ function computeColumnSoundingMetrics(envTempsC, envDewC, isFluid, vxRaw, vyRaw,
     muEl: isNaN(muEl) ? 0 : muEl,
     freezingAlt: isNaN(freezingAlt) ? 0 : freezingAlt,
     sfcPress_hPa,
+    sfcAltM,
+    muParcelAgl,
+    elevatedCape,
     srh1km, srh3km,
     shear3km, shear6km, shear8km,
     sriMag,
@@ -1546,6 +1612,164 @@ function computeColumnHazardsAndFire(metrics, envTempsC, waterVaporCol, soilMois
   };
 }
 
+function computeStormTypeComposites(metrics, drySlotStrength)
+{
+  const moistEnv = 1 - drySlotStrength * 0.55;
+  const {
+    sbCape, muCape, cape3km,
+    shear3km, shear6km, shear8km,
+    srh3km, pwat_mm, dcape, stp,
+    lapse03, sriMag,
+    muParcelAgl = 0, elevatedCape = 0, sfcAltM = 0, muLcl = 0,
+  } = metrics;
+
+  function cf(v, min, moderate, full) {
+    if (v <= 0) return 0;
+    if (v < min) return map_range_C(v, 0, min, 0.04, 0.18);
+    if (v >= full) return 1;
+    if (v <= moderate) return map_range_C(v, min, moderate, 0.18, 0.5);
+    return map_range_C(v, moderate, full, 0.5, 1);
+  }
+
+  // Blend strongest core signals with overall profile — avoids one weak factor zeroing the score
+  function stormComposite(factors, cap = 100) {
+    if (factors.length === 0) return 0;
+    const sorted = [...factors].sort((a, b) => b - a);
+    const topN = sorted.slice(0, Math.min(4, sorted.length));
+    if (topN[0] <= 0 || topN.filter(f => f >= 0.12).length < 2) return 0;
+    const gmTop = Math.pow(
+      topN.reduce((a, b) => a * Math.max(b, 0.06), 1),
+      1 / topN.length
+    );
+    const meanAll = factors.reduce((a, b) => a + Math.max(b, 0.04), 0) / factors.length;
+    const blend = gmTop * 0.72 + meanAll * 0.28;
+    return Math.min(cap, Math.round(Math.pow(blend, 1.12) * 100));
+  }
+
+  function applyBonus(base, bonus, weight = 0.22) {
+    return Math.min(100, Math.round(base * (1 - weight + weight * Math.max(0.35, bonus))));
+  }
+
+  const lapseN = lapse03 || 0;
+  const muLclAgl = Math.max(0, muLcl - sfcAltM);
+  const lowShear = Math.max(0, 24 - shear6km);
+  const lowSrh = Math.max(0, 130 - srh3km);
+  const dryMid = Math.max(0, 42 - pwat_mm);
+  const deepShear = Math.max(0, shear8km - shear3km);
+  const orgFactor = Math.max(
+    cf(stp, 0.15, 0.6, 3.5),
+    cf(shear3km, 6, 12, 22) * 0.85 + cf(srh3km, 50, 120, 260) * 0.15
+  );
+
+  const pulse = stormComposite([
+    cf(muCape, 200, 600, 2000),
+    cf(lowShear, 3, 8, 14),
+    cf(lowSrh, 10, 35, 75),
+    cf(cape3km > 0 ? Math.min(1.2, sbCape / Math.max(cape3km, 1)) : 0.35, 0.35, 0.65, 1.0),
+  ]);
+
+  const multicell = stormComposite([
+    cf(muCape, 300, 800, 2400),
+    cf(shear3km, 4, 10, 18),
+    cf(shear6km, 6, 12, 24),
+    cf(pwat_mm, 14, 24, 40),
+    cf(moistEnv, 0.42, 0.62, 0.85),
+    cf(Math.max(0, 1 - Math.abs(shear6km - 16) / 16), 0.1, 0.4, 0.75),
+  ]);
+
+  const lpBase = stormComposite([
+    cf(muCape, 500, 1100, 3000),
+    cf(shear6km, 10, 16, 30),
+    cf(srh3km, 50, 110, 240),
+    cf(dryMid, 4, 10, 20),
+    cf(lapseN, 5.5, 6.8, 8.8),
+    cf(pwat_mm, 0, 18, 32), // drier midlevels favored
+  ]);
+  const lpSupercell = applyBonus(lpBase, cf(drySlotStrength, 0, 0.15, 0.55));
+
+  const classicBase = stormComposite([
+    cf(muCape, 550, 1200, 3000),
+    cf(shear6km, 10, 16, 30),
+    cf(srh3km, 55, 120, 280),
+    orgFactor,
+    cf(pwat_mm, 14, 24, 42),
+    cf(moistEnv, 0.38, 0.58, 0.82),
+  ]);
+  const classicSupercell = applyBonus(classicBase, cf(sriMag, 0, 6, 14));
+
+  const hpBase = stormComposite([
+    cf(muCape, 600, 1300, 3200),
+    cf(shear6km, 9, 15, 26),
+    cf(srh3km, 50, 110, 260),
+    cf(pwat_mm, 24, 34, 52),
+    cf(moistEnv, 0.55, 0.72, 0.9),
+    cf(Math.max(0, 1800 - muLclAgl), 200, 700, 1200),
+  ]);
+  const hpSupercell = applyBonus(hpBase, cf(Math.max(0, 42 - lapseN), 0, 5, 12));
+
+  const squallLine = stormComposite([
+    cf(shear6km, 12, 18, 32),
+    cf(dcape, 350, 750, 1900),
+    cf(muCape, 250, 650, 1800),
+    cf(pwat_mm, 15, 26, 44),
+    cf(deepShear, 2, 6, 14),
+    cf(drySlotStrength, 0.08, 0.25, 0.55),
+  ]);
+
+  const derecho = stormComposite([
+    cf(dcape, 700, 1200, 2500),
+    cf(shear6km, 15, 22, 36),
+    cf(shear8km, 17, 26, 40),
+    cf(muCape, 300, 750, 2000),
+    cf(Math.max(0, 1 - srh3km / 300), 0.15, 0.4, 0.75),
+    cf(drySlotStrength, 0.1, 0.3, 0.6),
+  ], 95);
+
+  let convMode = 'None';
+  let convModeColor = '#888888';
+  if (muCape >= 200) {
+    const sfcStrong = sbCape >= 350;
+    const elevStrong = elevatedCape >= 350;
+    const muElevated = muParcelAgl >= 1200;
+    const muSurface = muParcelAgl <= 500;
+    if (sfcStrong && elevStrong && muParcelAgl > 700 && muParcelAgl < 3500) {
+      convMode = 'Mixed';
+      convModeColor = '#CCAAFF';
+    } else if (muElevated || (elevStrong && elevatedCape > sbCape * 1.12 && muParcelAgl > 600)) {
+      convMode = 'Elevated';
+      convModeColor = '#66CCFF';
+    } else if (muSurface && sbCape >= muCape * 0.72) {
+      convMode = 'Surface-Based';
+      convModeColor = '#88FF88';
+    } else if (sfcStrong && !elevStrong) {
+      convMode = 'Surface-Based';
+      convModeColor = '#88FF88';
+    } else if (elevStrong && !sfcStrong) {
+      convMode = 'Elevated';
+      convModeColor = '#66CCFF';
+    } else {
+      convMode = 'Mixed';
+      convModeColor = '#CCAAFF';
+    }
+  }
+
+  const types = [
+    { key: 'pulse', label: 'Pulse Thunderstorm', shortLabel: 'Pulse TS', score: pulse, color: '#AAAAAA' },
+    { key: 'multicell', label: 'Multicell (Classic) TS', shortLabel: 'Multicell', score: multicell, color: '#88CCFF' },
+    { key: 'lp', label: 'LP Supercell', shortLabel: 'LP Supercell', score: lpSupercell, color: '#FF8800' },
+    { key: 'classic', label: 'Classic Supercell', shortLabel: 'Classic SC', score: classicSupercell, color: '#FF4400' },
+    { key: 'hp', label: 'HP Supercell', shortLabel: 'HP Supercell', score: hpSupercell, color: '#FF0066' },
+    { key: 'squall', label: 'Squall Line', shortLabel: 'Squall Line', score: squallLine, color: '#CC6600' },
+    { key: 'derecho', label: 'Derecho', shortLabel: 'Derecho', score: derecho, color: '#FF00AA' },
+  ].sort((a, b) => b.score - a.score);
+
+  return {
+    pulse, multicell, lpSupercell, classicSupercell, hpSupercell, squallLine, derecho,
+    convMode, convModeColor, types,
+    dominantType: types[0].score > 0 ? types[0] : null,
+  };
+}
+
 const SOUNDING_VIEW_CONFIGS = [
   { mode: 'DISP_CAPE',       key: 'sbCape',           scaleId: 'cape',       min: 0,    max: 10000, label: 'CAPE',           unit: 'J/kg' },
   { mode: 'DISP_MU_CAPE',    key: 'muCape',           scaleId: 'cape',       min: 0,    max: 10000, label: 'MU CAPE',        unit: 'J/kg' },
@@ -1629,6 +1853,7 @@ function computeColumnLightningHotspot(chargeCol, cloudWaterCol, isFluid, simRes
 
   let activeFreq = 0;
   if (guiControls.enableCloudLightning) activeFreq += guiControls.cloudLightningFrequency;
+  if (guiControls.enableCloudFlash) activeFreq += guiControls.cloudFlashFrequency;
   if (guiControls.enableStrobeLightning) activeFreq += guiControls.strobeLightningFrequency;
   if (guiControls.enableCloudGroundLightning) activeFreq += guiControls.cloudGroundLightningFrequency;
 
@@ -3980,7 +4205,10 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       let soundDelay = distance / 343;                                            // in seconds
       soundDelay = Math.max(soundDelay, 0.12); // always slightly after the visible flash
 
-      let simTimeMult = timePerIteration * guiControls.IterPerFrame * FPS * 3600; // how much faster sime time is than real time
+      let effectiveIters = Math.max(1, lastFrameSimIterations
+        || Math.round(guiControls.IterPerFrame * Math.max(0.1, guiControls.simulationQuality)));
+      effectiveIters = Math.min(effectiveIters, MAX_ITER_PER_FRAME);
+      let simTimeMult = timePerIteration * effectiveIters * FPS * 3600; // how much faster sim time is than real time
 
       soundDelay /= simTimeMult;
 
@@ -6100,11 +6328,20 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
     var lightning_folder = datGui.addFolder('Lightning');
     lightning_folder.add(guiControls, 'cloudLightningFrequency', 0.0, 100.0, 0.05).name('Cloud-Cloud Frequency');
-    lightning_folder.add(guiControls, 'enableStrobeLightning').name('Strobe Lightning');
+    lightning_folder.add(guiControls, 'cloudLightningDischarge', 0.0, 3.0, 0.05).name('CC Charge Discharge');
+    lightning_folder.add(guiControls, 'enableCloudFlash').name('Cloud Flashes');
+    lightning_folder.add(guiControls, 'cloudFlashIntensity', 0.0, 10.0, 0.1).name('Flash Intensity');
+    lightning_folder.add(guiControls, 'cloudFlashThreshold', 0.0, 1.0, 0.05).name('Flash Threshold');
+    lightning_folder.add(guiControls, 'cloudFlashFrequency', 0.0, 100.0, 0.05).name('Flash Frequency');
+    lightning_folder.add(guiControls, 'cloudFlashDischarge', 0.0, 3.0, 0.05).name('Flash Charge Discharge');
+    lightning_folder.add(guiControls, 'enableStrobeLightning').name('Strobe Bolts');
     lightning_folder.add(guiControls, 'strobeLightningIntensity', 0.0, 10.0, 0.1).name('Strobe Intensity');
     lightning_folder.add(guiControls, 'strobeLightningThreshold', 0.0, 1.0, 0.05).name('Strobe Threshold');
     lightning_folder.add(guiControls, 'strobeLightningFrequency', 0.0, 100.0, 0.05).name('Strobe Frequency');
+    lightning_folder.add(guiControls, 'strobeLightningDischarge', 0.0, 3.0, 0.05).name('Strobe Charge Discharge');
     lightning_folder.add(guiControls, 'cloudGroundLightningFrequency', 0.0, 100.0, 0.05).name('Cloud-Ground Frequency');
+    lightning_folder.add(guiControls, 'cloudGroundLightningDischarge', 0.0, 3.0, 0.05).name('CG Charge Discharge');
+    lightning_folder.add(guiControls, 'lightningBoltWidth', 0.25, 4.0, 0.05).name('Bolt Width');
 
     var display_folder = datGui.addFolder('Display');
 
@@ -6317,9 +6554,12 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       })
       .name('Enable Precipitation');
 
-    advanced_folder.add(guiControls, 'IterPerFrame', 1, 50, 1).onChange(function() { guiControls.auto_IterPerFrame = false; }).name('Iterations / Frame').listen();
+    advanced_folder.add(guiControls, 'IterPerFrame', 1, 200, 1).onChange(function() { guiControls.auto_IterPerFrame = false; }).name('Max Iterations / Frame').listen();
 
     advanced_folder.add(guiControls, 'auto_IterPerFrame').name('Auto Adjust').listen();
+    advanced_folder.add(guiControls, 'simBudgetMs', MIN_SIM_BUDGET_MS, MAX_SIM_BUDGET_MS, 1)
+      .onChange(function() { simBudgetMs = guiControls.simBudgetMs; })
+      .name('Sim GPU Budget (ms)').listen();
 
 
     advanced_folder.add(guiControls, 'sound').name('Enable Sound').onChange(function() {
@@ -6382,7 +6622,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       .name('Fullscreen Res');
     advanced_folder.add(guiControls, 'skipCurlCalculation').name('Skip Curl (Faster)');
     advanced_folder.add(guiControls, 'skipCAPECalculation').name('Skip CAPE (Faster)');
-    advanced_folder.add(guiControls, 'simulationQuality', 0.1, 25.0, 0.1).name('Sim Quality (High=Fast)');
+    advanced_folder.add(guiControls, 'simulationQuality', 0.1, 25.0, 0.1).name('Time Speed Multiplier');
     advanced_folder.add(guiControls, 'skipLightingCalculation').name('Skip Lighting (Major boost)');
     advanced_folder.add(guiControls, 'skipAdvection').name('Skip Advection (No fluid)');
     advanced_folder.add(guiControls, 'skipChargeCalculation').name('Skip Charge (Faster)');
@@ -6425,6 +6665,9 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
     clockEl = document.createElement('div');
     document.body.appendChild(clockEl);
+
+    simBudgetMs = guiControls.simBudgetMs || DEFAULT_SIM_BUDGET_MS;
+    guiControls.simBudgetMs = simBudgetMs;
 
     clockEl.innerHTML = ''
     clockEl.style.position = 'absolute';
@@ -6913,6 +7156,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       let muLcl = soundingMetrics.lclAlt;
       let muLfc = soundingMetrics.lfcAlt;
       let muEl = soundingMetrics.elAlt;
+      let muParcelLevel = surfaceLevel;
       for (let y = surfaceLevel; y < sim_res_y - 1; y++) {
         if (wallTextureValues[4 * y + 1] === 0) continue;
         const pp = computeParcelProfile(envTempsC[y], envDewC[y], y);
@@ -6923,6 +7167,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
           muLcl = m.lclAlt;
           muLfc = m.lfcAlt;
           muEl = m.elAlt;
+          muParcelLevel = y;
         }
       }
       if (muCape < sbCape) {
@@ -6931,6 +7176,17 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         muLcl = soundingMetrics.lclAlt;
         muLfc = soundingMetrics.lfcAlt;
         muEl = soundingMetrics.elAlt;
+        muParcelLevel = surfaceLevel;
+      }
+      const muParcelAgl = (muParcelLevel - surfaceLevel) * dz;
+
+      let elevatedCape = 0;
+      const elevOriginMin = surfaceLevel + Math.round(1500 / dz);
+      for (let y = elevOriginMin; y < sim_res_y - 1; y++) {
+        if (wallTextureValues[4 * y + 1] === 0) continue;
+        const pp = computeParcelProfile(envTempsC[y], envDewC[y], y);
+        const m = computeCAPE(envTempsC, envDewC, pp, y);
+        if (m.cape > elevatedCape) elevatedCape = m.cape;
       }
 
       // 3CAPE: max CAPE among lifts in lowest 3 km with LFC below 3 km AGL
@@ -7354,6 +7610,15 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         lightningFlMin = lScore * pScore * mScore * uScore * sScore * slotScore * 6.0;
       }
 
+      const stormTypes = computeStormTypeComposites({
+        sbCape, muCape, mlCape, cape3km,
+        shear3km, shear6km, shear8km,
+        srh3km, pwat_mm, dcape, stp,
+        lapse03, sriMag,
+        muParcelAgl, elevatedCape,
+        sfcAltM, muLcl,
+      }, drySlot.strength);
+
       // Pre-compute hazards so we can size the box dynamically
       const hazards = [];
       {
@@ -7455,12 +7720,14 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         hazards.sort((a, b) => b.pct - a.pct);
       }
 
-      // Dynamic box height: fixed rows + hazard section + padding
-      const numFixedRows = 30; // + dry slot readout
+      // Dynamic box height: fixed rows + storm types + hazards + risk/fire footer + padding
+      const numFixedRows = 29;
+      const stormTypeItemsH = lineHeight + stormTypes.types.length * (lineHeight + 4) + 2;
       const hazardItemsH = hazards.length === 0
         ? lineHeight
         : hazards.length * (lineHeight + 4) + 2;
-      const infoBoxHeight = 16 + numFixedRows * lineHeight + hazardItemsH;
+      const footerRowsH = 2 * lineHeight; // Risk + Fire Risk
+      const infoBoxHeight = 16 + numFixedRows * lineHeight + stormTypeItemsH + hazardItemsH + footerRowsH + 4;
 
       const textX = infoBoxX + 8;
       let textY = infoBoxY + 8;
@@ -7538,6 +7805,43 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       row('DCAPE:', Math.round(dcape) + ' J/kg', dcape > 1000 ? '#FF4400' : dcape > 500 ? '#FFAA00' : 'white');
       row('Est. Hail:', printHailSize(estHailIn), estHailIn >= 1.0 ? '#FF4400' : estHailIn >= 0.5 ? '#FFAA00' : 'white');
       row('Lightning:', formatLightningEstimate(lightningFlMin), lightningFlMin >= 1.2 ? '#FFFF00' : lightningFlMin >= 0.35 ? '#FFAA00' : 'white');
+      row('Conv Mode:', stormTypes.convMode, stormTypes.convModeColor);
+      row('Dominant:', stormTypes.dominantType
+        ? stormTypes.dominantType.label + ' (' + stormTypes.dominantType.score + '%)'
+        : 'None', stormTypes.dominantType ? stormTypes.dominantType.color : '#888888');
+
+      // Storm-type composite scores
+      {
+        c.fillStyle = '#AAAAAA';
+        c.font = '12px monospace';
+        c.fillText('Storm Types:', textX, textY);
+        textY += lineHeight;
+
+        const barMaxW = 80;
+        stormTypes.types.forEach(st => {
+          c.fillStyle = '#333333';
+          c.fillRect(textX + 4, textY + 8, barMaxW, 5);
+          c.fillStyle = st.color;
+          c.fillRect(textX + 4, textY + 8, Math.round(barMaxW * st.score / 100), 5);
+          c.fillStyle = '#cccccc';
+          c.font = '10px monospace';
+          c.fillText(st.score + '%', textX + 4, textY);
+          c.fillStyle = st.color;
+          c.font = '10px monospace';
+          let labelStr = st.label;
+          const labelX = textX + 4 + barMaxW + 4;
+          const labelMaxW = infoBoxWidth - (labelX - textX) - 4;
+          while (labelStr.length > 1 && c.measureText(labelStr + '…').width > labelMaxW) {
+            labelStr = labelStr.slice(0, -1);
+          }
+          if (labelStr !== st.label && c.measureText(st.label).width > labelMaxW) {
+            labelStr += '…';
+          }
+          c.fillText(labelStr, labelX, textY);
+          textY += lineHeight + 4;
+        });
+        textY += 2;
+      }
 
       // Hazard probability list — draw using pre-computed hazards array
       {
@@ -9013,10 +9317,25 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
   var lastBpressTime;
 
+  var unpauseFrameGuard = 0;
+  var lastFrameSimIterations = 1;
+  var simBudgetMs = DEFAULT_SIM_BUDGET_MS;
+
+  function getMaxSafeIterationsPerFrame()
+  {
+    const cells = Math.max(1, sim_res_x * sim_res_y);
+    let maxIters = Math.floor(36000000 / cells);
+    if (guiControls.enablePrecipitation)
+      maxIters = Math.floor(maxIters * 1000000 / (1000000 + NUM_DROPLETS * 3));
+    return clamp(maxIters, 4, MAX_ITER_PER_FRAME);
+  }
+
   function handlePause()
   {
     if (guiControls.paused && soundSystem) {
       soundSystem.mute();
+    } else if (!guiControls.paused) {
+      unpauseFrameGuard = UNPAUSE_GUARD_FRAMES;
     }
   }
 
@@ -9569,6 +9888,9 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         console.log('water:', water);
         console.log('Ice:', ice);
         console.log('Density:', density);
+        const w = computeDropletWidths(water, ice, density);
+        console.log('Width H:', w.horizStr);
+        console.log('Width V:', w.vertStr);
         console.log(' ');
         numInBrush++;
 
@@ -10405,32 +10727,19 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     colorScaleData.charge = chargeScale;
     colorScaleValues.charge = Array.from({length: 33}, (_, i) => i);
 
-    // Relative Humidity: 0% (dry) → 100% (saturated), with distinct cloud density above 100%
-    // Uses blue-cyan gradient for humidity, transitioning to white/gray for clouds
-    const rhScale = [];
-    for (let i = 0; i <= 32; i++) {
-      const t = i / 32; // 0=dry, 1=saturated
-      if (t < 0.3) {
-        // Dry: dark blue to medium blue
-        const f = t / 0.3;
-        rhScale.push([0, Math.round(f * 100), Math.round(50 + f * 150)]);
-      } else if (t < 0.6) {
-        // Medium humidity: blue to cyan
-        const f = (t - 0.3) / 0.3;
-        rhScale.push([0, Math.round(100 + f * 155), Math.round(200 + f * 55)]);
-      } else if (t < 0.9) {
-        // High humidity: cyan to white
-        const f = (t - 0.6) / 0.3;
-        rhScale.push([Math.round(f * 255), 255, 255]);
-      } else {
-        // Saturated/cloudy: white to light gray
-        const f = (t - 0.9) / 0.1;
-        const gray = Math.round(255 - f * 40);
-        rhScale.push([gray, gray, gray]);
-      }
-    }
-    colorScaleData.relativeHumidity = rhScale;
-    colorScaleValues.relativeHumidity = Array.from({length: 33}, (_, i) => i * 3.125); // 0-100%
+    // Relative Humidity: smooth 0–99%, dark blue at 99%, hard white at 100%
+    buildPalette('relativeHumidity', 33, 0, 99, [
+      {t: 0,    c: [255, 0, 0]},
+      {t: 0.18, c: [255, 140, 0]},
+      {t: 0.35, c: [255, 255, 0]},
+      {t: 0.50, c: [0, 217, 0]},
+      {t: 0.65, c: [0, 242, 191]},
+      {t: 0.80, c: [0, 166, 255]},
+      {t: 1,    c: [0, 0, 140]},
+    ]);
+    colorScaleData.relativeHumidity[31] = [0, 0, 140];
+    colorScaleData.relativeHumidity[32] = [255, 255, 255];
+    colorScaleValues.relativeHumidity = Array.from({length: 33}, (_, i) => i * (100 / 32));
 
     function lerpRgb(a, b, t) {
       return [
@@ -11701,7 +12010,6 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   gl.uniform1i(gl.getUniformLocation(humidityDisplayProgram, 'baseTex'), 0);
   gl.uniform1i(gl.getUniformLocation(humidityDisplayProgram, 'waterTex'), 1);
   gl.uniform1i(gl.getUniformLocation(humidityDisplayProgram, 'wallTex'), 2);
-  gl.uniform1i(gl.getUniformLocation(humidityDisplayProgram, 'colorScalesTex'), 9);
   gl.uniform1f(gl.getUniformLocation(humidityDisplayProgram, 'dryLapse'), dryLapse);
 
   gl.useProgram(precipDisplayProgram);
@@ -11852,6 +12160,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   // per-frame precipitation
   const uloc_precip_iterNum            = gl.getUniformLocation(precipitationProgram,     'iterNum');
   const uloc_precip_inactiveDroplets   = gl.getUniformLocation(precipitationProgram,     'inactiveDroplets');
+  const uloc_lightningLocation_iterNum = gl.getUniformLocation(lightningLocationProgram, 'iterNum');
 
   // bloom blur
   const uloc_bloom_bloomTexture        = gl.getUniformLocation(bloomBlurProgram, 'bloomTexture');
@@ -11888,6 +12197,11 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   const uloc_real_strobeLightningIntensity = gl.getUniformLocation(realisticDisplayProgram, 'strobeLightningIntensity');
   const uloc_real_strobeLightningThreshold = gl.getUniformLocation(realisticDisplayProgram, 'strobeLightningThreshold');
   const uloc_real_strobeLightningFrequency = gl.getUniformLocation(realisticDisplayProgram, 'strobeLightningFrequency');
+  const uloc_real_enableCloudFlash = gl.getUniformLocation(realisticDisplayProgram, 'enableCloudFlash');
+  const uloc_real_cloudFlashIntensity = gl.getUniformLocation(realisticDisplayProgram, 'cloudFlashIntensity');
+  const uloc_real_cloudFlashThreshold = gl.getUniformLocation(realisticDisplayProgram, 'cloudFlashThreshold');
+  const uloc_real_cloudFlashFrequency = gl.getUniformLocation(realisticDisplayProgram, 'cloudFlashFrequency');
+  const uloc_real_lightningBoltWidth = gl.getUniformLocation(realisticDisplayProgram, 'lightningBoltWidth');
   const uloc_real_lightningRepeat       = gl.getUniformLocation(realisticDisplayProgram, 'lightningRepeat');
   const uloc_real_lightningCrossTrigger = gl.getUniformLocation(realisticDisplayProgram, 'lightningCrossTrigger');
   const uloc_real_invertSun             = gl.getUniformLocation(realisticDisplayProgram, 'invertSun');
@@ -12310,7 +12624,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   function isProceduralLightningEnabled()
   {
     return guiControls.enableCloudLightning || guiControls.enableCloudGroundLightning
-      || guiControls.enableStrobeLightning;
+      || guiControls.enableStrobeLightning || guiControls.enableCloudFlash;
   }
 
   function refreshLightningFieldCache()
@@ -12370,22 +12684,35 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     let t = guiControls.cloudLightningThreshold;
     if (ltType >= 5)
       t = guiControls.cloudGroundLightningThreshold;
-    else if (ltType >= 3)
+    else if (ltType === 4)
       t = guiControls.strobeLightningThreshold;
-    return 0.12 + t * 0.38;
+    else if (ltType === 3)
+      t = guiControls.cloudFlashThreshold;
+    return 0.10 + t * 0.35;
   }
 
-  function lightningStrikeInterval(freq)
+  function channelCloudThreshold(channel)
   {
-    if (freq <= 0)
-      return Infinity;
-    return Math.max(6, 80 / (freq + 0.08));
+    if (channel.id === 'cg')
+      return guiControls.cloudGroundLightningThreshold;
+    if (channel.id === 'strobe')
+      return guiControls.strobeLightningThreshold;
+    if (channel.id === 'flash')
+      return guiControls.cloudFlashThreshold;
+    return guiControls.cloudLightningThreshold;
+  }
+
+  function channelChargeThreshold(channel)
+  {
+    return 0.10 + channelCloudThreshold(channel) * 0.35;
   }
 
   function lightningStrikeChance(freq)
   {
-    const interval = lightningStrikeInterval(freq);
-    return interval === Infinity ? 0 : 1 / interval;
+    if (freq <= 0)
+      return 0;
+    const norm = freq / 100.0;
+    return Math.min(0.72, norm * norm * 0.50 + norm * 0.38 + 0.003);
   }
 
   function getLightningChannels()
@@ -12400,9 +12727,17 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         freq: () => guiControls.cloudLightningFrequency
       },
       {
+        id: 'flash',
+        salt: 1511,
+        typeMin: 3,
+        typeMax: 3,
+        enabled: () => guiControls.enableCloudFlash,
+        freq: () => guiControls.cloudFlashFrequency
+      },
+      {
         id: 'strobe',
         salt: 1913,
-        typeMin: 3,
+        typeMin: 4,
         typeMax: 4,
         enabled: () => guiControls.enableStrobeLightning,
         freq: () => guiControls.strobeLightningFrequency
@@ -12461,13 +12796,34 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   {
     for (let s = 0; s < 3; s++) {
       const pick = pickLightningOriginCached(eventId, s, 3);
-      const strike = evaluateProceduralStrikeCached(pick.originX, pick.originY, channel);
-      if (!strike)
+      const cloudGate = cloudGateFromDensity(readCloudCached(pick.originX, pick.originY));
+      const originMag = Math.abs(readChargeCached(pick.originX, pick.originY));
+      const cloudTh = channelCloudThreshold(channel);
+      if (cloudGate < cloudTh * 0.30)
         continue;
-      if (strike.originMag >= chargeThresholdForType(strike.ltType))
+      if (originMag >= channelChargeThreshold(channel))
         return true;
     }
     return false;
+  }
+
+  function assignLtTypeForChannel(channel, chargeVal, eventId, slot)
+  {
+    const chargeMag = Math.abs(chargeVal);
+    const chargeNeg = Math.max(-chargeVal, 0);
+    const r = shaderRand(eventId * 3.17 + channel.salt + slot * 41.0);
+    if (channel.id === 'cc')
+      return r > 0.42 ? 2 : 1;
+    if (channel.id === 'flash')
+      return 3;
+    if (channel.id === 'strobe')
+      return 4;
+    if (channel.id === 'cg') {
+      if (chargeMag >= 0.38 || chargeNeg >= 0.22)
+        return r > 0.38 ? 6 : 5;
+      return 5;
+    }
+    return selectLightningTypeJS(chargeVal, 1.0);
   }
 
   function readCloudAtSimPixel(simX, simY)
@@ -12564,47 +12920,68 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     };
   }
 
-  function evaluateProceduralStrikeCached(originX, originY, channel)
+  function evaluateProceduralStrikeCached(originX, originY, channel, eventId, slot)
   {
     const cloudGate = cloudGateFromDensity(readCloudCached(originX, originY));
     const chargeVal = readChargeCached(originX, originY);
     const originMag = Math.abs(chargeVal);
-    const ltType = selectLightningTypeJS(chargeVal, cloudGate);
-    if (ltType === 0)
+    const cloudTh = channelCloudThreshold(channel);
+    if (cloudGate < cloudTh * 0.30)
       return null;
-    if (channel && (ltType < channel.typeMin || ltType > channel.typeMax))
+    if (originMag < channelChargeThreshold(channel))
       return null;
-    const threshold = (ltType >= 3 && ltType <= 4)
-      ? guiControls.strobeLightningThreshold
-      : guiControls.cloudLightningThreshold;
-    if (cloudGate < threshold * 0.35)
-      return null;
+    const ltType = assignLtTypeForChannel(channel, chargeVal, eventId, slot);
     if (ltType >= 1 && ltType <= 2 && !guiControls.enableCloudLightning)
       return null;
-    if (ltType >= 3 && ltType <= 4 && !guiControls.enableStrobeLightning)
+    if (ltType === 3 && !guiControls.enableCloudFlash)
+      return null;
+    if (ltType === 4 && !guiControls.enableStrobeLightning)
       return null;
     if (ltType >= 5 && !guiControls.enableCloudGroundLightning)
       return null;
     return { ltType, chargeVal, originMag, cloudGate };
   }
 
-  function dischargeAmountForStrike(ltType, originMag)
+  function computeCloudFlashSize(originMag, eventId, slot)
+  {
+    const r = shaderRand(eventId * 5.13 + slot * 97.0 + 311.0);
+    const chargeHeadroom = clamp((originMag - 0.12) / 0.65, 0, 1);
+    return 0.28 + chargeHeadroom * 0.52 + r * 0.55;
+  }
+
+  function dischargeMultiplierForType(ltType)
+  {
+    if (ltType >= 5)
+      return guiControls.cloudGroundLightningDischarge;
+    if (ltType === 4)
+      return guiControls.strobeLightningDischarge;
+    if (ltType === 3)
+      return guiControls.cloudFlashDischarge;
+    return guiControls.cloudLightningDischarge;
+  }
+
+  function dischargeAmountForStrike(ltType, originMag, flashSize = 1)
   {
     let amount = originMag * 0.68 + 0.10;
     if (ltType >= 5)
       amount *= 1.20;
-    else if (ltType >= 3)
+    else if (ltType === 3)
+      amount *= 0.50 + flashSize * 0.72;
+    else if (ltType === 4)
       amount *= 0.90;
     else
       amount *= 0.82;
+    amount *= dischargeMultiplierForType(ltType);
     return Math.min(amount, 0.92);
   }
 
-  function dischargeRadiusForStrike(ltType)
+  function dischargeRadiusForStrike(ltType, flashSize = 1)
   {
     if (ltType >= 5)
       return 18;
-    if (ltType >= 3)
+    if (ltType === 3)
+      return 5 + flashSize * 22;
+    if (ltType === 4)
       return 11;
     return 14;
   }
@@ -12613,21 +12990,27 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   {
     if (chargeDischargesThisIter.length >= 4)
       return;
+    const flashSize = strike.flashSize || 1;
     chargeDischargesThisIter.push({
       u: strike.originX / sim_res_x,
       v: strike.originY / sim_res_y,
-      amount: dischargeAmountForStrike(strike.ltType, strike.originMag),
-      radius: dischargeRadiusForStrike(strike.ltType),
+      amount: dischargeAmountForStrike(strike.ltType, strike.originMag, flashSize),
+      radius: dischargeRadiusForStrike(strike.ltType, flashSize),
       ltType: strike.ltType
     });
   }
+
+  const chargeDischargeUniformData = new Float32Array(16);
+  const chargeDischargeUniformMeta = new Float32Array(16);
 
   function uploadChargeDischargeUniforms()
   {
     const count = Math.min(chargeDischargesThisIter.length, 4);
     gl.uniform1i(uloc_charge_ltDischargeCount, count);
-    const disArr = new Float32Array(16);
-    const metaArr = new Float32Array(16);
+    const disArr = chargeDischargeUniformData;
+    const metaArr = chargeDischargeUniformMeta;
+    disArr.fill(0);
+    metaArr.fill(0);
     for (let i = 0; i < count; i++) {
       const d = chargeDischargesThisIter[i];
       disArr[i * 4] = d.u;
@@ -12648,11 +13031,18 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     const strikes = [];
     for (let s = 0; s < numStrikes; s++) {
       const pick = pickLightningOriginCached(eventId, s, numStrikes);
-      const strike = evaluateProceduralStrikeCached(pick.originX, pick.originY, channel);
+      const strike = evaluateProceduralStrikeCached(pick.originX, pick.originY, channel, eventId, s);
       if (!strike)
         continue;
       if (strike.originMag < chargeThresholdForType(strike.ltType))
         continue;
+      let flashSize = 1.0;
+      if (strike.ltType === 3) {
+        flashSize = computeCloudFlashSize(strike.originMag, eventId, s);
+        const minCharge = chargeThresholdForType(3) + flashSize * 0.09;
+        if (strike.originMag < minCharge)
+          continue;
+      }
       const seed = lightningStrikeSeedJS(eventId, s, pick.originX, pick.originY);
       let numFlashes = 1;
       if (guiControls.lightningRepeat && strike.originMag > 0.55 && shaderRand(seed + 888) > 0.88)
@@ -12665,7 +13055,8 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         seed,
         originMag: strike.originMag,
         cloudGate: strike.cloudGate,
-        numFlashes
+        numFlashes,
+        flashSize
       });
     }
     return strikes;
@@ -12749,6 +13140,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         metaArr[i * 4] = s.originMag;
         metaArr[i * 4 + 1] = s.cloudGate;
         metaArr[i * 4 + 2] = s.numFlashes;
+        metaArr[i * 4 + 3] = s.flashSize || 0;
       }
     }
     gl.uniform4fv(uloc_real_ltStrikePos, posArr);
@@ -12876,6 +13268,47 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       const fade = Math.min(1, (strike.expireAt - now) / fadeMs);
       drawRadarLightningIcon(ctx, sx, sy, 16, fade);
     }
+  }
+
+  function getSimQualityMult()
+  {
+    return Math.max(0.1, guiControls.simulationQuality);
+  }
+
+  function getMaxSimIterationAttempts()
+  {
+    let maxAttempts = Math.round(guiControls.IterPerFrame * getSimQualityMult());
+    if (isPageHidden())
+      maxAttempts *= HIDDEN_TAB_ITER_MULT;
+    return Math.max(1, Math.min(maxAttempts, getMaxSafeIterationsPerFrame()));
+  }
+
+  function getSimBudgetMs()
+  {
+    return clamp(guiControls.simBudgetMs || simBudgetMs, MIN_SIM_BUDGET_MS, MAX_SIM_BUDGET_MS);
+  }
+
+  function tickProceduralLightningForIteration(iterationIndex, numIterations)
+  {
+    if (!isProceduralLightningEnabled())
+      return;
+
+    chargeDischargesThisIter.length = 0;
+
+    if (proceduralLightningState.trackedEventId >= 0 && proceduralLightningState.trackedChannel) {
+      const age = iterNum - proceduralLightningState.trackedEventId;
+      if (age >= 0 && age < LIGHTNING_FLASH_DURATION) {
+        proceduralLightningState.eventAge = age;
+        proceduralLightningState.eventId = proceduralLightningState.trackedEventId;
+        proceduralLightningState.channelId = proceduralLightningState.trackedChannel.id;
+        return;
+      }
+      proceduralLightningState.trackedEventId = -1;
+      proceduralLightningState.trackedChannel = null;
+    }
+
+    if (iterationIndex === 0 || iterationIndex === numIterations - 1)
+      updateProceduralLightningState();
   }
 
   function draw()
@@ -13023,8 +13456,6 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
             }
           } else if (airplaneMode || guiControls.slowMotion) {
             updateSunlight(1.0 / 3600.0 / 60);                                                                    // increase solar time at real speed: 1/60 seconds per frame
-          } else {
-            updateSunlight(timePerIteration * guiControls.IterPerFrame * (nightAccelerationActive ? 10.0 : 1.0)); // increase solar time
           }
         }
 
@@ -13034,12 +13465,24 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         gl.viewport(0, 0, sim_res_x, sim_res_y);
         gl.clearColor(0.0, 0.0, 0.0, 0.0);
 
+        lastFrameSimIterations = 0;
+
         if (!airplaneMode || airplane.hasCrashed() || frameNum % 17 == 0) { // update every 17 frames because 60 * 0.288 secs per iteration = 17.28
-          let numIterations = guiControls.IterPerFrame;
+          let maxAttempts = getMaxSimIterationAttempts();
           if (airplaneMode || guiControls.slowMotion)
-            numIterations = 1;
+            maxAttempts = 1;
+          else if (unpauseFrameGuard > 0) {
+            maxAttempts = Math.min(maxAttempts, UNPAUSE_MAX_ITERS_PER_FRAME);
+            unpauseFrameGuard--;
+          }
+
           refreshLightningFieldCache();
-          for (var i = 0; i < numIterations; i++) { // Simulation loop
+          let particleLightningCheckPending = guiControls.enablePrecipitation
+            && (guiControls.soundThunderEnabled || guiControls.radarLightningIcons);
+          const simLoopBudgetMs = getSimBudgetMs();
+          const simLoopStart = performance.now();
+
+          for (var i = 0; i < maxAttempts; i++) { // Simulation loop (stops early when GPU time budget is used)
             // calc and apply velocity
             gl.useProgram(velocityProgram);
             gl.activeTexture(gl.TEXTURE0);
@@ -13076,10 +13519,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
             const runChargePass = isProceduralLightningEnabled() && !guiControls.skipChargeCalculation;
 
-            if (isProceduralLightningEnabled()) {
-              chargeDischargesThisIter.length = 0;
-              updateProceduralLightningState();
-            }
+            tickProceduralLightningForIteration(i, maxAttempts);
 
             // calc atmospheric charge (drives physics-based lightning)
             if (runChargePass) {
@@ -13156,7 +13596,8 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
             }
 
             // capture current temperature state for the temperature-change display
-            if (!guiControls.disableTempChangeHistory) {
+            const tempHistoryStride = Math.max(1, Math.round(guiControls.temperatureChangeIterations));
+            if (!guiControls.disableTempChangeHistory && iterNum % tempHistoryStride === 0) {
               gl.bindFramebuffer(gl.READ_FRAMEBUFFER, frameBuff_1);
               gl.readBuffer(gl.COLOR_ATTACHMENT0);
               gl.activeTexture(gl.TEXTURE0);
@@ -13239,14 +13680,16 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
               gl.disable(gl.BLEND);
               gl.bindVertexArray(fluidVao); // set screenfilling rect again
 
-              gl.useProgram(lightningLocationProgram);
-              gl.uniform1f(gl.getUniformLocation(lightningLocationProgram, 'iterNum'), iterNum);
-              gl.activeTexture(gl.TEXTURE0);
-              gl.bindTexture(gl.TEXTURE_2D, precipitationFeedbackTexture);
-              gl.bindFramebuffer(gl.FRAMEBUFFER, lightningDataFrameBuff);
-              gl.drawBuffers([ gl.COLOR_ATTACHMENT0 ]);
-              gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
-              detectParticleLightningStrike();
+              if (particleLightningCheckPending) {
+                gl.useProgram(lightningLocationProgram);
+                gl.uniform1f(uloc_lightningLocation_iterNum, iterNum);
+                gl.activeTexture(gl.TEXTURE0);
+                gl.bindTexture(gl.TEXTURE_2D, precipitationFeedbackTexture);
+                gl.bindFramebuffer(gl.FRAMEBUFFER, lightningDataFrameBuff);
+                gl.drawBuffers([ gl.COLOR_ATTACHMENT0 ]);
+                gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+                detectParticleLightningStrike();
+              }
 
             }
 
@@ -13258,7 +13701,15 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
             if (!airplaneMode) {
               iterNum++;
             }
+
+            lastFrameSimIterations = i + 1;
+            if (performance.now() - simLoopStart >= simLoopBudgetMs)
+              break;
           }
+        }
+
+        if (guiControls.dayNightCycle && !guiControls.realtimeMode && !airplaneMode && !guiControls.slowMotion) {
+          updateSunlight(timePerIteration * lastFrameSimIterations * (nightAccelerationActive ? 10.0 : 1.0));
         }
 
         if (airplaneMode) {
@@ -13332,6 +13783,10 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       ctx.fillText('Ice     : ' + dropletInfo[3].toFixed(2), 0, 30);
       ctx.fillStyle = '#00FF00';
       ctx.fillText('Dens : ' + dropletInfo[4].toFixed(2), 0, 45);
+      const widths = computeDropletWidths(dropletInfo[2], dropletInfo[3], dropletInfo[4]);
+      ctx.fillStyle = '#FFAA44';
+      ctx.fillText('Width H: ' + widths.horizStr, 0, 60);
+      ctx.fillText('Width V: ' + widths.vertStr, 0, 75);
     }
 
     if (airplaneMode) {
@@ -13491,6 +13946,11 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       gl.uniform1f(uloc_real_strobeLightningIntensity, guiControls.strobeLightningIntensity);
       gl.uniform1f(uloc_real_strobeLightningThreshold, guiControls.strobeLightningThreshold);
       gl.uniform1f(uloc_real_strobeLightningFrequency, guiControls.strobeLightningFrequency);
+      gl.uniform1f(uloc_real_enableCloudFlash, guiControls.enableCloudFlash ? 1.0 : 0.0);
+      gl.uniform1f(uloc_real_cloudFlashIntensity, guiControls.cloudFlashIntensity);
+      gl.uniform1f(uloc_real_cloudFlashThreshold, guiControls.cloudFlashThreshold);
+      gl.uniform1f(uloc_real_cloudFlashFrequency, guiControls.cloudFlashFrequency);
+      gl.uniform1f(uloc_real_lightningBoltWidth, guiControls.lightningBoltWidth);
       gl.uniform1i(uloc_real_lightningRepeat,       guiControls.lightningRepeat       ? 1 : 0);
       gl.uniform1i(uloc_real_lightningCrossTrigger, guiControls.lightningCrossTrigger ? 1 : 0);
       gl.uniform1i(uloc_real_invertSun,             guiControls.invertSun             ? 1 : 0);
@@ -14681,7 +15141,7 @@ drawNukeOverlay();
     return shader;
   }
 
-  function adjIterPerFrame(adj) { guiControls.IterPerFrame = Math.round(clamp(guiControls.IterPerFrame + adj, 1, 50)); }
+  function adjIterPerFrame(adj) { guiControls.IterPerFrame = Math.round(clamp(guiControls.IterPerFrame + adj, 1, 200)); }
 
   function isPageHidden() { return document.hidden || document.msHidden || document.webkitHidden || document.mozHidden; }
 
@@ -14693,14 +15153,27 @@ drawNukeOverlay();
 
 
       if (!guiControls.paused) {
-        console.log(FPS + ' FPS   ' + guiControls.IterPerFrame + ' Iterations / frame      ' + FPS * guiControls.IterPerFrame + ' Iterations / second');
+        const achievedItersPerSec = Math.max(1, FPS * lastFrameSimIterations);
+        if (frameNum % 120 === 0) {
+          console.log(FPS + ' FPS   ran ' + lastFrameSimIterations + '/' + getMaxSimIterationAttempts()
+            + ' iters  budget ' + getSimBudgetMs().toFixed(0) + 'ms   '
+            + achievedItersPerSec + ' iterations / second');
+        }
 
         if (guiControls.auto_IterPerFrame && !airplaneMode && !guiControls.slowMotion) {
-          const fpsTarget = 60;
-          adjIterPerFrame((FPS / fpsTarget - 1.0) * 5.0); // example: ((30 / 60)-1.0) = -0.5
+          simBudgetMs = guiControls.simBudgetMs = getSimBudgetMs();
+          const ratio = TARGET_ITERS_PER_SECOND / achievedItersPerSec;
 
-          if (FPS == fpsTarget)
-            adjIterPerFrame(1);
+          if (ratio > 1.15 && FPS >= 42 && simBudgetMs < MAX_SIM_BUDGET_MS)
+            guiControls.simBudgetMs = simBudgetMs = simBudgetMs + 1;
+          else if ((ratio < 0.75 || FPS < 28) && simBudgetMs > MIN_SIM_BUDGET_MS)
+            guiControls.simBudgetMs = simBudgetMs = simBudgetMs - 1;
+
+          if (ratio > 1.25 && lastFrameSimIterations >= getMaxSimIterationAttempts() - 1
+              && guiControls.IterPerFrame < getMaxSafeIterationsPerFrame() / getSimQualityMult())
+            adjIterPerFrame(4);
+          else if (FPS < 24 && lastFrameSimIterations < 6)
+            adjIterPerFrame(-2);
         }
       }
       // calculate total amounts of water and smoke for verification of fluid simulation
