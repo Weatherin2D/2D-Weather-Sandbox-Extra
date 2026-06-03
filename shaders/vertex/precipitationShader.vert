@@ -202,15 +202,24 @@ void main()
 
       // growthRate = 0.0;                                                                                                                  // for debug
 
-      float cloudGrowth = water[CLOUD] * growthRate * surfaceArea;
-      float accretionGrowth = 0.0;
+      float growth = water[CLOUD] * growthRate * surfaceArea;
 
-      cloudGrowth += max(relativeHumidity - 1.0, 0.) * max(-30.0 - KtoC(realTemp), 0.) * 0.0000; // increase growthrate below -30 C and above 100% relative humidity
+      growth += max(relativeHumidity - 1.0, 0.) * max(-30.0 - KtoC(realTemp), 0.) * 0.0000; // increase growthrate below -30 C and above 100% relative humidity
 
       // Mixed-phase hail-core zone (−8 to −32 °C)
       float hailCoreZone = smoothstep(CtoK(-6.0), CtoK(-14.0), realTemp)
                          * (1.0 - smoothstep(CtoK(-30.0), CtoK(-36.0), realTemp));
       float updraft = max(base[VY], 0.0);
+
+      // Hail growth enhancement (reference sim)
+      if (realTemp < CtoK(0.0) && water[CLOUD] > 0.0 && density == 1.0) {
+        growth += surfaceArea * water[PRECIPITATION] * 0.0030;
+      }
+
+      // Extra dense-hail accretion in mixed-phase updraft cores
+      if (realTemp < CtoK(0.0) && newDensity >= 0.82) {
+        growth += surfaceArea * water[PRECIPITATION] * mix(0.0, 0.0025, hailCoreZone);
+      }
 
       // Riming compacts snow/graupel toward hail density (no extra cloud depletion)
       if (newMass[ICE] > 0.0 && realTemp < CtoK(0.0) && hailCoreZone > 0.0) {
@@ -218,25 +227,18 @@ void main()
         newDensity = min(1.0, newDensity + riming * (0.04 + updraft * 0.18));
       }
 
-      // Dense hail accretes from the in-air precip field, not from cloud water
-      if (realTemp < CtoK(0.0) && newDensity >= 0.82) {
-        accretionGrowth += surfaceArea * water[PRECIPITATION] * mix(0.0030, 0.0055, hailCoreZone);
-      }
-
-      feedback[VAPOR] -= cloudGrowth; // only cloud water is removed from the air
+      feedback[VAPOR] -= growth;
 
 
       if (realTemp < CtoK(0.0)) { // below freezing
 
-        newMass[ICE] += cloudGrowth + accretionGrowth;
-        // Hail core: supercooled cloud; accretion recycles existing precip with no net heating
-        float cloudHeatFrac = (newDensity >= 0.82 && hailCoreZone > 0.2) ? 0.04 : 1.0;
-        feedback[HEAT] += cloudGrowth * meltingHeat * cloudHeatFrac;
+        newMass[ICE] += growth;
+        feedback[HEAT] += growth * meltingHeat;
 
         float freezing = min((CtoK(0.0) - realTemp) * freezingRate * surfaceArea, newMass[WATER]); // rain freezing
         newMass[WATER] -= freezing;
         newMass[ICE] += freezing;
-        feedback[HEAT] += freezing * meltingHeat * cloudHeatFrac * 0.25;
+        feedback[HEAT] += freezing * meltingHeat;
 
         // Wet-growth shell: internal water→ice, no cloud draw or latent heat
         if (newMass[ICE] > 0.0 && newMass[WATER] > 0.0 && realTemp < CtoK(-4.0) && newDensity < 0.95) {
@@ -247,7 +249,7 @@ void main()
         }
 
       } else {                                                                                                    // above freezing
-        newMass[WATER] += cloudGrowth;                                                                            // water growth
+        newMass[WATER] += growth;                                                                                 // water growth
 
         float melting = min((realTemp - CtoK(0.0)) * meltingRate * surfaceArea /* / newDensity */, newMass[ICE]); // 0.0002 snow / hail melting
         newMass[ICE] -= melting;
@@ -283,10 +285,10 @@ void main()
       // move with air    * 2. because droplet position goes from -1. to 1
       newPos += base.xy / resolution * 2.;
       float fallVel = fallSpeed * newDensity * sqrt(totalMass / max(surfaceArea, 0.02));
-      // Dense hail in updrafts: modest lofting so cores can persist without stacking feedback
+      // Dense hail in updrafts: modest lofting so cores can persist aloft
       if (newDensity >= 0.88 && newMass[ICE] > 0.2 && hailCoreZone > 0.3) {
         float updraftLift = updraft / max(resolution.y, 1.0) * 2.0;
-        fallVel = max(fallVel - updraftLift * 0.45, fallVel * 0.25);
+        fallVel = max(fallVel - updraftLift * 0.65, fallVel * 0.15);
       }
       newPos.y -= fallVel; // fall speed relative to air
       /*

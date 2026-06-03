@@ -8,11 +8,22 @@ in vec2 fragCoord;
 uniform sampler2D baseTex;
 uniform sampler2D waterTex;
 uniform isampler2D wallTex;
+uniform sampler2D colorScalesTex;
 
 uniform vec2 resolution;
 uniform vec2 texelSize;
 
 uniform float dryLapse;
+
+uniform int colorScaleColumn;
+uniform int colorScaleCloudColumn;
+
+uniform float colorScaleRhMin;
+uniform float colorScaleRhMax;
+uniform float colorScaleRhOffset;
+uniform float colorScaleCloudMin;
+uniform float colorScaleCloudMax;
+uniform float colorScaleCloudOffset;
 
 uniform float displayVectorField;
 
@@ -23,6 +34,7 @@ out vec4 fragmentColor;
 
 #include "common.glsl"
 #include "commonDisplay.glsl"
+
 
 void main()
 {
@@ -53,10 +65,22 @@ void main()
 
     float relativeHumidity = relativeHumd(realTemp, water[TOTAL]);
 
-    if (relativeHumidity <= 1.0) {
-      fragmentColor = vec4(sampleRhColor(relativeHumidity), 1.0);
+    if (relativeHumidity < 1.0) {
+      float rhPct = min(relativeHumidity, 0.99) * 100.0;
+      float lookupRh = rhPct + colorScaleRhOffset;
+      float rhRange = max(colorScaleRhMax - colorScaleRhMin, 0.001);
+      float v = clamp((lookupRh - colorScaleRhMin) / rhRange, 0.0, 1.0);
+      ivec2 scaleSize = textureSize(colorScalesTex, 0);
+      float u = (float(colorScaleColumn) + 0.5) / float(scaleSize.x);
+      fragmentColor = texture(colorScalesTex, vec2(u, v));
     } else {
-      fragmentColor = vec4(sampleRhCloudColor(water[CLOUD]), 1.0);
+      float cloudDens = clamp(water[CLOUD], 0.0, 10.0);
+      float lookupCloud = cloudDens + colorScaleCloudOffset;
+      float cloudRange = max(colorScaleCloudMax - colorScaleCloudMin, 0.001);
+      float v = clamp((lookupCloud - colorScaleCloudMin) / cloudRange, 0.0, 1.0);
+      ivec2 scaleSize = textureSize(colorScalesTex, 0);
+      float u = (float(colorScaleCloudColumn) + 0.5) / float(scaleSize.x);
+      fragmentColor = texture(colorScalesTex, vec2(u, v));
     }
 
     drawVectorField(base.xy, displayVectorField);

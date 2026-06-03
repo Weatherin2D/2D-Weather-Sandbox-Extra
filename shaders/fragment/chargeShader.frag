@@ -32,8 +32,8 @@ layout(location = 0) out vec2 charge;
 //   (+) Weak screening pocket at cloud base (warm rain export)
 //   Ground (+) induced under negative cloud base
 //
-// Requires cloud + precipitation coexistence (collision proxy), storm-core
-// cloud density, and vertical motion — charge only builds in active convection.
+// Requires active convection and dense cloud — precipitation enhances charging
+// but thick cloud alone (bases, anvils, cores) can also separate charge.
 
 #define CHARGE_DECAY        0.996
 #define CHARGE_DIFFUSION    0.012
@@ -43,6 +43,81 @@ layout(location = 0) out vec2 charge;
 uniform int ltDischargeCount;
 uniform vec4 ltDischarge[MAX_LT_DISCHARGE];     // xy = uv, z = amount, w = radius px
 uniform vec4 ltDischargeMeta[MAX_LT_DISCHARGE]; // x = ltType (for column shape)
+
+uniform vec4 userInputValues; // xpos  ypos  intensity  brush size
+#define BRUSH_INTENSITY 2
+#define BRUSH_SIZE 3
+uniform int userInputType;    // 23 = charge brush
+uniform int invertTool;       // 0 = add + / remove −, 1 = add − / remove +
+uniform bool wrapHorizontally;
+
+#define CHARGE_TOOL_TYPE 23
+#define CHARGE_BRUSH_RATE 4.0
+
+float applyDirectedCharge(float c, float delta, bool towardPositive)
+{
+  float amt = abs(delta);
+  if (amt < 1e-8)
+    return c;
+  if (towardPositive) {
+    if (delta > 0.0) {
+      if (c < 0.0)
+        c = min(c + amt, 0.0);
+      else
+        c = min(c + amt, 1.0);
+    } else {
+      if (c > 0.0)
+        c = max(c + delta, 0.0);
+      else
+        c = max(c + delta, -1.0);
+    }
+  } else {
+    if (delta > 0.0) {
+      if (c > 0.0)
+        c = max(c - amt, 0.0);
+      else
+        c = max(c - amt, -1.0);
+    } else {
+      if (c < 0.0)
+        c = min(c - delta, 0.0);
+      else
+        c = min(c - delta, 1.0);
+    }
+  }
+  return clamp(c, -1.0, 1.0);
+}
+
+void applyChargeBrush(inout float cellCharge, vec2 coord)
+{
+  if (userInputType != CHARGE_TOOL_TYPE)
+    return;
+
+  bool inBrush = false;
+  float weight = 1.0;
+
+  if (userInputValues.x < -0.5) {
+    if (abs(userInputValues.y - coord.y) < userInputValues[BRUSH_SIZE] * texelSize.y)
+      inBrush = true;
+  } else {
+    vec2 vecFromMouse;
+    if (wrapHorizontally)
+      vecFromMouse = vec2(absHorizontalDist(userInputValues.x, coord.x), userInputValues.y - coord.y);
+    else
+      vecFromMouse = vec2(abs(userInputValues.x - coord.x), userInputValues.y - coord.y);
+    vecFromMouse.x *= texelSize.y / texelSize.x;
+    float distFromMouse = length(vecFromMouse);
+    weight = smoothstep(userInputValues[BRUSH_SIZE] * texelSize.y, 0., distFromMouse);
+    if (distFromMouse < userInputValues[BRUSH_SIZE] * texelSize.y)
+      inBrush = true;
+  }
+
+  if (!inBrush)
+    return;
+
+  bool towardPositive = invertTool == 0;
+  float delta = userInputValues[BRUSH_INTENSITY] * weight * CHARGE_BRUSH_RATE;
+  cellCharge = applyDirectedCharge(cellCharge, delta, towardPositive);
+}
 
 void main()
 {
@@ -59,6 +134,7 @@ void main()
 
     float groundCharge = prev.g * CHARGE_DECAY - airChargeAbove * 0.06;
     groundCharge = clamp(groundCharge, -1.0, 1.0);
+    applyChargeBrush(groundCharge, texCoord);
     charge = vec2(0.0, groundCharge);
     return;
   }
@@ -90,31 +166,49 @@ void main()
   if (wallUp[DISTANCE]    != 0) { neighborCloud += cU; neighborCount += 1.0; }
 
   float localMean = neighborCloud / neighborCount;
-  float stormCore = smoothstep(localMean * 0.55 + 0.12, localMean + 0.75, cloudWater);
-  stormCore *= smoothstep(0.30, 1.2, cloudWater);
+  // Convective core (local peak) OR uniformly dense layer (anvil / cloud-base shelf)
+  float corePeak = smoothstep(localMean * 0.55 + 0.10, localMean + 0.70, cloudWater);
+  float uniformDense = smoothstep(0.38, 0.82, cloudWater) * smoothstep(0.35, 0.78, localMean);
+  float stormCore = max(corePeak, uniformDense * 0.85);
+  stormCore *= smoothstep(0.22, 1.05, cloudWater);
 
-  // Ice–liquid collision rate (Takahashi non-inductive charging proxy)
-  float collision = cloudWater * precip * (1.0 + updraft * 1.6 + downdraft * 0.7);
-  collision += cloudWater * cloudWater * updraft * 0.40;
+  float denseCloud = smoothstep(0.32, 0.95, cloudWater) * stormCore;
+
+  // Collision: precip enhances; dense cloud + updraft can charge without rain
+  float cloudOnlyColl = cloudWater * cloudWater * (0.42 + updraft * 1.35 + downdraft * 0.40);
+  cloudOnlyColl += cloudWater * denseCloud * updraft * 0.50;
+  float precipColl = cloudWater * precip * (1.0 + updraft * 1.6 + downdraft * 0.7);
+  float collision = cloudOnlyColl + precipColl;
 
   // Graupel → negative: mixed-phase −10 to −20 °C in active updraft
   float graupelZone = smoothstep(CtoK(-22.0), CtoK(-14.0), realTemp)
                     * (1.0 - smoothstep(CtoK(-8.0), CtoK(2.0), realTemp));
   float graupelBoost = 0.35 + updraft * 1.4 + downdraft * 0.5;
-  float negativeGen = collision * graupelZone * graupelBoost * stormCore * CHARGE_SCALE * 1.6;
+  float negativeGen = collision * graupelZone * graupelBoost * denseCloud * CHARGE_SCALE * 1.6;
+  float mixedCloudNeg = cloudWater * denseCloud * graupelZone
+                      * (0.18 + updraft * 0.75) * CHARGE_SCALE * 0.55;
+  negativeGen += mixedCloudNeg;
 
   // Ice crystals → positive: lofted in cold updraft above graupel layer
   float iceCrystalZone = smoothstep(CtoK(-38.0), CtoK(-24.0), realTemp)
                        * (1.0 - smoothstep(CtoK(-18.0), CtoK(-10.0), realTemp));
-  float positiveGen = collision * iceCrystalZone * (0.25 + updraft * 1.8) * stormCore * CHARGE_SCALE * 1.1;
-  positiveGen += cloudWater * updraft * iceCrystalZone * stormCore * CHARGE_SCALE * 0.30;
+  float positiveGen = collision * iceCrystalZone * (0.25 + updraft * 1.8) * denseCloud * CHARGE_SCALE * 1.1;
+  positiveGen += cloudWater * updraft * iceCrystalZone * denseCloud * CHARGE_SCALE * 0.32;
 
-  // Weak positive screening at cloud base (warm rain processes)
+  // Anvil: cold dense spread-out cloud (no precip required)
+  float anvilZone = smoothstep(CtoK(-48.0), CtoK(-26.0), realTemp)
+                  * smoothstep(0.40, 1.15, cloudWater)
+                  * (0.55 + (1.0 - min(updraft * 1.2, 1.0)) * 0.45);
+  float anvilPositiveGen = cloudWater * anvilZone * denseCloud * CHARGE_SCALE * 0.38;
+  positiveGen += anvilPositiveGen;
+
+  // Cloud base screening (+): dense warm cloud; precip adds extra
   float cloudBaseZone = smoothstep(CtoK(-3.0), CtoK(7.0), realTemp);
-  float warmPositiveGen = precip * cloudWater * cloudBaseZone * stormCore * CHARGE_SCALE * 0.18;
+  float warmPositiveGen = cloudWater * cloudBaseZone * denseCloud * CHARGE_SCALE * 0.24;
+  warmPositiveGen += precip * cloudWater * cloudBaseZone * denseCloud * CHARGE_SCALE * 0.14;
 
-  // Falling hydrometeors transport negative charge downward
-  float precipTransport = precip * (0.20 + downdraft * 1.1 + updraft * 0.15) * stormCore * CHARGE_SCALE * 0.50;
+  // Falling hydrometeors transport negative charge downward (needs precip)
+  float precipTransport = precip * (0.20 + downdraft * 1.1 + updraft * 0.15) * denseCloud * CHARGE_SCALE * 0.50;
 
   float netCharge = positiveGen + warmPositiveGen - negativeGen - precipTransport;
 
@@ -171,6 +265,7 @@ void main()
   }
 
   airCharge = clamp(airCharge, -1.0, 1.0);
+  applyChargeBrush(airCharge, texCoord);
 
   charge = vec2(airCharge, 0.0);
 }

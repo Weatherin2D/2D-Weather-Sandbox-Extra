@@ -350,6 +350,20 @@ float cloudDiffuseFlashGlow(vec2 p, vec2 center, float seed, float prog, float s
   return clamp(core + mid + halo, 0.0, 1.0);
 }
 
+// Lightning visibility — strike charge from spawn cache + smooth display cloud opacity
+// (no live chargeTex sampling; per-texel charge caused hard pixelated bolt edges)
+float lightningVisMask(float originMag, float typeThreshold, bool isCG,
+                       bool isCloudFlash, float cloudOpacityGate) {
+  if (isCloudFlash)
+    return 1.0;
+  float strikeGate = isCG
+    ? smoothstep(typeThreshold * 0.05, typeThreshold * 0.25, originMag)
+    : smoothstep(typeThreshold * 0.04, typeThreshold * 0.30, originMag);
+  if (isCG)
+    return strikeGate;
+  return strikeGate * cloudOpacityGate;
+}
+
 // Scatter flash size — type 3 uses CPU flashSize; bolts scale with charge / type
 float boltScatterFlashSize(int ltType, float originMag, float flashMeta) {
   if (ltType == 3)
@@ -864,7 +878,11 @@ void main()
           float scatterReach = resolution.x * (0.06 + scatterSize * 0.14);
           float strikeReach = isCloudFlash ? scatterReach : max(boltReach, scatterReach);
           float distOrigin  = length(fragCoord - bOrigin);
-          if (distOrigin <= strikeReach) {
+          float cloudOpacityGate = isCG ? 1.0
+            : smoothstep(typeThreshold * 0.10, typeThreshold * 1.40, opacity);
+          float visMask     = lightningVisMask(originMag, typeThreshold, isCG,
+                                               isCloudFlash, cloudOpacityGate);
+          if (distOrigin <= strikeReach && visMask > 0.003) {
             float reachFade = 1.0 - smoothstep(strikeReach * 0.78, strikeReach, distOrigin);
 
             float crawlThick = resolution.x * 0.000068 * widthScale;
@@ -874,8 +892,7 @@ void main()
                             : (isStrobe ? strobeLightningIntensity : cloudLightningIntensity));
             // Mild charge boost for flash/bolt brightness (capped)
             float chargeFlash = 1.0 + min(originMag * 0.28, 0.22);
-            float cloudClip  = isCG ? 1.0
-              : smoothstep(typeThreshold * 0.30, typeThreshold * 1.15, opacity);
+            float cloudClip  = cloudOpacityGate;
 
             for (int f = 0; f < 2; f++) {
               if (f >= numFlashes) break;
@@ -894,7 +911,7 @@ void main()
                 boltProg = clamp(1.0 - pow(1.0 - boltProg, 2.2), 0.0, 1.0);
               float riseFade = smoothstep(0.0, growFrames, fAge);
               float flick = 0.88 + 0.12 * rand(iterNum * 1.9 + seed + float(f) * 131.0);
-              float envFade = riseFade * repFade * globalFade * flick * reachFade;
+              float envFade = riseFade * repFade * globalFade * flick * reachFade * visMask;
 
               // Cloud flash: gentle swell; strobe/crawler keep sharper pulse
               if (isStrobe || isCrawler) {
@@ -939,7 +956,7 @@ void main()
 
               // Bolts — cloud flash (type 3) has no core bolt
               if (tG > 0.003 && cloudClip > 0.01 && ltType != 3) {
-                float bright = intensity * 1.08 * flick * envFade * chargeFlash * cloudClip;
+                float bright = intensity * 1.08 * flick * envFade * chargeFlash;
                 vec3 col = boltColorForType(ltType, tG, bOrigin, fragCoord) * bright * tG;
                 emittedLight += col;
                 onLight      += col * 0.52;
