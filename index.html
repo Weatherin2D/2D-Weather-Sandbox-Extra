@@ -174,8 +174,498 @@
 
         #graphCanvas {
             position: fixed;
+            top: 0;
+            left: 0;
             z-index: 1;
             display: none;
+        }
+
+        #soundingDashboard {
+            position: fixed;
+            inset: 0;
+            z-index: 2;
+            pointer-events: none;
+            display: none;
+            font-family: 'Segoe UI', Arial, sans-serif;
+            color: #e8eef2;
+        }
+
+        #soundingDashboard .sounding-footer,
+        #soundingDashboard .sounding-footer-panel,
+        #soundingDashboard .sounding-metrics-panel,
+        #soundingDashboard .sounding-share-image-btn {
+            pointer-events: auto;
+        }
+
+        .sounding-share-image-btn {
+            position: fixed;
+            right: 8px;
+            bottom: 8px;
+            z-index: 30;
+            background: rgba(40, 48, 58, 0.95);
+            border: 1px solid rgba(255, 255, 255, 0.22);
+            color: #e8eef2;
+            padding: 6px 12px;
+            border-radius: 4px;
+            font-size: 10px;
+            font-weight: 600;
+            cursor: pointer;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45);
+        }
+
+        .sounding-share-image-btn:hover {
+            background: rgba(60, 72, 88, 0.98);
+        }
+
+        .sounding-layout-layer {
+            position: absolute;
+            inset: 0;
+            pointer-events: none;
+            z-index: 20;
+        }
+
+        .sounding-layout-region {
+            position: absolute;
+            box-sizing: border-box;
+            border: 1px dashed rgba(120, 180, 255, 0.55);
+            background: rgba(74, 144, 226, 0.06);
+            pointer-events: none;
+            display: none;
+            z-index: 21;
+            cursor: move;
+        }
+
+        #soundingDashboard.layout-edit-active .sounding-layout-region {
+            display: block;
+            pointer-events: auto;
+        }
+
+        #soundingDashboard.layout-edit-active .sounding-metrics-panel {
+            z-index: 22;
+        }
+
+        #soundingDashboard.layout-edit-active .sounding-footer-panel {
+            z-index: 22;
+        }
+
+        .sounding-layout-region::before {
+            content: attr(data-label);
+            position: absolute;
+            top: 2px;
+            left: 4px;
+            font-size: 8px;
+            font-weight: 700;
+            letter-spacing: 0.04em;
+            text-transform: uppercase;
+            color: #8ec4ff;
+            pointer-events: none;
+        }
+
+        .sounding-layout-resize-handle {
+            position: absolute;
+            right: 0;
+            bottom: 0;
+            width: 16px;
+            height: 16px;
+            cursor: nwse-resize;
+            z-index: 6;
+            display: none;
+            background: linear-gradient(135deg, transparent 50%, rgba(120, 180, 255, 0.75) 50%);
+        }
+
+        #soundingDashboard.layout-edit-active .sounding-layout-panel .sounding-layout-resize-handle {
+            display: block;
+        }
+
+        #soundingDashboard.layout-edit-active .sounding-layout-drag-handle {
+            cursor: move;
+        }
+
+        .sounding-layout-region .sounding-layout-resize-handle {
+            display: block;
+            pointer-events: auto;
+        }
+
+        .sounding-layout-reset-btn {
+            grid-column: 1 / -1;
+            margin-top: 4px;
+            background: rgba(40, 48, 58, 0.95);
+            border: 1px solid rgba(255, 255, 255, 0.22);
+            color: #c8d4e0;
+            padding: 4px 6px;
+            border-radius: 4px;
+            font-size: 8px;
+            cursor: pointer;
+            width: 100%;
+        }
+
+        .sounding-layout-reset-btn:hover {
+            background: rgba(60, 72, 88, 0.98);
+        }
+
+        #soundingDashboard.visible {
+            display: block;
+        }
+
+        .sounding-header {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: var(--sounding-dash-w, 100%);
+            height: 44px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0 16px;
+            background: linear-gradient(180deg, rgba(8, 10, 14, 0.92), rgba(8, 10, 14, 0.55));
+            border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+            pointer-events: auto;
+            box-sizing: border-box;
+        }
+
+        .sounding-header-station {
+            font-size: 13px;
+            font-weight: 600;
+            color: #c8d4e0;
+        }
+
+        .sounding-header-valid {
+            font-size: 12px;
+            color: #ffcc44;
+            text-align: center;
+            flex: 1;
+            padding: 0 12px;
+        }
+
+        .sounding-header-actions {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+        }
+
+        .sounding-header-actions button {
+            background: rgba(40, 48, 58, 0.9);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            color: #e8eef2;
+            padding: 4px 10px;
+            border-radius: 4px;
+            font-size: 11px;
+            cursor: pointer;
+        }
+
+        .sounding-header-actions button:hover {
+            background: rgba(60, 72, 88, 0.95);
+        }
+
+        .sounding-metrics-panel {
+            display: none;
+            position: absolute;
+            z-index: 3;
+            box-sizing: border-box;
+            left: var(--metrics-left, 0);
+            top: var(--metrics-top, 48px);
+            width: var(--metrics-width, 260px);
+            height: var(--metrics-height, 200px);
+            overflow-x: hidden;
+            overflow-y: auto;
+            pointer-events: auto;
+            background: rgba(10, 12, 16, 0.96);
+            border: 1px solid rgba(255, 255, 255, 0.14);
+            border-radius: 4px;
+            padding: 8px 10px 10px;
+            box-sizing: border-box;
+            font-size: 11px;
+            line-height: 1.4;
+            scrollbar-width: thin;
+            scrollbar-color: rgba(120, 140, 160, 0.5) transparent;
+        }
+
+        .sounding-metrics-panel::-webkit-scrollbar {
+            width: 6px;
+        }
+
+        .sounding-metrics-panel::-webkit-scrollbar-thumb {
+            background: rgba(120, 140, 160, 0.45);
+            border-radius: 3px;
+        }
+
+        .sounding-metrics-time {
+            font-size: 10px;
+            color: #8899aa;
+            font-family: monospace;
+            margin-bottom: 8px;
+        }
+
+        .sounding-metrics-section {
+            font-size: 9px;
+            font-weight: 700;
+            letter-spacing: 0.06em;
+            text-transform: uppercase;
+            color: #7a8fa0;
+            background: rgba(255, 255, 255, 0.06);
+            padding: 3px 6px;
+            margin: 8px 0 4px;
+        }
+
+        .sounding-metrics-section:first-of-type {
+            margin-top: 0;
+        }
+
+        .sounding-metrics-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: baseline;
+            gap: 8px;
+            padding: 2px 0;
+            font-family: monospace;
+            font-size: 10px;
+        }
+
+        .sounding-metrics-row .lbl {
+            color: #7a8fa0;
+            flex-shrink: 0;
+        }
+
+        .sounding-metrics-row .val {
+            color: #e8eef2;
+            text-align: right;
+        }
+
+        .sounding-metrics-row.highlight {
+            background: rgba(255, 136, 0, 0.18);
+            border-radius: 3px;
+            padding: 4px 6px;
+            margin: 2px 0;
+        }
+
+        .sounding-metrics-bar {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) auto;
+            align-items: center;
+            gap: 6px;
+            padding: 3px 0;
+            font-size: 10px;
+            font-family: monospace;
+        }
+
+        .sounding-metrics-bar .name {
+            color: #c8d4e0;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .sounding-metrics-bar .track {
+            grid-column: 1 / -1;
+            height: 4px;
+            background: #2a3038;
+            border-radius: 2px;
+            overflow: hidden;
+        }
+
+        .sounding-metrics-bar .fill {
+            height: 100%;
+            border-radius: 2px;
+        }
+
+        .sounding-metrics-bar .pct {
+            color: #8899aa;
+            font-size: 9px;
+        }
+
+        .sounding-footer {
+            position: absolute;
+            left: 0;
+            width: var(--sounding-dash-w, 100%);
+            bottom: 0;
+            top: auto;
+            height: var(--sounding-footer-h, 112px);
+            max-height: var(--sounding-footer-h, 112px);
+            min-height: var(--sounding-footer-h, 112px);
+            padding: 8px 8px 8px 0;
+            background: linear-gradient(0deg, rgba(8, 10, 14, 0.98), rgba(8, 10, 14, 0.88));
+            border-top: 1px solid rgba(255, 255, 255, 0.12);
+            pointer-events: auto;
+            box-sizing: border-box;
+            overflow: hidden;
+        }
+
+        .sounding-footer-panel {
+            position: absolute;
+            top: 8px;
+            bottom: auto;
+            height: auto;
+            width: var(--panel-w, 100px);
+            max-width: var(--panel-w, 100px);
+            min-width: var(--panel-w, 100px);
+            background: rgba(12, 14, 18, 0.92);
+            border: 1px solid rgba(255, 255, 255, 0.14);
+            border-radius: 4px;
+            padding: 6px 8px;
+            font-size: 9px;
+            line-height: 1.3;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            box-sizing: border-box;
+        }
+
+        #soundingReadoutPanel {
+            --panel-w: var(--footer-readout-w, 200px);
+            left: var(--footer-readout-left, 0);
+        }
+
+        #soundingParcelPanel {
+            --panel-w: var(--footer-parcel-w, 180px);
+            left: var(--footer-parcel-left, 218px);
+        }
+
+        #soundingControlsPanel {
+            --panel-w: var(--footer-controls-w, 200px);
+            left: var(--footer-controls-left, 680px);
+            right: auto;
+            padding: 6px 8px;
+            z-index: 2;
+        }
+
+        #soundingControlsPanel h4 {
+            margin: 0 0 4px 0;
+        }
+
+        .sounding-footer-panel h4 {
+            margin: 0 0 6px 0;
+            font-size: 9px;
+            font-weight: 700;
+            letter-spacing: 0.05em;
+            text-transform: uppercase;
+            color: #8fa8bc;
+            flex-shrink: 0;
+        }
+
+        .sounding-readout-cols {
+            display: flex;
+            flex: 1;
+            gap: 10px 14px;
+            min-height: 0;
+            width: 100%;
+            align-items: flex-start;
+            justify-content: space-between;
+            overflow: hidden;
+        }
+
+        .sounding-readout-col {
+            display: grid;
+            grid-template-columns: auto minmax(0, 1fr);
+            gap: 2px 6px;
+            align-items: baseline;
+            flex: 1;
+            min-width: 0;
+        }
+
+        .sounding-readout-col .lbl {
+            color: #7a8fa0;
+            white-space: nowrap;
+        }
+
+        .sounding-readout-col .val {
+            color: #e8eef2;
+            font-family: monospace;
+            min-width: 0;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .sounding-readout-col .val.temp {
+            color: #ff5555;
+        }
+
+        .sounding-readout-col .val.dew {
+            color: #66ccff;
+        }
+
+        #soundingReadoutPanel .sounding-readout-cols {
+            flex: 1;
+            min-height: 0;
+            overflow: hidden;
+            gap: 4px 6px;
+        }
+
+        #soundingReadoutPanel .sounding-readout-col {
+            flex: 1;
+            font-size: 8px;
+        }
+
+        #soundingReadoutPanel .sounding-readout-col .val {
+            font-size: 8px;
+        }
+
+        #soundingParcelPanel {
+            font-size: 10px;
+            line-height: 1.35;
+        }
+
+        #soundingParcelPanel .sounding-readout-cols {
+            flex: 1;
+            min-height: 0;
+            overflow: hidden;
+            gap: 10px 20px;
+            justify-content: flex-start;
+        }
+
+        #soundingParcelPanel .sounding-readout-col {
+            flex: 1 1 0;
+            min-width: 72px;
+        }
+
+        #soundingParcelPanel .sounding-readout-col .lbl {
+            font-size: 9px;
+        }
+
+        #soundingParcelPanel .sounding-readout-col .val {
+            font-size: 10px;
+            overflow: visible;
+            text-overflow: clip;
+            white-space: nowrap;
+        }
+
+        #soundingControlsPanel .sounding-toggles {
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+            flex: 1;
+            min-height: 0;
+            width: 100%;
+            overflow-y: auto;
+        }
+
+        .sounding-toggle-row {
+            display: flex;
+            flex-direction: row;
+            align-items: center;
+            justify-content: space-between;
+            gap: 6px;
+            font-size: 8px;
+            color: #c8d4e0;
+            line-height: 1.15;
+            cursor: pointer;
+            margin: 0;
+            white-space: nowrap;
+        }
+
+        .sounding-toggle-row span {
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .sounding-toggle-row input {
+            flex-shrink: 0;
+            width: 13px;
+            height: 13px;
+            margin: 0;
+            accent-color: #4a90e2;
+            cursor: pointer;
         }
 
         .autopilotNumberInput {
@@ -568,6 +1058,44 @@
 
     </div>
 
+    <div id="soundingDashboard" aria-hidden="true">
+        <header class="sounding-header">
+            <div class="sounding-header-station" id="soundingStationLabel">Simulation Sounding</div>
+            <div class="sounding-header-valid" id="soundingValidLabel">VALID: —</div>
+            <div class="sounding-header-actions">
+                <button type="button" id="soundingSaveBtn" title="Freeze & save column">Save</button>
+                <button type="button" id="soundingFreezeBtn" title="Freeze column">Freeze</button>
+            </div>
+        </header>
+        <div id="soundingLayoutLayer" class="sounding-layout-layer" aria-hidden="true"></div>
+        <aside id="soundingMetricsPanel" class="sounding-metrics-panel sounding-layout-panel" data-layout-id="metrics" aria-label="Sounding metrics">
+            <div class="sounding-metrics-time" id="soundingMetricsTime"></div>
+            <div id="soundingMetricsBody"></div>
+        </aside>
+        <footer class="sounding-footer">
+            <div class="sounding-footer-panel sounding-layout-panel" id="soundingReadoutPanel" data-layout-id="footerReadout">
+                <h4 class="sounding-layout-drag-handle">Readout (click / hover on Skew-T)</h4>
+                <div class="sounding-readout-cols" id="soundingReadoutGrid"></div>
+            </div>
+            <div class="sounding-footer-panel sounding-layout-panel" id="soundingParcelPanel" data-layout-id="footerParcel">
+                <h4 class="sounding-layout-drag-handle">Parcel Info (SFC)</h4>
+                <div class="sounding-readout-cols" id="soundingParcelGrid"></div>
+            </div>
+            <div class="sounding-footer-panel sounding-layout-panel" id="soundingControlsPanel" data-layout-id="footerControls">
+                <h4 class="sounding-layout-drag-handle">Skew-T Controls</h4>
+                <div class="sounding-toggles">
+                    <label class="sounding-toggle-row"><span>Show Wind Barbs</span><input type="checkbox" id="togWindBarbs" checked></label>
+                    <label class="sounding-toggle-row"><span>Show Parcel Paths</span><input type="checkbox" id="togParcels" checked></label>
+                    <label class="sounding-toggle-row"><span>Show Mixing Ratio</span><input type="checkbox" id="togMixing" checked></label>
+                    <label class="sounding-toggle-row"><span>Show Heights</span><input type="checkbox" id="togHeights" checked></label>
+                    <label class="sounding-toggle-row"><span>Show θe Column</span><input type="checkbox" id="togThetaE" checked></label>
+                    <label class="sounding-toggle-row"><span>Customize Layout</span><input type="checkbox" id="togLayoutEdit"></label>
+                    <button type="button" class="sounding-layout-reset-btn" id="soundingLayoutResetBtn">Reset layout</button>
+                </div>
+            </div>
+        </footer>
+        <button type="button" id="soundingShareImageBtn" class="sounding-share-image-btn" title="Save sounding as PNG">Share Image</button>
+    </div>
     <canvas id="graphCanvas"></canvas>
     <canvas id="dropletInfoCanvas" width="150" height="82"
         style="z-index: 1; position: absolute; left: 50%; top: 50%;"></canvas>

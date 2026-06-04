@@ -460,6 +460,12 @@ const guiControls_default = {
   brushIntensity : 0.01,
   allowCaves : true,
   showGraph : false,
+  soundingShowWindBarbs : true,
+  soundingShowParcels : true,
+  soundingShowMixingRatio : true,
+  soundingShowHeights : true,
+  soundingShowThetaE : true,
+  soundingLayoutEdit : false,
   graphFixedPosition : false, // When true, graph stays at fixed position instead of following cursor
   graphFixedX : 0,
   graphFixedY : 0,
@@ -1353,23 +1359,45 @@ function integrateBuoyLayerCol(buoy, altBot, altTop, mode, startIndex, simResY, 
   return total;
 }
 
-function findLclAltFromParcel(parcelTemps, envDewC, startIndex, simResY, dz)
+function findLclAltFromParcel(parcelTemps, envDewC, startIndex, simResY, dz, isFluid)
 {
   const altFromIndex = (index) => index * dz;
   const parcelBaseAlt = altFromIndex(startIndex);
+  const mixingWater = maxWater(CtoK(envDewC[startIndex]));
+
   for (let y = startIndex + 1; y < simResY; y++) {
-    if (isNaN(parcelTemps[y])) continue;
-    if (parcelTemps[y] <= envDewC[y] + 0.05) {
-      const t0 = parcelTemps[y - 1];
-      const t1 = parcelTemps[y];
-      const d0 = envDewC[y - 1];
-      const d1 = envDewC[y];
-      const denom = (t0 - d0) - (t1 - d1);
-      const ratio = denom !== 0 ? (t0 - d0) / denom : 0.5;
+    if (isNaN(parcelTemps[y]) || isNaN(parcelTemps[y - 1])) continue;
+    const cwPrev = Math.max(mixingWater - maxWater(CtoK(parcelTemps[y - 1])), 0);
+    const cwHere = Math.max(mixingWater - maxWater(CtoK(parcelTemps[y])), 0);
+    if (cwHere > 0 && cwPrev <= 0) {
+      const denom = cwHere - cwPrev;
+      const ratio = denom > 1e-9 ? cwPrev / denom : 0;
       return altFromIndex(y - 1) + Math.max(0, Math.min(1, ratio)) * dz;
     }
   }
-  const surfTdiff = parcelTemps[startIndex] - envDewC[startIndex];
+
+  for (let y = startIndex + 1; y < simResY; y++) {
+    if (isNaN(parcelTemps[y])) continue;
+    if (isFluid && !isFluid[y]) continue;
+    const tParcel = parcelTemps[y];
+    const tDew = envDewC[y];
+    if (isNaN(tDew)) continue;
+    const t0 = parcelTemps[y - 1];
+    const d0 = envDewC[y - 1];
+    if (isNaN(t0) || isNaN(d0)) continue;
+    if (t0 > d0 + 0.05 && tParcel <= tDew + 0.05) {
+      const denom = (t0 - d0) - (tParcel - tDew);
+      const ratio = Math.abs(denom) > 1e-6 ? (t0 - d0) / denom : 0.5;
+      return altFromIndex(y - 1) + Math.max(0, Math.min(1, ratio)) * dz;
+    }
+  }
+
+  const surfT = parcelTemps[startIndex];
+  const surfTd = envDewC[startIndex];
+  if (!isNaN(surfT) && !isNaN(surfTd) && surfT <= surfTd + 0.05) {
+    return parcelBaseAlt;
+  }
+  const surfTdiff = (isNaN(surfT) || isNaN(surfTd)) ? 0 : surfT - surfTd;
   return parcelBaseAlt + (surfTdiff > 0 ? (surfTdiff / 8.0) * 1000.0 : 0);
 }
 
@@ -1409,7 +1437,7 @@ function computeCAPEForColumn(envTempsC, envDewC, parcelTemps, startIndex, isFlu
   }
 
   const parcelBaseAlt = altFromIndex(startIndex);
-  lclAlt = findLclAltFromParcel(parcelTemps, envDewC, startIndex, simResY, dz);
+  lclAlt = findLclAltFromParcel(parcelTemps, envDewC, startIndex, simResY, dz, isFluid);
 
   if (buoy[startIndex] > B_MIN) {
     lfcAlt = parcelBaseAlt;
@@ -1472,6 +1500,28 @@ function computeCAPEForColumn(envTempsC, envDewC, parcelTemps, startIndex, isFlu
     }
   }
 
+  if (isNaN(lfcAlt)) {
+    for (let y = startIndex + 1; y < simResY; y++) {
+      if (!isFluid[y] || isNaN(buoy[y])) continue;
+      if (buoy[y] > B_MIN) {
+        lfcAlt = altFromIndex(y);
+        break;
+      }
+    }
+  }
+  if (!isNaN(lfcAlt) && isNaN(elAlt)) {
+    for (let y = simResY - 2; y > startIndex; y--) {
+      if (!isFluid[y] || isNaN(buoy[y])) continue;
+      if (buoy[y] > B_MIN) {
+        elAlt = altFromIndex(y);
+        break;
+      }
+    }
+    if (isNaN(elAlt)) {
+      elAlt = altFromIndex(simResY - 1);
+    }
+  }
+
   const cinhTopAlt = isNaN(lfcAlt)
     ? Math.min(parcelBaseAlt + 10000, (simResY - 1) * dz)
     : lfcAlt;
@@ -1482,6 +1532,16 @@ function computeCAPEForColumn(envTempsC, envDewC, parcelTemps, startIndex, isFlu
     const cape3Top = Math.min(elAlt, top3kmAlt);
     if (cape3Top > lfcAlt) {
       cape3km = integrateBuoyLayerCol(buoy, lfcAlt, cape3Top, 'pos', startIndex, simResY, dz);
+    }
+  } else if (!isNaN(lfcAlt) && cape === 0) {
+    for (let y = startIndex + 1; y < simResY; y++) {
+      if (!isFluid[y] || isNaN(buoy[y]) || buoy[y] <= B_MIN) continue;
+      const topAlt = altFromIndex(y);
+      if (topAlt > lfcAlt + MIN_CAPE_LAYER_M) {
+        elAlt = isNaN(elAlt) ? topAlt : elAlt;
+        cape = integrateBuoyLayerCol(buoy, lfcAlt, topAlt, 'pos', startIndex, simResY, dz);
+        break;
+      }
     }
   }
 
@@ -3762,6 +3822,189 @@ function extractJsonObject(text)
   return null;
 }
 
+const MAX_SAVED_RADARS = 10000;
+
+function isPlausibleGuiControlsLength(len, offset, totalBytes)
+{
+  return len >= 64 && len < 2000000 &&
+    offset + Uint32Array.BYTES_PER_ELEMENT + len <= totalBytes;
+}
+
+function radarPositionsLookValid(positions, count)
+{
+  for (let i = 0; i < count; i++) {
+    const x = positions[i * 2];
+    const y = positions[i * 2 + 1];
+    if (x < 0 || y < 0 || x >= sim_res_x || y >= sim_res_y)
+      return false;
+  }
+  return true;
+}
+
+function applyRadarSettingsFromSave(radarSettings)
+{
+  if (!Array.isArray(radarSettings) || radars.length === 0)
+    return;
+
+  const n = Math.min(radarSettings.length, radars.length);
+  for (let i = 0; i < n; i++) {
+    if (radarSettings[i] && typeof radarSettings[i] === 'object')
+      radars[i].setSettings(radarSettings[i]);
+  }
+
+  if (n < radars.length)
+    console.warn('Save file has settings for ' + n + ' radars but ' + radars.length + ' towers were loaded');
+  else
+    console.log('Loaded radar settings for ' + n + ' radar towers');
+}
+
+async function loadRadarTowersFromSave(dataBlob, sliceStart, totalBytes)
+{
+  if (sliceStart + Int16Array.BYTES_PER_ELEMENT > totalBytes)
+    return sliceStart;
+
+  if (sliceStart + 1 <= totalBytes) {
+    const firstChar = await dataBlob.slice(sliceStart, sliceStart + 1).text();
+    if (firstChar === '{')
+      return sliceStart;
+  }
+
+  if (sliceStart + Uint32Array.BYTES_PER_ELEMENT <= totalBytes) {
+    const guiLenBuf = await dataBlob.slice(sliceStart, sliceStart + Uint32Array.BYTES_PER_ELEMENT).arrayBuffer();
+    const guiLen = new Uint32Array(guiLenBuf)[0];
+    if (isPlausibleGuiControlsLength(guiLen, sliceStart, totalBytes))
+      return sliceStart;
+  }
+
+  const numRadarsBuf = await dataBlob.slice(sliceStart, sliceStart + Int16Array.BYTES_PER_ELEMENT).arrayBuffer();
+  const numRadars = new Int16Array(numRadarsBuf)[0];
+  let offset = sliceStart + Int16Array.BYTES_PER_ELEMENT;
+
+  if (numRadars === 0)
+    return offset;
+
+  if (numRadars <= 0 || numRadars >= MAX_SAVED_RADARS) {
+    console.warn('Invalid radar count in save file:', numRadars);
+    return sliceStart;
+  }
+
+  const posBytes = numRadars * 2 * Int16Array.BYTES_PER_ELEMENT;
+  if (offset + posBytes > totalBytes) {
+    console.warn('Truncated radar positions in save file');
+    return sliceStart;
+  }
+
+  const radarBuf = await dataBlob.slice(offset, offset + posBytes).arrayBuffer();
+  const safeLen = Math.floor(radarBuf.byteLength / Int16Array.BYTES_PER_ELEMENT) * Int16Array.BYTES_PER_ELEMENT;
+  if (safeLen < posBytes) {
+    console.warn('Incomplete radar position data in save file');
+    return sliceStart;
+  }
+
+  const radarArray = new Int16Array(radarBuf, 0, safeLen / Int16Array.BYTES_PER_ELEMENT);
+  const count = Math.floor(radarArray.length / 2);
+  if (count !== numRadars || !radarPositionsLookValid(radarArray, count)) {
+    console.warn('Radar section invalid or from older save format without towers — skipping');
+    return sliceStart;
+  }
+
+  radars = [];
+  for (let i = 0; i < count; i++)
+    radars.push(new Radar(radarArray[i * 2], radarArray[i * 2 + 1]));
+
+  refreshRadarOverlaySourceDropdown();
+  console.log('Loaded ' + count + ' radar towers');
+  return offset + posBytes;
+}
+
+async function loadRadarSettingsFromSaveBlob(settingsArrayBlob, offsetInBlob)
+{
+  if (offsetInBlob >= settingsArrayBlob.size)
+    return;
+
+  const lenBuf = await settingsArrayBlob.slice(offsetInBlob, offsetInBlob + Uint32Array.BYTES_PER_ELEMENT).arrayBuffer();
+  if (lenBuf.byteLength >= Uint32Array.BYTES_PER_ELEMENT) {
+    const radarSettingsLength = new Uint32Array(lenBuf)[0];
+    const settingsStart = offsetInBlob + Uint32Array.BYTES_PER_ELEMENT;
+    const settingsEnd = settingsStart + radarSettingsLength;
+
+    if (radarSettingsLength > 0 && radarSettingsLength < 500000 && settingsEnd <= settingsArrayBlob.size) {
+      try {
+        const text = await settingsArrayBlob.slice(settingsStart, settingsEnd).text();
+        applyRadarSettingsFromSave(JSON.parse(text));
+        return;
+      } catch (e) {
+        console.log('Failed to parse length-prefixed radar settings:', e.message);
+      }
+    }
+  }
+
+  const text = await settingsArrayBlob.slice(offsetInBlob).text();
+  const trimmed = text.trim();
+  if (!trimmed.startsWith('['))
+    return;
+
+  try {
+    const arrEnd = trimmed.indexOf(']');
+    if (arrEnd >= 0)
+      applyRadarSettingsFromSave(JSON.parse(trimmed.slice(0, arrEnd + 1)));
+  } catch (e) {
+    console.log('No radar settings in save file:', e.message);
+  }
+}
+
+function finalizeLoadedRadars()
+{
+  if (radars.length === 0)
+    return;
+
+  if (guiControls && guiControls.displayRadars !== undefined)
+    displayRadars = guiControls.displayRadars;
+
+  for (let i = 0; i < radars.length; i++) {
+    radars[i].updateCanvas();
+    radars[i].setHidden(!displayRadars);
+  }
+  refreshRadarOverlaySourceDropdown();
+}
+
+function buildSavedRadarTowersForGuiControls()
+{
+  if (radars.length === 0)
+    return null;
+
+  return radars.map(radar => ({
+    x : radar.getXpos(),
+    y : radar.getYpos(),
+    ...radar.getSettings(),
+  }));
+}
+
+function restoreSavedRadarTowersFromGuiControls()
+{
+  const saved = guiControls && guiControls.__savedRadarTowers;
+  if (!Array.isArray(saved) || saved.length === 0)
+    return;
+
+  if (radars.length === 0) {
+    for (let i = 0; i < saved.length; i++) {
+      const entry = saved[i];
+      if (entry && Number.isFinite(entry.x) && Number.isFinite(entry.y))
+        radars.push(new Radar(entry.x, entry.y));
+    }
+    refreshRadarOverlaySourceDropdown();
+  }
+
+  applyRadarSettingsFromSave(saved.map(entry => {
+    const settings = Object.assign({}, entry);
+    delete settings.x;
+    delete settings.y;
+    return settings;
+  }));
+
+  delete guiControls.__savedRadarTowers;
+}
+
 async function loadMasterFormatSettings(dataBlob, sliceStart, totalBytes)
 {
   if (sliceStart + Int16Array.BYTES_PER_ELEMENT > totalBytes)
@@ -3790,6 +4033,8 @@ async function loadMasterFormatSettings(dataBlob, sliceStart, totalBytes)
     console.warn('Invalid weather station count in save file:', numWeatherStations);
     return;
   }
+
+  offset = await loadRadarTowersFromSave(dataBlob, offset, totalBytes);
 
   if (offset >= totalBytes)
     return;
@@ -3827,19 +4072,7 @@ async function loadNewFormatSettings(dataBlob, sliceStart, totalBytes)
       guiControlsFromSaveFile = await settingsArrayBlob.slice(tempSliceStart, tempSliceEnd).text();
 
       tempSliceStart = tempSliceEnd;
-      if (tempSliceStart < settingsArrayBlob.size) {
-        const radarSettingsText = await settingsArrayBlob.slice(tempSliceStart).text();
-        try {
-          const radarSettings = JSON.parse(radarSettingsText);
-          if (Array.isArray(radarSettings) && radarSettings.length === radars.length) {
-            for (let i = 0; i < radars.length; i++)
-              radars[i].setSettings(radarSettings[i]);
-            console.log('Loaded radar settings for ' + radars.length + ' radars');
-          }
-        } catch (e) {
-          console.log('No radar settings in save file:', e.message);
-        }
-      }
+      await loadRadarSettingsFromSaveBlob(settingsArrayBlob, tempSliceStart);
       return;
     }
 
@@ -3849,10 +4082,20 @@ async function loadNewFormatSettings(dataBlob, sliceStart, totalBytes)
     const settingsText = await settingsArrayBlob.text();
     const jsonStr = extractJsonObject(settingsText);
 
-    if (jsonStr)
+    if (jsonStr) {
       guiControlsFromSaveFile = jsonStr;
-    else
+      const tail = settingsText.slice(settingsText.indexOf(jsonStr) + jsonStr.length);
+      const arrStart = tail.indexOf('[');
+      if (arrStart >= 0) {
+        try {
+          const arrEnd = tail.indexOf(']', arrStart);
+          if (arrEnd >= 0)
+            applyRadarSettingsFromSave(JSON.parse(tail.slice(arrStart, arrEnd + 1)));
+        } catch (_) { /* no radar settings in legacy tail */ }
+      }
+    } else {
       console.warn('Could not locate guiControls JSON in settings section');
+    }
   }
 }
 
@@ -4027,42 +4270,9 @@ window.loadData = async function()
           sliceEnd = sliceStart + numWeatherStations * 2 * Int16Array.BYTES_PER_ELEMENT;
         }
 
-        // Load radars
-        sliceStart = sliceEnd;
-        sliceEnd += 1 * Int16Array.BYTES_PER_ELEMENT;
-        const numRadarsBlob = safeSlice(sliceStart, sliceEnd);
-        let numRadars = 0;
-        if (numRadarsBlob) {
-          let numRadarsBuf = await numRadarsBlob.arrayBuffer();
-          if (numRadarsBuf.byteLength >= Int16Array.BYTES_PER_ELEMENT) {
-            numRadars = new Int16Array(numRadarsBuf)[0];
-          }
-        }
+        sliceStart = await loadRadarTowersFromSave(dataBlob, sliceEnd, totalBytes);
 
-        console.log('numRadars', numRadars);
-
-        if (numRadars > 0 && numRadars < 10000) {
-          sliceStart = sliceEnd;
-          sliceEnd += numRadars * 2 * Int16Array.BYTES_PER_ELEMENT;
-          const radarBlob = safeSlice(sliceStart, sliceEnd);
-          if (radarBlob) {
-            let radarBuf = await radarBlob.arrayBuffer();
-            // Round down to nearest multiple of Int16Array element size before constructing
-            const safeLen = Math.floor(radarBuf.byteLength / Int16Array.BYTES_PER_ELEMENT) * Int16Array.BYTES_PER_ELEMENT;
-            if (safeLen >= 2 * Int16Array.BYTES_PER_ELEMENT) {
-              let radarArray = new Int16Array(radarBuf, 0, safeLen / Int16Array.BYTES_PER_ELEMENT);
-              const count = Math.floor(radarArray.length / 2);
-              for (i = 0; i < count; i++) {
-                radars.push(new Radar(radarArray[i * 2], radarArray[i * 2 + 1]));
-              }
-              refreshRadarOverlaySourceDropdown();
-            }
-          }
-        } else {
-          sliceEnd = sliceStart + numRadars * 2 * Int16Array.BYTES_PER_ELEMENT;
-        }
-
-        sliceStart = sliceEnd;
+        sliceEnd = sliceStart;
         if (sliceStart < totalBytes)
           await loadNewFormatSettings(dataBlob, sliceStart, totalBytes);
         else
@@ -4073,7 +4283,6 @@ window.loadData = async function()
           console.warn('Could not load optional save data (weather stations, radars, settings) — using defaults. Reason:', e.message);
         }
       } else if (version == 263574036) {
-        radars = [];
         try {
           await loadMasterFormatSettings(dataBlob, sliceEnd, decompressed.byteLength);
           console.log('Loaded guiControls from master-format save file (v263574036)');
@@ -6394,6 +6603,8 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   if (!guiControls.lapseUnit)
     guiControls.lapseUnit = guiControls_default.lapseUnit;
 
+  restoreSavedRadarTowersFromGuiControls();
+
   function setGuiUniforms()
   { // set all uniforms to new values
     gl.useProgram(boundaryProgram);
@@ -7268,7 +7479,11 @@ function formatSoundingSimTimeLabel()
 
 function formatSoundingObsTimeLabel()
 {
-  return '';
+  if (typeof simDateTime === 'undefined' || !simDateTime) return '';
+  const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const d = simDateTime;
+  const utc = d.getUTCHours().toString().padStart(2, '0') + ':00 UTC';
+  return months[d.getUTCMonth()] + ' ' + d.getUTCDate() + ' ' + utc;
 }
 
 function skewSatVaporPressureHpa(Tc)
@@ -7304,6 +7519,181 @@ function skewHpaFromAltM(altM)
   return 1013.25 * Math.pow(1.0 - 2.25577e-5 * Math.max(0, altM), 5.25588);
 }
 
+function windAtAltFromHodo(hodoPoints, altM)
+{
+  if (!hodoPoints || hodoPoints.length === 0) return {u: 0, v: 0};
+  if (altM <= hodoPoints[0].altM) return {u: hodoPoints[0].u, v: hodoPoints[0].v};
+  const last = hodoPoints[hodoPoints.length - 1];
+  if (altM >= last.altM) return {u: last.u, v: last.v};
+  for (let i = 0; i < hodoPoints.length - 1; i++) {
+    const p0 = hodoPoints[i];
+    const p1 = hodoPoints[i + 1];
+    if (altM >= p0.altM && altM <= p1.altM) {
+      const t = p1.altM > p0.altM ? (altM - p0.altM) / (p1.altM - p0.altM) : 0;
+      return {
+        u: p0.u + (p1.u - p0.u) * t,
+        v: p0.v + (p1.v - p0.v) * t,
+      };
+    }
+  }
+  return {u: last.u, v: last.v};
+}
+
+function computeLayerMeanWind(hodoPoints, botM, topM)
+{
+  let sumU = 0, sumV = 0, n = 0;
+  for (const p of hodoPoints) {
+    if (p.altM >= botM && p.altM <= topM) {
+      sumU += p.u;
+      sumV += p.v;
+      n++;
+    }
+  }
+  if (n === 0) return windAtAltFromHodo(hodoPoints, (botM + topM) * 0.5);
+  return {u: sumU / n, v: sumV / n};
+}
+
+function computeBunkersStormMotion(hodoPoints)
+{
+  const sfc = windAtAltFromHodo(hodoPoints, 0);
+  const km6 = windAtAltFromHodo(hodoPoints, 6000);
+  const mean = computeLayerMeanWind(hodoPoints, 0, 6000);
+  const shearU = km6.u - sfc.u;
+  const shearV = km6.v - sfc.v;
+  const shearMag = Math.hypot(shearU, shearV);
+  const dev = 7.5;
+  let right = {...mean};
+  let left = {...mean};
+  if (shearMag > 0.5) {
+    const perpU = -shearV / shearMag;
+    const perpV = shearU / shearMag;
+    right = {u: mean.u + perpU * dev, v: mean.v + perpV * dev};
+    left = {u: mean.u - perpU * dev, v: mean.v - perpV * dev};
+  }
+  return {right, left, mean};
+}
+
+function computeCorfidiVectors(hodoPoints)
+{
+  const low = computeLayerMeanWind(hodoPoints, 0, 3000);
+  const mid = computeLayerMeanWind(hodoPoints, 3000, 9000);
+  const shearU = mid.u - low.u;
+  const shearV = mid.v - low.v;
+  const mag = Math.hypot(shearU, shearV) || 1;
+  const down = {u: low.u + shearU * 0.35, v: low.v + shearV * 0.35};
+  const up = {u: mid.u - shearU * 0.35, v: mid.v - shearV * 0.35};
+  return {down, up, shearMag: mag};
+}
+
+function formatWindDirSpd(u, v)
+{
+  const spd = Math.hypot(u, v);
+  if (spd < 0.2) return 'calm';
+  const dir = Math.round((Math.atan2(-u, -v) * 180 / Math.PI + 360) % 360);
+  return dir + '°/' + Math.round(msToKnots(spd)) + ' kt';
+}
+
+function computeEHI(capeJkg, srhM2s2, shearMs)
+{
+  if (capeJkg <= 0 || srhM2s2 <= 0) return 0;
+  const capeTerm = capeJkg / 30000;
+  const srhTerm = srhM2s2 / 150;
+  const shearTerm = Math.min(2, Math.max(0.3, shearMs / 12));
+  return capeTerm * srhTerm * shearTerm;
+}
+
+function computeSHIP(muCape, shear6km, lapse700_500, mucin)
+{
+  const capeF = Math.max(0, muCape / 1500);
+  const shearF = Math.max(0, shear6km / 20);
+  const lapseF = Math.max(0, (lapse700_500 || 0) / 9);
+  const cinF = Math.max(0.2, 1 - Math.max(0, mucin) / 200);
+  return capeF * shearF * lapseF * cinF * 3.0;
+}
+
+function computeSCP(muCape, shear6km, srh3km)
+{
+  return (muCape / 1000) * (shear6km / 10) * (srh3km / 100);
+}
+
+function computeThetaEC(tempC, mixingRatio)
+{
+  const tK = CtoK(tempC);
+  return tK + 2500 * Math.max(mixingRatio, 0) / 1004;
+}
+
+function findWetBulbZeroAlt(envTempsC, envDewC, surfaceLevel, sim_res_y, dz, wallTextureValues)
+{
+  for (let y = surfaceLevel; y < sim_res_y - 1; y++) {
+    if (wallTextureValues[4 * y + 1] === 0 || wallTextureValues[4 * (y + 1) + 1] === 0) continue;
+    const rh = relativeHumd(CtoK(envTempsC[y]), maxWater(CtoK(envDewC[y])));
+    const tw0 = envTempsC[y] - (100 - rh) / 5;
+    const rh1 = relativeHumd(CtoK(envTempsC[y + 1]), maxWater(CtoK(envDewC[y + 1])));
+    const tw1 = envTempsC[y + 1] - (100 - rh1) / 5;
+    if (tw0 > 0 && tw1 <= 0) {
+      const ratio = tw0 / (tw0 - tw1);
+      return (y - surfaceLevel + ratio) * dz;
+    }
+  }
+  return NaN;
+}
+
+function computeCriticalAngle(hodoPoints, stormU, stormV)
+{
+  const sfc = windAtAltFromHodo(hodoPoints, 0);
+  const km1 = windAtAltFromHodo(hodoPoints, 1000);
+  const inflowU = sfc.u - stormU;
+  const inflowV = sfc.v - stormV;
+  const shearU = km1.u - sfc.u;
+  const shearV = km1.v - sfc.v;
+  const a = Math.atan2(inflowV, inflowU);
+  const b = Math.atan2(shearV, shearU);
+  let deg = Math.abs((a - b) * 180 / Math.PI);
+  if (deg > 180) deg = 360 - deg;
+  return Math.round(deg);
+}
+
+function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
+{
+  const spdKt = msToKnots(Math.hypot(uMs, vMs));
+  if (spdKt < 1) return;
+  const barbLen = Math.min(34, 8 + spdKt * 0.42);
+  const tipX = stemX - barbLen;
+  ctx.beginPath();
+  ctx.moveTo(stemX, y);
+  ctx.lineTo(tipX, y);
+  ctx.stroke();
+  let flags = Math.floor(spdKt / 50);
+  let rem = spdKt - flags * 50;
+  let pennants = Math.floor(rem / 10);
+  rem -= pennants * 10;
+  let half = rem >= 5 ? 1 : 0;
+  let px = tipX;
+  const step = 5;
+  for (let i = 0; i < flags; i++) {
+    ctx.beginPath();
+    ctx.moveTo(px, y);
+    ctx.lineTo(px + 7, y - 9);
+    ctx.lineTo(px, y - 9);
+    ctx.closePath();
+    ctx.fill();
+    px += step;
+  }
+  for (let i = 0; i < pennants; i++) {
+    ctx.beginPath();
+    ctx.moveTo(px, y);
+    ctx.lineTo(px + 6, y - 7);
+    ctx.stroke();
+    px += step;
+  }
+  if (half) {
+    ctx.beginPath();
+    ctx.moveTo(px, y);
+    ctx.lineTo(px + 4, y - 5);
+    ctx.stroke();
+  }
+}
+
   var soundingGraph = {
     graphCanvas : null,
     ctx : null,
@@ -7313,6 +7703,13 @@ function skewHpaFromAltM(altM)
     _capeDisplaySmooth : null,
     _panelWidth : 360,
     _railContentRight : 0,
+    FOOTER_READOUT_MIN : 150,
+    FOOTER_READOUT_MAX : 210,
+    FOOTER_PARCEL_MIN : 200,
+    FOOTER_PANEL_EDGE : 0,
+    FOOTER_CONTROLS_W : 200,
+    _dashboardReady : false,
+    _hoverReadout : null,
     resizeCanvas : function() {
       const h = window.innerHeight;
       this.graphCanvas.height = h;
@@ -7328,10 +7725,25 @@ function skewHpaFromAltM(altM)
       this.resizeCanvas();
       this.ctx = this.graphCanvas.getContext('2d', { alpha: true });
       var style = this.graphCanvas.style;
-      if (guiControls.showGraph)
+      if (guiControls.showGraph) {
         style.display = 'block';
-      else
+        const dash = document.getElementById('soundingDashboard');
+        if (dash) {
+          dash.classList.add('visible');
+          dash.setAttribute('aria-hidden', 'false');
+        }
+        const metricsPanel = document.getElementById('soundingMetricsPanel');
+        if (metricsPanel) metricsPanel.style.display = 'block';
+      } else {
         style.display = 'none';
+        const dash = document.getElementById('soundingDashboard');
+        if (dash) {
+          dash.classList.remove('visible');
+          dash.setAttribute('aria-hidden', 'true');
+        }
+        const metricsPanel = document.getElementById('soundingMetricsPanel');
+        if (metricsPanel) metricsPanel.style.display = 'none';
+      }
       
       // Add click handler for the Freeze/Save Sounding button
       if (!this.buttonClickHandler) {
@@ -7373,6 +7785,804 @@ function skewHpaFromAltM(altM)
           }
         };
         this.graphCanvas.addEventListener('click', this.buttonClickHandler);
+      }
+      this.initSoundingDashboard();
+    },
+    initSoundingDashboard : function() {
+      if (this._dashboardReady) return;
+      const dash = document.getElementById('soundingDashboard');
+      if (!dash) return;
+      this._dashboardReady = true;
+      const bindToggle = (id, key) => {
+        const el = document.getElementById(id);
+        if (!el) return;
+        el.checked = guiControls[key];
+        el.addEventListener('change', () => {
+          guiControls[key] = el.checked;
+        });
+      };
+      bindToggle('togWindBarbs', 'soundingShowWindBarbs');
+      bindToggle('togParcels', 'soundingShowParcels');
+      bindToggle('togMixing', 'soundingShowMixingRatio');
+      bindToggle('togHeights', 'soundingShowHeights');
+      bindToggle('togThetaE', 'soundingShowThetaE');
+      const saveBtn = document.getElementById('soundingSaveBtn');
+      const freezeBtn = document.getElementById('soundingFreezeBtn');
+      if (saveBtn) {
+        saveBtn.addEventListener('click', () => {
+          if (!guiControls.graphFixedPosition) {
+            guiControls.graphFixedPosition = true;
+            guiControls.graphFixedX = Math.floor(Math.abs(mod(mouseXinSim * sim_res_x, sim_res_x)));
+            guiControls.graphFixedY = Math.floor(mouseYinSim * sim_res_y);
+          }
+          this.saveCurrentSounding();
+        });
+      }
+      const toggleFreeze = () => {
+        if (guiControls.graphFixedPosition) {
+          guiControls.graphFixedPosition = false;
+        } else {
+          guiControls.graphFixedPosition = true;
+          guiControls.graphFixedX = Math.floor(Math.abs(mod(mouseXinSim * sim_res_x, sim_res_x)));
+          guiControls.graphFixedY = Math.floor(mouseYinSim * sim_res_y);
+        }
+        const freezeBtnEl = document.getElementById('soundingFreezeBtn');
+        if (freezeBtnEl) {
+          freezeBtnEl.textContent = guiControls.graphFixedPosition ? 'Unlock' : 'Freeze';
+        }
+      };
+      if (freezeBtn) freezeBtn.addEventListener('click', toggleFreeze);
+      bindToggle('togLayoutEdit', 'soundingLayoutEdit');
+      const layoutResetBtn = document.getElementById('soundingLayoutResetBtn');
+      if (layoutResetBtn) {
+        layoutResetBtn.addEventListener('click', () => this.resetCustomLayout());
+      }
+      const layoutEditEl = document.getElementById('togLayoutEdit');
+      if (layoutEditEl) {
+        layoutEditEl.addEventListener('change', () => this.setLayoutEditMode(guiControls.soundingLayoutEdit));
+      }
+      const shareBtn = document.getElementById('soundingShareImageBtn');
+      if (shareBtn) {
+        shareBtn.addEventListener('click', () => {
+          const link = document.createElement('a');
+          link.download = 'sounding-column.png';
+          link.href = this.exportSoundingPng();
+          link.click();
+        });
+      }
+      this.initLayoutEditor();
+      this.setLayoutEditMode(guiControls.soundingLayoutEdit);
+    },
+    _escapeHtml : function(str) {
+      return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+    },
+    SOUNDING_LAYOUT_STORAGE_KEY : 'soundingLayoutCustom_v1',
+    _customLayout : null,
+    _layoutDrag : null,
+    _layoutEditorReady : false,
+    loadCustomLayout : function() {
+      try {
+        const raw = localStorage.getItem(this.SOUNDING_LAYOUT_STORAGE_KEY);
+        this._customLayout = raw ? JSON.parse(raw) : {};
+      } catch (e) {
+        this._customLayout = {};
+      }
+    },
+    saveCustomLayout : function() {
+      if (!this._customLayout) return;
+      try {
+        localStorage.setItem(this.SOUNDING_LAYOUT_STORAGE_KEY, JSON.stringify(this._customLayout));
+      } catch (e) { /* ignore quota */ }
+    },
+    resetCustomLayout : function() {
+      this._customLayout = {};
+      try {
+        localStorage.removeItem(this.SOUNDING_LAYOUT_STORAGE_KEY);
+      } catch (e) { /* ignore */ }
+      if (guiControls.showGraph) {
+        const gx = guiControls.graphFixedPosition
+          ? guiControls.graphFixedX
+          : Math.floor(Math.abs(mod(mouseXinSim * sim_res_x, sim_res_x)));
+        soundingGraph.draw(gx, mouseYinSim);
+      }
+    },
+    _clampLayoutRect : function(r, minW, minH, maxW, maxH) {
+      return {
+        left: Math.max(0, r.left),
+        top: Math.max(0, r.top),
+        width: Math.max(minW, Math.min(maxW, r.width)),
+        height: Math.max(minH, Math.min(maxH, r.height)),
+      };
+    },
+    applyCustomSoundingLayout : function(ls) {
+      const c = this._customLayout;
+      if (!c) return ls;
+      const out = Object.assign({}, ls);
+      if (c.skewT) {
+        const r = c.skewT;
+        out.skewTLeft = r.left;
+        out.skewTWidth = r.width;
+        out.skewTRight = r.left + r.width;
+        out.skewTPlotRight = out.skewTRight - ls.SKEW_META_W;
+        out.plotTop = r.top;
+        out.plotBottom = r.top + r.height;
+        out.plotHeight = r.height;
+        out.graphBottem = out.plotBottom;
+      }
+      if (c.hodo) {
+        const r = c.hodo;
+        out.infoBoxX = r.left;
+        out.infoBoxWidth = r.width;
+        const hodoPlotH = Math.max(40, r.height - ls.HODO_LEGEND_H - ls.HODO_STATS_H);
+        out.hodographRadius = Math.max(24, Math.min(120, Math.round(hodoPlotH * 0.5 - ls.hodoPanelPad)));
+        out.hodoPanelSize = (out.hodographRadius + ls.hodoPanelPad) * 2;
+        out.hodographCx = r.left + r.width * 0.5;
+        out.hodographCy = r.top + out.hodographRadius + ls.hodoPanelPad;
+        out.hodoBlockBottom = r.top + r.height;
+        out.readoutBoxY = out.hodoBlockBottom + ls.hodoReadoutGap;
+      } else if (c.skewT && !c.metrics) {
+        out.infoBoxX = out.skewTRight + ls.hodoReadoutGap;
+      }
+      if (c.metrics) {
+        const r = c.metrics;
+        out.infoBoxX = r.left;
+        out.readoutBoxY = r.top;
+        out.infoBoxWidth = r.width;
+        out.metricsHeight = r.height;
+      }
+      if (c.windCol) {
+        const r = c.windCol;
+        out.windColLeft = r.left;
+        out.WIND_COL_W = r.width;
+        out.windBarbX = r.left + Math.min(34, Math.max(14, r.width * 0.35));
+        out.railContentRight = r.left + r.width + ls.RAIL_RIGHT_PAD;
+      } else {
+        out.windColLeft = out.infoBoxX + out.infoBoxWidth + ls.RAIL_INNER_GAP + ls.WIND_COL_EXTRA_SHIFT;
+        out.railContentRight = out.windColLeft + out.WIND_COL_W + ls.RAIL_RIGHT_PAD;
+      }
+      return out;
+    },
+    buildDashboardLayout : function(ls, canvasH) {
+      const c = this._customLayout || {};
+      const panelTop = 8;
+      const panelH = ls.SOUNDING_FOOTER_H - 16;
+      const footerGap = 8;
+      const readoutNatural = Math.round(ls.skewTRight - ls.skewTLeft);
+      const readoutW = Math.min(
+        this.FOOTER_READOUT_MAX,
+        Math.max(this.FOOTER_READOUT_MIN, readoutNatural));
+      const controlsW = this.FOOTER_CONTROLS_W;
+      const controlsLeft = Math.round(ls.windColLeft - controlsW - footerGap);
+      const readoutLeft = this.FOOTER_PANEL_EDGE;
+      const parcelLeft = readoutLeft + readoutW + footerGap;
+      const parcelW = Math.max(this.FOOTER_PARCEL_MIN, controlsLeft - footerGap - parcelLeft);
+      const defaults = {
+        footerReadout: {left: readoutLeft, top: panelTop, width: readoutW, height: panelH},
+        footerParcel: {left: parcelLeft, top: panelTop, width: parcelW, height: panelH},
+        footerControls: {left: controlsLeft, top: panelTop, width: controlsW, height: panelH},
+        metrics: {
+          left: ls.infoBoxX,
+          top: ls.readoutBoxY,
+          width: ls.infoBoxWidth,
+          height: Math.max(72, ls.plotBottom - ls.readoutBoxY - 4),
+        },
+      };
+      const panels = {};
+      for (const key of ['footerReadout', 'footerParcel', 'footerControls', 'metrics']) {
+        panels[key] = c[key] ? Object.assign({}, defaults[key], c[key]) : defaults[key];
+      }
+      return {
+        railW: ls.railContentRight,
+        footerH: ls.SOUNDING_FOOTER_H,
+        footerGap,
+        panels,
+        readoutLeft: panels.footerReadout.left,
+        readoutW: panels.footerReadout.width,
+        parcelLeft: panels.footerParcel.left,
+        parcelW: panels.footerParcel.width,
+        controlsLeft: panels.footerControls.left,
+        controlsW: panels.footerControls.width,
+        metricsLeft: panels.metrics.left,
+        metricsTop: panels.metrics.top,
+        metricsWidth: panels.metrics.width,
+        metricsHeight: panels.metrics.height,
+      };
+    },
+    _applyPanelRect : function(el, rect) {
+      if (!el || !rect) return;
+      el.style.left = Math.round(rect.left) + 'px';
+      el.style.top = Math.round(rect.top) + 'px';
+      el.style.width = Math.round(rect.width) + 'px';
+      el.style.height = Math.round(rect.height) + 'px';
+      el.style.right = 'auto';
+      el.style.bottom = 'auto';
+    },
+    setLayoutEditMode : function(active) {
+      const dash = document.getElementById('soundingDashboard');
+      if (dash) dash.classList.toggle('layout-edit-active', !!active);
+      const layer = document.getElementById('soundingLayoutLayer');
+      if (layer) layer.setAttribute('aria-hidden', active ? 'false' : 'true');
+      if (active && this._lastLayoutState) {
+        this._ensureCustomLayoutSeeded(this._lastLayoutState);
+      }
+    },
+    _ensureCustomLayoutSeeded : function(ls) {
+      if (!ls) return;
+      if (!this._customLayout) this._customLayout = {};
+      const seed = (key, rect) => {
+        if (!this._customLayout[key]) {
+          this._customLayout[key] = {
+            left: Math.round(rect.left),
+            top: Math.round(rect.top),
+            width: Math.round(rect.width),
+            height: Math.round(rect.height),
+          };
+        }
+      };
+      seed('skewT', {
+        left: ls.skewTLeft,
+        top: ls.plotTop,
+        width: ls.skewTRight - ls.skewTLeft,
+        height: ls.plotBottom - ls.plotTop,
+      });
+      seed('hodo', {
+        left: ls.infoBoxX,
+        top: ls.plotTop,
+        width: ls.infoBoxWidth,
+        height: ls.hodoBlockBottom - ls.plotTop,
+      });
+      seed('windCol', {
+        left: ls.windColLeft,
+        top: ls.plotTop,
+        width: ls.WIND_COL_W + 36,
+        height: ls.plotBottom - ls.plotTop,
+      });
+    },
+    _scheduleLayoutRedraw : function() {
+      if (this._layoutRedrawPending) return;
+      this._layoutRedrawPending = true;
+      requestAnimationFrame(() => {
+        this._layoutRedrawPending = false;
+        if (!guiControls.showGraph) return;
+        const gx = guiControls.graphFixedPosition
+          ? guiControls.graphFixedX
+          : Math.floor(Math.abs(mod(mouseXinSim * sim_res_x, sim_res_x)));
+        this.draw(gx, mouseYinSim);
+      });
+    },
+    _layoutCanvasSize : function() {
+      const gc = this.graphCanvas;
+      if (!gc) return {w: 0, h: 0};
+      return {w: gc.width, h: gc.height};
+    },
+    syncLayoutRegionOverlays : function(ls) {
+      const layer = document.getElementById('soundingLayoutLayer');
+      if (!layer) return;
+      const c = this._customLayout || {};
+      const pick = (key, fallback) => (c[key] ? c[key] : fallback);
+      const regions = {
+        skewT: {
+          label: 'Skew-T',
+          left: pick('skewT', {left: ls.skewTLeft}).left,
+          top: pick('skewT', {top: ls.plotTop}).top,
+          width: pick('skewT', {width: ls.skewTRight - ls.skewTLeft}).width,
+          height: pick('skewT', {height: ls.plotBottom - ls.plotTop}).height,
+        },
+        hodo: {
+          label: 'Hodograph',
+          left: pick('hodo', {left: ls.infoBoxX}).left,
+          top: pick('hodo', {top: ls.plotTop}).top,
+          width: pick('hodo', {width: ls.infoBoxWidth}).width,
+          height: pick('hodo', {height: ls.hodoBlockBottom - ls.plotTop}).height,
+        },
+        windCol: {
+          label: 'Wind profile',
+          left: pick('windCol', {left: ls.windColLeft}).left,
+          top: pick('windCol', {top: ls.plotTop}).top,
+          width: pick('windCol', {width: ls.WIND_COL_W + 36}).width,
+          height: pick('windCol', {height: ls.plotBottom - ls.plotTop}).height,
+        },
+      };
+      for (const [id, spec] of Object.entries(regions)) {
+        let el = layer.querySelector('[data-region="' + id + '"]');
+        if (!el) continue;
+        el.style.left = Math.round(spec.left) + 'px';
+        el.style.top = Math.round(spec.top) + 'px';
+        el.style.width = Math.round(Math.max(40, spec.width)) + 'px';
+        el.style.height = Math.round(Math.max(40, spec.height)) + 'px';
+        el.setAttribute('data-label', spec.label);
+      }
+    },
+    _layoutCommitRect : function(regionKey, rect) {
+      if (!this._customLayout) this._customLayout = {};
+      const {w, h} = this._layoutCanvasSize();
+      this._customLayout[regionKey] = this._clampLayoutRect(rect, 48, 40, w, h);
+      this.saveCustomLayout();
+    },
+    _layoutOnPointerMove : function(e) {
+      const drag = this._layoutDrag;
+      if (!drag) return;
+      const dx = e.clientX - drag.startX;
+      const dy = e.clientY - drag.startY;
+      const rect = {
+        left: drag.origLeft + dx,
+        top: drag.origTop + dy,
+        width: drag.origW + (drag.mode === 'resize' ? dx : 0),
+        height: drag.origH + (drag.mode === 'resize' ? dy : 0),
+      };
+      if (drag.kind === 'panel') {
+        const el = document.getElementById(drag.panelId);
+        if (el) this._applyPanelRect(el, rect);
+        if (!this._customLayout) this._customLayout = {};
+        this._customLayout[drag.regionKey] = rect;
+      } else if (drag.kind === 'region') {
+        const el = drag.regionEl;
+        if (el) {
+          el.style.left = Math.round(rect.left) + 'px';
+          el.style.top = Math.round(rect.top) + 'px';
+          el.style.width = Math.round(Math.max(40, rect.width)) + 'px';
+          el.style.height = Math.round(Math.max(40, rect.height)) + 'px';
+        }
+        if (!this._customLayout) this._customLayout = {};
+        this._customLayout[drag.regionKey] = rect;
+      }
+      this._scheduleLayoutRedraw();
+    },
+    _layoutOnPointerUp : function() {
+      if (this._layoutDrag) {
+        const drag = this._layoutDrag;
+        if (drag.kind === 'panel' && this._customLayout && this._customLayout[drag.regionKey]) {
+          const {w, h} = this._layoutCanvasSize();
+          this._customLayout[drag.regionKey] = this._clampLayoutRect(
+            this._customLayout[drag.regionKey], 80, 48, w, h);
+        }
+        if (drag.kind === 'region' && this._customLayout && this._customLayout[drag.regionKey]) {
+          const {w, h} = this._layoutCanvasSize();
+          const minW = drag.regionKey === 'windCol' ? 48 : (drag.regionKey === 'skewT' ? 160 : 100);
+          const minH = drag.regionKey === 'skewT' ? 180 : 60;
+          this._customLayout[drag.regionKey] = this._clampLayoutRect(
+            this._customLayout[drag.regionKey], minW, minH, w, h);
+        }
+        this.saveCustomLayout();
+        this._scheduleLayoutRedraw();
+      }
+      this._layoutDrag = null;
+      document.removeEventListener('mousemove', this._layoutMoveHandler);
+      document.removeEventListener('mouseup', this._layoutUpHandler);
+    },
+    _layoutStartDrag : function(kind, regionKey, mode, targetEl, panelId, e) {
+      if (!guiControls.soundingLayoutEdit) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const r = targetEl.getBoundingClientRect();
+      const panelEl = panelId ? document.getElementById(panelId) : null;
+      const dash = document.getElementById('soundingDashboard');
+      const parent = (kind === 'region')
+        ? dash
+        : ((panelEl && panelEl.closest('.sounding-footer')) || dash);
+      const parentRect = parent ? parent.getBoundingClientRect() : {left: 0, top: 0};
+      this._layoutDrag = {
+        kind,
+        regionKey,
+        mode,
+        panelId,
+        regionEl: targetEl,
+        parentEl: parent,
+        startX: e.clientX,
+        startY: e.clientY,
+        origLeft: r.left - parentRect.left,
+        origTop: r.top - parentRect.top,
+        origW: r.width,
+        origH: r.height,
+      };
+      if (!this._layoutMoveHandler) {
+        this._layoutMoveHandler = (ev) => this._layoutOnPointerMove(ev);
+        this._layoutUpHandler = () => this._layoutOnPointerUp();
+      }
+      document.addEventListener('mousemove', this._layoutMoveHandler);
+      document.addEventListener('mouseup', this._layoutUpHandler);
+    },
+    _bindLayoutPanel : function(panelId, regionKey) {
+      const el = document.getElementById(panelId);
+      if (!el) return;
+      if (!el.querySelector('.sounding-layout-resize-handle')) {
+        const grip = document.createElement('div');
+        grip.className = 'sounding-layout-resize-handle';
+        grip.title = 'Resize';
+        el.appendChild(grip);
+        grip.addEventListener('mousedown', (e) => {
+          this._layoutStartDrag('panel', regionKey, 'resize', el, panelId, e);
+        });
+      }
+      const handle = el.querySelector('.sounding-layout-drag-handle') || el.querySelector('h4');
+      if (handle && !handle._layoutBound) {
+        handle._layoutBound = true;
+        handle.addEventListener('mousedown', (e) => {
+          if (e.target.closest('.sounding-layout-resize-handle')) return;
+          this._layoutStartDrag('panel', regionKey, 'move', el, panelId, e);
+        });
+      }
+    },
+    initLayoutEditor : function() {
+      if (this._layoutEditorReady) return;
+      this.loadCustomLayout();
+      const layer = document.getElementById('soundingLayoutLayer');
+      if (layer && !layer.childElementCount) {
+        for (const [id, label] of [['skewT', 'Skew-T'], ['hodo', 'Hodograph'], ['windCol', 'Wind profile']]) {
+          const div = document.createElement('div');
+          div.className = 'sounding-layout-region';
+          div.dataset.region = id;
+          div.dataset.label = label;
+          const grip = document.createElement('div');
+          grip.className = 'sounding-layout-resize-handle';
+          div.appendChild(grip);
+          div.addEventListener('mousedown', (e) => {
+            if (!e.target.classList.contains('sounding-layout-resize-handle')) {
+              this._layoutStartDrag('region', id, 'move', div, null, e);
+            }
+          });
+          grip.addEventListener('mousedown', (e) => {
+            e.stopPropagation();
+            this._layoutStartDrag('region', id, 'resize', div, null, e);
+          });
+          layer.appendChild(div);
+        }
+      }
+      this._bindLayoutPanel('soundingReadoutPanel', 'footerReadout');
+      this._bindLayoutPanel('soundingParcelPanel', 'footerParcel');
+      this._bindLayoutPanel('soundingControlsPanel', 'footerControls');
+      this._bindLayoutPanel('soundingMetricsPanel', 'metrics');
+      this._layoutEditorReady = true;
+    },
+    _exportCanvasScale : function() {
+      const gc = this.graphCanvas;
+      const r = gc.getBoundingClientRect();
+      return {
+        gcRect: r,
+        scaleX: r.width > 0 ? gc.width / r.width : 1,
+        scaleY: r.height > 0 ? gc.height / r.height : 1,
+      };
+    },
+    _exportMapRect : function(domRect, gcRect, scaleX, scaleY) {
+      return {
+        x: (domRect.left - gcRect.left) * scaleX,
+        y: (domRect.top - gcRect.top) * scaleY,
+        w: domRect.width * scaleX,
+        h: domRect.height * scaleY,
+      };
+    },
+    _exportFillRoundRect : function(ctx, x, y, w, h, rad) {
+      const r = Math.min(rad, w * 0.5, h * 0.5);
+      ctx.beginPath();
+      ctx.moveTo(x + r, y);
+      ctx.lineTo(x + w - r, y);
+      ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+      ctx.lineTo(x + w, y + h - r);
+      ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+      ctx.lineTo(x + r, y + h);
+      ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+      ctx.lineTo(x, y + r);
+      ctx.quadraticCurveTo(x, y, x + r, y);
+      ctx.closePath();
+    },
+    _exportDrawPanelChrome : function(ctx, box, scaleY) {
+      this._exportFillRoundRect(ctx, box.x, box.y, box.w, box.h, 4 * scaleY);
+      ctx.fillStyle = 'rgba(12, 14, 18, 0.94)';
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.14)';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+    },
+    _exportDrawReadoutCols : function(ctx, panelEl, box, scaleX, scaleY) {
+      const padX = 8 * scaleX;
+      const padTop = 22 * scaleY;
+      const cols = panelEl.querySelectorAll('.sounding-readout-col');
+      if (!cols.length) return;
+      const colGap = 10 * scaleX;
+      const colW = (box.w - padX * 2 - colGap * (cols.length - 1)) / cols.length;
+      let cx = box.x + padX;
+      const rowH = 11 * scaleY;
+      const lblFont = `9px Segoe UI, Arial`;
+      const valFont = `9px Consolas, monospace`;
+      cols.forEach(col => {
+        const lbls = col.querySelectorAll('.lbl');
+        const vals = col.querySelectorAll('.val');
+        let ry = box.y + padTop;
+        for (let i = 0; i < lbls.length; i++) {
+          const lbl = lbls[i];
+          const val = vals[i];
+          if (!lbl || !val) continue;
+          ctx.font = lblFont;
+          ctx.fillStyle = '#7a8fa0';
+          const lblText = lbl.textContent;
+          ctx.fillText(lblText, cx, ry);
+          const lblW = ctx.measureText(lblText).width;
+          ctx.font = valFont;
+          if (val.classList.contains('temp')) ctx.fillStyle = '#ff5555';
+          else if (val.classList.contains('dew')) ctx.fillStyle = '#66ccff';
+          else ctx.fillStyle = '#e8eef2';
+          ctx.fillText(val.textContent, cx + lblW + 5 * scaleX, ry);
+          ry += rowH;
+        }
+        cx += colW + colGap;
+      });
+    },
+    _exportDrawControls : function(ctx, panelEl, box, scaleX, scaleY) {
+      const padX = 8 * scaleX;
+      let y = box.y + 22 * scaleY;
+      const rowH = 12 * scaleY;
+      panelEl.querySelectorAll('.sounding-toggle-row').forEach(row => {
+        const span = row.querySelector('span');
+        const input = row.querySelector('input');
+        const label = span ? span.textContent : '';
+        ctx.font = '8px Segoe UI, Arial';
+        ctx.fillStyle = '#c8d4e0';
+        ctx.fillText(label, box.x + padX, y);
+        const cbX = box.x + box.w - padX - 11 * scaleX;
+        const cbY = y - 8 * scaleY;
+        ctx.strokeStyle = 'rgba(255,255,255,0.35)';
+        ctx.strokeRect(cbX, cbY, 10 * scaleX, 10 * scaleY);
+        if (input && input.checked) {
+          ctx.fillStyle = '#4a90e2';
+          ctx.fillRect(cbX + 2 * scaleX, cbY + 2 * scaleY, 6 * scaleX, 6 * scaleY);
+        }
+        y += rowH;
+      });
+      const resetBtn = panelEl.querySelector('.sounding-layout-reset-btn');
+      if (resetBtn) {
+        const bx = box.x + padX;
+        const by = box.y + box.h - 14 * scaleY;
+        const bw = box.w - padX * 2;
+        const bh = 12 * scaleY;
+        this._exportFillRoundRect(ctx, bx, by, bw, bh, 3 * scaleY);
+        ctx.fillStyle = 'rgba(40, 48, 58, 0.95)';
+        ctx.fill();
+        ctx.strokeStyle = 'rgba(255,255,255,0.22)';
+        ctx.stroke();
+        ctx.fillStyle = '#c8d4e0';
+        ctx.font = '8px Segoe UI, Arial';
+        ctx.fillText(resetBtn.textContent, bx + 6 * scaleX, by + 9 * scaleY);
+      }
+    },
+    _exportDrawFooterPanel : function(ctx, panelEl, gcRect, scaleX, scaleY) {
+      if (!panelEl || panelEl.offsetParent === null) return;
+      const dom = panelEl.getBoundingClientRect();
+      if (dom.width < 4 || dom.height < 4) return;
+      const box = this._exportMapRect(dom, gcRect, scaleX, scaleY);
+      ctx.save();
+      this._exportDrawPanelChrome(ctx, box, scaleY);
+      const h4 = panelEl.querySelector('h4');
+      if (h4) {
+        ctx.fillStyle = '#8fa8bc';
+        ctx.font = `bold ${Math.round(9 * scaleY)}px Segoe UI, Arial`;
+        ctx.fillText(h4.textContent.trim(), box.x + 8 * scaleX, box.y + 14 * scaleY);
+      }
+      if (panelEl.id === 'soundingControlsPanel') {
+        this._exportDrawControls(ctx, panelEl, box, scaleX, scaleY);
+      } else {
+        this._exportDrawReadoutCols(ctx, panelEl, box, scaleX, scaleY);
+      }
+      ctx.restore();
+    },
+    _exportDrawFooterBar : function(ctx, gcRect, scaleX, scaleY) {
+      const footer = document.querySelector('.sounding-footer');
+      if (!footer) return;
+      const dom = footer.getBoundingClientRect();
+      const box = this._exportMapRect(dom, gcRect, scaleX, scaleY);
+      ctx.save();
+      ctx.fillStyle = 'rgba(8, 10, 14, 0.96)';
+      ctx.fillRect(box.x, box.y, box.w, box.h);
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.12)';
+      ctx.beginPath();
+      ctx.moveTo(box.x, box.y);
+      ctx.lineTo(box.x + box.w, box.y);
+      ctx.stroke();
+      ctx.restore();
+    },
+    _exportDrawMetricsPanel : function(ctx, panelEl, gcRect, scaleX, scaleY) {
+      if (!panelEl || panelEl.style.display === 'none') return;
+      const dom = panelEl.getBoundingClientRect();
+      if (dom.width < 4 || dom.height < 4) return;
+      const box = this._exportMapRect(dom, gcRect, scaleX, scaleY);
+      ctx.save();
+      this._exportDrawPanelChrome(ctx, box, scaleY);
+      let y = box.y + 12 * scaleY;
+      const timeEl = panelEl.querySelector('.sounding-metrics-time');
+      if (timeEl && timeEl.textContent) {
+        ctx.fillStyle = '#8899aa';
+        ctx.font = `${Math.round(10 * scaleY)}px Consolas, monospace`;
+        ctx.fillText(timeEl.textContent, box.x + 8 * scaleX, y);
+        y += 14 * scaleY;
+      }
+      const body = panelEl.querySelector('#soundingMetricsBody');
+      if (!body) {
+        ctx.restore();
+        return;
+      }
+      for (const el of body.children) {
+        if (y > box.y + box.h - 4 * scaleY) break;
+        if (el.classList.contains('sounding-metrics-section')) {
+          y += 4 * scaleY;
+          ctx.fillStyle = 'rgba(255,255,255,0.06)';
+          this._exportFillRoundRect(ctx, box.x + 6 * scaleX, y - 8 * scaleY, box.w - 12 * scaleX, 12 * scaleY, 2);
+          ctx.fill();
+          ctx.fillStyle = '#7a8fa0';
+          ctx.font = `bold ${Math.round(9 * scaleY)}px Segoe UI, Arial`;
+          ctx.fillText(el.textContent.trim(), box.x + 10 * scaleX, y);
+          y += 12 * scaleY;
+        } else if (el.classList.contains('sounding-metrics-row')) {
+          const lbl = el.querySelector('.lbl');
+          const val = el.querySelector('.val');
+          if (!lbl || !val) continue;
+          ctx.fillStyle = '#7a8fa0';
+          ctx.font = `${Math.round(10 * scaleY)}px Consolas, monospace`;
+          ctx.fillText(lbl.textContent, box.x + 8 * scaleX, y);
+          ctx.fillStyle = val.style.color || '#e8eef2';
+          ctx.textAlign = 'right';
+          ctx.fillText(val.textContent, box.x + box.w - 8 * scaleX, y);
+          ctx.textAlign = 'left';
+          y += 11 * scaleY;
+        } else if (el.classList.contains('sounding-metrics-bar')) {
+          y += 2 * scaleY;
+        }
+      }
+      ctx.restore();
+    },
+    _exportDrawHeader : function(ctx, headerEl, gcRect, scaleX, scaleY) {
+      if (!headerEl) return;
+      const dom = headerEl.getBoundingClientRect();
+      const box = this._exportMapRect(dom, gcRect, scaleX, scaleY);
+      ctx.save();
+      const grad = ctx.createLinearGradient(box.x, box.y, box.x, box.y + box.h);
+      grad.addColorStop(0, 'rgba(8, 10, 14, 0.92)');
+      grad.addColorStop(1, 'rgba(8, 10, 14, 0.55)');
+      ctx.fillStyle = grad;
+      ctx.fillRect(box.x, box.y, box.w, box.h);
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.12)';
+      ctx.beginPath();
+      ctx.moveTo(box.x, box.y + box.h);
+      ctx.lineTo(box.x + box.w, box.y + box.h);
+      ctx.stroke();
+      const station = headerEl.querySelector('.sounding-header-station');
+      const valid = headerEl.querySelector('.sounding-header-valid');
+      if (station) {
+        ctx.fillStyle = '#c8d4e0';
+        ctx.font = `600 ${Math.round(13 * scaleY)}px Segoe UI, Arial`;
+        ctx.fillText(station.textContent, box.x + 16 * scaleX, box.y + 26 * scaleY);
+      }
+      if (valid) {
+        ctx.fillStyle = '#ffcc44';
+        ctx.font = `${Math.round(12 * scaleY)}px Segoe UI, Arial`;
+        const tw = ctx.measureText(valid.textContent).width;
+        ctx.fillText(valid.textContent, box.x + (box.w - tw) * 0.5, box.y + 26 * scaleY);
+      }
+      ctx.restore();
+    },
+    exportSoundingPng : function() {
+      const gc = this.graphCanvas;
+      if (!gc) return '';
+      const dash = document.getElementById('soundingDashboard');
+      const out = document.createElement('canvas');
+      out.width = gc.width;
+      out.height = gc.height;
+      const ctx = out.getContext('2d');
+      ctx.drawImage(gc, 0, 0);
+      if (!dash || !dash.classList.contains('visible') || !guiControls.showGraph) {
+        return out.toDataURL('image/png');
+      }
+      const {gcRect, scaleX, scaleY} = this._exportCanvasScale();
+      this._exportDrawHeader(ctx, dash.querySelector('.sounding-header'), gcRect, scaleX, scaleY);
+      this._exportDrawMetricsPanel(ctx, document.getElementById('soundingMetricsPanel'), gcRect, scaleX, scaleY);
+      this._exportDrawFooterBar(ctx, gcRect, scaleX, scaleY);
+      this._exportDrawFooterPanel(ctx, document.getElementById('soundingReadoutPanel'), gcRect, scaleX, scaleY);
+      this._exportDrawFooterPanel(ctx, document.getElementById('soundingParcelPanel'), gcRect, scaleX, scaleY);
+      this._exportDrawFooterPanel(ctx, document.getElementById('soundingControlsPanel'), gcRect, scaleX, scaleY);
+      return out.toDataURL('image/png');
+    },
+    renderMetricsPanel : function(rows, timeLine) {
+      const body = document.getElementById('soundingMetricsBody');
+      const timeEl = document.getElementById('soundingMetricsTime');
+      if (!body) return;
+      if (timeEl) {
+        timeEl.textContent = timeLine || '';
+      }
+      let html = '';
+      for (const row of rows || []) {
+        if (row.section) {
+          html += '<div class="sounding-metrics-section">' + this._escapeHtml(row.section) + '</div>';
+        } else if (row.miniBar) {
+          const name = row.shortLabel || row.label;
+          const pct = Math.max(0, Math.min(100, row.pct || 0));
+          const color = row.color || '#88aacc';
+          html += '<div class="sounding-metrics-bar"><span class="name">' + this._escapeHtml(name) +
+            '</span><span class="pct">' + pct + '%</span><div class="track"><div class="fill" style="width:' +
+            pct + '%;background:' + color + '"></div></div></div>';
+        } else if (row.label) {
+          const cls = row.highlight ? 'sounding-metrics-row highlight' : 'sounding-metrics-row';
+          const valColor = row.color || '#e8eef2';
+          html += '<div class="' + cls + '"><span class="lbl">' + this._escapeHtml(row.label) +
+            '</span><span class="val" style="color:' + valColor + '">' +
+            this._escapeHtml(row.value) + '</span></div>';
+        }
+      }
+      body.innerHTML = html;
+    },
+    updateSoundingDashboard : function(data) {
+      const dashRoot = document.getElementById('soundingDashboard');
+      const metricsPanel = document.getElementById('soundingMetricsPanel');
+      if (data.layout && dashRoot) {
+        const L = data.layout;
+        dashRoot.style.setProperty('--sounding-dash-w', Math.ceil(L.railW) + 'px');
+        dashRoot.style.setProperty('--sounding-footer-h', (L.footerH || 112) + 'px');
+        dashRoot.style.setProperty('--sounding-footer-gap', (L.footerGap || 8) + 'px');
+        dashRoot.style.setProperty('--footer-readout-w', Math.max(0, L.readoutW) + 'px');
+        dashRoot.style.setProperty('--footer-parcel-w', Math.max(0, L.parcelW) + 'px');
+        dashRoot.style.setProperty('--footer-controls-w', Math.max(0, L.controlsW) + 'px');
+        if (L.readoutLeft != null) {
+          dashRoot.style.setProperty('--footer-readout-left', Math.round(L.readoutLeft) + 'px');
+        }
+        if (L.parcelLeft != null) {
+          dashRoot.style.setProperty('--footer-parcel-left', Math.round(L.parcelLeft) + 'px');
+        }
+        if (L.controlsLeft != null) {
+          dashRoot.style.setProperty('--footer-controls-left', Math.round(L.controlsLeft) + 'px');
+        }
+        const panelMap = {
+          footerReadout: 'soundingReadoutPanel',
+          footerParcel: 'soundingParcelPanel',
+          footerControls: 'soundingControlsPanel',
+          metrics: 'soundingMetricsPanel',
+        };
+        if (L.panels) {
+          for (const [key, rect] of Object.entries(L.panels)) {
+            const el = document.getElementById(panelMap[key]);
+            if (el && rect) this._applyPanelRect(el, rect);
+          }
+        }
+        if (metricsPanel) {
+          metricsPanel.style.display = 'block';
+          if (!L.panels || !L.panels.metrics) {
+            metricsPanel.style.left = Math.round(L.metricsLeft) + 'px';
+            metricsPanel.style.top = Math.round(L.metricsTop) + 'px';
+            metricsPanel.style.width = Math.round(L.metricsWidth) + 'px';
+            metricsPanel.style.height = Math.max(80, Math.round(L.metricsHeight)) + 'px';
+          }
+        }
+      }
+      if (data.metricsRows) {
+        this.renderMetricsPanel(data.metricsRows, data.metricsTimeLine);
+      }
+      const station = document.getElementById('soundingStationLabel');
+      const valid = document.getElementById('soundingValidLabel');
+      if (station) {
+        station.textContent = data.stationLabel || 'Simulation Sounding';
+      }
+      if (valid) {
+        valid.textContent = 'VALID: ' + (data.validLabel || '—');
+      }
+      const fillGridCols = (elId, columns) => {
+        const grid = document.getElementById(elId);
+        if (!grid || !columns) return;
+        grid.innerHTML = columns.map(col =>
+          '<div class="sounding-readout-col">' + col.map(([lbl, val, cls]) =>
+            '<span class="lbl">' + this._escapeHtml(lbl) + '</span><span class="val' +
+            (cls ? ' ' + cls : '') + '">' + this._escapeHtml(val) + '</span>'
+          ).join('') + '</div>'
+        ).join('');
+      };
+      if (data.readoutCols) {
+        fillGridCols('soundingReadoutGrid', data.readoutCols);
+      }
+      if (data.parcelCols) {
+        fillGridCols('soundingParcelGrid', data.parcelCols);
+      }
+      const freezeBtnEl = document.getElementById('soundingFreezeBtn');
+      if (freezeBtnEl) {
+        freezeBtnEl.textContent = guiControls.graphFixedPosition ? 'Unlock' : 'Freeze';
       }
     },
     saveCurrentSounding : function() {
@@ -7491,7 +8701,14 @@ function skewHpaFromAltM(altM)
         this._lastGraphX = simXpos;
       }
 
-      const graphBottem = this.graphCanvas.height - 40;
+      const SOUNDING_HEADER_H = 44;
+      const SOUNDING_FOOTER_H = 112;
+      const SOUNDING_AXIS_PAD = 26;
+      const METRICS_PANEL_W = 268;
+      let plotTop = SOUNDING_HEADER_H + 6;
+      let plotBottom = this.graphCanvas.height - SOUNDING_FOOTER_H - SOUNDING_AXIS_PAD;
+      let plotHeight = Math.max(200, plotBottom - plotTop);
+      let graphBottem = plotBottom;
       const dz = guiControls.simHeight / sim_res_y;
       if (this._railContentRight > 0) {
         const targetW = Math.ceil(this._railContentRight + 6);
@@ -7504,51 +8721,161 @@ function skewHpaFromAltM(altM)
       const graphCanvasH = this.graphCanvas.height;
 
       const windBarbScale = 2.5;
-      let infoBoxWidth = this._panelWidth || 360;
-      const WIND_COL_SLOT_W = 78;
-      const RAIL_RIGHT_PAD = 2;
-      const RAIL_INNER_GAP = 10;
+      let infoBoxWidth = METRICS_PANEL_W;
+      const WIND_COL_SLOT_W = 88;
+      const RAIL_RIGHT_PAD = 6;
+      const RAIL_INNER_GAP = 22;
+      const WIND_COL_EXTRA_SHIFT = 20;
       let WIND_COL_W = WIND_COL_SLOT_W;
       let infoBoxX = graphCanvasW - RAIL_RIGHT_PAD - infoBoxWidth;
-      let windColLeft = infoBoxX + infoBoxWidth + RAIL_INNER_GAP;
-      let windBarbX = windColLeft + 10;
-      const railTop = 8;
-      const hodoReadoutGap = 12;
-      const hodoPanelPad = 6;
-      const HODO_LEGEND_H = 22;
-      const skewTLeft = 52;
-      let hodographRadius = Math.min(88, Math.round(graphCanvasH * 0.12));
-      const hodoPanelSize = (hodographRadius + hodoPanelPad) * 2;
-      let skewTWidth = Math.max(300, graphBottem - skewTLeft - 10);
+      let windColLeft = infoBoxX + infoBoxWidth + RAIL_INNER_GAP + WIND_COL_EXTRA_SHIFT;
+      let windBarbX = windColLeft + 14;
+      const railTop = plotTop;
+      const hodoReadoutGap = 10;
+      const hodoPanelPad = 5;
+      const HODO_LEGEND_H = 16;
+      const HODO_STATS_H = 36;
+      const SKEW_META_W = (guiControls.soundingShowWindBarbs || guiControls.soundingShowThetaE) ? 54 : 6;
+      let skewTLeft = guiControls.soundingShowHeights ? 68 : 52;
+      let skewTPlotRight = 0;
+      let hodographRadius = Math.min(68, Math.max(48, Math.round(plotHeight * 0.11)));
+      let hodoPanelSize = (hodographRadius + hodoPanelPad) * 2;
+      let hodoBlockBottom = plotTop + hodoPanelSize + HODO_LEGEND_H + HODO_STATS_H;
+      let skewTWidth = Math.min(plotHeight - 8, Math.max(240, graphBottem - skewTLeft - 10));
       let skewTRight = skewTLeft + skewTWidth;
       let hodographCx = 0;
-      let hodographCy = railTop + hodographRadius + hodoPanelPad;
-      let readoutBoxY = railTop + hodoPanelSize + HODO_LEGEND_H + hodoReadoutGap;
+      let hodographCy = plotTop + hodographRadius + hodoPanelPad;
+      let readoutBoxY = hodoBlockBottom + hodoReadoutGap;
       let railContentRight = graphCanvasW;
 
       const updateSoundingLayout = () => {
-        skewTWidth = Math.max(280, graphBottem - skewTLeft - 10);
-        skewTRight = skewTLeft + skewTWidth;
-        infoBoxX = skewTRight + hodoReadoutGap;
-        hodographCx = infoBoxX + infoBoxWidth * 0.5;
-        hodographCy = railTop + hodographRadius + hodoPanelPad;
-        readoutBoxY = railTop + hodoPanelSize + HODO_LEGEND_H + hodoReadoutGap;
-        windColLeft = infoBoxX + infoBoxWidth + RAIL_INNER_GAP;
-        const windSpinePad = 10;
-        const windLeftRoom = this._windDisplaySmooth
-          ? Math.max(12, this._windDisplaySmooth.leftExtent)
-          : 14;
-        windBarbX = windColLeft + Math.max(windSpinePad, windLeftRoom * 0.75);
-        railContentRight = windColLeft + WIND_COL_W + RAIL_RIGHT_PAD;
+        const c = this._customLayout;
+        if (c && c.skewT) {
+          skewTLeft = c.skewT.left;
+          skewTWidth = c.skewT.width;
+          skewTRight = skewTLeft + skewTWidth;
+          plotTop = c.skewT.top;
+          plotBottom = c.skewT.top + c.skewT.height;
+          plotHeight = c.skewT.height;
+          graphBottem = plotBottom;
+        } else {
+          skewTWidth = Math.min(plotHeight - 8, Math.max(240, graphBottem - skewTLeft - 10));
+          skewTRight = skewTLeft + skewTWidth;
+        }
+        skewTPlotRight = skewTRight - SKEW_META_W;
+
+        if (c && c.hodo) {
+          const r = c.hodo;
+          infoBoxX = r.left;
+          infoBoxWidth = r.width;
+          const hodoPlotH = Math.max(40, r.height - HODO_LEGEND_H - HODO_STATS_H);
+          hodographRadius = Math.max(24, Math.min(120, Math.round(hodoPlotH * 0.5 - hodoPanelPad)));
+          hodoPanelSize = (hodographRadius + hodoPanelPad) * 2;
+          hodographCx = r.left + r.width * 0.5;
+          hodographCy = r.top + hodographRadius + hodoPanelPad;
+          hodoBlockBottom = r.top + r.height;
+          readoutBoxY = hodoBlockBottom + hodoReadoutGap;
+        } else {
+          infoBoxX = skewTRight + hodoReadoutGap;
+          hodographCx = infoBoxX + infoBoxWidth * 0.5;
+          hodographCy = plotTop + hodographRadius + hodoPanelPad;
+          readoutBoxY = plotTop + hodoPanelSize + HODO_LEGEND_H + HODO_STATS_H + hodoReadoutGap;
+        }
+
+        if (c && c.metrics) {
+          infoBoxX = c.metrics.left;
+          readoutBoxY = c.metrics.top;
+          infoBoxWidth = c.metrics.width;
+        }
+
+        if (c && c.windCol) {
+          windColLeft = c.windCol.left;
+          WIND_COL_W = Math.max(48, c.windCol.width - 36);
+          windBarbX = c.windCol.left + Math.min(34, Math.max(14, c.windCol.width * 0.35));
+          railContentRight = c.windCol.left + c.windCol.width + RAIL_RIGHT_PAD;
+        } else {
+          windColLeft = infoBoxX + infoBoxWidth + RAIL_INNER_GAP + WIND_COL_EXTRA_SHIFT;
+          const windSpinePad = 12;
+          const windLeftRoom = this._windDisplaySmooth
+            ? Math.max(14, this._windDisplaySmooth.leftExtent)
+            : 16;
+          windBarbX = windColLeft + Math.max(windSpinePad, windLeftRoom * 0.55);
+          railContentRight = windColLeft + WIND_COL_W + RAIL_RIGHT_PAD;
+        }
       };
       updateSoundingLayout();
 
-      function T_to_Xpos(T, y) {
-        const normX = T * 0.0115 + 0.9 - (y / graphBottem) * 0.8;
-        return skewTLeft + normX * skewTWidth;
+      let layoutState = {
+        SOUNDING_HEADER_H,
+        SOUNDING_FOOTER_H,
+        SOUNDING_AXIS_PAD,
+        METRICS_PANEL_W,
+        SKEW_META_W,
+        plotTop,
+        plotBottom,
+        plotHeight,
+        graphBottem,
+        skewTLeft,
+        skewTRight,
+        skewTWidth,
+        skewTPlotRight,
+        infoBoxX,
+        infoBoxWidth,
+        hodographCx,
+        hodographCy,
+        hodographRadius,
+        hodoPanelSize,
+        hodoBlockBottom,
+        readoutBoxY,
+        windColLeft,
+        WIND_COL_W,
+        WIND_COL_SLOT_W,
+        windBarbX,
+        railContentRight,
+        hodoReadoutGap,
+        RAIL_INNER_GAP,
+        RAIL_RIGHT_PAD,
+        WIND_COL_EXTRA_SHIFT,
+        HODO_LEGEND_H,
+        HODO_STATS_H,
+        hodoPanelPad,
+      };
+      layoutState = this.applyCustomSoundingLayout(layoutState);
+      plotTop = layoutState.plotTop;
+      plotBottom = layoutState.plotBottom;
+      plotHeight = layoutState.plotHeight;
+      graphBottem = layoutState.graphBottem;
+      skewTLeft = layoutState.skewTLeft;
+      skewTRight = layoutState.skewTRight;
+      skewTWidth = layoutState.skewTWidth;
+      skewTPlotRight = layoutState.skewTPlotRight;
+      infoBoxX = layoutState.infoBoxX;
+      infoBoxWidth = layoutState.infoBoxWidth;
+      hodographCx = layoutState.hodographCx;
+      hodographCy = layoutState.hodographCy;
+      hodographRadius = layoutState.hodographRadius;
+      hodoPanelSize = layoutState.hodoPanelSize;
+      hodoBlockBottom = layoutState.hodoBlockBottom;
+      readoutBoxY = layoutState.readoutBoxY;
+      windColLeft = layoutState.windColLeft;
+      WIND_COL_W = layoutState.WIND_COL_W;
+      windBarbX = layoutState.windBarbX;
+      railContentRight = layoutState.railContentRight;
+      this._lastLayoutState = layoutState;
+      if (guiControls.soundingLayoutEdit) {
+        this._ensureCustomLayoutSeeded(layoutState);
       }
-      const scrYToAltM = (scrY) => map_range(scrY, graphBottem, 0, 0, guiControls.simHeight);
-      const altMToScrY = (altM) => map_range(altM, 0, guiControls.simHeight, graphBottem, 0);
+      this.syncLayoutRegionOverlays(layoutState);
+
+      function T_to_Xpos(T, y) {
+        const yNorm = plotHeight > 0 ? (y - plotTop) / plotHeight : 0;
+        const normX = T * 0.0115 + 0.9 - yNorm * 0.8;
+        const plotW = Math.max(80, skewTPlotRight - skewTLeft);
+        return skewTLeft + normX * plotW;
+      }
+      const scrYFromSimY = (y) => map_range(y, sim_res_y, 0, plotTop, plotBottom);
+      const scrYToAltM = (scrY) => map_range(scrY, plotBottom, plotTop, 0, guiControls.simHeight);
+      const altMToScrY = (altM) => map_range(altM, 0, guiControls.simHeight, plotBottom, plotTop);
 
       var c = this.ctx;
 
@@ -7629,121 +8956,6 @@ function skewHpaFromAltM(altM)
         return total;
       }
 
-      function computeCAPE(envTempsC, envDewC, parcelTemps, startIndex) {
-        const B_MIN = 0.02;
-        const MIN_CAPE_LAYER_M = 350;
-        const altFromIndex = (index) => index * dz;
-        let lclAlt = NaN;
-        let lfcAlt = NaN;
-        let elAlt = NaN;
-        let cape = 0.0;
-        let cinh = 0.0;
-        let cape3km = 0.0;
-        const sfcAltM = surfaceLevel * dz;
-        const top3kmAlt = sfcAltM + 3000;
-
-        const buoy = new Float32Array(sim_res_y);
-        for (let y = startIndex; y < sim_res_y; y++) {
-          if (isNaN(parcelTemps[y])) {
-            buoy[y] = 0;
-            continue;
-          }
-          if (wallTextureValues[4 * y + 1] === 0) {
-            buoy[y] = NaN;
-            continue;
-          }
-          const envTk = CtoK(envTempsC[y]);
-          const parcelTk = CtoK(parcelTemps[y]);
-          buoy[y] = 9.81 * (parcelTk - envTk) / envTk;
-        }
-
-        function buoyBelow(y) {
-          for (let yy = y - 1; yy >= startIndex; yy--) {
-            if (!isNaN(buoy[yy])) return buoy[yy];
-          }
-          return buoy[startIndex];
-        }
-
-        const parcelBaseAlt = altFromIndex(startIndex);
-        lclAlt = findLclAltFromParcel(parcelTemps, envDewC, startIndex, sim_res_y, dz);
-
-        if (buoy[startIndex] > B_MIN) {
-          lfcAlt = parcelBaseAlt;
-        } else {
-          const lfcSearchMinAlt = Math.max(parcelBaseAlt, lclAlt - dz * 0.5);
-          for (let y = startIndex + 1; y < sim_res_y; y++) {
-            if (isNaN(parcelTemps[y])) continue;
-            const bHere = buoy[y];
-            if (isNaN(bHere)) continue;
-            if (altFromIndex(y) < lfcSearchMinAlt) continue;
-            const bBelow = buoyBelow(y);
-            if (bBelow <= B_MIN && bHere > B_MIN) {
-              const denom = bBelow - bHere;
-              const ratio = denom !== 0 ? bBelow / denom : 0.5;
-              lfcAlt = altFromIndex(y - 1) + Math.max(0, Math.min(1, ratio)) * dz;
-              break;
-            }
-          }
-        }
-
-        if (!isNaN(lfcAlt)) {
-          let prevBuoy = buoy[Math.max(startIndex, Math.floor(lfcAlt / dz))];
-          if (isNaN(prevBuoy)) prevBuoy = buoyBelow(Math.floor(lfcAlt / dz) + 1);
-          for (let y = startIndex + 1; y < sim_res_y; y++) {
-            if (isNaN(buoy[y])) continue;
-            if (altFromIndex(y) < lfcAlt + MIN_CAPE_LAYER_M) continue;
-            if (prevBuoy > B_MIN && buoy[y] <= B_MIN) {
-              const denom = prevBuoy - buoy[y];
-              const ratio = denom !== 0 ? prevBuoy / denom : 0.5;
-              elAlt = altFromIndex(y - 1) + Math.max(0, Math.min(1, ratio)) * dz;
-              break;
-            }
-            prevBuoy = buoy[y];
-          }
-          if (isNaN(elAlt)) {
-            elAlt = altFromIndex(sim_res_y - 1);
-          } else if (elAlt - lfcAlt < MIN_CAPE_LAYER_M) {
-            let prevB = buoy[Math.max(startIndex, Math.floor(lfcAlt / dz))];
-            if (isNaN(prevB)) prevB = B_MIN;
-            for (let y = Math.floor(lfcAlt / dz) + 1; y < sim_res_y; y++) {
-              if (isNaN(buoy[y])) continue;
-              if (altFromIndex(y) < lfcAlt + MIN_CAPE_LAYER_M) {
-                prevB = buoy[y];
-                continue;
-              }
-              if (prevB > B_MIN && buoy[y] <= B_MIN) {
-                const denom = prevB - buoy[y];
-                const ratio = denom !== 0 ? prevB / denom : 0.5;
-                const candidateEl = altFromIndex(y - 1) + Math.max(0, Math.min(1, ratio)) * dz;
-                if (candidateEl - lfcAlt >= MIN_CAPE_LAYER_M) {
-                  elAlt = candidateEl;
-                  break;
-                }
-              }
-              prevB = buoy[y];
-            }
-            if (elAlt - lfcAlt < MIN_CAPE_LAYER_M) {
-              elAlt = altFromIndex(sim_res_y - 1);
-            }
-          }
-        }
-
-        const cinhTopAlt = isNaN(lfcAlt)
-          ? Math.min(parcelBaseAlt + 10000, (sim_res_y - 1) * dz)
-          : lfcAlt;
-        cinh = integrateBuoyLayer(buoy, parcelBaseAlt, cinhTopAlt, 'neg', startIndex);
-
-        if (!isNaN(lfcAlt) && !isNaN(elAlt) && elAlt > lfcAlt) {
-          cape = integrateBuoyLayer(buoy, lfcAlt, elAlt, 'pos', startIndex);
-          const cape3Top = Math.min(elAlt, top3kmAlt);
-          if (cape3Top > lfcAlt) {
-            cape3km = integrateBuoyLayer(buoy, lfcAlt, cape3Top, 'pos', startIndex);
-          }
-        }
-
-        return {cape, cinh, lclAlt, lfcAlt, elAlt, cape3km};
-      }
-
       function meanLayerParcel(envTempsC, envDewC, startIndex) {
         const dz = guiControls.simHeight / sim_res_y;
         const maxLevels = Math.max(1, Math.min(sim_res_y - startIndex, Math.round(1000 / dz)));
@@ -7774,11 +8986,14 @@ function skewHpaFromAltM(altM)
         Math.pow(baseTextureValues[4 * surfaceLevel], 2) + Math.pow(baseTextureValues[4 * surfaceLevel + 1], 2)
       ));
 
+      const sfcAltM = surfaceLevel * dz;
       const parcelProfile = computeParcelProfile(envTempsC[surfaceLevel], envDewC[surfaceLevel], surfaceLevel);
-      const soundingMetrics = computeCAPE(envTempsC, envDewC, parcelProfile, surfaceLevel);
+      const soundingMetrics = computeCAPEForColumn(
+        envTempsC, envDewC, parcelProfile, surfaceLevel, columnIsFluid, sim_res_y, dz, sfcAltM);
       const sbCape = soundingMetrics.cape;
       const meanParcelProfile = meanLayerParcel(envTempsC, envDewC, surfaceLevel);
-      const meanLayerMetrics = computeCAPE(envTempsC, envDewC, meanParcelProfile, surfaceLevel);
+      const meanLayerMetrics = computeCAPEForColumn(
+        envTempsC, envDewC, meanParcelProfile, surfaceLevel, columnIsFluid, sim_res_y, dz, sfcAltM);
 
       // Most Unstable CAPE: max CAPE among parcels lifted from any level in the column
       let muCape = 0;
@@ -7790,7 +9005,7 @@ function skewHpaFromAltM(altM)
       for (let y = surfaceLevel; y < sim_res_y - 1; y++) {
         if (wallTextureValues[4 * y + 1] === 0) continue;
         const pp = computeParcelProfile(envTempsC[y], envDewC[y], y);
-        const m = computeCAPE(envTempsC, envDewC, pp, y);
+        const m = computeCAPEForColumn(envTempsC, envDewC, pp, y, columnIsFluid, sim_res_y, dz, sfcAltM);
         if (m.cape > muCape) {
           muCape = m.cape;
           muCinh = m.cinh;
@@ -7815,7 +9030,7 @@ function skewHpaFromAltM(altM)
       for (let y = elevOriginMin; y < sim_res_y - 1; y++) {
         if (wallTextureValues[4 * y + 1] === 0) continue;
         const pp = computeParcelProfile(envTempsC[y], envDewC[y], y);
-        const m = computeCAPE(envTempsC, envDewC, pp, y);
+        const m = computeCAPEForColumn(envTempsC, envDewC, pp, y, columnIsFluid, sim_res_y, dz, sfcAltM);
         if (m.cape > elevatedCape) elevatedCape = m.cape;
       }
 
@@ -7825,13 +9040,11 @@ function skewHpaFromAltM(altM)
       for (let y = surfaceLevel; y < Math.min(max3kmLevel, sim_res_y); y++) {
         if (wallTextureValues[4 * y + 1] === 0) continue;
         const pp = computeParcelProfile(envTempsC[y], envDewC[y], y);
-        const m = computeCAPE(envTempsC, envDewC, pp, y);
+        const m = computeCAPEForColumn(envTempsC, envDewC, pp, y, columnIsFluid, sim_res_y, dz, sfcAltM);
         if (m.cape3km > cape3km) {
           cape3km = m.cape3km;
         }
       }
-
-      const sfcAltM = surfaceLevel * dz;
 
       // Lifted Index: difference between parcel temp and env temp at 500mb (~5.5km)
       let liftedIndex = NaN;
@@ -7975,8 +9188,8 @@ function skewHpaFromAltM(altM)
         }
         maxWindRight = Math.max(maxWindRight, sfcSr.u, sr3km.u, sfcSr.u - stormU, sr3km.u - stormU, 0);
         maxWindLeft = Math.max(maxWindLeft, -sfcSr.u, -sr3km.u, -(sfcSr.u - stormU), -(sr3km.u - stormU), 0);
-        const windColRightPad = 48;
-        const windColLeftPad = 14;
+        const windColRightPad = 56;
+        const windColLeftPad = 16;
         const targetRightExtent = maxWindRight * windBarbScale + windColRightPad;
         const targetLeftExtent = maxWindLeft * windBarbScale + windColLeftPad;
 
@@ -8062,6 +9275,18 @@ function skewHpaFromAltM(altM)
       }
       const lapse03 = lapseRateLayer(0, 3000);
       const lapse36 = lapseRateLayer(3000, 6000);
+      const lapse75 = lapseRateLayer(2500, 5500);
+      const shear1km = windShearToAlt(1000);
+      const wblAlt = findWetBulbZeroAlt(envTempsC, envDewC, surfaceLevel, sim_res_y, dz, wallTextureValues);
+      const bunkers = computeBunkersStormMotion(hodoPoints);
+      const corfidi = computeCorfidiVectors(hodoPoints);
+      const ehi = computeEHI(sbCape, srh3km, shear3km);
+      const ship = computeSHIP(muCape, shear6km, lapse75, muCinh);
+      const scp = computeSCP(muCape, shear6km, srh3km);
+      const criticalAngle = computeCriticalAngle(hodoPoints, stormU, stormV);
+      const sbCinh = soundingMetrics.cinh;
+      const mlCapeVal = meanLayerMetrics.cape;
+      const mlCinhVal = meanLayerMetrics.cinh;
 
       // Dry slot: mid-level RH minimum sandwiched between moister layers (from profile, not proxies)
       function analyzeDrySlot() {
@@ -8181,7 +9406,12 @@ function skewHpaFromAltM(altM)
       }
       const risk = getRisk(muCape, shear6km, stp, drySlot.strength);
 
-      const altStr = (m) => isNaN(m) || m == null ? 'N/A' : printAltitude(Math.round(m));
+      const altStrAgl = (m) => {
+        if (!Number.isFinite(m)) return 'N/A';
+        const agl = m - sfcAltM;
+        if (agl < -20) return 'Sfc';
+        return printAltitude(Math.round(Math.max(0, agl)));
+      };
       // Barometric pressure from altitude: ISA formula, default surface = 1013.25 hPa
       const altToHpa = (alt_m) => 1013.25 * Math.pow(1.0 - 2.25577e-5 * alt_m, 5.25588);
 
@@ -8347,27 +9577,43 @@ function skewHpaFromAltM(altM)
         hazards.sort((a, b) => b.pct - a.pct);
       }
 
+      function capeForDisplay(prev, raw) {
+        if (!Number.isFinite(raw)) return Number.isFinite(prev) ? prev : 0;
+        const t = Math.max(0, raw);
+        const p = Number.isFinite(prev) ? Math.max(0, prev) : t;
+        if (t < 80 && p > 400) return Math.round(p * 0.97 + t * 0.03);
+        if (t < p * 0.12 && p > 200) return Math.round(p + (t - p) * 0.06);
+        if (t > p + 400) return Math.round(p + (t - p) * 0.55);
+        const alpha = guiControls.graphFixedPosition ? 0.25 : 0.4;
+        return Math.round(p + (t - p) * alpha);
+      }
       if (!this._capeDisplaySmooth) {
-        this._capeDisplaySmooth = { sb: sbCape, mu: muCape, ml: mlCape, c3: cape3km };
+        this._capeDisplaySmooth = {
+          sb: sbCape, mu: muCape, ml: mlCape, c3: cape3km,
+          colX: simXpos,
+        };
       }
       const cs = this._capeDisplaySmooth;
-      if (sbCape > 200 && cs.sb < sbCape * 0.15) {
+      if (cs.colX !== simXpos) {
         cs.sb = sbCape;
         cs.mu = muCape;
         cs.ml = mlCape;
         cs.c3 = cape3km;
+        cs.colX = simXpos;
+      } else {
+        cs.sb = capeForDisplay(cs.sb, sbCape);
+        cs.mu = capeForDisplay(cs.mu, muCape);
+        cs.ml = capeForDisplay(cs.ml, mlCape);
+        cs.c3 = capeForDisplay(cs.c3, cape3km);
       }
-      const capeAlpha = guiControls.graphFixedPosition ? 0.15 : 0.28;
-      function smoothCapeValue(prev, target) {
-        if (target < prev * 0.1 && prev > 250) {
-          return prev + (target - prev) * 0.05;
-        }
-        return prev + (target - prev) * capeAlpha;
+      function displayCapeReadout(smoothed, raw) {
+        if (!Number.isFinite(raw)) return smoothed;
+        if (raw < 100 && smoothed > 350) return smoothed;
+        return raw;
       }
-      cs.sb = smoothCapeValue(cs.sb, sbCape);
-      cs.mu = smoothCapeValue(cs.mu, muCape);
-      cs.ml = smoothCapeValue(cs.ml, mlCape);
-      cs.c3 = smoothCapeValue(cs.c3, cape3km);
+      const dispSbCape = displayCapeReadout(cs.sb, sbCape);
+      const dispMlCape = displayCapeReadout(cs.ml, mlCapeVal);
+      const dispMuCape = displayCapeReadout(cs.mu, muCape);
 
       const capeColor = (v) => v > 2500 ? '#FF4400' : v > 1000 ? '#FFAA00' : '#E8EEF2';
       const domShort = stormTypes.dominantType
@@ -8378,79 +9624,62 @@ function skewHpaFromAltM(altM)
       const obsTimeLabel = formatSoundingObsTimeLabel();
       const timeLine = formatSoundingSimTimeLabel() + (obsTimeLabel ? '  ·  ' + obsTimeLabel : '');
 
+      const tornadoPct = Math.min(48, Math.round(
+        map_range_C(stp, 0.8, 5, 6, 40) *
+        map_range_C(srh3km, 80, 280, 0.35, 1) *
+        map_range_C(muCape, 800, 3200, 0.35, 1) *
+        (1 - drySlot.strength * 0.4)
+      ));
+
       const panelRows = [
-        { section: 'INSTABILITY' },
-        { label: 'SBCAPE', value: Math.round(cs.sb) + ' J/kg', color: capeColor(cs.sb) },
-        { label: 'MUCAPE', value: Math.round(cs.mu) + ' J/kg', color: capeColor(cs.mu) },
-        { label: 'MLCAPE', value: Math.round(cs.ml) + ' J/kg', color: capeColor(cs.ml) },
-        { label: '3CAPE', value: Math.round(cs.c3) + ' J/kg', color: '#E8EEF2' },
-        { label: 'CINH', value: Math.round(muCinh) + ' J/kg', color: muCinh < -100 ? '#FF8888' : '#E8EEF2' },
-        { label: 'LI', value: isNaN(liftedIndex) ? 'N/A' : liftedIndex.toFixed(1) + ' °C', color: '#E8EEF2' },
-        { label: 'Pwat', value: pwat_mm.toFixed(0) + ' mm', color: '#E8EEF2' },
+        { section: 'PARCEL & INSTABILITY' },
+        { label: 'SBCAPE', value: Math.round(dispSbCape) + ' J/kg', color: capeColor(dispSbCape) },
+        { label: 'MLCAPE', value: Math.round(dispMlCape) + ' J/kg', color: capeColor(dispMlCape) },
+        { label: 'MUCAPE', value: Math.round(dispMuCape) + ' J/kg', color: capeColor(dispMuCape) },
+        { label: '3CAPE', value: Math.round(cape3km) + ' J/kg', color: '#E8EEF2' },
+        { label: 'SBCINH', value: Number.isFinite(sbCinh) ? Math.round(sbCinh) + ' J/kg' : 'N/A', color: sbCinh < -50 ? '#66CCFF' : '#E8EEF2' },
+        { label: 'DCAPE', value: Math.round(dcape) + ' J/kg', color: dcape > 1000 ? '#FF6644' : '#E8EEF2' },
+        { label: 'LI', value: isNaN(liftedIndex) ? 'N/A' : liftedIndex.toFixed(1) + ' °C', color: liftedIndex < -4 ? '#66CCFF' : '#E8EEF2' },
         { section: 'LEVELS' },
-        { label: 'LCL', value: altStr(muLcl), color: '#E8EEF2' },
-        { label: 'LFC', value: altStr(muLfc), color: '#E8EEF2' },
-        { label: 'EL', value: altStr(muEl), color: '#E8EEF2' },
-        { label: 'FZL', value: altStr(freezingAlt), color: '#E8EEF2' },
+        { label: 'LCL', value: altStrAgl(soundingMetrics.lclAlt), color: '#E8EEF2' },
+        { label: 'LFC', value: altStrAgl(soundingMetrics.lfcAlt), color: '#E8EEF2' },
+        { label: 'EL', value: altStrAgl(soundingMetrics.elAlt), color: '#E8EEF2' },
+        { label: 'FZL', value: altStrAgl(freezingAlt), color: '#E8EEF2' },
+        { label: 'WBL', value: altStrAgl(wblAlt), color: '#E8EEF2' },
+        { section: 'SHEAR' },
+        { label: '0-1 km', value: printShear(shear1km), color: '#E8EEF2' },
+        { label: '0-3 km', value: printShear(shear3km), color: '#E8EEF2' },
+        { label: '0-6 km', value: printShear(shear6km), color: '#E8EEF2' },
+        { label: 'Bulk', value: printShear(shear6km), color: '#E8EEF2' },
+        { section: 'STORM MOTION' },
+        { label: 'Bunkers R', value: formatWindDirSpd(bunkers.right.u, bunkers.right.v), color: '#E8EEF2' },
+        { label: 'Bunkers L', value: formatWindDirSpd(bunkers.left.u, bunkers.left.v), color: '#E8EEF2' },
+        { label: 'Corfidi DS', value: formatWindDirSpd(corfidi.down.u, corfidi.down.v), color: '#E8EEF2' },
+        { label: 'Corfidi US', value: formatWindDirSpd(corfidi.up.u, corfidi.up.v), color: '#E8EEF2' },
         { section: 'STORM MODE' },
         { label: 'Mode', value: stormTypes.convMode, color: stormTypes.convModeColor },
-        { label: 'Dominant', value: domShort, color: '#E8EEF2' },
-        { section: 'SHEAR' },
-        { label: 'SRH 0-1km', value: String(Math.round(srh1km)), color: '#E8EEF2' },
-        { label: 'SRH 0-3km', value: String(Math.round(srh3km)), color: '#E8EEF2' },
-        { label: 'SRI', value: printVelocity(sriMag), color: '#E8EEF2' },
-        { label: 'Shear 0-3', value: printShear(shear3km), color: '#E8EEF2' },
-        { label: 'Shear 0-6', value: printShear(shear6km), color: '#E8EEF2' },
-        { label: 'STP', value: stp.toFixed(1), color: '#E8EEF2' },
       ];
-      if (topStormTypes.length > 0) {
-        panelRows.push({ section: 'STORM TYPES' });
-        topStormTypes.forEach(st => panelRows.push({ miniBar: true, label: st.label, shortLabel: st.shortLabel, pct: st.score, color: st.color }));
-      }
+      const stormModeBars = stormTypes.types.filter(st => st.score >= 8).slice(0, 4);
+      stormModeBars.forEach(st => panelRows.push({ miniBar: true, label: st.label, shortLabel: st.shortLabel, pct: st.score, color: st.color }));
       panelRows.push({ section: 'HAZARDS' });
-      panelRows.push({ label: 'Hail', value: printHailSize(estHailIn), color: '#FFCC00' });
+      panelRows.push({ label: 'Hail Size', value: printHailSize(estHailIn), color: '#FF6644' });
       panelRows.push({ label: 'Lightning', value: formatLightningEstimate(lightningFlMin), color: '#E8EEF2' });
-      topHazards
-        .filter(h => h.label !== 'Hail')
-        .forEach(h => panelRows.push({ miniBar: true, label: h.label, pct: h.pct, color: h.color }));
+      const windHaz = hazards.find(h => h.label.includes('Wind'));
+      if (windHaz) panelRows.push({ label: 'Damaging Winds', value: windHaz.pct + '%', color: windHaz.color });
+      panelRows.push({ label: 'Tornado Risk', value: risk.label + ' (' + tornadoPct + '%)', color: risk.color, highlight: true });
+      panelRows.push({ section: 'INDICES' });
+      panelRows.push({ label: 'EHI', value: ehi.toFixed(1), color: ehi > 2 ? '#FF6644' : '#E8EEF2' });
+      panelRows.push({ label: 'STP (fixed)', value: stp.toFixed(1), color: '#E8EEF2' });
+      panelRows.push({ label: 'STP (eff.)', value: (stp * (1 - drySlot.strength * 0.35)).toFixed(1), color: '#E8EEF2' });
+      panelRows.push({ label: 'SHIP', value: ship.toFixed(1), color: '#E8EEF2' });
+      panelRows.push({ label: 'SCP', value: scp.toFixed(1), color: '#E8EEF2' });
+      panelRows.push({ label: 'Eff. SRH', value: Math.round(srh3km) + ' m²/s²', color: '#E8EEF2' });
+      panelRows.push({ label: '700-500 mb', value: printLapseRate(lapse75), color: '#E8EEF2' });
       panelRows.push({ section: 'OUTLOOK' });
       panelRows.push({ label: 'Risk', value: risk.label, color: risk.color });
       panelRows.push({ label: 'Fire', value: fireRisk.label, color: fireRisk.color });
 
-      const lineHeight = 14;
-      const panelPad = 12;
-      const measureRowWidth = (label, value) => {
-        c.font = '10px monospace';
-        return c.measureText(label).width + 10 + c.measureText(String(value)).width;
-      };
-      const measureMiniBarWidth = (name, pct) => {
-        c.font = '10px monospace';
-        return c.measureText(name).width + 50 + c.measureText(String(pct) + '%').width;
-      };
-
-      let panelInnerW = 0;
-      c.font = 'bold 12px Arial';
-      panelInnerW = Math.max(panelInnerW, c.measureText('Sounding').width);
-      c.font = '10px monospace';
-      panelInnerW = Math.max(panelInnerW, c.measureText(timeLine).width);
-      for (const row of panelRows) {
-        if (row.section) {
-          c.font = 'bold 10px Arial';
-          panelInnerW = Math.max(panelInnerW, c.measureText(row.section).width + 8);
-        } else if (row.miniBar) {
-          const name = row.shortLabel || row.label;
-          panelInnerW = Math.max(panelInnerW, measureMiniBarWidth(name, row.pct));
-        } else if (row.label) {
-          panelInnerW = Math.max(panelInnerW, measureRowWidth(row.label, row.value));
-        }
-      }
-
-      const MIN_INFO_BOX_W = 300;
-      const maxInfoBoxW = Math.max(
-        MIN_INFO_BOX_W,
-        graphCanvasW - skewTRight - hodoReadoutGap - WIND_COL_SLOT_W - RAIL_INNER_GAP - RAIL_RIGHT_PAD - 28
-      );
-      infoBoxWidth = Math.min(maxInfoBoxW, Math.max(MIN_INFO_BOX_W, Math.ceil(panelInnerW + panelPad * 2)));
+      infoBoxWidth = METRICS_PANEL_W;
       this._panelWidth = infoBoxWidth;
       updateSoundingLayout();
 
@@ -8462,7 +9691,7 @@ function skewHpaFromAltM(altM)
           const T = stepFn(py);
           if (T == null || !Number.isFinite(T)) continue;
           const x = T_to_Xpos(T, py);
-          if (x < skewTLeft || x > skewTRight) continue;
+          if (x < skewTLeft || x > skewTPlotRight) continue;
           if (first) {
             c.moveTo(x, py);
             first = false;
@@ -8474,7 +9703,7 @@ function skewHpaFromAltM(altM)
       }
 
       function drawSkewTReferenceGrid() {
-        const labelMaxX = skewTRight - 8;
+        const labelMaxX = skewTPlotRight - 8;
         c.strokeStyle = 'rgba(255, 255, 255, 0.22)';
         c.lineWidth = 1;
         c.font = '10px Arial';
@@ -8483,15 +9712,16 @@ function skewHpaFromAltM(altM)
           const altM = skewAltMFromHpa(hpa);
           if (altM > guiControls.simHeight + 200) continue;
           const py = altMToScrY(altM);
-          if (py < 4 || py > graphBottem - 2) continue;
+          if (py < plotTop + 4 || py > plotBottom - 2) continue;
           c.beginPath();
           c.moveTo(skewTLeft, py);
-          c.lineTo(skewTRight, py);
+          c.lineTo(skewTPlotRight, py);
           c.stroke();
           if (hpa >= 200) {
             c.fillText(hpa + ' hPa', skewTLeft + 2, py - 11);
           }
         }
+        if (guiControls.soundingShowMixingRatio) {
         c.setLineDash([5, 5]);
         c.strokeStyle = 'rgba(40, 120, 55, 0.55)';
         c.lineWidth = 1;
@@ -8502,7 +9732,7 @@ function skewHpaFromAltM(altM)
             const altM = scrYToAltM(py);
             const hpa = skewHpaFromAltM(altM);
             return skewTempFromMixingRatioGkg(wGkg, hpa);
-          }, graphBottem, 0);
+          }, plotBottom, plotTop);
           const labelY = altMToScrY(skewAltMFromHpa(850));
           const labelT = skewTempFromMixingRatioGkg(wGkg, 850);
           const lx = T_to_Xpos(labelT, labelY);
@@ -8511,13 +9741,14 @@ function skewHpaFromAltM(altM)
           }
         }
         c.setLineDash([]);
+        }
         c.strokeStyle = 'rgba(220, 60, 50, 0.45)';
         c.lineWidth = 1;
         for (let T0 = -30; T0 <= 50; T0 += 10) {
           traceSkewLine((py) => {
             const altM = scrYToAltM(py);
             return T0 - guiControls.dryLapseRate * altM / 1000.0;
-          }, graphBottem, 0);
+          }, plotBottom, plotTop);
         }
         c.setLineDash([6, 4]);
         c.strokeStyle = 'rgba(50, 200, 80, 0.5)';
@@ -8526,8 +9757,8 @@ function skewHpaFromAltM(altM)
           let prevCw = 0;
           const mixW = maxWater(CtoK(T0));
           traceSkewLine((py) => {
-            if (py >= graphBottem - 2) return T0;
-            const prevY = Math.min(graphBottem, py + 3);
+            if (py >= plotBottom - 2) return T0;
+            const prevY = Math.min(plotBottom, py + 3);
             const dAlt = scrYToAltM(py) - scrYToAltM(prevY);
             const dTdry = -guiControls.dryLapseRate * dAlt / 1000.0;
             const nextT = T + dTdry;
@@ -8536,7 +9767,7 @@ function skewHpaFromAltM(altM)
             T = T + dT_saturated(dTdry, dWt);
             prevCw = Math.max(mixW - maxWater(CtoK(T)), 0);
             return T;
-          }, graphBottem, 0);
+          }, plotBottom, plotTop);
         }
         c.setLineDash([]);
         c.strokeStyle = 'rgba(255, 140, 40, 0.55)';
@@ -8544,42 +9775,78 @@ function skewHpaFromAltM(altM)
         c.fillStyle = 'rgba(255, 180, 100, 0.85)';
         for (let T = -40.0; T <= 40.0; T += 10.0) {
           c.beginPath();
-          c.moveTo(T_to_Xpos(T, graphBottem), graphBottem);
-          c.lineTo(T_to_Xpos(T, 0), 0);
+          c.moveTo(T_to_Xpos(T, plotBottom), plotBottom);
+          c.lineTo(T_to_Xpos(T, plotTop), plotTop);
           c.stroke();
           if (T >= -20.0) {
-            const lx = T_to_Xpos(T, graphBottem) - 18;
+            const lx = T_to_Xpos(T, plotBottom) - 18;
             if (lx > skewTLeft + 4 && lx < labelMaxX - 24) {
-              c.fillText(printTemp(Math.round(T)), lx, graphCanvasH - 6);
+              c.fillText(printTemp(Math.round(T)), lx, plotBottom + 14);
             }
           }
         }
         c.beginPath();
         c.strokeStyle = 'rgba(255, 140, 40, 0.85)';
         c.lineWidth = 2;
-        c.moveTo(T_to_Xpos(0, graphBottem), graphBottem);
-        c.lineTo(T_to_Xpos(0, 0), 0);
+        c.moveTo(T_to_Xpos(0, plotBottom), plotBottom);
+        c.lineTo(T_to_Xpos(0, plotTop), plotTop);
         c.stroke();
+      }
+
+      function drawSkewTHeightsAndMeta() {
+        if (guiControls.soundingShowHeights) {
+          c.font = '9px Arial';
+          c.fillStyle = 'rgba(255, 160, 60, 0.9)';
+          for (const hpa of [1000, 850, 700, 500, 300, 200]) {
+            const altM = skewAltMFromHpa(hpa);
+            if (altM > guiControls.simHeight + 200) continue;
+            const py = altMToScrY(altM);
+            if (py < plotTop + 8 || py > plotBottom - 4) continue;
+            const agl = Math.round(altM - sfcAltM);
+            c.fillText(Math.round(agl) + ' m', skewTLeft - 44, py + 3);
+          }
+        }
+        const metaX = skewTPlotRight + 4;
+        const barbStep = Math.max(3, Math.round(80 / dz));
+        if (guiControls.soundingShowWindBarbs) {
+          c.strokeStyle = 'rgba(255, 255, 255, 0.85)';
+          c.fillStyle = 'rgba(255, 255, 255, 0.85)';
+          c.lineWidth = 1.2;
+          for (let y = surfaceLevel; y < sim_res_y; y += barbStep) {
+            if (wallTextureValues[4 * y + 1] === 0) continue;
+            const scrY = scrYFromSimY(y);
+            const u = rawVelocityTo_ms(baseTextureValues[4 * y]);
+            const v = rawVelocityTo_ms(baseTextureValues[4 * y + 1]);
+            drawSkewWindBarb(c, skewTPlotRight + 2, scrY, u, v);
+          }
+        }
+        if (guiControls.soundingShowThetaE) {
+          c.font = '9px monospace';
+          const teStep = Math.max(4, Math.round(120 / dz));
+          for (let y = surfaceLevel; y < sim_res_y; y += teStep) {
+            if (wallTextureValues[4 * y + 1] === 0) continue;
+            const scrY = scrYFromSimY(y);
+            const te = computeThetaEC(envTempsC[y], waterTextureValues[4 * y]) - 273.15;
+            c.fillStyle = te > 340 ? '#FF66CC' : te > 320 ? '#FFAA44' : 'rgba(200, 160, 220, 0.85)';
+            c.fillText(Math.round(te), metaX, scrY + 3);
+          }
+        }
       }
 
       c.clearRect(0, 0, this.graphCanvas.width, this.graphCanvas.height);
       c.fillStyle = 'rgba(10, 12, 16, 0.82)';
       c.fillRect(0, 0, this.graphCanvas.width, this.graphCanvas.height);
       c.fillStyle = 'rgba(8, 10, 14, 0.5)';
-      c.fillRect(skewTLeft, 0, skewTRight - skewTLeft, graphBottem);
+      c.fillRect(skewTLeft, plotTop, skewTRight - skewTLeft, plotHeight);
 
       drawSkewTReferenceGrid();
-
-      const muParcelTemps = computeParcelProfile(
-        envTempsC[muParcelLevel], envDewC[muParcelLevel], muParcelLevel
-      );
 
       let reachedAir = false;
       c.beginPath();
       for (let y = 0; y < sim_res_y; y++) {
         const potentialTemp = baseTextureValues[4 * y + 3];
         const temp = KtoC(potentialToRealT(potentialTemp, y));
-        const scrYpos = map_range(y, sim_res_y, 0, 0, graphBottem);
+        const scrYpos = scrYFromSimY(y);
         if (wallTextureValues[4 * y + 1] != 0) {
           if (!reachedAir) {
             reachedAir = true;
@@ -8614,7 +9881,7 @@ function skewHpaFromAltM(altM)
         if (guiControls.realDewPoint) {
           dewPoint = Math.min(envTemp, dewPoint);
         }
-        const scrYpos = map_range(y, sim_res_y, 0, 0, graphBottem);
+        const scrYpos = scrYFromSimY(y);
         if (y === simYpos) {
           const velocity = rawVelocityTo_ms(Math.sqrt(
             Math.pow(baseTextureValues[4 * y], 2) + Math.pow(baseTextureValues[4 * y + 1], 2)
@@ -8632,35 +9899,81 @@ function skewHpaFromAltM(altM)
       c.strokeStyle = '#66CCFF';
       c.stroke();
 
-      c.beginPath();
-      let muParcelStarted = false;
-      for (let y = muParcelLevel; y < sim_res_y; y++) {
-        if (!columnIsFluid[y]) continue;
-        const parcelT = muParcelTemps[y];
-        if (isNaN(parcelT)) continue;
-        const scrY = map_range(y, sim_res_y, 0, 0, graphBottem);
-        const x = T_to_Xpos(parcelT, scrY);
-        if (!muParcelStarted) {
-          c.moveTo(x, scrY);
-          muParcelStarted = true;
-        } else {
-          c.lineTo(x, scrY);
+      if (guiControls.soundingShowParcels) {
+        c.beginPath();
+        let sfcParcelStarted = false;
+        for (let y = surfaceLevel; y < sim_res_y; y++) {
+          if (!columnIsFluid[y]) continue;
+          const parcelT = parcelProfile[y];
+          if (isNaN(parcelT)) continue;
+          const scrY = scrYFromSimY(y);
+          const x = T_to_Xpos(parcelT, scrY);
+          if (!sfcParcelStarted) { c.moveTo(x, scrY); sfcParcelStarted = true; }
+          else c.lineTo(x, scrY);
         }
+        c.lineWidth = 2.5;
+        c.strokeStyle = '#33DD55';
+        if (sfcParcelStarted) c.stroke();
       }
-      c.lineWidth = 2.5;
-      c.strokeStyle = '#33DD55';
-      if (muParcelStarted) c.stroke();
 
+      if (guiControls.soundingShowParcels) {
+        c.beginPath();
+        let mlStarted = false;
+        for (let y = surfaceLevel; y < sim_res_y; y++) {
+          if (!columnIsFluid[y]) continue;
+          const parcelT = meanParcelProfile[y];
+          if (isNaN(parcelT)) continue;
+          const scrY = scrYFromSimY(y);
+          const x = T_to_Xpos(parcelT, scrY);
+          if (!mlStarted) { c.moveTo(x, scrY); mlStarted = true; }
+          else c.lineTo(x, scrY);
+        }
+        c.setLineDash([6, 4]);
+        c.lineWidth = 2;
+        c.strokeStyle = '#33DD55';
+        if (mlStarted) c.stroke();
+        c.setLineDash([]);
+      }
+
+      drawSkewTHeightsAndMeta();
+
+      const parcelTempAtAlt = (altM) => {
+        const y = altM / dz;
+        if (y <= surfaceLevel) return parcelProfile[surfaceLevel];
+        if (y >= sim_res_y - 1) return parcelProfile[sim_res_y - 1];
+        let y0 = Math.floor(y);
+        let y1 = y0 + 1;
+        for (let tries = 0; tries < 8 && (isNaN(parcelProfile[y0]) || isNaN(parcelProfile[y1])); tries++) {
+          if (isNaN(parcelProfile[y0]) && y0 > surfaceLevel) y0--;
+          if (isNaN(parcelProfile[y1]) && y1 < sim_res_y - 1) y1++;
+        }
+        const t0 = parcelProfile[y0];
+        const t1 = parcelProfile[y1];
+        if (isNaN(t0) && isNaN(t1)) return NaN;
+        if (isNaN(t0)) return t1;
+        if (isNaN(t1)) return t0;
+        return t0 + (t1 - t0) * (y - y0);
+      };
+
+      const markerLabelSlots = [];
       const drawMarker = (altitude, label, color, tempOverride) => {
-        if (isNaN(altitude) || altitude == null) return;
-        const yIndex = altitude / dz;
-        if (yIndex < surfaceLevel || yIndex >= sim_res_y) return;
-        const markerScrY = map_range(yIndex, sim_res_y, 0, 0, graphBottem);
-        const markerTemp = tempOverride !== undefined
-          ? tempOverride
-          : parcelProfile[Math.round(yIndex)];
-        if (isNaN(markerTemp)) return;
+        if (!Number.isFinite(altitude)) return;
+        const minAlt = surfaceLevel * dz;
+        const maxAlt = (sim_res_y - 1) * dz;
+        const altM = Math.max(minAlt, Math.min(maxAlt, altitude));
+        const yIndex = altM / dz;
+        const markerScrY = scrYFromSimY(yIndex);
+        if (markerScrY < plotTop - 4 || markerScrY > plotBottom + 4) return;
+        const markerTemp = tempOverride !== undefined ? tempOverride : parcelTempAtAlt(altM);
+        if (!Number.isFinite(markerTemp)) return;
         const xPos = T_to_Xpos(markerTemp, markerScrY);
+        let labelY = markerScrY + 4;
+        for (const slot of markerLabelSlots) {
+          if (Math.abs(slot.scrY - markerScrY) < 11 && Math.abs(slot.labelY - labelY) < 11) {
+            labelY = slot.labelY + 12;
+          }
+        }
+        markerLabelSlots.push({scrY: markerScrY, labelY});
         c.beginPath();
         c.moveTo(xPos - 15, markerScrY);
         c.lineTo(xPos + 15, markerScrY);
@@ -8669,101 +9982,16 @@ function skewHpaFromAltM(altM)
         c.stroke();
         c.fillStyle = color;
         c.font = 'bold 11px Arial';
-        c.fillText(label, xPos - 50, markerScrY + 4);
+        c.fillText(label, xPos - 50, labelY);
       };
-      drawMarker(muLcl, 'LCL', '#00FFFF');
-      drawMarker(muLfc, 'LFC', '#FF00FF');
-      drawMarker(muEl, 'EL', '#FFFF00');
+      drawMarker(soundingMetrics.lclAlt, 'LCL', '#FF66FF');
+      drawMarker(soundingMetrics.lfcAlt, 'LFC', '#FFDD00');
+      drawMarker(soundingMetrics.elAlt, 'EL', '#FF44FF');
       drawMarker(freezingAlt, 'FZL', '#66CCFF', 0);
 
-      const measureReadoutPanelHeight = (rows) => {
-        let h = panelPad + 18 + (lineHeight + 4);
-        for (const row of rows) {
-          if (row.section) h += lineHeight + 4;
-          else if (row.divider) h += 6;
-          else if (row.miniBar) h += lineHeight + 2;
-          else h += lineHeight + 4;
-        }
-        return h + panelPad;
-      };
-      const contentHeight = measureReadoutPanelHeight(panelRows);
-      const maxReadoutHeight = Math.max(120, graphBottem - readoutBoxY - 10);
-      let infoBoxHeight = Math.min(contentHeight, maxReadoutHeight);
-
-      const textX = infoBoxX + panelPad;
-      let panelInnerWDraw = infoBoxWidth - panelPad * 2;
-      let textY = readoutBoxY + panelPad;
-
-      c.fillStyle = 'rgba(12, 14, 18, 0.97)';
-      c.fillRect(infoBoxX, readoutBoxY, infoBoxWidth, infoBoxHeight);
-      c.strokeStyle = 'rgba(255, 255, 255, 0.18)';
-      c.lineWidth = 1;
-      c.strokeRect(infoBoxX + 0.5, readoutBoxY + 0.5, infoBoxWidth - 1, infoBoxHeight - 1);
-
-      c.textAlign = 'left';
-      c.textBaseline = 'top';
-      c.fillStyle = '#8FA8BC';
-      c.font = 'bold 12px Arial';
-      c.fillText('Sounding', textX, textY);
-      textY += 18;
-      c.font = '10px monospace';
-      c.fillStyle = '#8899AA';
-      c.fillText(timeLine, textX, textY);
-      textY += lineHeight + 4;
-
-      const drawSection = (title) => {
-        c.fillStyle = 'rgba(255, 255, 255, 0.07)';
-        c.fillRect(textX, textY, panelInnerWDraw, lineHeight);
-        c.fillStyle = '#7A8FA0';
-        c.font = 'bold 10px Arial';
-        c.fillText(title, textX + 4, textY + 2);
-        textY += lineHeight + 4;
-      };
-
-      const drawRow = (label, value, color) => {
-        c.font = '10px monospace';
-        const labelW = c.measureText(label).width;
-        c.fillStyle = '#7A8FA0';
-        c.fillText(label, textX, textY + 1);
-        c.fillStyle = color || '#E8EEF2';
-        c.fillText(String(value), textX + labelW + 10, textY + 1);
-        textY += lineHeight + 4;
-      };
-
-      const drawMiniBar = (label, pct, color, shortLabel) => {
-        const name = shortLabel || label;
-        c.font = '10px monospace';
-        const labelW = Math.ceil(c.measureText(name).width) + 6;
-        const pctStr = String(pct) + '%';
-        const pctW = c.measureText(pctStr).width + 4;
-        const barW = Math.max(24, panelInnerWDraw - labelW - pctW);
-        const barX = textX + labelW;
-        c.fillStyle = color;
-        c.fillText(name, textX, textY + 1);
-        c.fillStyle = '#2A3038';
-        c.fillRect(barX, textY + 4, barW, 4);
-        c.fillStyle = color;
-        c.fillRect(barX, textY + 4, Math.round(barW * pct / 100), 4);
-        c.fillStyle = '#8899AA';
-        c.fillText(pctStr, barX + barW + 4, textY + 1);
-        textY += lineHeight + 2;
-      };
-
-      for (const row of panelRows) {
-        if (row.section) drawSection(row.section);
-        else if (row.divider) {
-          c.fillStyle = 'rgba(255, 255, 255, 0.1)';
-          c.fillRect(textX, textY, panelInnerWDraw, 1);
-          textY += 6;
-        } else if (row.miniBar) {
-          drawMiniBar(row.label, row.pct, row.color, row.shortLabel);
-        } else {
-          drawRow(row.label, row.value, row.color);
-        }
-      }
-      // Fixed 2D hodograph + wind column (right of readout panel)
-      const surfaceScrY = map_range(surfaceLevel, sim_res_y, 0, 0, graphBottem);
-      const topScrY = 24;
+      // Fixed 2D hodograph + wind column (right of metrics panel)
+      const surfaceScrY = scrYFromSimY(surfaceLevel);
+      const topScrY = plotTop + 8;
       const topAltM = (sim_res_y - 1 - surfaceLevel) * dz;
 
       let maxHodoWind = STORM_MOTION_MS;
@@ -8897,13 +10125,40 @@ function skewHpaFromAltM(altM)
         c.fillText(label, lx, legendY + 5);
       });
 
+      const hodoKmLabels = [
+        [0, 'SFC'],
+        [1000, '1 km'],
+        [3000, '3 km'],
+        [6000, '6 km'],
+        [9000, '9 km'],
+      ];
+      c.font = '8px Arial';
+      for (const [altKm, lbl] of hodoKmLabels) {
+        const pt = windAtAltFromHodo(displayHodoPoints.length ? displayHodoPoints : hodoPoints, altKm);
+        const px = toHodoPx(pt.u, pt.v);
+        c.fillStyle = altToHodographColor(altKm);
+        c.fillText(lbl, px.x + 5, px.y - 3);
+      }
+      const stormDir = Math.round((Math.atan2(-displayStormU, -displayStormV) * 180 / Math.PI + 360) % 360);
+      const stormSpdKt = Math.round(msToKnots(Math.hypot(displayStormU, displayStormV)));
+      c.fillStyle = '#AAB8C8';
+      c.font = '9px monospace';
+      const hodoStatsY = Math.min(legendY + 14, readoutBoxY - 28);
+      c.font = '8px monospace';
+      c.fillStyle = '#AAB8C8';
+      c.fillText(
+        'CA ' + criticalAngle + '°  ·  ' + stormDir + '°/' + stormSpdKt + ' kt',
+        hodographCx - hodographRadius,
+        hodoStatsY
+      );
+
       c.restore();
 
       // Wind column: barbs + vertical profile trace (hodograph-like, same colors)
       const profilePoints = [];
       for (let y = surfaceLevel; y < sim_res_y; y++) {
         if (wallTextureValues[4 * y + 1] === 0) continue;
-        const scrYpos = map_range(y, sim_res_y, 0, 0, graphBottem);
+        const scrYpos = scrYFromSimY(y);
         const u = rawVelocityTo_ms(baseTextureValues[4 * y]);
         const v = rawVelocityTo_ms(baseTextureValues[4 * y + 1]);
         profilePoints.push({
@@ -8947,7 +10202,7 @@ function skewHpaFromAltM(altM)
       const y3kmIdx = surfaceLevel + Math.round(3000 / dz);
       const sfcProfileY = surfaceScrY;
       const sfcProfileX = windBarbX + (sfcSr.u - displayStormU) * windBarbScale;
-      const km3ProfileY = map_range(Math.min(y3kmIdx, sim_res_y - 1), sim_res_y, 0, 0, graphBottem);
+      const km3ProfileY = scrYFromSimY(Math.min(y3kmIdx, sim_res_y - 1));
       const km3ProfileX = windBarbX + (sr3km.u - displayStormU) * windBarbScale;
       const sriVertexX = Math.max(sfcProfileX, km3ProfileX) + 18;
       const sriVertexY = (sfcProfileY + km3ProfileY) * 0.5;
@@ -8970,68 +10225,68 @@ function skewHpaFromAltM(altM)
       c.font = '9px Arial';
       c.fillText('Profile', windBarbX - 22, topScrY + 16);
 
-      c.fillText('' + printDistance(map_range(simXpos, 0, sim_res_y, 0, guiControls.simHeight)), windBarbX - 10, 20);
+      this.saveButtonBounds = null;
+      this.unlockButtonBounds = null;
 
-      // Draw buttons
-      const btnY = this.graphCanvas.height - 40;
-      const btnHeight = 25;
-      
-      if (guiControls.graphFixedPosition) {
-        // When frozen: show "Save Sounding" and "Unlock" buttons
-        const saveBtnX = this.graphCanvas.width - WIND_COL_SLOT_W - 252;
-        const saveBtnWidth = 120;
-        
-        c.fillStyle = 'rgba(0, 100, 200, 0.7)';
-        c.fillRect(saveBtnX, btnY, saveBtnWidth, btnHeight);
-        c.strokeStyle = '#0088FF';
-        c.lineWidth = 2;
-        c.strokeRect(saveBtnX, btnY, saveBtnWidth, btnHeight);
-        c.fillStyle = 'white';
-        c.font = 'bold 12px Arial';
-        c.textAlign = 'center';
-        c.textBaseline = 'middle';
-        c.fillText('Save Sounding', saveBtnX + saveBtnWidth/2, btnY + btnHeight/2);
-        
-        // Store save button bounds
-        this.saveButtonBounds = {x: saveBtnX, y: btnY, width: saveBtnWidth, height: btnHeight};
-        
-        // Unlock button
-        const unlockBtnX = this.graphCanvas.width - WIND_COL_SLOT_W - 125;
-        const unlockBtnWidth = 110;
-        
-        c.fillStyle = 'rgba(200, 100, 0, 0.7)';
-        c.fillRect(unlockBtnX, btnY, unlockBtnWidth, btnHeight);
-        c.strokeStyle = '#FF8800';
-        c.lineWidth = 2;
-        c.strokeRect(unlockBtnX, btnY, unlockBtnWidth, btnHeight);
-        c.fillStyle = 'white';
-        c.fillText('Unlock', unlockBtnX + unlockBtnWidth/2, btnY + btnHeight/2);
-        
-        // Store unlock button bounds
-        this.unlockButtonBounds = {x: unlockBtnX, y: btnY, width: unlockBtnWidth, height: btnHeight};
-      } else {
-        // When not frozen: show "Freeze" button
-        const freezeBtnX = this.graphCanvas.width - WIND_COL_SLOT_W - 128;
-        const freezeBtnWidth = 120;
-        
-        c.fillStyle = 'rgba(0, 100, 200, 0.7)';
-        c.fillRect(freezeBtnX, btnY, freezeBtnWidth, btnHeight);
-        c.strokeStyle = '#0088FF';
-        c.lineWidth = 2;
-        c.strokeRect(freezeBtnX, btnY, freezeBtnWidth, btnHeight);
-        c.fillStyle = 'white';
-        c.font = 'bold 12px Arial';
-        c.textAlign = 'center';
-        c.textBaseline = 'middle';
-        c.fillText('Freeze', freezeBtnX + freezeBtnWidth/2, btnY + btnHeight/2);
-        
-        // Store freeze button bounds
-        this.saveButtonBounds = {x: freezeBtnX, y: btnY, width: freezeBtnWidth, height: btnHeight};
-        this.unlockButtonBounds = null;
+      let hoverY = Math.min(Math.max(simYpos, surfaceLevel), sim_res_y - 1);
+      if (wallTextureValues[4 * hoverY + 1] === 0) {
+        for (let dy = 1; dy < 40 && hoverY + dy < sim_res_y; dy++) {
+          if (wallTextureValues[4 * (hoverY + dy) + 1] !== 0) {
+            hoverY += dy;
+            break;
+          }
+        }
+        for (let dy = 1; dy < 40 && hoverY - dy >= surfaceLevel; dy++) {
+          if (wallTextureValues[4 * (hoverY - dy) + 1] !== 0) {
+            hoverY -= dy;
+            break;
+          }
+        }
       }
-      
-      c.textAlign = 'left';
-      c.textBaseline = 'top';
+      let readoutCols = [
+        [['Pressure', '—', ''], ['Height', '—', '']],
+        [['Temp', '—', 'temp'], ['Dewpoint', '—', 'dew'], ['θe', '—', '']],
+        [['Wind Dir', '—', ''], ['Wind Spd', '—', ''], ['RH', '—', '']],
+      ];
+      if (wallTextureValues[4 * hoverY + 1] !== 0) {
+        const hpa = altToHpa((hoverY - surfaceLevel) * dz + sfcAltM);
+        const altAgl = (hoverY - surfaceLevel) * dz;
+        const tC = envTempsC[hoverY];
+        const tdC = envDewC[hoverY];
+        const rh = relativeHumd(CtoK(tC), waterTextureValues[4 * hoverY]);
+        const te = computeThetaEC(tC, waterTextureValues[4 * hoverY]) - 273.15;
+        const wU = rawVelocityTo_ms(baseTextureValues[4 * hoverY]);
+        const wV = rawVelocityTo_ms(baseTextureValues[4 * hoverY + 1]);
+        const wDir = Math.round((Math.atan2(-wU, -wV) * 180 / Math.PI + 360) % 360);
+        readoutCols = [
+          [['Pressure', Math.round(hpa) + ' hPa', ''], ['Height', printAltitude(Math.round(altAgl)), '']],
+          [['Temp', printTemp(tC), 'temp'], ['Dewpoint', printTemp(tdC), 'dew'], ['θe', te.toFixed(1) + ' °C', '']],
+          [['Wind Dir', wDir + '°', ''], ['Wind Spd', printVelocity(Math.hypot(wU, wV)), ''],
+            ['RH', Math.round(rh) + '%', '']],
+        ];
+      }
+      const sfcThetaE = computeThetaEC(envTempsC[surfaceLevel], waterTextureValues[4 * surfaceLevel]) - 273.15;
+      const parcelCols = [
+        [['Temp', printTemp(envTempsC[surfaceLevel]), 'temp'],
+          ['Dewpoint', printTemp(envDewC[surfaceLevel]), 'dew'],
+          ['θe', sfcThetaE.toFixed(1) + ' °C', '']],
+        [['LCL', altStrAgl(soundingMetrics.lclAlt), ''],
+          ['LFC', altStrAgl(soundingMetrics.lfcAlt), ''],
+          ['EL', altStrAgl(soundingMetrics.elAlt), '']],
+        [['CAPE', Math.round(dispSbCape) + ' J/kg', ''],
+          ['CINH', Number.isFinite(sbCinh) ? Math.round(sbCinh) + ' J/kg' : 'N/A', '']],
+      ];
+      const colX = Math.floor(Math.abs(mod(simXpos, sim_res_x)));
+      const dashLayout = this.buildDashboardLayout(layoutState, graphCanvasH);
+      this.updateSoundingDashboard({
+        stationLabel: 'Column ' + colX + ' · ' + printDistance(map_range(colX, 0, sim_res_y, 0, guiControls.simHeight)),
+        validLabel: (formatSoundingObsTimeLabel() || 'Simulation') + ' · ' + formatSoundingSimTimeLabel(),
+        metricsTimeLine: timeLine,
+        metricsRows: panelRows,
+        readoutCols,
+        parcelCols,
+        layout: dashLayout,
+      });
 
       this._railContentRight = railContentRight;
     }, // end of draw()
@@ -10962,6 +12217,7 @@ function skewHpaFromAltM(altM)
 
   // Initialize radar cache FBOs
   radars.forEach(radar => radar.initCacheFBO());
+  finalizeLoadedRadars();
 
   // Set up Framebuffers
 
@@ -15955,10 +17211,23 @@ drawNukeOverlay();
 
   function hideOrShowGraph()
   {
+    const dash = document.getElementById('soundingDashboard');
+    const metricsPanel = document.getElementById('soundingMetricsPanel');
     if (guiControls.showGraph) {
       soundingGraph.graphCanvas.style.display = 'block';
+      if (dash) {
+        dash.classList.add('visible');
+        dash.setAttribute('aria-hidden', 'false');
+      }
+      if (metricsPanel) metricsPanel.style.display = 'block';
+      soundingGraph.initSoundingDashboard();
     } else {
       soundingGraph.graphCanvas.style.display = 'none';
+      if (dash) {
+        dash.classList.remove('visible');
+        dash.setAttribute('aria-hidden', 'true');
+      }
+      if (metricsPanel) metricsPanel.style.display = 'none';
     }
   }
 
@@ -16025,12 +17294,18 @@ drawNukeOverlay();
         }
 
 
-        let strGuiControls = JSON.stringify(guiControls);
+        const guiControlsForSave = Object.assign({}, guiControls);
+        const embeddedRadars = buildSavedRadarTowersForGuiControls();
+        if (embeddedRadars)
+          guiControlsForSave.__savedRadarTowers = embeddedRadars;
+
+        let strGuiControls = JSON.stringify(guiControlsForSave);
         let strRadarSettings = JSON.stringify(radarsSettings);
 
         let saveDataArray = [
           Uint16Array.of(sim_res_x), Uint16Array.of(sim_res_y), baseTextureValues, waterTextureValues, wallTextureValues, Uint32Array.of(rainDrops.length / 5), precipBufferValues, Uint16Array.of(weatherStations.length),
-          weatherStationsPositions, Uint16Array.of(radars.length), radarsPositions, Uint32Array.of(strGuiControls.length), strGuiControls, strRadarSettings
+          weatherStationsPositions, Uint16Array.of(radars.length), radarsPositions, Uint32Array.of(strGuiControls.length), strGuiControls,
+          Uint32Array.of(strRadarSettings.length), strRadarSettings
         ];
         let blob = new Blob(saveDataArray);        // combine everything into a single blob
         let arrBuff = await blob.arrayBuffer();    // turn into array for pako
