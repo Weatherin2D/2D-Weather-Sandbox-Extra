@@ -20,6 +20,7 @@ uniform vec2 resolution;
 uniform vec2 texelSize;
 
 uniform float sunAngle;
+uniform float sunAzimuth;
 
 uniform float sunIntensity;
 
@@ -33,21 +34,41 @@ layout(location = 1) out vec4 reflectedLight;
 
 uniform float dryLapse;
 
+uniform float enableTwilightUnderglow;
+uniform float enableRadialSunShadows;
+
 #include "common.glsl"
 
 void main()
 {
+  float twilightTop = twilightUnderglowStrength(sunAngle, enableTwilightUnderglow);
+  float topSun = sunIntensity * mix(1.0, 0.42 * twilightTop, step(PI * 0.5, sunAngle) * enableTwilightUnderglow);
+
   if (fragCoord.y >= resolution.y - 1.)
-    light = vec4(sunIntensity, 0, 0, 0); // at top: full sun, no IR
+    light = vec4(topSun, 0, 0, 0); // at top: sun (or brief twilight underglow below horizon)
   else {
 
     float cellHeightCompensation = 300. / resolution.y; // 300 cells = 1.0     100 cells = 3.0
 
-    // sunlight calculation
-
-    vec2 sunRay = vec2(sin(sunAngle) * texelSize.x, cos(sunAngle) * texelSize.y);
+    // Parallel propagation (stable over many iterations) × radial line-of-sight to sun (position-dependent shadows)
+    vec2 sunRay = sunlightSampleOffset(texelSize, sunAngle, sunAzimuth);
     float sunlight = texture(lightTex, texCoord + sunRay)[SUNLIGHT];
-    // float sunlight = bilerp(lightTex, fragCoord + vec2(sin(sunAngle) ,
+    float sunVisible = sunLineOfSightVisibility(waterTex, wallTex, texCoord, texelSize, sunAngle, sunAzimuth, enableTwilightUnderglow, enableRadialSunShadows);
+
+    if (enableRadialSunShadows > 0.5) {
+      vec2 sunPos = sunScreenPositionForLight(sunAngle, sunAzimuth, enableTwilightUnderglow);
+      vec2 toSun = sunPos - texCoord;
+      toSun.x *= texelSize.y / texelSize.x;
+      float distSun = length(toSun);
+      if (distSun > length(texelSize)) {
+        vec2 stepToSun = (toSun / distSun) * texelSize;
+        vec2 sp = texCoord + stepToSun;
+        if (sp.y > 1.0 || sp.x < 0.0 || sp.x > 1.0 || sp.y < 0.0)
+          sunlight = max(sunlight, sunIntensity * sunVisible);
+      }
+    }
+
+    sunlight *= sunVisible;
 
     float realTemp = potentialToRealT(texture(baseTex, texCoord)[TEMPERATURE]);
     vec4 water = texture(waterTex, texCoord);

@@ -33,6 +33,7 @@ uniform bool allowCaves;
 float getInitialT(int y) { return initial_Tv[y / 4][y % 4]; }
 
 uniform float sunAngle;
+uniform float sunAzimuth;
 
 uniform float iterNum; // used as seed for random function
 
@@ -210,14 +211,19 @@ void main()
       if (wall[TYPE] != WALLTYPE_WATER) { // any land
         float lightPower = 0.0;
 
+        vec2 sunPos = sunScreenPosition(sunAngle, sunAzimuth);
+        vec2 toSun = sunPos - texCoord;
+        toSun.x *= texelSize.y / texelSize.x;
+        vec2 sunDir = length(toSun) > 1e-5 ? toSun / length(toSun) : vec2(0.0, 1.0);
+
         if (wallX0Ym[DISTANCE] == 0)
-          lightPower += max(light[SUNLIGHT] * cos(sunAngle), 0.0); // Light power per horizontal surface area;
+          lightPower += max(light[SUNLIGHT] * max(sunDir.y, 0.0), 0.0);
 
         if (wallXmY0[DISTANCE] == 0)
-          lightPower += max(light[SUNLIGHT] * sin(sunAngle), 0.0); // Light power on right phasing vertical wall
+          lightPower += max(light[SUNLIGHT] * max(sunDir.x, 0.0), 0.0);
 
         if (wallXpY0[DISTANCE] == 0)
-          lightPower += max(light[SUNLIGHT] * sin(-sunAngle), 0.0); // Light power on left phasing vertical wall
+          lightPower += max(light[SUNLIGHT] * max(-sunDir.x, 0.0), 0.0);
 
         float albedoTotal = 1.0;
 

@@ -263,3 +263,38 @@ vec4 smoothBilerpWallVis(sampler2D tex, isampler2D wallTex, vec2 pos)
 
   return mix(mix(a, b, mixAB), mix(c, d, mixCD), mixAB_CD);
 }
+
+// Hermite-interpolated cloud water (smooth density for lighting normals)
+float smoothCloudWater(sampler2D waterTex, vec2 tc, vec2 resolution)
+{
+  vec2 st = tc * resolution - vec2(0.5);
+  vec2 ipos = floor(st);
+  vec2 fpos = fract(st);
+  vec2 sf = fpos * fpos * (3.0 - 2.0 * fpos);
+  vec2 uvA = (ipos + vec2(0.5, 0.5)) / resolution;
+  vec2 uvB = (ipos + vec2(1.5, 0.5)) / resolution;
+  vec2 uvC = (ipos + vec2(0.5, 1.5)) / resolution;
+  vec2 uvD = (ipos + vec2(1.5, 1.5)) / resolution;
+  float a = texture(waterTex, uvA)[1];
+  float b = texture(waterTex, uvB)[1];
+  float c = texture(waterTex, uvC)[1];
+  float d = texture(waterTex, uvD)[1];
+  return mix(mix(a, b, sf.x), mix(c, d, sf.x), sf.y);
+}
+
+// Soft sunlight sample (reduces blocky shadow boundaries from the light grid)
+float smoothSunlightSample(sampler2D lightTex, vec2 tc, vec2 texelSize)
+{
+  float sum = 0.0;
+  float wsum = 0.0;
+  for (int j = -2; j <= 2; j++) {
+    for (int i = -2; i <= 2; i++) {
+      vec2 o = vec2(float(i), float(j)) * texelSize * 0.85;
+      float d = length(vec2(float(i), float(j)));
+      float w = exp(-d * d * 0.55);
+      sum += texture(lightTex, tc + o)[0] * w;
+      wsum += w;
+    }
+  }
+  return sum / wsum;
+}

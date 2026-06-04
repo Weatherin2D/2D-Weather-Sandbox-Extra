@@ -102,6 +102,102 @@ float map_range(float value, float min1, float max1, float min2, float max2) { r
 
 float map_rangeC(float value, float min1, float max1, float min2, float max2) { return clamp(map_range(value, min1, max1, min2, max2), min(min2, max2), max(min2, max2)); }
 
+// sunZenithAngle: 0 = overhead, PI/2 = horizon. sunAzimuth: hour angle (rad), 0 at solar noon.
+vec2 sunlightSampleOffset(vec2 texelSize, float sunZenithAngle, float sunAzimuth)
+{
+  return vec2(sin(sunZenithAngle) * sin(sunAzimuth) * texelSize.x, cos(sunZenithAngle) * texelSize.y);
+}
+
+vec2 sunlightDirection(float sunZenithAngle, float sunAzimuth)
+{
+  return vec2(sin(sunZenithAngle) * sin(sunAzimuth), cos(sunZenithAngle));
+}
+
+const float SUN_HORIZON_LINE = 0.028;
+
+vec2 sunScreenPosition(float sunZenithAngle, float sunAzimuth)
+{
+  float sunElevRad = clamp(PI * 0.5 - sunZenithAngle, 0.0, PI * 0.5);
+  return vec2(0.5 + 0.44 * sin(sunAzimuth), SUN_HORIZON_LINE + 0.94 * sin(sunElevRad));
+}
+
+// Lighting sun can sit below the screen horizon briefly after sunset (upward rays).
+vec2 sunScreenPositionForLight(float sunZenithAngle, float sunAzimuth, float enableUnderglow)
+{
+  if (enableUnderglow < 0.5)
+    return sunScreenPosition(sunZenithAngle, sunAzimuth);
+  float horiz = 0.5 + 0.44 * sin(sunAzimuth);
+  float elev = PI * 0.5 - sunZenithAngle;
+  if (elev >= 0.0)
+    return vec2(horiz, SUN_HORIZON_LINE + 0.94 * sin(min(elev, PI * 0.5)));
+  float below = clamp(-elev / 0.30, 0.0, 1.0);
+  float underglow = (1.0 - smoothstep(0.42, 1.0, below)) * smoothstep(0.0, 0.12, below);
+  return vec2(horiz, SUN_HORIZON_LINE - 0.055 * underglow - 0.025 * below);
+}
+
+// 0 at day/deep night; peaks just after sunset with light from below the horizon.
+float twilightUnderglowStrength(float sunZenithAngle, float enableUnderglow)
+{
+  if (enableUnderglow < 0.5)
+    return 0.0;
+  float z = sunZenithAngle;
+  float below = max(z - PI * 0.5, 0.0);
+  float under = (1.0 - smoothstep(0.0, 0.20, below)) * smoothstep(0.0, 0.035, below);
+  float approach = smoothstep(1.50, 1.565, z) * (1.0 - smoothstep(1.565, 1.59, z));
+  return max(under, approach * 0.3);
+}
+
+// Unit step toward the sun in texCoord space (aspect-corrected).
+vec2 sunlightRayToSun(vec2 texelSize, vec2 texCoord, float sunZenithAngle, float sunAzimuth, float enableUnderglow, float enableRadial)
+{
+  if (enableRadial < 0.5)
+    return sunlightSampleOffset(texelSize, sunZenithAngle, sunAzimuth);
+  vec2 sunPos = sunScreenPositionForLight(sunZenithAngle, sunAzimuth, enableUnderglow);
+  vec2 toSun = sunPos - texCoord;
+  toSun.x *= texelSize.y / texelSize.x;
+  float len = length(toSun);
+  if (len < 1e-5)
+    return vec2(0.0, texelSize.y);
+  return (toSun / len) * texelSize;
+}
+
+// Per-pixel visibility to the sun (0 = in shadow, 1 = full sun). Shadows fan out from sun position.
+float sunLineOfSightVisibility(sampler2D waterTex, isampler2D wallTex, vec2 texCoord, vec2 texelSize, float sunZenithAngle, float sunAzimuth, float enableUnderglow, float enableRadial)
+{
+  if (enableRadial < 0.5)
+    return 1.0;
+  vec2 sunPos = sunScreenPositionForLight(sunZenithAngle, sunAzimuth, enableUnderglow);
+  vec2 toSun = sunPos - texCoord;
+  toSun.x *= texelSize.y / texelSize.x;
+  float dist = length(toSun);
+  if (dist < length(texelSize) * 0.25)
+    return 1.0;
+
+  vec2 stepUV = (toSun / dist) * texelSize;
+  int maxSteps = int(clamp(dist / max(length(texelSize), 1e-6), 4.0, 40.0));
+  float transmittance = 1.0;
+
+  for (int i = 1; i < 42; i++) {
+    if (i >= maxSteps)
+      break;
+    vec2 p = texCoord + stepUV * float(i);
+    if (p.y > 1.0)
+      return transmittance;
+    if (p.y < 0.0 || p.x < 0.0 || p.x > 1.0)
+      return transmittance;
+
+    if (texture(wallTex, p)[DISTANCE] == 0)
+      return 0.0; // wall blocks sun
+
+    vec4 w = texture(waterTex, p);
+    float extinction = min(w[CLOUD] * 0.010 + w[PRECIPITATION] * 0.025 + w[SMOKE] * 0.004, 0.92);
+    transmittance *= (1.0 - extinction);
+    if (transmittance < 0.03)
+      return 0.0;
+  }
+  return transmittance;
+}
+
 uint hash(uint x)
 {
   x += (x << 10u);
