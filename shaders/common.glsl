@@ -155,6 +155,24 @@ vec2 sunlightRayToSun(vec2 texelSize, vec2 texCoord, float sunZenithAngle, float
   return (toSun / len) * texelSize;
 }
 
+// Hermite-smoothed cloud water (reduces grid speckle in shadow rays).
+float smoothCloudWaterAt(sampler2D waterTex, vec2 tc)
+{
+  vec2 st = tc * resolution - vec2(0.5);
+  vec2 ipos = floor(st);
+  vec2 fpos = fract(st);
+  vec2 sf = fpos * fpos * (3.0 - 2.0 * fpos);
+  vec2 uvA = (ipos + vec2(0.5, 0.5)) / resolution;
+  vec2 uvB = (ipos + vec2(1.5, 0.5)) / resolution;
+  vec2 uvC = (ipos + vec2(0.5, 1.5)) / resolution;
+  vec2 uvD = (ipos + vec2(1.5, 1.5)) / resolution;
+  float a = texture(waterTex, uvA)[CLOUD];
+  float b = texture(waterTex, uvB)[CLOUD];
+  float c = texture(waterTex, uvC)[CLOUD];
+  float d = texture(waterTex, uvD)[CLOUD];
+  return mix(mix(a, b, sf.x), mix(c, d, sf.x), sf.y);
+}
+
 // Per-pixel visibility to the sun (0 = in shadow, 1 = full sun). Shadows fan out from sun position.
 float sunLineOfSightVisibility(sampler2D waterTex, isampler2D wallTex, vec2 texCoord, vec2 texelSize, float sunZenithAngle, float sunAzimuth)
 {
@@ -166,10 +184,11 @@ float sunLineOfSightVisibility(sampler2D waterTex, isampler2D wallTex, vec2 texC
     return 1.0;
 
   vec2 stepUV = (toSun / dist) * texelSize;
-  int maxSteps = int(clamp(dist / max(length(texelSize), 1e-6), 4.0, 40.0));
+  float stepsNeeded = dist / max(length(stepUV), 1e-7);
+  int maxSteps = int(clamp(stepsNeeded, 8.0, 220.0));
   float transmittance = 1.0;
 
-  for (int i = 1; i < 42; i++) {
+  for (int i = 1; i < 224; i++) {
     if (i >= maxSteps)
       break;
     vec2 p = texCoord + stepUV * float(i);
@@ -182,10 +201,13 @@ float sunLineOfSightVisibility(sampler2D waterTex, isampler2D wallTex, vec2 texC
       return 0.0; // wall blocks sun
 
     vec4 w = texture(waterTex, p);
-    float extinction = min(w[CLOUD] * 0.010 + w[PRECIPITATION] * 0.025 + w[SMOKE] * 0.004, 0.92);
+    float cloudW = smoothCloudWaterAt(waterTex, p);
+    // Only dense cloud blocks direct sun; thin wisps stay mostly transparent to light.
+    float thickCloud = max(cloudW - 5.0, 0.0);
+    float cloudShadowWeight = pow(clamp(thickCloud / 14.0, 0.0, 1.0), 2.0);
+    float cloudExtinction = cloudShadowWeight * cloudW * 0.008;
+    float extinction = min(cloudExtinction + w[PRECIPITATION] * 0.025 + w[SMOKE] * 0.004, 0.92);
     transmittance *= (1.0 - extinction);
-    if (transmittance < 0.03)
-      return 0.0;
   }
   return transmittance;
 }

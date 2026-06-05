@@ -47,23 +47,9 @@ void main()
 
     float cellHeightCompensation = 300. / resolution.y; // 300 cells = 1.0     100 cells = 3.0
 
-    // Parallel propagation (stable over many iterations) × radial line-of-sight to sun (position-dependent shadows)
+    // Parallel propagation only (stable; radial line-of-sight caused vertical shadow speckle columns).
     vec2 sunRay = sunlightSampleOffset(texelSize, sunAngle, sunAzimuth);
     float sunlight = texture(lightTex, texCoord + sunRay)[SUNLIGHT];
-    float sunVisible = sunLineOfSightVisibility(waterTex, wallTex, texCoord, texelSize, sunAngle, sunAzimuth);
-
-    vec2 sunPos = sunScreenPosition(sunAngle, sunAzimuth);
-    vec2 toSun = sunPos - texCoord;
-    toSun.x *= texelSize.y / texelSize.x;
-    float distSun = length(toSun);
-    if (distSun > length(texelSize)) {
-      vec2 stepToSun = (toSun / distSun) * texelSize;
-      vec2 sp = texCoord + stepToSun;
-      if (sp.y > 1.0 || sp.x < 0.0 || sp.x > 1.0 || sp.y < 0.0)
-        sunlight = max(sunlight, sunIntensity * sunVisible);
-    }
-
-    sunlight *= sunVisible;
 
     float realTemp = potentialToRealT(texture(baseTex, texCoord)[TEMPERATURE]);
     vec4 water = texture(waterTex, texCoord);

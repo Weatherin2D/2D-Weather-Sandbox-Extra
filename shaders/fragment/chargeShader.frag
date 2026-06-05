@@ -37,8 +37,14 @@ layout(location = 0) out vec2 charge;
 
 #define CHARGE_DECAY        0.996
 #define CHARGE_DIFFUSION    0.012
-#define CHARGE_SCALE        0.0025
+#define CHARGE_SCALE_BASE   0.0025
 #define MAX_LT_DISCHARGE    4
+
+uniform float chargeGenerationRate;
+uniform float chargeMinCloudDensity;
+uniform float chargeStormCoreThreshold;
+uniform float chargeTransportStrength;
+uniform float chargeDissipationRate;
 
 uniform int ltDischargeCount;
 uniform vec4 ltDischarge[MAX_LT_DISCHARGE];     // xy = uv, z = amount, w = radius px
@@ -129,10 +135,18 @@ void main()
 
   // ── Wall / ground cells: induced surface charge ─────────────────────────
   if (wall[DISTANCE] == 0) {
-    vec2 aboveCoord = vec2(texCoord.x, texCoord.y + texelSize.y);
+    vec2 aboveCoord = vec2(texCoord.x, min(texCoord.y + texelSize.y, 1.0));
     float airChargeAbove = texture(chargeTex, aboveCoord).r;
+    float airLeft  = texture(chargeTex, vec2(max(texCoord.x - texelSize.x, 0.0), aboveCoord.y)).r;
+    float airRight = texture(chargeTex, vec2(min(texCoord.x + texelSize.x, 1.0), aboveCoord.y)).r;
+    float gradAbove = (airRight - airLeft) * 0.5;
 
-    float groundCharge = prev.g * CHARGE_DECAY - airChargeAbove * 0.06;
+    float surfDecay = mix(CHARGE_DECAY, 0.993, clamp(chargeDissipationRate - 1.0, 0.0, 1.0) * 0.35);
+    float groundCharge = prev.g * surfDecay;
+    groundCharge -= airChargeAbove * 0.10;
+    groundCharge -= gradAbove * 0.045;
+    if (sign(airChargeAbove) != sign(groundCharge) && abs(airChargeAbove) > 0.08)
+      groundCharge += sign(-airChargeAbove) * min(abs(airChargeAbove) * 0.05, 0.12);
     groundCharge = clamp(groundCharge, -1.0, 1.0);
     applyChargeBrush(groundCharge, texCoord);
     charge = vec2(0.0, groundCharge);
@@ -166,13 +180,18 @@ void main()
   if (wallUp[DISTANCE]    != 0) { neighborCloud += cU; neighborCount += 1.0; }
 
   float localMean = neighborCloud / neighborCount;
+  float chargeScale = CHARGE_SCALE_BASE * chargeGenerationRate;
+  float minCloudDens = chargeMinCloudDensity;
+  float denseCloudHigh = minCloudDens + 0.63;
+  float stormCoreGateLow = minCloudDens * 0.6875;
   // Convective core (local peak) OR uniformly dense layer (anvil / cloud-base shelf)
   float corePeak = smoothstep(localMean * 0.55 + 0.10, localMean + 0.70, cloudWater);
-  float uniformDense = smoothstep(0.38, 0.82, cloudWater) * smoothstep(0.35, 0.78, localMean);
+  float uniformDense = smoothstep(chargeStormCoreThreshold, chargeStormCoreThreshold + 0.44, cloudWater)
+                     * smoothstep(chargeStormCoreThreshold - 0.03, chargeStormCoreThreshold + 0.40, localMean);
   float stormCore = max(corePeak, uniformDense * 0.85);
-  stormCore *= smoothstep(0.22, 1.05, cloudWater);
+  stormCore *= smoothstep(stormCoreGateLow, 1.05, cloudWater);
 
-  float denseCloud = smoothstep(0.32, 0.95, cloudWater) * stormCore;
+  float denseCloud = smoothstep(minCloudDens, denseCloudHigh, cloudWater) * stormCore;
 
   // Collision: precip enhances; dense cloud + updraft can charge without rain
   float cloudOnlyColl = cloudWater * cloudWater * (0.42 + updraft * 1.35 + downdraft * 0.40);
@@ -184,39 +203,44 @@ void main()
   float graupelZone = smoothstep(CtoK(-22.0), CtoK(-14.0), realTemp)
                     * (1.0 - smoothstep(CtoK(-8.0), CtoK(2.0), realTemp));
   float graupelBoost = 0.35 + updraft * 1.4 + downdraft * 0.5;
-  float negativeGen = collision * graupelZone * graupelBoost * denseCloud * CHARGE_SCALE * 1.6;
+  float negativeGen = collision * graupelZone * graupelBoost * denseCloud * chargeScale * 1.6;
   float mixedCloudNeg = cloudWater * denseCloud * graupelZone
-                      * (0.18 + updraft * 0.75) * CHARGE_SCALE * 0.55;
+                      * (0.18 + updraft * 0.75) * chargeScale * 0.55;
   negativeGen += mixedCloudNeg;
 
   // Ice crystals → positive: lofted in cold updraft above graupel layer
   float iceCrystalZone = smoothstep(CtoK(-38.0), CtoK(-24.0), realTemp)
                        * (1.0 - smoothstep(CtoK(-18.0), CtoK(-10.0), realTemp));
-  float positiveGen = collision * iceCrystalZone * (0.25 + updraft * 1.8) * denseCloud * CHARGE_SCALE * 1.1;
-  positiveGen += cloudWater * updraft * iceCrystalZone * denseCloud * CHARGE_SCALE * 0.32;
+  float positiveGen = collision * iceCrystalZone * (0.25 + updraft * 1.8) * denseCloud * chargeScale * 1.1;
+  positiveGen += cloudWater * updraft * iceCrystalZone * denseCloud * chargeScale * 0.32;
 
   // Anvil: cold dense spread-out cloud (no precip required)
   float anvilZone = smoothstep(CtoK(-48.0), CtoK(-26.0), realTemp)
                   * smoothstep(0.40, 1.15, cloudWater)
                   * (0.55 + (1.0 - min(updraft * 1.2, 1.0)) * 0.45);
-  float anvilPositiveGen = cloudWater * anvilZone * denseCloud * CHARGE_SCALE * 0.38;
+  float anvilPositiveGen = cloudWater * anvilZone * denseCloud * chargeScale * 0.38;
   positiveGen += anvilPositiveGen;
 
   // Cloud base screening (+): dense warm cloud; precip adds extra
   float cloudBaseZone = smoothstep(CtoK(-3.0), CtoK(7.0), realTemp);
-  float warmPositiveGen = cloudWater * cloudBaseZone * denseCloud * CHARGE_SCALE * 0.24;
-  warmPositiveGen += precip * cloudWater * cloudBaseZone * denseCloud * CHARGE_SCALE * 0.14;
+  float warmPositiveGen = cloudWater * cloudBaseZone * denseCloud * chargeScale * 0.24;
+  warmPositiveGen += precip * cloudWater * cloudBaseZone * denseCloud * chargeScale * 0.14;
 
   // Falling hydrometeors transport negative charge downward (needs precip)
-  float precipTransport = precip * (0.20 + downdraft * 1.1 + updraft * 0.15) * denseCloud * CHARGE_SCALE * 0.50;
+  float precipTransport = precip * (0.20 + downdraft * 1.1 + updraft * 0.15) * denseCloud * chargeScale * 0.50;
 
-  float netCharge = positiveGen + warmPositiveGen - negativeGen - precipTransport;
-
-  // ── Diffusion (air cells only) ───────────────────────────────────────────
   float chargeLeft  = texture(chargeTex, texCoordXmY0).r;
   float chargeRight = texture(chargeTex, texCoordXpY0).r;
   float chargeDown  = texture(chargeTex, texCoordX0Ym).r;
   float chargeUp    = texture(chargeTex, texCoordX0Yp).r;
+
+  float netCharge = positiveGen + warmPositiveGen - negativeGen - precipTransport;
+  float tripoleSign = sign(realTemp - CtoK(-15.0));
+  float updraftOrg = updraft * denseCloud * chargeScale * 0.10 * tripoleSign;
+  float layerShear = (chargeUp - chargeDown) * updraft * denseCloud * 0.06;
+  netCharge += updraftOrg + layerShear;
+
+  // ── Diffusion (air cells only) ───────────────────────────────────────────
 
   float neighborSum = 0.0;
   float neighborDiffCount = 0.0;
@@ -236,8 +260,10 @@ void main()
   upstreamCoord = clamp(upstreamCoord, vec2(0.0), vec2(1.0));
   float advectedCharge = texture(chargeTex, upstreamCoord).r;
 
-  float airCharge = mix(prev.r, advectedCharge, 0.32);
-  airCharge = airCharge * CHARGE_DECAY + diffusion + netCharge;
+  float transportMix = clamp(chargeTransportStrength, 0.0, 3.0) * 0.32;
+  float dissipation = mix(CHARGE_DECAY, 0.992, clamp(chargeDissipationRate - 1.0, 0.0, 1.0) * 0.5);
+  float airCharge = mix(prev.r, advectedCharge, transportMix);
+  airCharge = airCharge * dissipation + diffusion + netCharge;
 
   // Lightning discharge — neutralize charge around strike origins this iteration
   for (int d = 0; d < MAX_LT_DISCHARGE; d++) {
