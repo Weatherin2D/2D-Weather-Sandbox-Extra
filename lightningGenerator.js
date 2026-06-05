@@ -13,6 +13,12 @@ onmessage = (event) => {
     case 'SPIDER':
       imgElement = generateSpiderLightning(msg.width, msg.height);
       break;
+    case 'ANVIL':
+      imgElement = generateAnvilCrawler(msg.width, msg.height);
+      break;
+    case 'POSITIVE':
+      imgElement = generatePositiveCGBolt(msg.width, msg.height);
+      break;
     case 'SPRITE':
       imgElement = generateSpritePattern(msg.width, msg.height);
       break;
@@ -289,6 +295,144 @@ function generateSpiderLightning(width, height)
       }
     }
 
+    ctx.strokeStyle = getColor(lineWidth);
+    ctx.stroke();
+  }
+
+  return ctx.getImageData(0, 0, width, height);
+}
+
+// Thicker positive cloud-to-ground bolt
+function generatePositiveCGBolt(width, height)
+{
+  const canvas = new OffscreenCanvas(width, height);
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, width, height);
+
+  function getColor(lineWidth) {
+    const b = Math.pow(lineWidth, 1.8);
+    return `rgb(${14 * b}, ${13 * b}, ${15 * b})`;
+  }
+
+  let startX = width / 2.0;
+  let startY = 0;
+  let angle = Math.PI / 5.;
+  let lineWidth = 14.0;
+  const targetAngle = 0.0;
+
+  ctx.beginPath();
+  ctx.moveTo(startX, startY);
+  ctx.lineWidth = lineWidth;
+
+  while (startY < height) {
+    const nextX = startX + Math.sin(angle) * 1.2;
+    const nextY = startY + Math.cos(angle) * 1.2;
+    angle += (Math.random() - 0.5) * 1.6;
+    angle -= (angle - targetAngle) * 0.06;
+    ctx.lineTo(nextX, nextY);
+    startX = nextX;
+    startY = nextY;
+
+    if (Math.random() < 0.02 * (1. - nextY / height)) {
+      ctx.strokeStyle = getColor(lineWidth);
+      ctx.stroke();
+      drawBranch(nextX, nextY, targetAngle + (Math.random() - 0.5) * 2.0, lineWidth * 0.55);
+      ctx.beginPath();
+      ctx.moveTo(nextX, nextY);
+      ctx.lineWidth = lineWidth;
+    }
+    if (startY >= height - 1) {
+      ctx.lineTo(startX, height);
+      break;
+    }
+  }
+  ctx.strokeStyle = getColor(lineWidth);
+  ctx.stroke();
+  return ctx.getImageData(0, 0, width, height);
+
+  function drawBranch(startX, startY, targetAngle, line_width) {
+    let angle = targetAngle;
+    ctx.beginPath();
+    ctx.moveTo(startX, startY);
+    ctx.lineWidth = line_width;
+    while (startY < height) {
+      const nextX = startX + Math.sin(angle);
+      const nextY = startY + Math.cos(angle);
+      angle += (Math.random() - 0.5) * 0.8;
+      angle -= (angle - targetAngle) * 0.08;
+      ctx.lineTo(nextX, nextY);
+      startX = nextX;
+      startY = nextY;
+      if (Math.random() < 0.02) {
+        ctx.strokeStyle = getColor(line_width);
+        ctx.stroke();
+        line_width -= 0.25;
+        if (line_width < 0.15) return;
+        ctx.beginPath();
+        ctx.moveTo(nextX, nextY);
+        ctx.lineWidth = line_width;
+      }
+      if (startY >= height - 1) break;
+    }
+    ctx.strokeStyle = getColor(line_width);
+    ctx.stroke();
+  }
+}
+
+// Large horizontal anvil crawler discharge
+function generateAnvilCrawler(width, height)
+{
+  const canvas = new OffscreenCanvas(width, height);
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, width, height);
+
+  function getColor(lineWidth) {
+    const b = Math.pow(lineWidth, 2.0);
+    return `rgb(${13 * b}, ${12 * b}, ${16 * b})`;
+  }
+
+  const centerY = height * 0.42;
+  const numChannels = 3 + Math.floor(Math.random() * 3);
+
+  for (let ch = 0; ch < numChannels; ch++) {
+    const yOff = (ch - numChannels / 2) * height * 0.04;
+    let startX = width * (0.05 + Math.random() * 0.1);
+    let currentX = startX;
+    let currentY = centerY + yOff;
+    let lineWidth = 5.0 + Math.random() * 3.0;
+
+    ctx.beginPath();
+    ctx.moveTo(currentX, currentY);
+    ctx.lineWidth = lineWidth;
+
+    while (currentX < width * 0.92) {
+      const stepX = 3 + Math.random() * 5;
+      currentX += stepX;
+      currentY += (Math.random() - 0.5) * 8;
+      currentY = centerY + yOff + (currentY - centerY - yOff) * 0.6;
+      ctx.lineTo(currentX, currentY);
+
+      if (Math.random() < 0.04) {
+        ctx.strokeStyle = getColor(lineWidth);
+        ctx.stroke();
+        let bx = currentX;
+        let by = currentY;
+        const dir = Math.random() > 0.5 ? 1 : -1;
+        ctx.beginPath();
+        ctx.moveTo(bx, by);
+        for (let j = 0; j < 20; j++) {
+          by += dir * (1 + Math.random());
+          bx += (Math.random() - 0.5) * 3;
+          ctx.lineTo(bx, by);
+        }
+        ctx.strokeStyle = getColor(lineWidth * 0.5);
+        ctx.lineWidth = lineWidth * 0.5;
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(currentX, currentY);
+        ctx.lineWidth = lineWidth;
+      }
+    }
     ctx.strokeStyle = getColor(lineWidth);
     ctx.stroke();
   }

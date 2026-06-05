@@ -447,7 +447,7 @@ const guiControls_default = {
   month : 6.65, // Northern hemisphere summer solstice
   sunAngle : 90.0,
   dayNightCycle : true,
-  realtimeMode : false,  // sync sun position to real wall-clock time
+  realtimeMode : false,  // 1:1 sim time with wall clock (sun, clock, and physics)
   accelerateNight : true,
   greenhouseGases : 0.001,
   waterGreenHouseEffect : 0.0015,
@@ -508,6 +508,10 @@ const guiControls_default = {
   lightningBoltWidth : 1.0,
   lightningRepeat : true,          // allow repeat strikes driven by charge
   lightningCrossTrigger : true,    // CG can trigger CC crawlers and vice versa
+  chargeGenerationRate : 1.0,
+  chargeMinCloudDensity : 0.32,
+  chargeStormCoreThreshold : 0.38,
+  ...(typeof LightningV2 !== 'undefined' ? LightningV2.DEFAULT_SETTINGS : {}),
   enableVectorField : false,
   // Nuke settings
   nukeBlastRadius : 50,
@@ -601,6 +605,8 @@ var proceduralLightningState = {
 var chargeDischargesThisIter = [];
 var lightningFieldCache = null;
 var lightningFieldCacheFrame = -1;
+var lightningStormProfile = null;
+var lightningStormProfileFrame = -1;
 var lightningSummaryTexture = null;
 var lightningSummaryFrameBuff = null;
 var lightningSummaryBuffer = null;
@@ -609,8 +615,14 @@ var lightningCacheH = 0;
 const LIGHTNING_CACHE_SCALE = 4;
 const LIGHTNING_FLASH_DURATION = 11;
 var particleLightningReadBuffer = new Float32Array(4);
-var procLightningPosArr = new Float32Array(16);
-var procLightningMetaArr = new Float32Array(16);
+var procLightningPosArr = new Float32Array(32);
+var procLightningDestArr = new Float32Array(32);
+var procLightningMetaArr = new Float32Array(32);
+var lightningBurstState = typeof LightningV2 !== 'undefined' ? LightningV2.createBurstState() : { phase: 'burst', burstIntensity: 1.0 };
+var lightningEventLog = [];
+var lightningEventIdCounter = 0;
+var lightningDebugCanvas = null;
+var forcedLightningQueue = [];
 
 var nukeOverlayCanvas = null;
 var nukeOverlayCtx = null;
@@ -681,6 +693,8 @@ var dryLapse;
 
 
 const timePerIteration = 0.00008; // in hours (0.00008 = 0.288 sec, at 40m cell size that means the speed of light & sound = 138.88 m/s = 500 km/h)
+const REALTIME_ITERS_PER_MS = 1.0 / (timePerIteration * 3600 * 1000); // iterations per real ms at 1:1 sim speed
+const REALTIME_MAX_CATCHUP_MS = 500; // cap lag catch-up so a long stall does not burst the sim forward
 const MAX_ITER_PER_FRAME = 200;
 const TARGET_FRAME_MS = 28;
 const HIDDEN_TAB_ITER_MULT = 2;
@@ -4924,54 +4938,66 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
     soundThunder(x, y, intensity)
     {
+      if (!Number.isFinite(x) || !Number.isFinite(y))
+        return;
+
       let camXnorm = 1. - (cam.curXpos + 1.0) / 2.0;
 
-      let camDistFromSim = cellHeight * sim_res_x * 0.5 / cam.curZoom; // asuming 90° HFOV
+      let camDistFromSim = cellHeight * sim_res_x * 0.5 / Math.max(cam.curZoom, 1e-6);
 
       let camHorDistFromStrike = (x - camXnorm) * cellHeight * sim_res_x;
 
       let vecStrikeToCam = new Vec2D(camDistFromSim, camHorDistFromStrike);
 
       let distance = vecStrikeToCam.mag();
+      if (!Number.isFinite(distance))
+        distance = 1000.0;
 
       let leftRightBalance = -vecStrikeToCam.angle();
-
-      // console.log(camDistFromSim, camHorDistFromStrike, distance, leftRightBalance);
+      if (!Number.isFinite(leftRightBalance))
+        leftRightBalance = 0.0;
 
       // Speed of sound ≈ 343 m/s — thunder follows the flash, delayed by distance
-      let soundDelay = distance / 343;                                            // in seconds
-      soundDelay = Math.max(soundDelay, 0.12); // always slightly after the visible flash
+      let soundDelay = distance / 343;
+      soundDelay = Math.max(soundDelay, 0.12);
 
       let effectiveIters = Math.max(1, lastFrameSimIterations
         || Math.round(guiControls.IterPerFrame * Math.max(0.1, guiControls.simulationQuality)));
       effectiveIters = Math.min(effectiveIters, MAX_ITER_PER_FRAME);
-      let simTimeMult = timePerIteration * effectiveIters * FPS * 3600; // how much faster sim time is than real time
+      let simTimeMult = Math.max(1e-6, timePerIteration * effectiveIters * FPS * 3600);
 
       soundDelay /= simTimeMult;
+      soundDelay = Math.min(Math.max(soundDelay, 0.0), 120.0);
 
       if (!guiControls.soundThunderEnabled) return;
 
-      let soundArray = intensity > 0.75 ? this.thunderCGSounds : this.thunderCCSounds;
+      const safeIntensity = Number.isFinite(intensity) ? clamp(intensity, 0.0, 2.0) : 0.5;
+      let soundArray = safeIntensity > 0.75 ? this.thunderCGSounds : this.thunderCCSounds;
       if (!soundArray || soundArray.length === 0) return;
       let randomThunderSound = soundArray[Math.floor(Math.random() * soundArray.length)];
       if (!randomThunderSound) return;
-      let volume = intensity * 0.16 * guiControls.soundVolumeThunder;
+      const thunderVol = guiControls.soundVolumeThunder ?? 1.0;
+      let volume = safeIntensity * 0.16 * thunderVol;
       volume /= (1.0 + distance * 0.004);
-      volume = Math.min(volume, 0.55);
+      volume = clamp(volume, 0.0, 0.55);
       this.playOnce(randomThunderSound, volume, leftRightBalance, soundDelay);
     }
 
     playOnce(buffer, volume = 1, leftRightBalance = 0, delay = 0)
     {
+      if (!buffer) return;
+      const safeVolume = Number.isFinite(volume) ? clamp(volume, 0.0, 1.0) : 0.0;
+      const safePan = Number.isFinite(leftRightBalance) ? clamp(leftRightBalance, -1., 1.) : 0.0;
+      const safeDelay = Number.isFinite(delay) ? clamp(delay, 0.0, 120.0) : 0.12;
       const src = this.audioCtx.createBufferSource();
       const gain = this.audioCtx.createGain();
       const pan = this.audioCtx.createStereoPanner();
       src.buffer = buffer;
       src.loop = false;
-      gain.gain.value = volume;
-      pan.pan.value = clamp(leftRightBalance, -1., 1.);
+      gain.gain.value = safeVolume;
+      pan.pan.value = safePan;
       src.connect(gain).connect(pan).connect(this.audioCtx.destination);
-      src.start(this.audioCtx.currentTime + delay);
+      src.start(this.audioCtx.currentTime + safeDelay);
     }
 
     playLoop(buffer, volume = 1, leftRightBalance = 0)
@@ -6605,6 +6631,29 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
   restoreSavedRadarTowersFromGuiControls();
 
+  var uloc_charge_generationRate = null;
+  var uloc_charge_minCloudDensity = null;
+  var uloc_charge_stormCoreThreshold = null;
+  var uloc_charge_transportStrength = null;
+  var uloc_charge_dissipationRate = null;
+  var postProc_exposure_loc = null;
+  var postProc_saturation_loc = null;
+  var postProc_contrast_loc = null;
+
+  function setChargeGenerationUniforms()
+  {
+    if (!chargeProgram || uloc_charge_generationRate === null)
+      return;
+    gl.useProgram(chargeProgram);
+    gl.uniform1f(uloc_charge_generationRate, guiControls.chargeGenerationRate);
+    gl.uniform1f(uloc_charge_minCloudDensity, guiControls.chargeMinCloudDensity);
+    gl.uniform1f(uloc_charge_stormCoreThreshold, guiControls.chargeStormCoreThreshold);
+    if (uloc_charge_transportStrength !== null)
+      gl.uniform1f(uloc_charge_transportStrength, guiControls.chargeTransportStrength || 1.0);
+    if (uloc_charge_dissipationRate !== null)
+      gl.uniform1f(uloc_charge_dissipationRate, guiControls.chargeDissipationRate || 1.0);
+  }
+
   function setGuiUniforms()
   { // set all uniforms to new values
     gl.useProgram(boundaryProgram);
@@ -6646,11 +6695,12 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'meltingRate'), guiControls.meltingRate);
     gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'evapRate'), guiControls.evapRate);
     gl.useProgram(postProcessingProgram);
-    gl.uniform1f(postProc_exposure_loc, guiControls.exposure);
-    gl.uniform1f(postProc_saturation_loc, guiControls.saturation);
-    gl.uniform1f(postProc_contrast_loc, guiControls.contrast);
-    gl.useProgram(realisticDisplayProgram);
-    gl.uniform1i(gl.getUniformLocation(realisticDisplayProgram, 'invertSun'), guiControls.invertSun ? 1 : 0);
+    if (postProc_exposure_loc !== null) {
+      gl.uniform1f(postProc_exposure_loc, guiControls.exposure);
+      gl.uniform1f(postProc_saturation_loc, guiControls.saturation);
+      gl.uniform1f(postProc_contrast_loc, guiControls.contrast);
+    }
+    setChargeGenerationUniforms();
   }
 
   function updateMenuStyle()
@@ -6712,6 +6762,21 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       guiControls.radarOverlaySource = 'composite';
     if (!guiControls.worldRadarProduct)
       guiControls.worldRadarProduct = 'reflectivity';
+    if (guiControls.chargeGenerationRate === undefined)
+      guiControls.chargeGenerationRate = guiControls_default.chargeGenerationRate;
+    if (guiControls.chargeMinCloudDensity === undefined)
+      guiControls.chargeMinCloudDensity = guiControls_default.chargeMinCloudDensity;
+    if (guiControls.chargeStormCoreThreshold === undefined)
+      guiControls.chargeStormCoreThreshold = guiControls_default.chargeStormCoreThreshold;
+
+    if (typeof LightningV2 !== 'undefined') {
+      Object.keys(LightningV2.DEFAULT_SETTINGS).forEach(key => {
+        if (guiControls[key] === undefined)
+          guiControls[key] = LightningV2.DEFAULT_SETTINGS[key];
+      });
+      if (guiControls.lightningPreset && guiControls.lightningPreset !== 'Custom')
+        LightningV2.applyPreset(guiControls, guiControls.lightningPreset);
+    }
 
     guiControls.tool = 'TOOL_NONE';
 
@@ -6745,6 +6810,15 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         panel.style.display = 'block';
         if (typeof refreshKeybindEditorList === 'function')
           refreshKeybindEditorList();
+      }
+    };
+
+    guiControls.openSkyEditor = function() {
+      const panel = document.getElementById('skyPanel');
+      if (panel) {
+        panel.style.display = 'block';
+        if (typeof refreshSkyEditor === 'function')
+          refreshSkyEditor();
       }
     };
 
@@ -6918,13 +6992,6 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       })*/
       .name('IR Multiplier');
 
-    radiation_folder.add(guiControls, 'invertSun')
-      .onChange(function() {
-        gl.useProgram(realisticDisplayProgram);
-        gl.uniform1i(gl.getUniformLocation(realisticDisplayProgram, 'invertSun'), guiControls.invertSun ? 1 : 0);
-      })
-      .name('Invert Sun');
-
     var water_folder = datGui.addFolder('Water');
 
     water_folder.add(guiControls, 'waterTemperature', 0.0, 40.0, 0.1)
@@ -7080,22 +7147,18 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     guiControls.resetRadarAccumulation = function() { resetRadarAccumulation(); };
     radar_folder.add(guiControls, 'resetRadarAccumulation').name('Reset Rain Accumulation');
 
-    var lightning_folder = datGui.addFolder('Lightning');
-    lightning_folder.add(guiControls, 'cloudLightningFrequency', 0.0, 100.0, 0.05).name('Cloud-Cloud Frequency');
-    lightning_folder.add(guiControls, 'cloudLightningDischarge', 0.0, 3.0, 0.05).name('CC Charge Discharge');
-    lightning_folder.add(guiControls, 'enableCloudFlash').name('Cloud Flashes');
-    lightning_folder.add(guiControls, 'cloudFlashIntensity', 0.0, 10.0, 0.1).name('Flash Intensity');
-    lightning_folder.add(guiControls, 'cloudFlashThreshold', 0.0, 1.0, 0.05).name('Flash Threshold');
-    lightning_folder.add(guiControls, 'cloudFlashFrequency', 0.0, 100.0, 0.05).name('Flash Frequency');
-    lightning_folder.add(guiControls, 'cloudFlashDischarge', 0.0, 3.0, 0.05).name('Flash Charge Discharge');
-    lightning_folder.add(guiControls, 'enableStrobeLightning').name('Strobe Bolts');
-    lightning_folder.add(guiControls, 'strobeLightningIntensity', 0.0, 10.0, 0.1).name('Strobe Intensity');
-    lightning_folder.add(guiControls, 'strobeLightningThreshold', 0.0, 1.0, 0.05).name('Strobe Threshold');
-    lightning_folder.add(guiControls, 'strobeLightningFrequency', 0.0, 100.0, 0.05).name('Strobe Frequency');
-    lightning_folder.add(guiControls, 'strobeLightningDischarge', 0.0, 3.0, 0.05).name('Strobe Charge Discharge');
-    lightning_folder.add(guiControls, 'cloudGroundLightningFrequency', 0.0, 100.0, 0.05).name('Cloud-Ground Frequency');
-    lightning_folder.add(guiControls, 'cloudGroundLightningDischarge', 0.0, 3.0, 0.05).name('CG Charge Discharge');
-    lightning_folder.add(guiControls, 'lightningBoltWidth', 0.25, 4.0, 0.05).name('Bolt Width');
+    if (typeof LightningV2 !== 'undefined') {
+      LightningV2.buildLightningV2GUI(datGui, guiControls, {
+        setChargeGenerationUniforms,
+        onSettingsChanged() { guiControls.lightningPreset = 'Custom'; },
+        forceSpawnLightningType,
+        forceSpawnAllLightningTypes,
+      });
+    } else {
+      var lightning_folder = datGui.addFolder('Lightning');
+      lightning_folder.add(guiControls, 'chargeGenerationRate', 0.0, 5.0, 0.05)
+        .onChange(setChargeGenerationUniforms).name('Cloud Charge Generation');
+    }
 
     var display_folder = datGui.addFolder('Display');
 
@@ -7175,49 +7238,16 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       })
       .name('Contrast');
 
-    display_folder.add(guiControls, 'greenHueStartThreshold', 0.0, 25.0, 0.01)
-      .onChange(function() {
-        gl.useProgram(realisticDisplayProgram);
-        gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'greenHueStartThreshold'), guiControls.greenHueStartThreshold);
-        gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'greenHueEndThreshold'), guiControls.greenHueEndThreshold);
-      })
-      .name('Green Hue Start');
-
-    display_folder.add(guiControls, 'greenHueEndThreshold', 0.0, 50.0, 0.01)
-      .onChange(function() {
-        gl.useProgram(realisticDisplayProgram);
-        gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'greenHueStartThreshold'), guiControls.greenHueStartThreshold);
-        gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'greenHueEndThreshold'), guiControls.greenHueEndThreshold);
-        gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'greenHueStrength'), guiControls.greenHueStrength);
-      })
-      .name('Green Hue End');
-
-    display_folder.add(guiControls, 'greenHueStrength', 0.0, 5.0, 0.001)
-      .onChange(function() {
-        gl.useProgram(realisticDisplayProgram);
-        gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'greenHueStrength'), guiControls.greenHueStrength);
-      })
-      .name('Green Hue Strength');
-
     display_folder.add(guiControls, 'starVisibility', 0.0, 1.0, 0.01)
-      .onChange(function() {
-        gl.useProgram(skyBackgroundDisplayProgram);
-        gl.uniform1f(gl.getUniformLocation(skyBackgroundDisplayProgram, 'starVisibility'), guiControls.starVisibility);
-      })
+      .onChange(function() { uploadSkyUniforms(); })
       .name('Star Visibility');
 
     display_folder.add(guiControls, 'starLightEmitStrength', 0.0, 0.5, 0.01)
-      .onChange(function() {
-        gl.useProgram(skyBackgroundDisplayProgram);
-        gl.uniform1f(gl.getUniformLocation(skyBackgroundDisplayProgram, 'starLightEmitStrength'), guiControls.starLightEmitStrength);
-      })
+      .onChange(function() { uploadSkyUniforms(); })
       .name('Star Light Emit Strength');
 
     display_folder.add(guiControls, 'starDensity', 0.0, 1.0, 0.01)
-      .onChange(function() {
-        gl.useProgram(skyBackgroundDisplayProgram);
-        gl.uniform1f(gl.getUniformLocation(skyBackgroundDisplayProgram, 'starDensity'), guiControls.starDensity);
-      })
+      .onChange(function() { uploadSkyUniforms(); })
       .name('Star Density');
 
     display_folder.add(guiControls, 'autoMinShadowLight').name('Auto Shadow Light');
@@ -7340,12 +7370,6 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
     advanced_folder.add(guiControls, 'enableBloom').name('Enable Bloom');
     advanced_folder.add(guiControls, 'enableVectorField').name('Vector Field');
-    advanced_folder.add(guiControls, 'enhancedLooks')
-      .onChange(function() {
-        gl.useProgram(realisticDisplayProgram);
-        gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'enhancedLooks'), guiControls.enhancedLooks ? 1.0 : 0.0);
-      })
-      .name('Smooth Clouds');
     advanced_folder.add(guiControls, 'displayWeatherStations')
       .onChange(function() {
         displayWeatherStations = guiControls.displayWeatherStations;
@@ -7416,6 +7440,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     datGui.add(guiControls, 'download').name('Save Simulation to File');
     datGui.add(guiControls, 'openColorScaleEditor').name('Open Color Scale Editor');
     datGui.add(guiControls, 'openKeybindEditor').name('Open Keybind Editor');
+    datGui.add(guiControls, 'openSkyEditor').name('Open Sky Editor');
     datGui.add(guiControls, 'hodograph2DNodes', 5, 100, 1).name('2D Hodograph Nodes');
     datGui.add(guiControls, 'hodographProfileNodes', 5, 100, 1).name('Profile Hodograph Nodes');
 
@@ -7432,9 +7457,11 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     console.log('startSimulation called, SETUP_MODE was:', SETUP_MODE);
     SETUP_MODE = false;
     gl.useProgram(postProcessingProgram);
-    gl.uniform1f(postProc_exposure_loc, guiControls.exposure);
-    gl.uniform1f(postProc_saturation_loc, guiControls.saturation);
-    gl.uniform1f(postProc_contrast_loc, guiControls.contrast);
+    if (postProc_exposure_loc !== null) {
+      gl.uniform1f(postProc_exposure_loc, guiControls.exposure);
+      gl.uniform1f(postProc_saturation_loc, guiControls.saturation);
+      gl.uniform1f(postProc_contrast_loc, guiControls.contrast);
+    }
     datGui.show(); // unhide
 
     clockEl = document.createElement('div');
@@ -7463,6 +7490,9 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     } else {
       updateSunlight('MANUAL_ANGLE'); // set angle from savefile
     }
+
+    if (guiControls.realtimeMode)
+      enableRealtimeMode();
   }
 
 function formatSoundingSimTimeLabel()
@@ -11344,6 +11374,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   var adaptiveSimIters = 6;
   var smoothedFrameMs = 18;
   var useLiteVisualsThisFrame = false;
+  var realtimeLastWallClockMs = 0;
+  var realtimeIterAccumulator = 0;
 
   function getMaxSafeIterationsPerFrame()
   {
@@ -11367,7 +11399,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     smoothedFrameMs = smoothedFrameMs * 0.88 + frameMs * 0.12;
     const sliderTarget = getSliderTargetIterations();
 
-    if (!guiControls.auto_IterPerFrame || airplaneMode || guiControls.slowMotion) {
+    if (!guiControls.auto_IterPerFrame || airplaneMode || guiControls.slowMotion || guiControls.realtimeMode) {
       adaptiveSimIters = sliderTarget;
       return;
     }
@@ -11392,6 +11424,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         lightningIconsPauseClockMs = 0;
       }
       unpauseFrameGuard = UNPAUSE_GUARD_FRAMES;
+      if (guiControls.realtimeMode)
+        realtimeLastWallClockMs = performance.now();
     }
   }
 
@@ -11484,6 +11518,11 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       return false;
     if (el.closest && el.closest('#keybindPanel')) {
       if (el.tagName === 'INPUT' && el.id === 'kbe-search')
+        return true;
+      return false;
+    }
+    if (el.closest && el.closest('#skyPanel')) {
+      if (el.tagName === 'INPUT' && (el.type === 'text' || el.type === 'number'))
         return true;
       return false;
     }
@@ -11593,6 +11632,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   // load shaders
   var commonSource = await loadSourceFile('shaders/common.glsl');
   var commonDisplaySource = await loadSourceFile('shaders/commonDisplay.glsl');
+  var lightningV2Source = await loadSourceFile('shaders/fragment/lightningV2.glsl');
   var dropletSizeSource = await loadSourceFile('shaders/dropletSize.glsl');
 
   const simVertexShader = await loadShader('simShader.vert');
@@ -11608,6 +11648,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   const capeShader = await loadShader('capeShader.frag');
   const chargeShader = await loadShader('chargeShader.frag');
   const lightningSummaryShader = await loadShader('lightningSummaryShader.frag');
+  const lightningDebugShader = await loadShader('lightningDebugShader.frag');
   const chargeDisplayShader = await loadShader('chargeDisplayShader.frag');
   const dropletSizeAccumVertexShader = await loadShader('dropletSizeAccumShader.vert');
   const dropletSizeAccumShader = await loadShader('dropletSizeAccumShader.frag');
@@ -11646,6 +11687,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   const capeProgram = createProgram(simVertexShader, capeShader);
   const chargeProgram = createProgram(simVertexShader, chargeShader);
   const lightningSummaryProgram = createProgram(simVertexShader, lightningSummaryShader);
+  const lightningDebugProgram = createProgram(dispVertexShader, lightningDebugShader);
   const vorticityProgram = createProgram(simVertexShader, vorticityShader);
   const boundaryProgram = createProgram(simVertexShader, boundaryShader);
   const lightingProgram = createProgram(simVertexShader, lightingShader);
@@ -11669,6 +11711,9 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   gl.deleteShader(dispVertexShader);
 
   const postProcessingProgram = createProgram(postProcessingVertexShader, postProcessingShader);
+  postProc_exposure_loc = gl.getUniformLocation(postProcessingProgram, 'exposure');
+  postProc_saturation_loc = gl.getUniformLocation(postProcessingProgram, 'saturation');
+  postProc_contrast_loc = gl.getUniformLocation(postProcessingProgram, 'contrast');
   const isolateBrightPartsProgram = createProgram(postProcessingVertexShader, isolateBrightPartsShader);
   const bloomBlurProgram = createProgram(postProcessingVertexShader, bloomBlurShader);
 
@@ -11677,8 +11722,22 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   try {
     realisticDisplayProgram = await linkProgramAsync(realDispVertexShader, realisticDisplayShader, null, 'realistic display');
   } catch (e) {
-    await loadingBar.showError('ERROR linking realistic display shader:\n' + e.message);
-    throw e;
+    if (gl.isContextLost && gl.isContextLost()) {
+      await loadingBar.showError('WebGL context lost while linking shaders.\nRefresh the page — if this keeps happening, your GPU may not handle the full lightning shader.');
+      throw e;
+    }
+    console.warn('Realistic display link failed with Lightning V2:', e.message, '— retrying without procedural lightning');
+    gl.deleteShader(realisticDisplayShader);
+    await loadingBar.set(84, 'Linking realistic display (fallback)...');
+    const realisticDisplayShaderNoLt = await loadShader('realisticDisplayShader.frag', { skipLightningV2: true });
+    try {
+      realisticDisplayProgram = await linkProgramAsync(realDispVertexShader, realisticDisplayShaderNoLt, null, 'realistic display (no lightning V2)');
+      lightningV2InRealisticShader = false;
+      console.warn('Loaded without Lightning V2 in realistic display — legacy lightning still works.');
+    } catch (e2) {
+      await loadingBar.showError('ERROR linking realistic display shader:\n' + e2.message);
+      throw e2;
+    }
   }
   gl.deleteShader(realDispVertexShader);
 
@@ -12130,6 +12189,10 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   const surfaceTextureMap = gl.createTexture();
   const colorScalesTexture = gl.createTexture();
 
+  const lightningTextures = [];
+  const numLightningTextures = 12;
+  const lightningTextureTypes = ['CG', 'CG', 'POSITIVE', 'POSITIVE', 'CC', 'CC', 'SPIDER', 'SPIDER', 'ANVIL', 'ANVIL', 'CG', 'CC'];
+
   const temperatureChangeHistoryTextures = [
     gl.createTexture(),
     gl.createTexture(),
@@ -12435,6 +12498,151 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);        // horizontal
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE); // vertical
+
+
+  function generateLightningTexture(i, imgData)
+  {
+    lightningTextures[i] = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, lightningTextures[i]);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.LUMINANCE, imgData.width, imgData.height, 0, gl.LUMINANCE, gl.UNSIGNED_BYTE, imgData);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  }
+
+  for (let i = 0; i < numLightningTextures; i++) {
+    const lightningGeneratorWorker = new Worker('./lightningGenerator.js');
+    const texIndex = i;
+    lightningGeneratorWorker.onmessage = (imgElement) => {
+      generateLightningTexture(texIndex, imgElement.data);
+    };
+    lightningGeneratorWorker.postMessage({
+      width: 2500, height: 5000,
+      type: lightningTextureTypes[texIndex] || 'CG',
+    });
+  }
+
+
+  // ========================= Sky Editor System =========================
+  const SKY_STORAGE_KEY = 'weatherSandboxSky_v1';
+  const SKY_SETTINGS_DEFAULTS = {
+    horizonLine : 0.028,
+    dayHue : 0.6,
+    daySatLow : 0.7,
+    daySatHigh : 1.0,
+    dayValLow : 1.0,
+    dayValHigh : 0.05,
+    dayValPow : 5.0,
+    twilightTop : [ 0.42, 0.06, 0.10 ],
+    twilightUpper : [ 0.78, 0.14, 0.06 ],
+    twilightMid : [ 0.98, 0.38, 0.08 ],
+    twilightLow : [ 1.0, 0.62, 0.18 ],
+    twilightHorizon : [ 1.0, 0.88, 0.52 ],
+    horizonDeepRed : [ 1.0, 0.14, 0.03 ],
+    horizonBurntOrange : [ 1.0, 0.42, 0.08 ],
+    horizonGold : [ 1.0, 0.78, 0.28 ],
+    horizonPaleGold : [ 1.0, 0.94, 0.72 ],
+    crepuscularColor : [ 1.0, 0.55, 0.18 ],
+    crepuscularStrength : 0.22,
+    sunHorizAmplitude : 0.44,
+    sunVertScale : 0.94,
+    hazeMixStrength : 0.55,
+    hazeBoostStrength : 0.45,
+  };
+  let skySettings = JSON.parse(JSON.stringify(SKY_SETTINGS_DEFAULTS));
+  let refreshSkyEditor = null;
+
+  function cloneSkySettings(src)
+  {
+    return JSON.parse(JSON.stringify(src));
+  }
+
+  function loadSkySettings()
+  {
+    try {
+      const raw = localStorage.getItem(SKY_STORAGE_KEY);
+      if (!raw)
+        return;
+      const parsed = JSON.parse(raw);
+      skySettings = Object.assign(cloneSkySettings(SKY_SETTINGS_DEFAULTS), parsed);
+    } catch (e) {
+      skySettings = cloneSkySettings(SKY_SETTINGS_DEFAULTS);
+    }
+  }
+
+  function saveSkySettings()
+  {
+    try {
+      localStorage.setItem(SKY_STORAGE_KEY, JSON.stringify(skySettings));
+    } catch (e) { /* ignore quota errors */ }
+  }
+
+  function resetSkySettingsToDefaults()
+  {
+    skySettings = cloneSkySettings(SKY_SETTINGS_DEFAULTS);
+    saveSkySettings();
+    uploadSkyUniforms();
+    if (typeof refreshSkyEditor === 'function')
+      refreshSkyEditor();
+  }
+
+  function skyVec3ToHex(v)
+  {
+    const r = Math.round(Math.max(0, Math.min(1, v[0])) * 255);
+    const g = Math.round(Math.max(0, Math.min(1, v[1])) * 255);
+    const b = Math.round(Math.max(0, Math.min(1, v[2])) * 255);
+    return '#' + [ r, g, b ].map(x => x.toString(16).padStart(2, '0')).join('');
+  }
+
+  function skyHexToVec3(hex)
+  {
+    const h = hex.replace('#', '');
+    if (h.length !== 6)
+      return [ 1, 1, 1 ];
+    return [
+      parseInt(h.slice(0, 2), 16) / 255,
+      parseInt(h.slice(2, 4), 16) / 255,
+      parseInt(h.slice(4, 6), 16) / 255,
+    ];
+  }
+
+  function uploadSkyUniforms()
+  {
+    if (!skyBackgroundDisplayProgram || !ulocsReady)
+      return;
+    gl.useProgram(skyBackgroundDisplayProgram);
+    if (uloc_sky_horizonLine) gl.uniform1f(uloc_sky_horizonLine, skySettings.horizonLine);
+    if (uloc_sky_dayHue) gl.uniform1f(uloc_sky_dayHue, skySettings.dayHue);
+    if (uloc_sky_daySatLow) gl.uniform1f(uloc_sky_daySatLow, skySettings.daySatLow);
+    if (uloc_sky_daySatHigh) gl.uniform1f(uloc_sky_daySatHigh, skySettings.daySatHigh);
+    if (uloc_sky_dayValLow) gl.uniform1f(uloc_sky_dayValLow, skySettings.dayValLow);
+    if (uloc_sky_dayValHigh) gl.uniform1f(uloc_sky_dayValHigh, skySettings.dayValHigh);
+    if (uloc_sky_dayValPow) gl.uniform1f(uloc_sky_dayValPow, skySettings.dayValPow);
+    if (uloc_sky_twilightTop) gl.uniform3fv(uloc_sky_twilightTop, skySettings.twilightTop);
+    if (uloc_sky_twilightUpper) gl.uniform3fv(uloc_sky_twilightUpper, skySettings.twilightUpper);
+    if (uloc_sky_twilightMid) gl.uniform3fv(uloc_sky_twilightMid, skySettings.twilightMid);
+    if (uloc_sky_twilightLow) gl.uniform3fv(uloc_sky_twilightLow, skySettings.twilightLow);
+    if (uloc_sky_twilightHorizon) gl.uniform3fv(uloc_sky_twilightHorizon, skySettings.twilightHorizon);
+    if (uloc_sky_horizonDeepRed) gl.uniform3fv(uloc_sky_horizonDeepRed, skySettings.horizonDeepRed);
+    if (uloc_sky_horizonBurntOrange) gl.uniform3fv(uloc_sky_horizonBurntOrange, skySettings.horizonBurntOrange);
+    if (uloc_sky_horizonGold) gl.uniform3fv(uloc_sky_horizonGold, skySettings.horizonGold);
+    if (uloc_sky_horizonPaleGold) gl.uniform3fv(uloc_sky_horizonPaleGold, skySettings.horizonPaleGold);
+    if (uloc_sky_crepuscularColor) gl.uniform3fv(uloc_sky_crepuscularColor, skySettings.crepuscularColor);
+    if (uloc_sky_crepuscularStrength) gl.uniform1f(uloc_sky_crepuscularStrength, skySettings.crepuscularStrength);
+    if (uloc_sky_sunHorizAmplitude) gl.uniform1f(uloc_sky_sunHorizAmplitude, skySettings.sunHorizAmplitude);
+    if (uloc_sky_sunVertScale) gl.uniform1f(uloc_sky_sunVertScale, skySettings.sunVertScale);
+    if (uloc_sky_hazeMixStrength) gl.uniform1f(uloc_sky_hazeMixStrength, skySettings.hazeMixStrength);
+    if (uloc_sky_hazeBoostStrength) gl.uniform1f(uloc_sky_hazeBoostStrength, skySettings.hazeBoostStrength);
+    if (uloc_sky_starVisibility) gl.uniform1f(uloc_sky_starVisibility, guiControls.starVisibility);
+    if (uloc_sky_starLightEmitStrength) gl.uniform1f(uloc_sky_starLightEmitStrength, guiControls.starLightEmitStrength);
+    if (uloc_sky_starDensity) gl.uniform1f(uloc_sky_starDensity, guiControls.starDensity);
+    if (uloc_sky_minShadowLight) gl.uniform1f(uloc_sky_minShadowLight, guiControls.minShadowLight);
+    if (uloc_sky_timeOfDay) gl.uniform1f(uloc_sky_timeOfDay, guiControls.timeOfDay);
+    if (uloc_sky_month) gl.uniform1f(uloc_sky_month, guiControls.month);
+  }
+
+  loadSkySettings();
 
 
   // ========================= Color Scale System =========================
@@ -13997,6 +14205,384 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     refreshKeybindEditorList();
   }
 
+  function buildSkyEditor()
+  {
+    const styleEl = document.createElement('style');
+    styleEl.textContent = `
+      #skyPanel{display:none;position:fixed;top:50px;right:420px;width:500px;
+        background:#13131f;border:1px solid #252540;border-radius:10px;
+        z-index:10000;font-family:Arial,sans-serif;color:#eee;max-height:92vh;
+        overflow:hidden;box-shadow:0 8px 32px rgba(0,0,0,0.75);}
+      .ske-hdr{display:flex;align-items:center;gap:8px;padding:11px 15px;
+        background:linear-gradient(135deg,#191930,#0e0e22);
+        border-bottom:1px solid #252540;cursor:move;user-select:none;flex-shrink:0;}
+      .ske-hdr span{font-size:14px;font-weight:700;flex:1;}
+      .ske-close{background:rgba(255,255,255,0.07);border:none;color:#777;cursor:pointer;
+        font-size:12px;padding:3px 8px;border-radius:5px;line-height:1;flex-shrink:0;}
+      .ske-close:hover{background:rgba(220,60,60,0.35);color:#fff;}
+      .ske-body{padding:14px 15px 16px;overflow-y:auto;max-height:calc(92vh - 46px);
+        scrollbar-width:thin;scrollbar-color:#252540 #0d0d18;}
+      .ske-body::-webkit-scrollbar{width:4px;}
+      .ske-body::-webkit-scrollbar-thumb{background:#252540;border-radius:2px;}
+      .ske-tabs{display:flex;gap:3px;flex-wrap:wrap;margin-bottom:12px;}
+      .ske-tab{padding:5px 11px;border:1px solid #252540;border-radius:20px;
+        background:#13131f;color:#5a6070;cursor:pointer;font-size:11px;
+        font-weight:600;transition:all 0.15s;}
+      .ske-tab:hover{background:#1e1e38;color:#aaa;border-color:#3a3a60;}
+      .ske-tab.active{background:#1e3080;color:#a0c0ff;border-color:#3050c0;}
+      .ske-section{display:none;}
+      .ske-section.active{display:block;}
+      .ske-grad{height:28px;border-radius:6px;margin-bottom:10px;border:1px solid #252540;}
+      .ske-row{display:flex;align-items:center;gap:8px;margin-bottom:8px;}
+      .ske-lbl{flex:1;font-size:11px;color:#888;min-width:0;}
+      .ske-lbl small{display:block;color:#555;font-size:10px;margin-top:1px;}
+      .ske-inp{width:72px;height:26px;border:1px solid #252540;border-radius:4px;
+        background:#0b0b17;color:#c0c0d0;font-size:11px;text-align:right;padding:2px 6px;
+        box-sizing:border-box;flex-shrink:0;}
+      .ske-inp:focus{outline:none;border-color:#3050c0;}
+      .ske-inp[type=color]{width:42px;height:26px;padding:1px;cursor:pointer;}
+      .ske-chk{display:flex;align-items:center;gap:8px;margin-bottom:8px;font-size:12px;color:#888;cursor:pointer;}
+      .ske-chk input{width:15px;height:15px;accent-color:#4a90e2;cursor:pointer;}
+      .ske-divider{border-top:1px solid #1c1c30;margin:10px 0;}
+      .ske-io-lbl{font-size:10px;color:#4a5060;text-transform:uppercase;
+        letter-spacing:1.2px;font-weight:600;margin-bottom:6px;}
+      .ske-io-area{width:100%;box-sizing:border-box;height:72px;border:1px solid #252540;
+        border-radius:6px;background:#0b0b17;color:#888;font-size:10px;padding:8px;
+        font-family:Consolas,monospace;resize:vertical;margin-bottom:8px;}
+      .ske-footer{display:flex;gap:8px;margin-top:12px;padding-top:10px;border-top:1px solid #1c1c30;}
+      .ske-footer-btn{flex:1;padding:8px;border:none;border-radius:5px;cursor:pointer;
+        font-size:11px;font-weight:700;color:#fff;}
+      .ske-footer-btn.reset{background:#401828;}
+      .ske-footer-btn.reset:hover{filter:brightness(1.15);}
+      .ske-footer-btn.io{background:#182840;}
+      .ske-footer-btn.io:hover{filter:brightness(1.15);}
+    `;
+    document.head.appendChild(styleEl);
+
+    const panel = document.createElement('div');
+    panel.id = 'skyPanel';
+    panel.innerHTML = `
+      <div class="ske-hdr"><span>☁ Sky Editor</span>
+        <button class="ske-close" title="Close">✕</button></div>
+      <div class="ske-body">
+        <div class="ske-tabs" id="ske-tabs"></div>
+        <div class="ske-grad" id="ske-preview"></div>
+        <div class="ske-section active" id="ske-sec-time"></div>
+        <div class="ske-section" id="ske-sec-day"></div>
+        <div class="ske-section" id="ske-sec-twilight"></div>
+        <div class="ske-section" id="ske-sec-horizon"></div>
+        <div class="ske-section" id="ske-sec-stars"></div>
+        <div class="ske-section" id="ske-sec-effects"></div>
+        <div class="ske-divider"></div>
+        <div class="ske-io-lbl">Import / Export JSON</div>
+        <textarea class="ske-io-area" id="ske-io" placeholder="Paste sky settings JSON here…"></textarea>
+        <div class="ske-footer">
+          <button class="ske-footer-btn io" id="ske-export">Export</button>
+          <button class="ske-footer-btn io" id="ske-import">Import</button>
+          <button class="ske-footer-btn reset" id="ske-reset">Reset defaults</button>
+        </div>
+      </div>`;
+    document.body.appendChild(panel);
+    panel.querySelector('.ske-close').onclick = () => { panel.style.display = 'none'; };
+
+    {
+      let skeDragX = 0, skeDragY = 0, skeDragging = false;
+      const skeHdr = panel.querySelector('.ske-hdr');
+      skeHdr.addEventListener('mousedown', (e) => {
+        if (e.target.classList.contains('ske-close')) return;
+        skeDragging = true;
+        const r = panel.getBoundingClientRect();
+        skeDragX = e.clientX - r.left;
+        skeDragY = e.clientY - r.top;
+        e.preventDefault();
+      });
+      document.addEventListener('mousemove', (e) => {
+        if (!skeDragging) return;
+        panel.style.right = 'auto';
+        panel.style.bottom = 'auto';
+        panel.style.left = (e.clientX - skeDragX) + 'px';
+        panel.style.top  = (e.clientY - skeDragY) + 'px';
+      });
+      document.addEventListener('mouseup', () => { skeDragging = false; });
+    }
+
+    const tabs = [
+      { id: 'time', label: 'Time & Sun' },
+      { id: 'day', label: 'Day Sky' },
+      { id: 'twilight', label: 'Twilight' },
+      { id: 'horizon', label: 'Horizon' },
+      { id: 'stars', label: 'Stars' },
+      { id: 'effects', label: 'Effects' },
+    ];
+    let activeTab = 'time';
+    const tabsEl = panel.querySelector('#ske-tabs');
+    const previewEl = panel.querySelector('#ske-preview');
+    const skySyncFns = [];
+
+    function updatePreview()
+    {
+      const stops = [
+        skySettings.twilightHorizon,
+        skySettings.twilightLow,
+        skySettings.twilightMid,
+        skySettings.twilightUpper,
+        skySettings.twilightTop,
+      ];
+      const pct = 100 / (stops.length - 1);
+      const parts = stops.map((c, i) => skyVec3ToHex(c) + ' ' + (i * pct) + '%');
+      previewEl.style.background = 'linear-gradient(to top, ' + parts.join(', ') + ')';
+    }
+
+    function commitSkyChange()
+    {
+      saveSkySettings();
+      uploadSkyUniforms();
+      updatePreview();
+    }
+
+    function addSlider(sectionEl, label, hint, getVal, setVal, min, max, step)
+    {
+      const row = document.createElement('div');
+      row.className = 'ske-row';
+      const lbl = document.createElement('div');
+      lbl.className = 'ske-lbl';
+      lbl.innerHTML = label + (hint ? '<small>' + hint + '</small>' : '');
+      const inp = document.createElement('input');
+      inp.type = 'number';
+      inp.className = 'ske-inp';
+      inp.min = min;
+      inp.max = max;
+      inp.step = step;
+      inp.value = getVal();
+      inp.onchange = () => {
+        setVal(parseFloat(inp.value));
+        commitSkyChange();
+      };
+      row.appendChild(lbl);
+      row.appendChild(inp);
+      sectionEl.appendChild(row);
+      skySyncFns.push(() => { inp.value = getVal(); });
+      return inp;
+    }
+
+    function addGuiSlider(sectionEl, label, hint, guiKey, min, max, step, onExtra)
+    {
+      return addSlider(sectionEl, label, hint,
+        () => guiControls[guiKey],
+        (v) => {
+          guiControls[guiKey] = v;
+          if (typeof onExtra === 'function') onExtra();
+        },
+        min, max, step);
+    }
+
+    function addColorPicker(sectionEl, label, vecKey)
+    {
+      const row = document.createElement('div');
+      row.className = 'ske-row';
+      const lbl = document.createElement('div');
+      lbl.className = 'ske-lbl';
+      lbl.textContent = label;
+      const inp = document.createElement('input');
+      inp.type = 'color';
+      inp.className = 'ske-inp';
+      inp.value = skyVec3ToHex(skySettings[vecKey]);
+      inp.oninput = () => {
+        skySettings[vecKey] = skyHexToVec3(inp.value);
+        commitSkyChange();
+      };
+      row.appendChild(lbl);
+      row.appendChild(inp);
+      sectionEl.appendChild(row);
+      skySyncFns.push(() => { inp.value = skyVec3ToHex(skySettings[vecKey]); });
+      return inp;
+    }
+
+    const secTime = panel.querySelector('#ske-sec-time');
+    addGuiSlider(secTime, 'Time of day (hours)', '0–24, noon = 12', 'timeOfDay', 0, 23.96, 0.01, () => {
+      if (typeof onUpdateTimeOfDaySlider === 'function') onUpdateTimeOfDaySlider();
+    });
+    addGuiSlider(secTime, 'Sun angle (°)', 'Zenith angle; 90 = overhead', 'sunAngle', 0, 180, 0.1, () => {
+      if (typeof updateSunlight === 'function') updateSunlight();
+    });
+    addGuiSlider(secTime, 'Month', 'Affects moon phase', 'month', 1, 12, 0.01);
+    addGuiSlider(secTime, 'Latitude (°)', 'Day/night cycle latitude', 'latitude', -90, 90, 0.1);
+    addGuiSlider(secTime, 'Sun intensity', 'Radiation strength', 'sunIntensity', 0, 3, 0.01, () => {
+      if (typeof updateSunlight === 'function') updateSunlight();
+    });
+    addSlider(secTime, 'Sun horizontal amplitude', 'East–west travel range', () => skySettings.sunHorizAmplitude,
+      (v) => { skySettings.sunHorizAmplitude = v; }, 0, 0.8, 0.01);
+    addSlider(secTime, 'Sun vertical scale', 'Height above horizon', () => skySettings.sunVertScale,
+      (v) => { skySettings.sunVertScale = v; }, 0, 1.5, 0.01);
+
+    const dayNightChk = document.createElement('label');
+    dayNightChk.className = 'ske-chk';
+    dayNightChk.innerHTML = '<input type="checkbox"> Day / night cycle';
+    dayNightChk.querySelector('input').checked = guiControls.dayNightCycle;
+    dayNightChk.querySelector('input').onchange = (e) => {
+      guiControls.dayNightCycle = e.target.checked;
+    };
+    secTime.appendChild(dayNightChk);
+
+    const realtimeChk = document.createElement('label');
+    realtimeChk.className = 'ske-chk';
+    realtimeChk.innerHTML = '<input type="checkbox"> Realtime (1:1 wall clock)';
+    realtimeChk.querySelector('input').checked = guiControls.realtimeMode;
+    realtimeChk.querySelector('input').onchange = (e) => {
+      guiControls.realtimeMode = e.target.checked;
+      if (guiControls.realtimeMode)
+        enableRealtimeMode();
+      else
+        resetRealtimeClockState();
+    };
+    secTime.appendChild(realtimeChk);
+
+    const accelChk = document.createElement('label');
+    accelChk.className = 'ske-chk';
+    accelChk.innerHTML = '<input type="checkbox"> Accelerate night';
+    accelChk.querySelector('input').checked = guiControls.accelerateNight;
+    accelChk.querySelector('input').onchange = (e) => {
+      guiControls.accelerateNight = e.target.checked;
+    };
+    secTime.appendChild(accelChk);
+
+    const secDay = panel.querySelector('#ske-sec-day');
+    addSlider(secDay, 'Day sky hue', 'HSV hue (0–1)', () => skySettings.dayHue,
+      (v) => { skySettings.dayHue = v; }, 0, 1, 0.01);
+    addSlider(secDay, 'Saturation (horizon)', 'Lower Y = horizon', () => skySettings.daySatLow,
+      (v) => { skySettings.daySatLow = v; }, 0, 1, 0.01);
+    addSlider(secDay, 'Saturation (zenith)', 'Higher Y = top', () => skySettings.daySatHigh,
+      (v) => { skySettings.daySatHigh = v; }, 0, 1, 0.01);
+    addSlider(secDay, 'Brightness (horizon)', 'Value at bottom', () => skySettings.dayValLow,
+      (v) => { skySettings.dayValLow = v; }, 0, 1, 0.01);
+    addSlider(secDay, 'Brightness (zenith)', 'Value at top', () => skySettings.dayValHigh,
+      (v) => { skySettings.dayValHigh = v; }, 0, 1, 0.01);
+    addSlider(secDay, 'Brightness curve power', 'Steepness of gradient', () => skySettings.dayValPow,
+      (v) => { skySettings.dayValPow = v; }, 0.5, 10, 0.1);
+
+    const secTwilight = panel.querySelector('#ske-sec-twilight');
+    addColorPicker(secTwilight, 'Horizon band', 'twilightHorizon');
+    addColorPicker(secTwilight, 'Low sky', 'twilightLow');
+    addColorPicker(secTwilight, 'Mid sky', 'twilightMid');
+    addColorPicker(secTwilight, 'Upper sky', 'twilightUpper');
+    addColorPicker(secTwilight, 'Zenith', 'twilightTop');
+
+    const secHorizon = panel.querySelector('#ske-sec-horizon');
+    addSlider(secHorizon, 'Horizon line Y', 'Normalized screen height', () => skySettings.horizonLine,
+      (v) => { skySettings.horizonLine = v; }, 0, 0.15, 0.001);
+    addColorPicker(secHorizon, 'Deep red', 'horizonDeepRed');
+    addColorPicker(secHorizon, 'Burnt orange', 'horizonBurntOrange');
+    addColorPicker(secHorizon, 'Gold', 'horizonGold');
+    addColorPicker(secHorizon, 'Pale gold', 'horizonPaleGold');
+    addSlider(secHorizon, 'Haze mix strength', '', () => skySettings.hazeMixStrength,
+      (v) => { skySettings.hazeMixStrength = v; }, 0, 1, 0.01);
+    addSlider(secHorizon, 'Haze glow strength', '', () => skySettings.hazeBoostStrength,
+      (v) => { skySettings.hazeBoostStrength = v; }, 0, 1, 0.01);
+
+    const secStars = panel.querySelector('#ske-sec-stars');
+    addGuiSlider(secStars, 'Star visibility', '', 'starVisibility', 0, 1, 0.01, () => commitSkyChange());
+    addGuiSlider(secStars, 'Star light emit', '', 'starLightEmitStrength', 0, 0.5, 0.01, () => commitSkyChange());
+    addGuiSlider(secStars, 'Star density', '', 'starDensity', 0, 1, 0.01, () => commitSkyChange());
+
+    const secEffects = panel.querySelector('#ske-sec-effects');
+    addColorPicker(secEffects, 'Crepuscular ray color', 'crepuscularColor');
+    addSlider(secEffects, 'Crepuscular strength', '', () => skySettings.crepuscularStrength,
+      (v) => { skySettings.crepuscularStrength = v; }, 0, 1, 0.01);
+    addGuiSlider(secEffects, 'Min shadow light', '0 = darkest shadows', 'minShadowLight', 0, 0.2, 0.001, () => {
+      if (!guiControls.autoMinShadowLight) {
+        gl.useProgram(realisticDisplayProgram);
+        gl.uniform1f(uloc_realistic_minShadowLight, guiControls.minShadowLight);
+        commitSkyChange();
+      }
+    });
+    const autoShadowChk = document.createElement('label');
+    autoShadowChk.className = 'ske-chk';
+    autoShadowChk.innerHTML = '<input type="checkbox"> Auto shadow light';
+    autoShadowChk.querySelector('input').checked = guiControls.autoMinShadowLight;
+    autoShadowChk.querySelector('input').onchange = (e) => {
+      guiControls.autoMinShadowLight = e.target.checked;
+    };
+    secEffects.appendChild(autoShadowChk);
+
+    function renderTabs()
+    {
+      tabsEl.innerHTML = '';
+      for (const tab of tabs) {
+        const btn = document.createElement('button');
+        btn.className = 'ske-tab' + (tab.id === activeTab ? ' active' : '');
+        btn.textContent = tab.label;
+        btn.onclick = () => {
+          activeTab = tab.id;
+          renderTabs();
+          for (const t of tabs) {
+            const sec = panel.querySelector('#ske-sec-' + t.id);
+            if (sec) sec.classList.toggle('active', t.id === activeTab);
+          }
+        };
+        tabsEl.appendChild(btn);
+      }
+    }
+
+    refreshSkyEditor = function()
+    {
+      for (const fn of skySyncFns)
+        fn();
+      dayNightChk.querySelector('input').checked = guiControls.dayNightCycle;
+      realtimeChk.querySelector('input').checked = guiControls.realtimeMode;
+      accelChk.querySelector('input').checked = guiControls.accelerateNight;
+      autoShadowChk.querySelector('input').checked = guiControls.autoMinShadowLight;
+      updatePreview();
+    };
+
+    panel.querySelector('#ske-export').onclick = () => {
+      const payload = Object.assign({}, skySettings, {
+        timeOfDay : guiControls.timeOfDay,
+        sunAngle : guiControls.sunAngle,
+        month : guiControls.month,
+        latitude : guiControls.latitude,
+        sunIntensity : guiControls.sunIntensity,
+        dayNightCycle : guiControls.dayNightCycle,
+        realtimeMode : guiControls.realtimeMode,
+        accelerateNight : guiControls.accelerateNight,
+        starVisibility : guiControls.starVisibility,
+        starLightEmitStrength : guiControls.starLightEmitStrength,
+        starDensity : guiControls.starDensity,
+        minShadowLight : guiControls.minShadowLight,
+        autoMinShadowLight : guiControls.autoMinShadowLight,
+      });
+      panel.querySelector('#ske-io').value = JSON.stringify(payload, null, 2);
+    };
+
+    panel.querySelector('#ske-import').onclick = () => {
+      try {
+        const parsed = JSON.parse(panel.querySelector('#ske-io').value);
+        skySettings = Object.assign(cloneSkySettings(SKY_SETTINGS_DEFAULTS), parsed);
+        const guiKeys = [ 'timeOfDay', 'sunAngle', 'month', 'latitude', 'sunIntensity',
+          'dayNightCycle', 'realtimeMode', 'accelerateNight', 'starVisibility',
+          'starLightEmitStrength', 'starDensity', 'minShadowLight', 'autoMinShadowLight' ];
+        for (const k of guiKeys) {
+          if (parsed[k] !== undefined)
+            guiControls[k] = parsed[k];
+        }
+        saveSkySettings();
+        uploadSkyUniforms();
+        if (typeof updateSunlight === 'function') updateSunlight();
+        if (typeof onUpdateTimeOfDaySlider === 'function') onUpdateTimeOfDaySlider();
+        refreshSkyEditor();
+      } catch (e) {
+        alert('Invalid sky settings JSON: ' + e.message);
+      }
+    };
+
+    panel.querySelector('#ske-reset').onclick = () => {
+      if (confirm('Reset all sky settings to defaults?'))
+        resetSkySettingsToDefaults();
+    };
+
+    renderTabs();
+    updatePreview();
+  }
+
   // ========================= End Color Scale System =========================
 
   imgElement = await loadImage('resources/img/ColorScales.png');
@@ -14147,6 +14733,12 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   gl.uniform1i(gl.getUniformLocation(chargeProgram, 'wallTex'),   2);
   gl.uniform1i(gl.getUniformLocation(chargeProgram, 'chargeTex'), 3);
   gl.uniform1f(gl.getUniformLocation(chargeProgram, 'dryLapse'),  dryLapse);
+  uloc_charge_generationRate = gl.getUniformLocation(chargeProgram, 'chargeGenerationRate');
+  uloc_charge_minCloudDensity = gl.getUniformLocation(chargeProgram, 'chargeMinCloudDensity');
+  uloc_charge_stormCoreThreshold = gl.getUniformLocation(chargeProgram, 'chargeStormCoreThreshold');
+  uloc_charge_transportStrength = gl.getUniformLocation(chargeProgram, 'chargeTransportStrength');
+  uloc_charge_dissipationRate = gl.getUniformLocation(chargeProgram, 'chargeDissipationRate');
+  setChargeGenerationUniforms();
   const uloc_charge_ltDischargeCount = gl.getUniformLocation(chargeProgram, 'ltDischargeCount');
   const uloc_charge_ltDischarge      = gl.getUniformLocation(chargeProgram, 'ltDischarge');
   const uloc_charge_ltDischargeMeta  = gl.getUniformLocation(chargeProgram, 'ltDischargeMeta');
@@ -14157,8 +14749,12 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
 
   gl.useProgram(lightningSummaryProgram);
   gl.uniform2f(gl.getUniformLocation(lightningSummaryProgram, 'texelSize'), texelSizeX, texelSizeY);
+  gl.uniform2f(gl.getUniformLocation(lightningSummaryProgram, 'resolution'), sim_res_x, sim_res_y);
+  gl.uniform1f(gl.getUniformLocation(lightningSummaryProgram, 'dryLapse'), dryLapse);
   gl.uniform1i(gl.getUniformLocation(lightningSummaryProgram, 'chargeTex'), 0);
   gl.uniform1i(gl.getUniformLocation(lightningSummaryProgram, 'waterTex'), 1);
+  gl.uniform1i(gl.getUniformLocation(lightningSummaryProgram, 'baseTex'), 2);
+  gl.uniform1i(gl.getUniformLocation(lightningSummaryProgram, 'wallTex'), 3);
 
   gl.useProgram(chargeDisplayProgram);
   gl.uniform2f(gl.getUniformLocation(chargeDisplayProgram, 'resolution'), sim_res_x, sim_res_y);
@@ -14274,18 +14870,11 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   gl.uniform1i(gl.getUniformLocation(realisticDisplayProgram, 'noiseTex'), 4);
   gl.uniform1i(gl.getUniformLocation(realisticDisplayProgram, 'surfaceTextureMap'), 5);
   gl.uniform1i(gl.getUniformLocation(realisticDisplayProgram, 'curlTex'), 6);
-  gl.uniform1i(gl.getUniformLocation(realisticDisplayProgram, 'ambientLightTex'), 7);
+  gl.uniform1i(gl.getUniformLocation(realisticDisplayProgram, 'lightningTex'), 7);
+  gl.uniform1i(gl.getUniformLocation(realisticDisplayProgram, 'lightningDataTex'), 8);
+  gl.uniform1i(gl.getUniformLocation(realisticDisplayProgram, 'ambientLightTex'), 9);
   gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'dryLapse'), dryLapse);
   gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'cellHeight'), cellHeight);
-  const realDisp_enhancedLooks_loc = gl.getUniformLocation(realisticDisplayProgram, 'enhancedLooks');
-  gl.uniform1f(realDisp_enhancedLooks_loc, 0.0);
-  const realDisp_enableCloudLightning_loc = gl.getUniformLocation(realisticDisplayProgram, 'enableCloudLightning');
-  gl.uniform1f(realDisp_enableCloudLightning_loc, 0.0);
-  const realDisp_cloudLightningIntensity_loc = gl.getUniformLocation(realisticDisplayProgram, 'cloudLightningIntensity');
-  gl.uniform1f(realDisp_cloudLightningIntensity_loc, 2.0);
-  const realDisp_cloudLightningThreshold_loc = gl.getUniformLocation(realisticDisplayProgram, 'cloudLightningThreshold');
-  gl.uniform1f(realDisp_cloudLightningThreshold_loc, 0.5);
-  const realDisp_iterNum_loc = gl.getUniformLocation(realisticDisplayProgram, 'iterNum');
 
   gl.useProgram(lightningLocationProgram);
   gl.uniform1i(gl.getUniformLocation(lightningLocationProgram, 'precipFeedbackTex'), 0);
@@ -14309,9 +14898,6 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   gl.useProgram(postProcessingProgram);
   gl.uniform1i(gl.getUniformLocation(postProcessingProgram, 'hdrTex'), 0);
   gl.uniform1i(gl.getUniformLocation(postProcessingProgram, 'bloomTex'), 1);
-  const postProc_exposure_loc   = gl.getUniformLocation(postProcessingProgram, 'exposure');
-  const postProc_saturation_loc = gl.getUniformLocation(postProcessingProgram, 'saturation');
-  const postProc_contrast_loc   = gl.getUniformLocation(postProcessingProgram, 'contrast');
 
 
   gl.useProgram(isolateBrightPartsProgram);
@@ -14323,6 +14909,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
 
   buildColorScaleEditor();
   buildKeybindEditor();
+  buildSkyEditor();
 
   gl.bindVertexArray(fluidVao);
 
@@ -14375,6 +14962,30 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   const uloc_sky_timeOfDay             = gl.getUniformLocation(skyBackgroundDisplayProgram, 'timeOfDay');
   const uloc_sky_month                 = gl.getUniformLocation(skyBackgroundDisplayProgram, 'month');
   const uloc_sky_starDensity           = gl.getUniformLocation(skyBackgroundDisplayProgram, 'starDensity');
+  const uloc_sky_starVisibility        = gl.getUniformLocation(skyBackgroundDisplayProgram, 'starVisibility');
+  const uloc_sky_starLightEmitStrength = gl.getUniformLocation(skyBackgroundDisplayProgram, 'starLightEmitStrength');
+  const uloc_sky_horizonLine           = gl.getUniformLocation(skyBackgroundDisplayProgram, 'skyHorizonLine');
+  const uloc_sky_dayHue                = gl.getUniformLocation(skyBackgroundDisplayProgram, 'skyDayHue');
+  const uloc_sky_daySatLow             = gl.getUniformLocation(skyBackgroundDisplayProgram, 'skyDaySatLow');
+  const uloc_sky_daySatHigh            = gl.getUniformLocation(skyBackgroundDisplayProgram, 'skyDaySatHigh');
+  const uloc_sky_dayValLow             = gl.getUniformLocation(skyBackgroundDisplayProgram, 'skyDayValLow');
+  const uloc_sky_dayValHigh            = gl.getUniformLocation(skyBackgroundDisplayProgram, 'skyDayValHigh');
+  const uloc_sky_dayValPow             = gl.getUniformLocation(skyBackgroundDisplayProgram, 'skyDayValPow');
+  const uloc_sky_twilightTop           = gl.getUniformLocation(skyBackgroundDisplayProgram, 'skyTwilightTop');
+  const uloc_sky_twilightUpper         = gl.getUniformLocation(skyBackgroundDisplayProgram, 'skyTwilightUpper');
+  const uloc_sky_twilightMid           = gl.getUniformLocation(skyBackgroundDisplayProgram, 'skyTwilightMid');
+  const uloc_sky_twilightLow           = gl.getUniformLocation(skyBackgroundDisplayProgram, 'skyTwilightLow');
+  const uloc_sky_twilightHorizon       = gl.getUniformLocation(skyBackgroundDisplayProgram, 'skyTwilightHorizon');
+  const uloc_sky_horizonDeepRed        = gl.getUniformLocation(skyBackgroundDisplayProgram, 'skyHorizonDeepRed');
+  const uloc_sky_horizonBurntOrange    = gl.getUniformLocation(skyBackgroundDisplayProgram, 'skyHorizonBurntOrange');
+  const uloc_sky_horizonGold           = gl.getUniformLocation(skyBackgroundDisplayProgram, 'skyHorizonGold');
+  const uloc_sky_horizonPaleGold       = gl.getUniformLocation(skyBackgroundDisplayProgram, 'skyHorizonPaleGold');
+  const uloc_sky_crepuscularColor      = gl.getUniformLocation(skyBackgroundDisplayProgram, 'skyCrepuscularColor');
+  const uloc_sky_crepuscularStrength   = gl.getUniformLocation(skyBackgroundDisplayProgram, 'skyCrepuscularStrength');
+  const uloc_sky_sunHorizAmplitude     = gl.getUniformLocation(skyBackgroundDisplayProgram, 'skySunHorizAmplitude');
+  const uloc_sky_sunVertScale          = gl.getUniformLocation(skyBackgroundDisplayProgram, 'skySunVertScale');
+  const uloc_sky_hazeMixStrength       = gl.getUniformLocation(skyBackgroundDisplayProgram, 'skyHazeMixStrength');
+  const uloc_sky_hazeBoostStrength     = gl.getUniformLocation(skyBackgroundDisplayProgram, 'skyHazeBoostStrength');
 
   // per-frame lighting
   const uloc_lighting_IR_rate          = gl.getUniformLocation(lightingProgram,             'IR_rate');
@@ -14409,34 +15020,33 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   const uloc_real_cursor               = gl.getUniformLocation(realisticDisplayProgram, 'cursor');
   const uloc_real_Xmult                = gl.getUniformLocation(realisticDisplayProgram, 'Xmult');
   const uloc_real_iterNum              = gl.getUniformLocation(realisticDisplayProgram, 'iterNum');
-  const uloc_real_greenHueStart        = gl.getUniformLocation(realisticDisplayProgram, 'greenHueStartThreshold');
-  const uloc_real_greenHueEnd          = gl.getUniformLocation(realisticDisplayProgram, 'greenHueEndThreshold');
-  const uloc_real_greenHueStrength     = gl.getUniformLocation(realisticDisplayProgram, 'greenHueStrength');
   const uloc_real_displayVectorField   = gl.getUniformLocation(realisticDisplayProgram, 'displayVectorField');
-  const uloc_real_enableCloudLightning = gl.getUniformLocation(realisticDisplayProgram, 'enableCloudLightning');
-  const uloc_real_cloudLightningIntensity = gl.getUniformLocation(realisticDisplayProgram, 'cloudLightningIntensity');
-  const uloc_real_cloudLightningThreshold = gl.getUniformLocation(realisticDisplayProgram, 'cloudLightningThreshold');
-  const uloc_real_cloudLightningFrequency = gl.getUniformLocation(realisticDisplayProgram, 'cloudLightningFrequency');
-  const uloc_real_enableCloudGroundLightning = gl.getUniformLocation(realisticDisplayProgram, 'enableCloudGroundLightning');
-  const uloc_real_cloudGroundLightningIntensity = gl.getUniformLocation(realisticDisplayProgram, 'cloudGroundLightningIntensity');
-  const uloc_real_cloudGroundLightningThreshold = gl.getUniformLocation(realisticDisplayProgram, 'cloudGroundLightningThreshold');
-  const uloc_real_cloudGroundLightningFrequency = gl.getUniformLocation(realisticDisplayProgram, 'cloudGroundLightningFrequency');
-  const uloc_real_enableStrobeLightning = gl.getUniformLocation(realisticDisplayProgram, 'enableStrobeLightning');
-  const uloc_real_strobeLightningIntensity = gl.getUniformLocation(realisticDisplayProgram, 'strobeLightningIntensity');
-  const uloc_real_strobeLightningThreshold = gl.getUniformLocation(realisticDisplayProgram, 'strobeLightningThreshold');
-  const uloc_real_strobeLightningFrequency = gl.getUniformLocation(realisticDisplayProgram, 'strobeLightningFrequency');
-  const uloc_real_enableCloudFlash = gl.getUniformLocation(realisticDisplayProgram, 'enableCloudFlash');
-  const uloc_real_cloudFlashIntensity = gl.getUniformLocation(realisticDisplayProgram, 'cloudFlashIntensity');
-  const uloc_real_cloudFlashThreshold = gl.getUniformLocation(realisticDisplayProgram, 'cloudFlashThreshold');
-  const uloc_real_cloudFlashFrequency = gl.getUniformLocation(realisticDisplayProgram, 'cloudFlashFrequency');
-  const uloc_real_lightningBoltWidth = gl.getUniformLocation(realisticDisplayProgram, 'lightningBoltWidth');
-  const uloc_real_lightningRepeat       = gl.getUniformLocation(realisticDisplayProgram, 'lightningRepeat');
-  const uloc_real_lightningCrossTrigger = gl.getUniformLocation(realisticDisplayProgram, 'lightningCrossTrigger');
-  const uloc_real_invertSun             = gl.getUniformLocation(realisticDisplayProgram, 'invertSun');
-  const uloc_real_ltEventAge            = gl.getUniformLocation(realisticDisplayProgram, 'ltEventAge');
-  const uloc_real_ltNumStrikes          = gl.getUniformLocation(realisticDisplayProgram, 'ltNumStrikes');
-  const uloc_real_ltStrikePos           = gl.getUniformLocation(realisticDisplayProgram, 'ltStrikePos');
-  const uloc_real_ltStrikeMeta          = gl.getUniformLocation(realisticDisplayProgram, 'ltStrikeMeta');
+  const uloc_real_ltEventAge           = gl.getUniformLocation(realisticDisplayProgram, 'ltEventAge');
+  const uloc_real_ltNumStrikes         = gl.getUniformLocation(realisticDisplayProgram, 'ltNumStrikes');
+  const uloc_real_ltStrikePos          = gl.getUniformLocation(realisticDisplayProgram, 'ltStrikePos[0]');
+  const uloc_real_ltStrikeDest         = gl.getUniformLocation(realisticDisplayProgram, 'ltStrikeDest[0]');
+  const uloc_real_ltStrikeMeta         = gl.getUniformLocation(realisticDisplayProgram, 'ltStrikeMeta[0]');
+  const uloc_real_ltBrightness         = gl.getUniformLocation(realisticDisplayProgram, 'ltBrightness');
+  const uloc_real_ltContrast           = gl.getUniformLocation(realisticDisplayProgram, 'ltContrast');
+  const uloc_real_ltChannelThickness   = gl.getUniformLocation(realisticDisplayProgram, 'ltChannelThickness');
+  const uloc_real_ltBranchDensity      = gl.getUniformLocation(realisticDisplayProgram, 'ltBranchDensity');
+  const uloc_real_ltBranchLength       = gl.getUniformLocation(realisticDisplayProgram, 'ltBranchLength');
+  const uloc_real_ltFlashDuration      = gl.getUniformLocation(realisticDisplayProgram, 'ltFlashDuration');
+  const uloc_real_ltGlowDuration       = gl.getUniformLocation(realisticDisplayProgram, 'ltGlowDuration');
+  const uloc_real_ltGlowStrength       = gl.getUniformLocation(realisticDisplayProgram, 'ltGlowStrength');
+  const uloc_real_ltAtmosIllum         = gl.getUniformLocation(realisticDisplayProgram, 'ltAtmosIllum');
+  const uloc_real_ltCloudIllum         = gl.getUniformLocation(realisticDisplayProgram, 'ltCloudIllum');
+  const uloc_real_ltRainIllum          = gl.getUniformLocation(realisticDisplayProgram, 'ltRainIllum');
+  const uloc_real_ltTerrainIllum       = gl.getUniformLocation(realisticDisplayProgram, 'ltTerrainIllum');
+  const uloc_real_ltNightFlash         = gl.getUniformLocation(realisticDisplayProgram, 'ltNightFlash');
+  const uloc_real_ltDayFlash           = gl.getUniformLocation(realisticDisplayProgram, 'ltDayFlash');
+  const uloc_real_ltLODLevel           = gl.getUniformLocation(realisticDisplayProgram, 'ltLODLevel');
+  const uloc_real_ltEnableAtmos        = gl.getUniformLocation(realisticDisplayProgram, 'ltEnableAtmos');
+  const uloc_real_ltEnableCloudIllum   = gl.getUniformLocation(realisticDisplayProgram, 'ltEnableCloudIllum');
+  const uloc_real_ltEnableRainIllum    = gl.getUniformLocation(realisticDisplayProgram, 'ltEnableRainIllum');
+  const uloc_real_ltEnableTerrainIllum = gl.getUniformLocation(realisticDisplayProgram, 'ltEnableTerrainIllum');
+  const uloc_real_ltEnableChannelGlow  = gl.getUniformLocation(realisticDisplayProgram, 'ltEnableChannelGlow');
+  const uloc_real_ltEnableVolumetric   = gl.getUniformLocation(realisticDisplayProgram, 'ltEnableVolumetric');
 
   // precipDisplay per-frame
   const uloc_precipDisp_aspectRatios   = gl.getUniformLocation(precipDisplayProgram, 'aspectRatios');
@@ -14575,6 +15185,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   const uloc_tempChg_colorScalesTex    = gl.getUniformLocation(temperatureChangeDisplayProgram, 'colorScalesTex');
   const uloc_tempChg_colorScaleColumn  = gl.getUniformLocation(temperatureChangeDisplayProgram, 'colorScaleColumn');
   ulocsReady = true; // all uniform locations cached, updateSunlight can now use them
+  uploadSkyUniforms();
 
 
   for (i = 0; i < weatherStations.length; i++) { // initial measurement at weather stations
@@ -14894,10 +15505,46 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     return ((a % b) + b) % b;
   }
 
+  function isForcedLightningActive()
+  {
+    return proceduralLightningState.channelId === 'forced'
+      && proceduralLightningState.eventAge >= 0
+      && proceduralLightningState.eventAge < getLightningFlashDuration();
+  }
+
   function isProceduralLightningEnabled()
   {
+    if (isForcedLightningActive() || forcedLightningQueue.length > 0)
+      return true;
+    if (guiControls.lightningV2Enabled === false)
+      return false;
+    if (typeof LightningV2 !== 'undefined') {
+      return LightningV2.getChannels(guiControls, 0.5).length > 0
+        || guiControls.enableCloudLightning || guiControls.enableCloudGroundLightning
+        || guiControls.enableStrobeLightning || guiControls.enableCloudFlash;
+    }
     return guiControls.enableCloudLightning || guiControls.enableCloudGroundLightning
       || guiControls.enableStrobeLightning || guiControls.enableCloudFlash;
+  }
+
+  function getLightningFlashDuration()
+  {
+    return Math.max(6, Math.round(11 * (guiControls.flashDuration || 1.0)));
+  }
+
+  function estimateStormActivity()
+  {
+    if (!lightningFieldCache) return 0.4;
+    let sum = 0;
+    const step = Math.max(1, Math.floor(lightningFieldCache.cacheW / 8));
+    for (let y = 0; y < lightningFieldCache.cacheH; y += step) {
+      for (let x = 0; x < lightningFieldCache.cacheW; x += step) {
+        const i = (y * lightningFieldCache.cacheW + x) * 4;
+        sum += Math.abs(lightningFieldCache.data[i]) + lightningFieldCache.data[i + 2] * 0.5;
+      }
+    }
+    const cells = Math.ceil(lightningFieldCache.cacheW / step) * Math.ceil(lightningFieldCache.cacheH / step);
+    return clamp(sum / Math.max(cells, 1) * 2.5, 0.1, 1.0);
   }
 
   function updateDropletSizeTexture()
@@ -14945,6 +15592,10 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     gl.bindTexture(gl.TEXTURE_2D, even ? chargeTexture_0 : chargeTexture_1);
     gl.activeTexture(gl.TEXTURE1);
     gl.bindTexture(gl.TEXTURE_2D, waterTexture_0);
+    gl.activeTexture(gl.TEXTURE2);
+    gl.bindTexture(gl.TEXTURE_2D, baseTexture_0);
+    gl.activeTexture(gl.TEXTURE3);
+    gl.bindTexture(gl.TEXTURE_2D, wallTexture_0);
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
 
     gl.readPixels(0, 0, lightningCacheW, lightningCacheH, gl.RGBA, gl.FLOAT, lightningSummaryBuffer);
@@ -14975,6 +15626,44 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     const px = Math.max(0, Math.min(lightningFieldCache.cacheW - 1, Math.floor(simX / lightningFieldCache.scale)));
     const py = Math.max(0, Math.min(lightningFieldCache.cacheH - 1, Math.floor(simY / lightningFieldCache.scale)));
     return lightningFieldCache.data[(py * lightningFieldCache.cacheW + px) * 4 + 1];
+  }
+
+  function readPotentialCached(simX, simY)
+  {
+    if (!lightningFieldCache) return 0;
+    const px = Math.max(0, Math.min(lightningFieldCache.cacheW - 1, Math.floor(simX / lightningFieldCache.scale)));
+    const py = Math.max(0, Math.min(lightningFieldCache.cacheH - 1, Math.floor(simY / lightningFieldCache.scale)));
+    return lightningFieldCache.data[(py * lightningFieldCache.cacheW + px) * 4 + 2];
+  }
+
+  function readConductivityCached(simX, simY)
+  {
+    if (!lightningFieldCache) return 0;
+    const px = Math.max(0, Math.min(lightningFieldCache.cacheW - 1, Math.floor(simX / lightningFieldCache.scale)));
+    const py = Math.max(0, Math.min(lightningFieldCache.cacheH - 1, Math.floor(simY / lightningFieldCache.scale)));
+    return lightningFieldCache.data[(py * lightningFieldCache.cacheW + px) * 4 + 3];
+  }
+
+  function readSurfaceChargeCached(simX, simY)
+  {
+    if (!lightningFieldCache) return 0;
+    const px = Math.max(0, Math.min(lightningFieldCache.cacheW - 1, Math.floor(simX / lightningFieldCache.scale)));
+    const py = Math.max(0, Math.min(lightningFieldCache.cacheH - 1, Math.floor(simY / lightningFieldCache.scale)));
+    return lightningFieldCache.data[(py * lightningFieldCache.cacheW + px) * 4];
+  }
+
+  function getStormElectricalProfile()
+  {
+    refreshLightningFieldCache();
+    if (lightningStormProfileFrame === frameNum && lightningStormProfile)
+      return lightningStormProfile;
+    lightningStormProfileFrame = frameNum;
+    if (typeof LightningV2 !== 'undefined' && lightningFieldCache)
+      lightningStormProfile = LightningV2.analyzeStormElectricalProfile(
+        lightningFieldCache, sim_res_x, sim_res_y);
+    else
+      lightningStormProfile = null;
+    return lightningStormProfile;
   }
 
   function chargeThresholdForType(ltType)
@@ -15015,45 +15704,21 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
 
   function getLightningChannels()
   {
+    const stormActivity = estimateStormActivity();
+    const profile = getStormElectricalProfile();
+    if (typeof LightningV2 !== 'undefined')
+      return LightningV2.getChannels(guiControls, stormActivity, profile);
     return [
-      {
-        id: 'cc',
-        salt: 911,
-        typeMin: 1,
-        typeMax: 2,
-        enabled: () => guiControls.enableCloudLightning,
-        freq: () => guiControls.cloudLightningFrequency
-      },
-      {
-        id: 'flash',
-        salt: 1511,
-        typeMin: 3,
-        typeMax: 3,
-        enabled: () => guiControls.enableCloudFlash,
-        freq: () => guiControls.cloudFlashFrequency
-      },
-      {
-        id: 'strobe',
-        salt: 1913,
-        typeMin: 4,
-        typeMax: 4,
-        enabled: () => guiControls.enableStrobeLightning,
-        freq: () => guiControls.strobeLightningFrequency
-      },
-      {
-        id: 'cg',
-        salt: 2917,
-        typeMin: 5,
-        typeMax: 6,
-        enabled: () => guiControls.enableCloudGroundLightning,
-        freq: () => guiControls.cloudGroundLightningFrequency
-      }
+      { id: 'cc', salt: 911, freq: () => guiControls.cloudLightningFrequency },
+      { id: 'flash', salt: 1511, freq: () => guiControls.cloudFlashFrequency },
+      { id: 'strobe', salt: 1913, freq: () => guiControls.strobeLightningFrequency },
+      { id: 'cg', salt: 2917, freq: () => guiControls.cloudGroundLightningFrequency },
     ];
   }
 
   function getActiveLightningChannels()
   {
-    return getLightningChannels().filter(ch => ch.enabled() && ch.freq() > 0);
+    return getLightningChannels().filter(ch => ch.freq() > 0);
   }
 
   function findActiveLightningEventJS(frameIter)
@@ -15073,7 +15738,10 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
 
       const hits = [];
       for (const ch of channels) {
-        const strikeChance = lightningStrikeChance(ch.freq());
+        const burstMult = lightningBurstState.phase === 'burst' ? lightningBurstState.burstIntensity : 0.15;
+        const strikeChance = typeof LightningV2 !== 'undefined'
+          ? LightningV2.strikeChance(ch.freq(), burstMult, guiControls.lightningClusteringStrength)
+          : lightningStrikeChance(ch.freq());
         if (strikeChance <= 0)
           continue;
         if (shaderRand(startIter * 1.37 + ch.salt) >= strikeChance)
@@ -15094,34 +15762,35 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   {
     for (let s = 0; s < 3; s++) {
       const pick = pickLightningOriginCached(eventId, s, 3);
-      const cloudGate = cloudGateFromDensity(readCloudCached(pick.originX, pick.originY));
-      const originMag = Math.abs(readChargeCached(pick.originX, pick.originY));
-      const cloudTh = channelCloudThreshold(channel);
-      if (cloudGate < cloudTh * 0.30)
+      const potential = pick.potential || readPotentialCached(pick.originX, pick.originY);
+      const originMag = Math.max(Math.abs(pick.chargeVal || readChargeCached(pick.originX, pick.originY)), potential * 0.45);
+      if (pick.cloudGate < 0.10 && potential < 0.12)
         continue;
-      if (originMag >= channelChargeThreshold(channel))
+      if (originMag >= 0.12 || potential >= 0.22)
         return true;
     }
     return false;
   }
 
-  function assignLtTypeForChannel(channel, chargeVal, eventId, slot)
+  function assignLtTypeForChannel(channel, origin, eventId, slot)
   {
-    const chargeMag = Math.abs(chargeVal);
-    const chargeNeg = Math.max(-chargeVal, 0);
-    const r = shaderRand(eventId * 3.17 + channel.salt + slot * 41.0);
-    if (channel.id === 'cc')
-      return r > 0.42 ? 2 : 1;
-    if (channel.id === 'flash')
-      return 3;
-    if (channel.id === 'strobe')
-      return 4;
-    if (channel.id === 'cg') {
-      if (chargeMag >= 0.38 || chargeNeg >= 0.22)
-        return r > 0.38 ? 6 : 5;
-      return 5;
+    if (typeof LightningV2 !== 'undefined') {
+      const surfaceCond = readConductivityCached(origin.originX, sim_res_y * 0.03);
+      const surfaceCloud = readCloudCached(origin.originX, sim_res_y * 0.05);
+      const isDry = surfaceCond < 0.22 && surfaceCloud < 0.08 && origin.originY > sim_res_y * 0.22;
+      return LightningV2.selectTypeForChannel(
+        channel.id,
+        { charge: origin.chargeVal, potential: origin.potential || 0 },
+        eventId, slot, guiControls, isDry);
     }
-    return selectLightningTypeJS(chargeVal, 1.0);
+    const chargeVal = origin.chargeVal;
+    const chargeMag = Math.abs(chargeVal);
+    const r = shaderRand(eventId * 3.17 + channel.salt + slot * 41.0);
+    if (channel.id === 'cc') return r > 0.42 ? 2 : 1;
+    if (channel.id === 'flash') return 3;
+    if (channel.id === 'strobe') return 4;
+    if (channel.id === 'cg') return chargeMag >= 0.38 && r > 0.38 ? 6 : 5;
+    return 3;
   }
 
   function readCloudAtSimPixel(simX, simY)
@@ -15168,76 +15837,40 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     return 500 + h1 * 5500 + h2 * 5500 + h3 * 3500 + strikeSlot * 317;
   }
 
-  function pickLightningOriginCached(eventId, strikeSlot, numStrikeSlots)
+  function pickLightningOriginCached(eventId, strikeSlot, numStrikeSlots, channelId)
   {
-    let bestScore = -1;
-    let bestO = { x: sim_res_x * 0.5, y: sim_res_y * 0.35 };
-    let bestCloud = 0;
-    let bestCharge = 0;
-    const slots = Math.max(numStrikeSlots, 1);
-
-    for (let c = 0; c < 6; c++) {
-      const cs = c * 503 + strikeSlot * 131;
-      const xSlot = (strikeSlot + shaderRand(eventId * 1.37 + cs + 1) * 0.80) / slots;
-      const ox = (xSlot * 0.72 + shaderRand(eventId * 2.11 + cs + 10) * 0.20 + 0.04) * sim_res_x;
-      const probeY = (shaderRand(eventId * 3.07 + cs + 20) * 0.78 + 0.10) * sim_res_y;
-
-      let bestLocalScore = -1;
-      let bestLocalO = { x: ox, y: probeY };
-      let bestLocalCloud = 0;
-      let bestLocalCharge = 0;
-
-      for (let v = 0; v < 3; v++) {
-        const vy = Math.max(sim_res_y * 0.06,
-          Math.min(sim_res_y * 0.94, probeY + (v - 1) * sim_res_y * 0.055));
-        const cloud = readCloudCached(ox, vy);
-        const charge = readChargeCached(ox, vy);
-        const cg = cloudGateFromDensity(cloud);
-        const localScore = Math.abs(charge) * cg * (0.45 + cloud * 0.35);
-        if (localScore > bestLocalScore) {
-          bestLocalScore = localScore;
-          bestLocalO = { x: ox, y: vy };
-          bestLocalCloud = cloud;
-          bestLocalCharge = charge;
-        }
-      }
-
-      const score = bestLocalScore * (0.65 + shaderRand(eventId * 5.03 + cs + 30) * 0.70);
-      if (score > bestScore) {
-        bestScore = score;
-        bestO = bestLocalO;
-        bestCloud = bestLocalCloud;
-        bestCharge = bestLocalCharge;
-      }
+    if (typeof LightningV2 !== 'undefined' && lightningFieldCache) {
+      const pick = LightningV2.pickOriginFromPotential(
+        lightningFieldCache, eventId, strikeSlot, numStrikeSlots, sim_res_x, sim_res_y, channelId);
+      return {
+        originX: pick.x,
+        originY: pick.y,
+        cloudGate: LightningV2.cloudGate(pick.cloud),
+        chargeVal: pick.charge,
+        potential: pick.potential,
+      };
     }
     return {
-      originX: bestO.x,
-      originY: bestO.y,
-      cloudGate: cloudGateFromDensity(bestCloud),
-      chargeVal: bestCharge
+      originX: sim_res_x * 0.5,
+      originY: sim_res_y * 0.35,
+      cloudGate: 0.5,
+      chargeVal: 0.3,
+      potential: 0.3,
     };
   }
 
-  function evaluateProceduralStrikeCached(originX, originY, channel, eventId, slot)
+  function evaluateProceduralStrikeCached(pick, channel, eventId, slot)
   {
-    const cloudGate = cloudGateFromDensity(readCloudCached(originX, originY));
-    const chargeVal = readChargeCached(originX, originY);
-    const originMag = Math.abs(chargeVal);
-    const cloudTh = channelCloudThreshold(channel);
-    if (cloudGate < cloudTh * 0.30)
+    const originMag = Math.abs(pick.chargeVal);
+    const potential = pick.potential || readPotentialCached(pick.originX, pick.originY);
+    if (pick.cloudGate < 0.12 && potential < 0.15)
       return null;
-    if (originMag < channelChargeThreshold(channel))
+    if (originMag < 0.08 && potential < 0.2)
       return null;
-    const ltType = assignLtTypeForChannel(channel, chargeVal, eventId, slot);
-    if (ltType >= 1 && ltType <= 2 && !guiControls.enableCloudLightning)
+    const ltType = assignLtTypeForChannel(channel, pick, eventId, slot);
+    if (!ltType)
       return null;
-    if (ltType === 3 && !guiControls.enableCloudFlash)
-      return null;
-    if (ltType === 4 && !guiControls.enableStrobeLightning)
-      return null;
-    if (ltType >= 5 && !guiControls.enableCloudGroundLightning)
-      return null;
-    return { ltType, chargeVal, originMag, cloudGate };
+    return { ltType, chargeVal: pick.chargeVal, originMag: Math.max(originMag, potential * 0.5), cloudGate: pick.cloudGate };
   }
 
   function computeCloudFlashSize(originMag, eventId, slot)
@@ -15249,7 +15882,9 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
 
   function dischargeMultiplierForType(ltType)
   {
-    if (ltType >= 5)
+    if (ltType === 11)
+      return guiControls.cloudLightningDischarge * 0.65;
+    if (ltType >= 5 && ltType <= 10)
       return guiControls.cloudGroundLightningDischarge;
     if (ltType === 4)
       return guiControls.strobeLightningDischarge;
@@ -15261,7 +15896,9 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   function dischargeAmountForStrike(ltType, originMag, flashSize = 1)
   {
     let amount = originMag * 0.68 + 0.10;
-    if (ltType >= 5)
+    if (ltType === 11)
+      amount *= 0.55;
+    else if (ltType >= 5 && ltType <= 10)
       amount *= 1.20;
     else if (ltType === 3)
       amount *= 0.50 + flashSize * 0.72;
@@ -15275,9 +15912,15 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
 
   function dischargeRadiusForStrike(ltType, flashSize = 1)
   {
-    if (ltType >= 5)
+    if (ltType === 11)
+      return 8 + flashSize * 6;
+    if (ltType === 6)
+      return 24;
+    if (ltType >= 5 && ltType <= 10)
       return 18;
-    if (ltType === 3)
+    if (ltType >= 7 && ltType <= 8)
+      return 20;
+    if (ltType === 3 || ltType === 1)
       return 5 + flashSize * 22;
     if (ltType === 4)
       return 11;
@@ -15321,47 +15964,264 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     gl.uniform4fv(uloc_charge_ltDischargeMeta, metaArr);
   }
 
+  function channelIdForLtType(ltType)
+  {
+    if (ltType === 7) return 'spider';
+    if (ltType === 8) return 'anvil';
+    if (ltType === 5 || ltType === 6) return 'cg';
+    if (ltType === 4) return 'strobe';
+    if (ltType === 3) return 'sheet';
+    if (ltType === 2) return 'cc';
+    if (ltType === 9) return 'upward';
+    if (ltType === 10) return 'bftb';
+    return 'intracloud';
+  }
+
+  function getViewCenterLightningPick(ltType)
+  {
+    const normX = screenToSimX(canvas.width * 0.5);
+    const normY = screenToSimY(canvas.height * 0.5);
+    let originY = clamp(normY, 0.12, 0.82);
+    if (ltType === 7 || ltType === 8) originY = clamp(normY + 0.18, 0.42, 0.88);
+    else if (ltType >= 5 && ltType <= 6) originY = clamp(normY + 0.08, 0.22, 0.72);
+    return {
+      originX: clamp(Math.floor(normX * sim_res_x), 0, sim_res_x - 1),
+      originY: clamp(Math.floor(originY * sim_res_y), 0, sim_res_y - 1),
+      cloudGate: 0.65,
+      chargeVal: ltType === 6 ? 0.52 : -0.42,
+      potential: 0.55,
+    };
+  }
+
+  function getForcedLightningPick(ltType, eventId)
+  {
+    refreshLightningFieldCache();
+    const channelId = channelIdForLtType(ltType);
+    if (typeof LightningV2 !== 'undefined' && lightningFieldCache) {
+      const pick = LightningV2.pickOriginFromPotential(
+        lightningFieldCache, eventId, 0, 1, sim_res_x, sim_res_y, channelId);
+      if (pick.potential > 0.06 || pick.cloud > 0.08) {
+        return {
+          originX: pick.x,
+          originY: pick.y,
+          cloudGate: LightningV2.cloudGate(pick.cloud),
+          chargeVal: pick.charge || (ltType === 6 ? 0.48 : -0.38),
+          potential: pick.potential,
+        };
+      }
+    }
+    return getViewCenterLightningPick(ltType);
+  }
+
+  function buildStrikeFromPick(pick, ltType, eventId, slot)
+  {
+    const originMag = Math.max(
+      Math.abs(pick.chargeVal || 0),
+      (pick.potential || readPotentialCached(pick.originX, pick.originY)) * 0.5,
+      0.35);
+    const seed = lightningStrikeSeedJS(eventId, slot, pick.originX, pick.originY);
+    let flashSize = ltType === 3 || ltType === 1
+      ? computeCloudFlashSize(originMag, eventId, slot) : 1.0;
+    const numReturnStrokes = typeof LightningV2 !== 'undefined'
+      ? LightningV2.numReturnStrokesForType(ltType, originMag, seed, guiControls) : 1;
+    const brightness = typeof LightningV2 !== 'undefined'
+      ? LightningV2.brightnessForType(ltType, originMag, guiControls) : originMag;
+    const illumRadius = typeof LightningV2 !== 'undefined'
+      ? LightningV2.illuminationRadiusForType(ltType, guiControls) : 1.0;
+    let groundStrike = typeof LightningV2 !== 'undefined'
+      ? LightningV2.isGroundStrike(ltType) : ltType >= 5 && ltType <= 6;
+    let destX = pick.originX;
+    let destY = pick.originY;
+    let routePoints = null;
+    const profile = getStormElectricalProfile();
+
+    if (typeof LightningV2 !== 'undefined' && LightningV2.isDryLightningType(ltType)) {
+      const dry = LightningV2.placementForDryStrike(pick, sim_res_x, sim_res_y, seed);
+      destX = dry.destX;
+      destY = dry.destY;
+      flashSize = dry.flashSize;
+      groundStrike = false;
+    } else if (groundStrike && typeof LightningV2 !== 'undefined') {
+      const dest = LightningV2.pickGroundTarget(
+        lightningFieldCache,
+        { x: pick.originX, y: pick.originY, chargeVal: pick.chargeVal },
+        eventId, slot, sim_res_x, sim_res_y, guiControls);
+      destX = dest.x;
+      destY = dest.y;
+    } else if (typeof LightningV2 !== 'undefined' && (ltType === 7 || ltType === 8)) {
+      const placement = LightningV2.placementForSpiderAnvil(
+        pick, profile, sim_res_x, sim_res_y, seed, ltType);
+      destX = placement.destX;
+      destY = placement.destY;
+      flashSize = Math.max(flashSize, placement.flashSize || flashSize);
+      routePoints = [{ x: pick.originX, y: pick.originY }];
+      let cx = pick.originX;
+      let cy = pick.originY;
+      const dx = destX - pick.originX;
+      const dy = destY - pick.originY;
+      const horizSteps = ltType === 7 ? 16 : 13;
+      for (let step = 0; step < horizSteps; step++) {
+        const t = (step + 1) / horizSteps;
+        const targetX = pick.originX + dx * t;
+        const targetY = pick.originY + dy * t;
+        let best = { x: targetX, y: targetY, score: -1 };
+        for (let a = 0; a < 9; a++) {
+          const theta = Math.atan2(dy, dx) + (a - 4) * 0.22;
+          const nx = clamp(cx + Math.cos(theta) * sim_res_x * 0.045, 0, sim_res_x - 1);
+          const ny = clamp(cy + Math.sin(theta) * sim_res_y * 0.02, sim_res_y * 0.1, sim_res_y * 0.92);
+          const cloud = readCloudCached(nx, ny);
+          const pot = readPotentialCached(nx, ny);
+          const toward = 1.0 - clamp(Math.hypot(nx - targetX, ny - targetY) / (sim_res_x * 0.08), 0, 1);
+          const score = cloud * 1.6 + pot * 0.7 + toward * 0.5;
+          if (score > best.score) best = { x: nx, y: ny, score };
+        }
+        if (best.score < 0.05) break;
+        cx = best.x;
+        cy = best.y;
+        routePoints.push({ x: cx, y: cy });
+      }
+      const end = routePoints[routePoints.length - 1];
+      destX = end.x;
+      destY = end.y;
+    } else if (typeof LightningV2 !== 'undefined' && (ltType === 1 || ltType === 2) && lightningFieldCache) {
+      routePoints = [{ x: pick.originX, y: pick.originY }];
+      let cx = pick.originX;
+      let cy = pick.originY;
+      const baseAngle = shaderRand(eventId * 2.37 + slot * 53) * Math.PI * 2;
+      for (let step = 0; step < 14; step++) {
+        let best = { x: cx, y: cy, score: -1 };
+        for (let a = 0; a < 9; a++) {
+          const theta = baseAngle + (a - 4) * 0.34 + step * 0.05;
+          const nx = clamp(cx + Math.cos(theta) * sim_res_x * 0.042, 0, sim_res_x - 1);
+          const ny = clamp(cy + Math.sin(theta) * sim_res_y * 0.032, sim_res_y * 0.08, sim_res_y * 0.9);
+          const cloud = readCloudCached(nx, ny);
+          if (cloud < 0.06) continue;
+          const pot = readPotentialCached(nx, ny);
+          const chg = Math.abs(readChargeCached(nx, ny));
+          const grad = readConductivityCached(nx, ny);
+          const score = cloud * 1.4 + pot * 0.9 + chg * 0.35 + grad * 0.25;
+          if (score > best.score) best = { x: nx, y: ny, score };
+        }
+        if (best.score < 0) break;
+        cx = best.x;
+        cy = best.y;
+        routePoints.push({ x: cx, y: cy });
+      }
+      const end = routePoints[routePoints.length - 1];
+      destX = end.x;
+      destY = end.y;
+    } else if (ltType === 9) {
+      destY = clamp(pick.originY + sim_res_y * 0.22, 0, sim_res_y - 1);
+    } else if (ltType === 10) {
+      destX = clamp(pick.originX + (shaderRand(seed + 11) - 0.5) * sim_res_x * 0.28, 0, sim_res_x - 1);
+      destY = clamp(pick.originY - sim_res_y * 0.38, sim_res_y * 0.08, sim_res_y - 1);
+    }
+
+    const texIndex = typeof LightningV2 !== 'undefined'
+      ? LightningV2.boltTextureIndexForType(ltType, seed) : 0;
+    return {
+      originX: pick.originX,
+      originY: pick.originY,
+      destX, destY,
+      ltType,
+      chargeVal: pick.chargeVal,
+      seed,
+      originMag,
+      cloudGate: pick.cloudGate || 0.5,
+      numReturnStrokes,
+      numFlashes: numReturnStrokes,
+      flashSize,
+      brightness,
+      illumRadius,
+      groundStrike,
+      texIndex,
+      eventRecordId: ++lightningEventIdCounter,
+      routePoints,
+    };
+  }
+
+  function activateForcedLightningStrike(strike)
+  {
+    const eventId = iterNum;
+    const forcedChannel = { id: 'forced', salt: 0, freq: () => 1 };
+    proceduralLightningState.trackedEventId = eventId;
+    proceduralLightningState.trackedChannel = forcedChannel;
+    proceduralLightningState.eventId = eventId;
+    proceduralLightningState.eventAge = 0;
+    proceduralLightningState.builtEventId = eventId;
+    proceduralLightningState.channelId = 'forced';
+    proceduralLightningState.strikes = [strike];
+
+    queueChargeDischargeForStrike(strike);
+    const eventKey = 'lt-forced-' + eventId + '-t' + strike.ltType;
+    if (guiControls.radarLightningIcons)
+      registerRadarLightningStrike(eventKey, strike.groundStrike ? strike.destX : strike.originX,
+        strike.groundStrike ? strike.destY : strike.originY);
+    if (guiControls.enableThunder !== false)
+      playThunderForStrike(eventKey, (strike.groundStrike ? strike.destX : strike.originX) / sim_res_x,
+        (strike.groundStrike ? strike.destY : strike.originY) / sim_res_y,
+        thunderIntensityForType(strike.ltType, strike.originMag));
+    if (typeof LightningV2 !== 'undefined') {
+      const rec = LightningV2.createEventRecord(strike, eventId, iterNum);
+      lightningEventLog.push(rec);
+      const maxEv = guiControls.maxActiveLightningEvents || 24;
+      if (lightningEventLog.length > maxEv)
+        lightningEventLog.splice(0, lightningEventLog.length - maxEv);
+    }
+  }
+
+  function forceSpawnLightningType(ltType)
+  {
+    if (typeof LightningV2 === 'undefined')
+      return;
+    const eventId = iterNum + ltType * 131;
+    const pick = getForcedLightningPick(ltType, eventId);
+    const strike = buildStrikeFromPick(pick, ltType, eventId, 0);
+    activateForcedLightningStrike(strike);
+  }
+
+  function forceSpawnAllLightningTypes()
+  {
+    if (typeof LightningV2 === 'undefined')
+      return;
+    forcedLightningQueue = LightningV2.SPAWNABLE_LT_TYPES.slice();
+  }
+
+  function processForcedLightningQueue()
+  {
+    if (forcedLightningQueue.length === 0)
+      return;
+    const flashActive = proceduralLightningState.eventAge >= 0
+      && proceduralLightningState.eventAge < getLightningFlashDuration() - 1;
+    if (flashActive)
+      return;
+    forceSpawnLightningType(forcedLightningQueue.shift());
+  }
+
   function buildProceduralStrikesForEvent(eventId, channel)
   {
     const freq = channel.freq();
-    const numStrikes = 1 + Math.floor(shaderRand(eventId * 29 + 401 + channel.salt)
-      * Math.min(Math.max(freq + 0.35, 1), 3));
+    const maxBolts = guiControls.maxActiveBolts || 8;
+    let numStrikes = 1 + Math.floor(shaderRand(eventId * 29 + 401 + channel.salt)
+      * Math.min(Math.max(freq * 0.04 + 0.5, 1), 4));
+    if (lightningBurstState.phase === 'burst')
+      numStrikes = Math.min(maxBolts, numStrikes + Math.floor(lightningBurstState.burstIntensity * 2));
+    numStrikes = Math.min(numStrikes, maxBolts);
     const strikes = [];
     for (let s = 0; s < numStrikes; s++) {
-      const pick = pickLightningOriginCached(eventId, s, numStrikes);
-      const strike = evaluateProceduralStrikeCached(pick.originX, pick.originY, channel, eventId, s);
+      const pick = pickLightningOriginCached(eventId, s, numStrikes, channel.id);
+      const strike = evaluateProceduralStrikeCached(pick, channel, eventId, s);
       if (!strike)
         continue;
-      if (strike.originMag < chargeThresholdForType(strike.ltType))
-        continue;
-      let flashSize = 1.0;
-      if (strike.ltType === 3) {
-        flashSize = computeCloudFlashSize(strike.originMag, eventId, s);
-        const minCharge = chargeThresholdForType(3) + flashSize * 0.09;
-        if (strike.originMag < minCharge)
-          continue;
-      }
-      const seed = lightningStrikeSeedJS(eventId, s, pick.originX, pick.originY);
-      let numFlashes = 1;
-      if (guiControls.lightningRepeat && strike.originMag > 0.55 && shaderRand(seed + 888) > 0.88)
-        numFlashes = 2;
-      strikes.push({
-        originX: pick.originX,
-        originY: pick.originY,
-        ltType: strike.ltType,
-        chargeVal: strike.chargeVal,
-        seed,
-        originMag: strike.originMag,
-        cloudGate: strike.cloudGate,
-        numFlashes,
-        flashSize
-      });
+      strikes.push(buildStrikeFromPick(pick, strike.ltType, eventId, s));
     }
     return strikes;
   }
 
   function updateProceduralLightningState()
   {
+    if (isForcedLightningActive())
+      return;
     if (!isProceduralLightningEnabled()) {
       proceduralLightningState.eventAge = -1;
       proceduralLightningState.strikes = [];
@@ -15375,7 +16235,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     // Fast path: skip expensive lookback while an active flash is playing out
     if (proceduralLightningState.trackedEventId >= 0 && proceduralLightningState.trackedChannel) {
       const age = iterNum - proceduralLightningState.trackedEventId;
-      if (age >= 0 && age < LIGHTNING_FLASH_DURATION) {
+      if (age >= 0 && age < getLightningFlashDuration()) {
         proceduralLightningState.eventAge = age;
         proceduralLightningState.eventId = proceduralLightningState.trackedEventId;
         proceduralLightningState.channelId = proceduralLightningState.trackedChannel.id;
@@ -15410,9 +16270,19 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
           queueChargeDischargeForStrike(st);
           const eventKey = 'lt-' + active.eventId + '-s' + s;
           if (guiControls.radarLightningIcons)
-            registerRadarLightningStrike(eventKey, st.originX, st.originY);
-          playThunderForStrike(eventKey, st.originX / sim_res_x, st.originY / sim_res_y,
-            thunderIntensityForType(st.ltType, st.originMag));
+            registerRadarLightningStrike(eventKey, st.groundStrike ? st.destX : st.originX,
+              st.groundStrike ? st.destY : st.originY);
+          if (guiControls.enableThunder !== false)
+            playThunderForStrike(eventKey, (st.groundStrike ? st.destX : st.originX) / sim_res_x,
+              (st.groundStrike ? st.destY : st.originY) / sim_res_y,
+              thunderIntensityForType(st.ltType, st.originMag));
+          if (typeof LightningV2 !== 'undefined') {
+            const rec = LightningV2.createEventRecord(st, active.eventId, iterNum);
+            lightningEventLog.push(rec);
+            const maxEv = guiControls.maxActiveLightningEvents || 24;
+            if (lightningEventLog.length > maxEv)
+              lightningEventLog.splice(0, lightningEventLog.length - maxEv);
+          }
         }
       }
     }
@@ -15420,43 +16290,82 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
 
   function uploadProceduralLightningUniforms()
   {
+    if (!lightningV2InRealisticShader || !uloc_real_ltNumStrikes)
+      return;
     const st = proceduralLightningState;
+    const maxShader = typeof LightningV2 !== 'undefined' ? LightningV2.MAX_SHADER_STRIKES : 8;
+    const count = Math.min(st.strikes.length, maxShader);
     gl.uniform1f(uloc_real_ltEventAge, st.eventAge >= 0 ? st.eventAge : -1);
-    gl.uniform1i(uloc_real_ltNumStrikes, st.strikes.length);
+    gl.uniform1i(uloc_real_ltNumStrikes, count);
 
-    const posArr = procLightningPosArr;
-    const metaArr = procLightningMetaArr;
-    posArr.fill(0);
-    metaArr.fill(0);
-    for (let i = 0; i < 4; i++) {
-      if (i < st.strikes.length) {
-        const s = st.strikes[i];
-        posArr[i * 4] = s.originX;
-        posArr[i * 4 + 1] = s.originY;
-        posArr[i * 4 + 2] = s.ltType;
-        posArr[i * 4 + 3] = s.seed;
-        metaArr[i * 4] = s.originMag;
-        metaArr[i * 4 + 1] = s.cloudGate;
-        metaArr[i * 4 + 2] = s.numFlashes;
-        metaArr[i * 4 + 3] = s.flashSize || 0;
-      }
+    procLightningPosArr.fill(0);
+    procLightningDestArr.fill(0);
+    procLightningMetaArr.fill(0);
+    for (let i = 0; i < count; i++) {
+      const s = st.strikes[i];
+      procLightningPosArr[i * 4] = s.originX / sim_res_x;
+      procLightningPosArr[i * 4 + 1] = s.originY / sim_res_y;
+      procLightningPosArr[i * 4 + 2] = s.ltType;
+      procLightningPosArr[i * 4 + 3] = s.seed;
+      procLightningDestArr[i * 4] = s.destX / sim_res_x;
+      procLightningDestArr[i * 4 + 1] = s.destY / sim_res_y;
+      procLightningDestArr[i * 4 + 2] = s.originMag;
+      procLightningDestArr[i * 4 + 3] = s.numReturnStrokes || s.numFlashes || 1;
+      procLightningMetaArr[i * 4] = s.flashSize || 1;
+      procLightningMetaArr[i * 4 + 1] = s.illumRadius || 1;
+      procLightningMetaArr[i * 4 + 2] = s.groundStrike ? 1 : 0;
+      procLightningMetaArr[i * 4 + 3] = s.brightness || s.originMag;
     }
-    gl.uniform4fv(uloc_real_ltStrikePos, posArr);
-    gl.uniform4fv(uloc_real_ltStrikeMeta, metaArr);
+    gl.uniform4fv(uloc_real_ltStrikePos, procLightningPosArr);
+    gl.uniform4fv(uloc_real_ltStrikeDest, procLightningDestArr);
+    gl.uniform4fv(uloc_real_ltStrikeMeta, procLightningMetaArr);
+
+    const zoomNorm = clamp(cam.curZoom / sim_res_x / (guiControls.lightningLODDistance || 1), 0, 1);
+    const lod = guiControls.dynamicLOD ? clamp(zoomNorm * 2.5, 0, 1) : 1.0;
+    gl.uniform1f(uloc_real_ltBrightness, guiControls.lightningBrightness || 1);
+    gl.uniform1f(uloc_real_ltContrast, guiControls.lightningContrast || 1);
+    gl.uniform1f(uloc_real_ltChannelThickness, guiControls.channelThickness || 1);
+    gl.uniform1f(uloc_real_ltBranchDensity, guiControls.branchDensity || 1);
+    gl.uniform1f(uloc_real_ltBranchLength, guiControls.branchLength || 1);
+    gl.uniform1f(uloc_real_ltFlashDuration, guiControls.flashDuration || 1);
+    gl.uniform1f(uloc_real_ltGlowDuration, guiControls.channelGlowDuration || 1);
+    gl.uniform1f(uloc_real_ltGlowStrength, guiControls.glowStrength || 1);
+    gl.uniform1f(uloc_real_ltAtmosIllum, guiControls.atmosphericIlluminationStrength || 1);
+    gl.uniform1f(uloc_real_ltCloudIllum, guiControls.cloudIlluminationStrength || 1);
+    gl.uniform1f(uloc_real_ltRainIllum, guiControls.rainShaftIlluminationStrength || 1);
+    gl.uniform1f(uloc_real_ltTerrainIllum, guiControls.terrainIlluminationStrength || 1);
+    gl.uniform1f(uloc_real_ltNightFlash, guiControls.nighttimeFlashStrength || 1);
+    gl.uniform1f(uloc_real_ltDayFlash, guiControls.daytimeFlashStrength || 0.45);
+    gl.uniform1f(uloc_real_ltLODLevel, lod * (guiControls.gpuEffectQuality || 1));
+    gl.uniform1i(uloc_real_ltEnableAtmos, guiControls.ltEnableAtmosphericLighting !== false ? 1 : 0);
+    gl.uniform1i(uloc_real_ltEnableCloudIllum, guiControls.ltEnableCloudIllumination !== false ? 1 : 0);
+    gl.uniform1i(uloc_real_ltEnableRainIllum, guiControls.ltEnableRainShaftIllumination !== false ? 1 : 0);
+    gl.uniform1i(uloc_real_ltEnableTerrainIllum, guiControls.ltEnableTerrainIllumination !== false ? 1 : 0);
+    gl.uniform1i(uloc_real_ltEnableChannelGlow, guiControls.ltEnablePersistentChannelGlow !== false ? 1 : 0);
+    gl.uniform1i(uloc_real_ltEnableVolumetric, guiControls.ltEnableVolumetricCloudFlashing !== false ? 1 : 0);
   }
 
   function thunderIntensityForType(ltType, originMag)
   {
-    if (ltType >= 5) return 0.65 + originMag * 0.45;
-    if (ltType === 4) return 0.32 + originMag * 0.25;
-    if (ltType === 3) return 0.16 + originMag * 0.12;
-    if (ltType === 2) return 0.42 + originMag * 0.28;
-    return 0.32 + originMag * 0.20;
+    const mag = Number.isFinite(originMag) ? clamp(originMag, 0.0, 1.5) : 0.3;
+    let intensity;
+    if (ltType >= 6) intensity = 0.85 + mag * 0.55;
+    else if (ltType >= 5) intensity = 0.65 + mag * 0.45;
+    else if (ltType === 4) intensity = 0.32 + mag * 0.25;
+    else if (ltType === 3 || ltType === 1) intensity = 0.16 + mag * 0.12;
+    else if (ltType === 2) intensity = 0.42 + mag * 0.28;
+    else if (ltType >= 7 && ltType <= 8) intensity = 0.55 + mag * 0.35;
+    else if (ltType === 11) intensity = 0.12 + mag * 0.08;
+    else intensity = 0.32 + mag * 0.20;
+    const thunderVol = guiControls.thunderVolume ?? 1.0;
+    const bass = guiControls.thunderBassStrength ?? 1.0;
+    return clamp(intensity * thunderVol * bass * 0.85, 0.0, 2.0);
   }
 
   function playThunderForStrike(eventKey, normX, normY, intensity)
   {
-    if (!guiControls.soundThunderEnabled || !soundSystem || registeredThunderEvents.has(eventKey))
+    if (guiControls.enableThunder === false || !guiControls.soundThunderEnabled
+        || !soundSystem || registeredThunderEvents.has(eventKey))
       return;
     registeredThunderEvents.add(eventKey);
     if (registeredThunderEvents.size > 500)
@@ -15532,6 +16441,168 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     ctx.restore();
   }
 
+  function isLightningDebugActive()
+  {
+    return guiControls.debugShowChargeField || guiControls.debugShowChargeGradient
+      || guiControls.debugShowLightningPotential || guiControls.debugShowConductivityMap
+      || guiControls.debugShowStrikeOrigins || guiControls.debugShowStrikeDestinations
+      || guiControls.debugShowLightningTypeLabels || guiControls.debugShowElectricalBurstRegions
+      || guiControls.debugShowActiveLightningEvents || guiControls.debugShowThunderRadius
+      || guiControls.debugShowPerformanceMetrics || guiControls.debugShowSurfaceCharge
+      || guiControls.debugShowChargeOrganization || guiControls.debugShowSpiderRoutes
+      || guiControls.debugShowAnvilRoutes || guiControls.debugShowCloudPaths
+      || guiControls.debugShowLightningProbability;
+  }
+
+  function drawLightningFieldHeatmap(ctx, channelIndex, colorFn, alpha)
+  {
+    if (!lightningFieldCache) return;
+    refreshLightningFieldCache();
+    const cache = lightningFieldCache;
+    for (let py = 0; py < cache.cacheH; py++) {
+      for (let px = 0; px < cache.cacheW; px++) {
+        const val = cache.data[(py * cache.cacheW + px) * 4 + channelIndex];
+        if (val < 0.02) continue;
+        const simX = (px + 0.5) * cache.scale;
+        const simY = (py + 0.5) * cache.scale;
+        const sx = simToScreenX(simX);
+        const sy = simToScreenY(simY);
+        const size = Math.max(2, cache.scale * cam.curZoom * 0.85);
+        ctx.fillStyle = colorFn(val, py * cache.scale < sim_res_y * 0.04);
+        ctx.globalAlpha = alpha * clamp(val, 0, 1);
+        ctx.fillRect(sx - size * 0.5, sy - size * 0.5, size, size);
+      }
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  function drawLightningDebugOverlay()
+  {
+    if (!isLightningDebugActive()) {
+      if (lightningDebugCanvas)
+        lightningDebugCanvas.style.display = 'none';
+      return;
+    }
+
+    if (!lightningDebugCanvas) {
+      lightningDebugCanvas = document.createElement('canvas');
+      lightningDebugCanvas.style.cssText = 'position:fixed;top:0;left:0;pointer-events:none;z-index:3;';
+      document.body.appendChild(lightningDebugCanvas);
+    }
+    if (lightningDebugCanvas.width !== canvas.width || lightningDebugCanvas.height !== canvas.height) {
+      lightningDebugCanvas.width = canvas.width;
+      lightningDebugCanvas.height = canvas.height;
+    }
+    lightningDebugCanvas.style.display = 'block';
+    const ctx = lightningDebugCanvas.getContext('2d');
+    ctx.clearRect(0, 0, lightningDebugCanvas.width, lightningDebugCanvas.height);
+    refreshLightningFieldCache();
+
+    if (guiControls.debugShowChargeField)
+      drawLightningFieldHeatmap(ctx, 0, (v) => v > 0 ? 'rgb(80,140,255)' : 'rgb(255,90,70)', 0.45);
+    if (guiControls.debugShowLightningPotential)
+      drawLightningFieldHeatmap(ctx, 2, (v) => 'rgb(120,80,255)', 0.5);
+    if (guiControls.debugShowChargeGradient)
+      drawLightningFieldHeatmap(ctx, 3, (v) => 'rgb(180,220,255)', 0.4);
+    if (guiControls.debugShowConductivityMap)
+      drawLightningFieldHeatmap(ctx, 3, (v, isGround) => isGround ? 'rgb(40,200,90)' : 'rgb(60,120,80)', 0.55);
+    if (guiControls.debugShowSurfaceCharge)
+      drawLightningFieldHeatmap(ctx, 0, (v, isGround) => isGround
+        ? (v > 0 ? 'rgb(255,200,80)' : 'rgb(80,160,255)') : 'rgba(0,0,0,0)', 0.65);
+    if (guiControls.debugShowChargeOrganization)
+      drawLightningFieldHeatmap(ctx, 2, (v) => 'rgb(200,120,255)', 0.35);
+    if (guiControls.debugShowLightningProbability)
+      drawLightningFieldHeatmap(ctx, 2, (v) => 'rgb(255,180,60)', 0.42);
+
+    const profile = getStormElectricalProfile();
+    if (profile && (guiControls.debugShowChargeOrganization || guiControls.debugShowActiveLightningEvents)) {
+      ctx.fillStyle = 'rgba(0,0,0,0.45)';
+      ctx.fillRect(8, 8, 180, 18);
+      ctx.fillStyle = '#cef';
+      ctx.font = '11px monospace';
+      ctx.fillText('Storm: ' + profile.type + '  act=' + profile.stormActivity.toFixed(2), 14, 20);
+    }
+
+    if (guiControls.debugShowStrikeOrigins || guiControls.debugShowStrikeDestinations
+        || guiControls.debugShowSpiderRoutes || guiControls.debugShowAnvilRoutes
+        || guiControls.debugShowCloudPaths) {
+      const strikes = proceduralLightningState.strikes || [];
+      for (const st of strikes) {
+        if (guiControls.debugShowStrikeOrigins) {
+          const sx = simToScreenX(st.originX);
+          const sy = simToScreenY(st.originY);
+          ctx.beginPath();
+          ctx.arc(sx, sy, 6, 0, Math.PI * 2);
+          ctx.fillStyle = 'rgba(100, 180, 255, 0.85)';
+          ctx.fill();
+        }
+        const showRoute = (st.ltType === 7 && guiControls.debugShowSpiderRoutes)
+          || (st.ltType === 8 && guiControls.debugShowAnvilRoutes)
+          || ((st.ltType === 1 || st.ltType === 2) && guiControls.debugShowCloudPaths);
+        if (showRoute && st.routePoints && st.routePoints.length > 1) {
+          ctx.strokeStyle = st.ltType === 7 ? 'rgba(180, 120, 255, 0.75)'
+            : st.ltType === 8 ? 'rgba(140, 200, 255, 0.7)' : 'rgba(100, 220, 255, 0.55)';
+          ctx.lineWidth = st.ltType === 7 ? 2 : 1.5;
+          ctx.beginPath();
+          ctx.moveTo(simToScreenX(st.routePoints[0].x), simToScreenY(st.routePoints[0].y));
+          for (let ri = 1; ri < st.routePoints.length; ri++)
+            ctx.lineTo(simToScreenX(st.routePoints[ri].x), simToScreenY(st.routePoints[ri].y));
+          ctx.stroke();
+        }
+        if (guiControls.debugShowStrikeDestinations && (st.groundStrike || showRoute)) {
+          const dx = simToScreenX(st.destX);
+          const dy = simToScreenY(st.destY);
+          ctx.beginPath();
+          ctx.arc(dx, dy, 5, 0, Math.PI * 2);
+          ctx.fillStyle = st.groundStrike ? 'rgba(255, 220, 80, 0.9)' : 'rgba(160, 220, 255, 0.85)';
+          ctx.fill();
+          if (!showRoute) {
+            const ox = simToScreenX(st.originX);
+            const oy = simToScreenY(st.originY);
+            ctx.strokeStyle = 'rgba(255, 255, 120, 0.4)';
+            ctx.beginPath();
+            ctx.moveTo(ox, oy);
+            ctx.lineTo(dx, dy);
+            ctx.stroke();
+          }
+        }
+        if (guiControls.debugShowLightningTypeLabels && typeof LightningV2 !== 'undefined') {
+          const label = LightningV2.LT_NAMES[st.ltType] || ('Type ' + st.ltType);
+          ctx.fillStyle = '#fff';
+          ctx.font = '11px sans-serif';
+          ctx.fillText(label, simToScreenX(st.originX) + 8, simToScreenY(st.originY) - 8);
+        }
+      }
+    }
+
+    if (guiControls.debugShowElectricalBurstRegions && lightningBurstState.phase === 'burst') {
+      ctx.fillStyle = 'rgba(180, 100, 255, 0.12)';
+      ctx.fillRect(0, 0, lightningDebugCanvas.width, lightningDebugCanvas.height);
+      ctx.fillStyle = '#e8c8ff';
+      ctx.font = '12px sans-serif';
+      ctx.fillText('Electrical burst active', 12, 22);
+    }
+
+    if (guiControls.debugShowActiveLightningEvents) {
+      ctx.fillStyle = 'rgba(0,0,0,0.55)';
+      ctx.fillRect(8, lightningDebugCanvas.height - 80, 220, 72);
+      ctx.fillStyle = '#aef';
+      ctx.font = '11px monospace';
+      ctx.fillText('Active events: ' + lightningEventLog.length, 14, lightningDebugCanvas.height - 62);
+      const last = lightningEventLog[lightningEventLog.length - 1];
+      if (last && typeof LightningV2 !== 'undefined')
+        ctx.fillText((LightningV2.LT_NAMES[last.ltType] || 'Strike') + ' @ ' + Math.floor(last.time), 14, lightningDebugCanvas.height - 46);
+      ctx.fillText('Burst: ' + lightningBurstState.phase, 14, lightningDebugCanvas.height - 30);
+    }
+
+    if (guiControls.debugShowPerformanceMetrics) {
+      ctx.fillStyle = '#8f8';
+      ctx.font = '11px monospace';
+      ctx.fillText('Bolts: ' + (proceduralLightningState.strikes?.length || 0)
+        + '  LOD: ' + (guiControls.dynamicLOD ? 'on' : 'off'), 12, 40);
+    }
+  }
+
   function drawRadarLightningOverlay()
   {
     if (!shouldShowRadarLightningOverlay() || !guiControls.radarLightningIcons) {
@@ -15578,10 +16649,45 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     return Math.max(0.1, guiControls.simulationQuality);
   }
 
+  function resetRealtimeClockState()
+  {
+    realtimeLastWallClockMs = 0;
+    realtimeIterAccumulator = 0;
+  }
+
+  function enableRealtimeMode()
+  {
+    simDateTime = new Date();
+    guiControls.timeOfDay = simDateTime.getHours() + simDateTime.getMinutes() / 60. + simDateTime.getSeconds() / 3600.;
+    guiControls.month = simDateTime.getMonth() + 1 + simDateTime.getDate() / 30.5 + simDateTime.getHours() / 720.;
+    updateSunlight();
+    resetRealtimeClockState();
+    realtimeLastWallClockMs = performance.now();
+  }
+
+  function getRealtimeIterationsThisFrame()
+  {
+    const now = performance.now();
+    if (realtimeLastWallClockMs <= 0) {
+      realtimeLastWallClockMs = now;
+      return 0;
+    }
+
+    const deltaMs = now - realtimeLastWallClockMs;
+    realtimeLastWallClockMs = now;
+    if (deltaMs <= 0)
+      return 0;
+
+    realtimeIterAccumulator += Math.min(deltaMs, REALTIME_MAX_CATCHUP_MS) * REALTIME_ITERS_PER_MS;
+    const iters = Math.floor(realtimeIterAccumulator);
+    realtimeIterAccumulator -= iters;
+    return iters;
+  }
+
   function getMaxSimIterationAttempts()
   {
     const sliderTarget = getSliderTargetIterations();
-    if (guiControls.auto_IterPerFrame && !airplaneMode && !guiControls.slowMotion)
+    if (guiControls.auto_IterPerFrame && !airplaneMode && !guiControls.slowMotion && !guiControls.realtimeMode)
       return Math.max(1, Math.min(adaptiveSimIters, sliderTarget));
     return sliderTarget;
   }
@@ -15591,11 +16697,17 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     if (!isProceduralLightningEnabled())
       return;
 
+    if (typeof LightningV2 !== 'undefined' && iterationIndex === 0)
+      LightningV2.updateBurstState(lightningBurstState, iterNum, guiControls, estimateStormActivity());
+
     chargeDischargesThisIter.length = 0;
+
+    if (typeof LightningV2 !== 'undefined' && iterationIndex === 0)
+      processForcedLightningQueue();
 
     if (proceduralLightningState.trackedEventId >= 0 && proceduralLightningState.trackedChannel) {
       const age = iterNum - proceduralLightningState.trackedEventId;
-      if (age >= 0 && age < LIGHTNING_FLASH_DURATION) {
+      if (age >= 0 && age < getLightningFlashDuration()) {
         proceduralLightningState.eventAge = age;
         proceduralLightningState.eventId = proceduralLightningState.trackedEventId;
         proceduralLightningState.channelId = proceduralLightningState.trackedChannel.id;
@@ -15750,19 +16862,11 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
 
       if (!guiControls.paused) { // Simulation part
 
-        let nightAccelerationActive = !airplaneMode && !guiControls.slowMotion && guiControls.dayNightCycle && guiControls.accelerateNight && guiControls.sunAngle < 0.;
+        let nightAccelerationActive = !airplaneMode && !guiControls.slowMotion && !guiControls.realtimeMode
+          && guiControls.dayNightCycle && guiControls.accelerateNight && guiControls.sunAngle < 0.;
 
-        if (guiControls.dayNightCycle) {
-          if (guiControls.realtimeMode) {
-            // Sync to real wall-clock time — advance simDateTime to match now
-            const now = new Date();
-            const realDeltaHours = (now - simDateTime) / 3600000; // ms → hours
-            if (Math.abs(realDeltaHours) > 0.0001) {
-              updateSunlight(realDeltaHours);
-            }
-          } else if (airplaneMode || guiControls.slowMotion) {
-            updateSunlight(1.0 / 3600.0 / 60);                                                                    // increase solar time at real speed: 1/60 seconds per frame
-          }
+        if (guiControls.dayNightCycle && (airplaneMode || guiControls.slowMotion)) {
+          updateSunlight(1.0 / 3600.0 / 60); // increase solar time at real speed: 1/60 seconds per frame
         }
 
         gl.useProgram(lightingProgram);
@@ -15774,10 +16878,15 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         lastFrameSimIterations = 0;
 
         if (!airplaneMode || airplane.hasCrashed() || frameNum % 17 == 0) { // update every 17 frames because 60 * 0.288 secs per iteration = 17.28
-          let maxAttempts = getMaxSimIterationAttempts();
-          if (airplaneMode || guiControls.slowMotion)
-            maxAttempts = 1;
-          else if (unpauseFrameGuard > 0) {
+          let maxAttempts;
+          if (guiControls.realtimeMode)
+            maxAttempts = getRealtimeIterationsThisFrame();
+          else {
+            maxAttempts = getMaxSimIterationAttempts();
+            if (airplaneMode || guiControls.slowMotion)
+              maxAttempts = 1;
+          }
+          if (!guiControls.realtimeMode && unpauseFrameGuard > 0) {
             maxAttempts = Math.min(maxAttempts, UNPAUSE_MAX_ITERS_PER_FRAME);
             unpauseFrameGuard--;
           }
@@ -16016,8 +17125,11 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
           }
         }
 
-        if (guiControls.dayNightCycle && !guiControls.realtimeMode && !airplaneMode && !guiControls.slowMotion) {
-          updateSunlight(timePerIteration * lastFrameSimIterations * (nightAccelerationActive ? 10.0 : 1.0));
+        if (guiControls.dayNightCycle && !airplaneMode && !guiControls.slowMotion && lastFrameSimIterations > 0) {
+          if (guiControls.realtimeMode)
+            updateSunlight(timePerIteration * lastFrameSimIterations);
+          else
+            updateSunlight(timePerIteration * lastFrameSimIterations * (nightAccelerationActive ? 10.0 : 1.0));
         }
 
         if (airplaneMode) {
@@ -16052,11 +17164,11 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
 
     gl.useProgram(postProcessingProgram);
 
-    if (cursorType != 0 && !sunIsUp) {
-      // working at night
-      gl.uniform1f(postProc_exposure_loc, 2.0);
-    } else {
-      gl.uniform1f(postProc_exposure_loc, guiControls.exposure);
+    if (postProc_exposure_loc !== null) {
+      if (cursorType != 0 && !sunIsUp)
+        gl.uniform1f(postProc_exposure_loc, 2.0);
+      else
+        gl.uniform1f(postProc_exposure_loc, guiControls.exposure);
     }
 
     // Follow droplet
@@ -16207,8 +17319,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       gl.uniform3f(uloc_sky_view, cam.curXpos, cam.curYpos, cam.curZoom);
       gl.uniform1f(uloc_sky_Xmult, horizontalDisplayMult);
       gl.uniform1f(uloc_sky_iterNum, iterNum);
-      gl.uniform1f(uloc_sky_timeOfDay, guiControls.timeOfDay);
-      gl.uniform1f(uloc_sky_month, guiControls.month);
+      uploadSkyUniforms();
 
       gl.drawBuffers([ gl.COLOR_ATTACHMENT0 ]);
 
@@ -16225,9 +17336,6 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       gl.uniform4f(uloc_real_cursor, mouseXinSim, mouseYinSim, guiControls.brushSize * 0.5, cursorType);
       gl.uniform1f(uloc_real_Xmult, horizontalDisplayMult);
       gl.uniform1f(uloc_real_iterNum, iterNum);
-      gl.uniform1f(uloc_real_greenHueStart, guiControls.greenHueStartThreshold);
-      gl.uniform1f(uloc_real_greenHueEnd, guiControls.greenHueEndThreshold);
-      gl.uniform1f(uloc_real_greenHueStrength, guiControls.greenHueStrength);
 
       // Don't display vectors when zoomed out because you would just see noise
       if (cam.curZoom / sim_res_x > 0.003) {
@@ -16236,34 +17344,17 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         gl.uniform1f(uloc_real_displayVectorField, 0.0);
       }
 
-      // Cloud-CC Lightning uniforms
-      gl.uniform1f(uloc_real_enableCloudLightning, guiControls.enableCloudLightning ? 1.0 : 0.0);
-      gl.uniform1f(uloc_real_cloudLightningIntensity, guiControls.cloudLightningIntensity);
-      gl.uniform1f(uloc_real_cloudLightningThreshold, guiControls.cloudLightningThreshold);
-      gl.uniform1f(uloc_real_cloudLightningFrequency, guiControls.cloudLightningFrequency);
-      // Cloud-Ground Lightning uniforms
-      gl.uniform1f(uloc_real_enableCloudGroundLightning, guiControls.enableCloudGroundLightning ? 1.0 : 0.0);
-      gl.uniform1f(uloc_real_cloudGroundLightningIntensity, guiControls.cloudGroundLightningIntensity);
-      gl.uniform1f(uloc_real_cloudGroundLightningThreshold, guiControls.cloudGroundLightningThreshold);
-      gl.uniform1f(uloc_real_cloudGroundLightningFrequency, guiControls.cloudGroundLightningFrequency);
-      gl.uniform1f(uloc_real_enableStrobeLightning, guiControls.enableStrobeLightning ? 1.0 : 0.0);
-      gl.uniform1f(uloc_real_strobeLightningIntensity, guiControls.strobeLightningIntensity);
-      gl.uniform1f(uloc_real_strobeLightningThreshold, guiControls.strobeLightningThreshold);
-      gl.uniform1f(uloc_real_strobeLightningFrequency, guiControls.strobeLightningFrequency);
-      gl.uniform1f(uloc_real_enableCloudFlash, guiControls.enableCloudFlash ? 1.0 : 0.0);
-      gl.uniform1f(uloc_real_cloudFlashIntensity, guiControls.cloudFlashIntensity);
-      gl.uniform1f(uloc_real_cloudFlashThreshold, guiControls.cloudFlashThreshold);
-      gl.uniform1f(uloc_real_cloudFlashFrequency, guiControls.cloudFlashFrequency);
-      gl.uniform1f(uloc_real_lightningBoltWidth, guiControls.lightningBoltWidth);
-      gl.uniform1i(uloc_real_lightningRepeat,       guiControls.lightningRepeat       ? 1 : 0);
-      gl.uniform1i(uloc_real_lightningCrossTrigger, guiControls.lightningCrossTrigger ? 1 : 0);
-      gl.uniform1i(uloc_real_invertSun,             guiControls.invertSun             ? 1 : 0);
-      uploadProceduralLightningUniforms();
-      gl.uniform1f(uloc_real_iterNum, iterNum);
-
+      let lightningTexNum = Math.floor(iterNum / 400) % numLightningTextures;
+      if (proceduralLightningState.strikes.length > 0 && proceduralLightningState.strikes[0].texIndex != null)
+        lightningTexNum = proceduralLightningState.strikes[0].texIndex % numLightningTextures;
       gl.activeTexture(gl.TEXTURE7);
+      gl.bindTexture(gl.TEXTURE_2D, lightningTextures[lightningTexNum]);
+      gl.activeTexture(gl.TEXTURE8);
+      gl.bindTexture(gl.TEXTURE_2D, lightningDataTexture);
+      gl.activeTexture(gl.TEXTURE9);
       gl.bindTexture(gl.TEXTURE_2D, ambientLightFBOs[0].texture);
 
+      uploadProceduralLightningUniforms();
       gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4); // draw to hdr framebuffer
 
       gl.disable(gl.BLEND);
@@ -16343,7 +17434,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
 
-      if (SETUP_MODE) {
+      if (SETUP_MODE && postProc_exposure_loc !== null) {
         gl.uniform1f(postProc_exposure_loc, 50.0);
       }
 
@@ -17188,6 +18279,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     radarOverlayCanvas.style.display = 'none';
   }
 
+  drawLightningDebugOverlay();
   drawRadarLightningOverlay();
 
   if (displayWeatherStations) {
@@ -17374,10 +18466,24 @@ drawNukeOverlay();
     gl.linkProgram(program);
 
     if (parallelShaderCompileExt) {
-      while (!gl.getProgramParameter(program, parallelShaderCompileExt.COMPLETION_STATUS_KHR))
+      let waitCount = 0;
+      const maxWaits = 12000;
+      while (!gl.getProgramParameter(program, parallelShaderCompileExt.COMPLETION_STATUS_KHR)) {
         await linkProgramYield();
+        if (++waitCount >= maxWaits) {
+          console.warn('Parallel shader link wait timed out for "' + label + '", checking link status anyway');
+          break;
+        }
+      }
     } else {
       await linkProgramYield();
+    }
+
+    if (gl.isContextLost && gl.isContextLost()) {
+      gl.deleteProgram(program);
+      const ctxMsg = 'WebGL context was lost during shader link ("' + label + '"). The realistic display shader may be too complex for your GPU — try refreshing the page or lowering resolution.';
+      console.error(ctxMsg);
+      throw new Error(ctxMsg);
     }
 
     if (gl.getProgramParameter(program, gl.LINK_STATUS)) {
@@ -17386,10 +18492,14 @@ drawNukeOverlay();
       return program;
     }
 
+    const fragLog = gl.getShaderInfoLog(fragmentShader);
+    const vertLog = gl.getShaderInfoLog(vertexShader);
     const infoLog = gl.getProgramInfoLog(program);
     gl.deleteProgram(program);
-    console.error('Program link error (' + label + '):', infoLog);
-    throw new Error('Program link error (' + label + '): ' + infoLog);
+    const detail = [infoLog, fragLog && ('fragment: ' + fragLog), vertLog && ('vertex: ' + vertLog)]
+      .filter(Boolean).join('\n');
+    console.error('Program link error (' + label + '):', detail);
+    throw new Error('Program link error (' + label + '): ' + (detail || '(no driver message — context may have been lost)'));
   }
 
   async function loadSourceFile(fileName)
@@ -17409,7 +18519,9 @@ drawNukeOverlay();
     }
   }
 
-  async function loadShader(nameIn)
+  var lightningV2InRealisticShader = true;
+
+  async function loadShader(nameIn, opts)
   {
     const re = /(?:\.([^.]+))?$/;
 
@@ -17441,6 +18553,16 @@ drawNukeOverlay();
 
     if (shaderSource.includes('#include "dropletSize.glsl"')) {
       shaderSource = shaderSource.replace('#include "dropletSize.glsl"', dropletSizeSource);
+    }
+
+    if (opts && opts.skipLightningV2) {
+      shaderSource = shaderSource.replace(/#include "lightningV2.glsl"\r?\n?/, '');
+      shaderSource = shaderSource.replace(
+        /  \/\/ Lightning V2 procedural bolts and atmospheric illumination\r?\n  vec3 ltBolts = ltRenderStrikeBolts\(texCoord, aspectRatios\[0\], cloudwater\);\r?\n  emittedLight \+= ltBolts;\r?\n  emittedLight \/= 1\. \+ cloudDensity \* 18\.0;\r?\n  vec3 ltIllum = ltComputeStrikeIllumination\(texCoord, aspectRatios\[0\], cloudwater, water\[PRECIPITATION\], nightFactor\);\r?\n  onLight \+= ltIllum;\r?\n/,
+        '  // Lightning V2 disabled (GPU shader link fallback)\n'
+      );
+    } else if (shaderSource.includes('#include "lightningV2.glsl"')) {
+      shaderSource = shaderSource.replace('#include "lightningV2.glsl"', lightningV2Source);
     }
 
     const shader = gl.createShader(shaderType);
