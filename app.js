@@ -447,11 +447,6 @@ const guiControls_default = {
   month : 6.65, // Northern hemisphere summer solstice
   sunAngle : 90.0,
   dayNightCycle : true,
-  enableSunMoonSky : true,
-  enableTwilightSky : true,
-  enableSmoothCloudLighting : true,
-  enableTwilightUnderglow : true,
-  enableRadialSunShadows : true,
   realtimeMode : false,  // sync sun position to real wall-clock time
   accelerateNight : true,
   greenhouseGases : 0.001,
@@ -6929,14 +6924,6 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         gl.uniform1i(gl.getUniformLocation(realisticDisplayProgram, 'invertSun'), guiControls.invertSun ? 1 : 0);
       })
       .name('Invert Sun');
-
-    var dncVisuals_folder = radiation_folder.addFolder('Day/Night visuals');
-    dncVisuals_folder.add(guiControls, 'enableSunMoonSky').name('Sun & Moon in sky').onChange(updateRadiationVisuals);
-    dncVisuals_folder.add(guiControls, 'enableTwilightSky').name('Twilight sky & horizon').onChange(updateRadiationVisuals);
-    dncVisuals_folder.add(guiControls, 'enableSmoothCloudLighting').name('Smooth cloud lighting').onChange(updateRadiationVisuals);
-    dncVisuals_folder.add(guiControls, 'enableTwilightUnderglow').name('Light from below at dusk').onChange(updateRadiationVisuals);
-    dncVisuals_folder.add(guiControls, 'enableRadialSunShadows').name('Radial sun shadows').onChange(updateRadiationVisuals);
-    dncVisuals_folder.open();
 
     var water_folder = datGui.addFolder('Water');
 
@@ -14387,13 +14374,6 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   const uloc_sky_sunAngle              = gl.getUniformLocation(skyBackgroundDisplayProgram, 'sunAngle');
   const uloc_sky_timeOfDay             = gl.getUniformLocation(skyBackgroundDisplayProgram, 'timeOfDay');
   const uloc_sky_month                 = gl.getUniformLocation(skyBackgroundDisplayProgram, 'month');
-  const uloc_sky_enableSunMoonSky      = gl.getUniformLocation(skyBackgroundDisplayProgram, 'enableSunMoonSky');
-  const uloc_sky_enableTwilightSky     = gl.getUniformLocation(skyBackgroundDisplayProgram, 'enableTwilightSky');
-  const uloc_lighting_enableTwilightUnderglow = gl.getUniformLocation(lightingProgram, 'enableTwilightUnderglow');
-  const uloc_lighting_enableRadialSunShadows  = gl.getUniformLocation(lightingProgram, 'enableRadialSunShadows');
-  const uloc_realistic_enableSmoothCloudLighting = gl.getUniformLocation(realisticDisplayProgram, 'enableSmoothCloudLighting');
-  const uloc_realistic_enableTwilightUnderglow   = gl.getUniformLocation(realisticDisplayProgram, 'enableTwilightUnderglow');
-  const uloc_realistic_enableRadialSunShadows    = gl.getUniformLocation(realisticDisplayProgram, 'enableRadialSunShadows');
   const uloc_sky_starDensity           = gl.getUniformLocation(skyBackgroundDisplayProgram, 'starDensity');
 
   // per-frame lighting
@@ -14595,7 +14575,6 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   const uloc_tempChg_colorScalesTex    = gl.getUniformLocation(temperatureChangeDisplayProgram, 'colorScalesTex');
   const uloc_tempChg_colorScaleColumn  = gl.getUniformLocation(temperatureChangeDisplayProgram, 'colorScaleColumn');
   ulocsReady = true; // all uniform locations cached, updateSunlight can now use them
-  updateRadiationVisuals();
 
 
   for (i = 0; i < weatherStations.length; i++) { // initial measurement at weather stations
@@ -14604,23 +14583,6 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
 
   setInterval(calcFps, 1000); // log fps
   requestAnimationFrame(draw);
-
-  function updateRadiationVisuals()
-  {
-    if (!ulocsReady)
-      return;
-    const on = (b) => (b ? 1.0 : 0.0);
-    gl.useProgram(skyBackgroundDisplayProgram);
-    gl.uniform1f(uloc_sky_enableSunMoonSky, on(guiControls.enableSunMoonSky));
-    gl.uniform1f(uloc_sky_enableTwilightSky, on(guiControls.enableTwilightSky));
-    gl.useProgram(realisticDisplayProgram);
-    gl.uniform1f(uloc_realistic_enableSmoothCloudLighting, on(guiControls.enableSmoothCloudLighting));
-    gl.uniform1f(uloc_realistic_enableTwilightUnderglow, on(guiControls.enableTwilightUnderglow));
-    gl.uniform1f(uloc_realistic_enableRadialSunShadows, on(guiControls.enableRadialSunShadows));
-    gl.useProgram(lightingProgram);
-    gl.uniform1f(uloc_lighting_enableTwilightUnderglow, on(guiControls.enableTwilightUnderglow));
-    gl.uniform1f(uloc_lighting_enableRadialSunShadows, on(guiControls.enableRadialSunShadows));
-  }
 
   function onUpdateTimeOfDaySlider()
   {
