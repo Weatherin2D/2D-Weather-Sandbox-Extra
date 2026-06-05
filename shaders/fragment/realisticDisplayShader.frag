@@ -95,10 +95,6 @@ uniform float time;
 uniform float smoothClouds;
 uniform float enhancedLooks;
 
-uniform float enableSmoothCloudLighting;
-uniform float enableTwilightUnderglow;
-uniform float enableRadialSunShadows;
-
 uniform int invertSun;
 
 out vec4 fragmentColor;
@@ -554,22 +550,16 @@ vec4 getAirColor(vec2 fragCoordIn)
   vec2 bndFragCoord = vec2(fragCoordIn.x, clamp(fragCoordIn.y, 0., resolution.y)); // bound y within range
   base = smoothBilerpWallVis(baseTex, wallTex, bndFragCoord);
   wall = texture(wallTex, bndFragCoord * texelSize);                               // texCoord
-  water = (enableSmoothCloudLighting > 0.5)
-    ? smoothBilerpWallVis(waterTex, wallTex, bndFragCoord)
-    : bilerpWallVis(waterTex, wallTex, bndFragCoord);
+  water = smoothBilerpWallVis(waterTex, wallTex, bndFragCoord);
   vec2 tcAir = bndFragCoord * texelSize;
-  lightIntensity = (enableSmoothCloudLighting > 0.5)
-    ? smoothSunlightSample(lightTex, tcAir, texelSize) / standardSunBrightness
-    : texture(lightTex, tcAir)[SUNLIGHT] / standardSunBrightness;
+  lightIntensity = smoothSunlightSample(lightTex, tcAir, texelSize) / standardSunBrightness;
 
   ivec4 wallX0Ym = texture(wallTex, texCoordX0Ym);
 
   float realTemp = potentialToRealT(base[TEMPERATURE]);
 
-  bool nightTime = enableTwilightUnderglow > 0.5
-    ? (sunAngle > 1.72)
-    : (abs(sunAngle) > 85.0 * deg2rad);
-  float twilightFill = twilightUnderglowStrength(sunAngle, enableTwilightUnderglow);
+  bool nightTime = sunAngle > 1.72; // deep night (~8.5° below horizon)
+  float twilightFill = twilightUnderglowStrength(sunAngle);
 
   shadowLight = minShadowLight;
 
@@ -624,10 +614,8 @@ vec4 getAirColor(vec2 fragCoordIn)
       cloudCol = mix(grayCol, whiteCol, smoothstep(0.0, 1.0, localT));
     }
   } else {
-    float cw = (enableSmoothCloudLighting > 0.5)
-      ? smoothCloudWater(waterTex, tcAir, resolution)
-      : cloudwater;
-    cloudCol = vec3(1.0 / (cw * 0.005 + 1.0));
+    float smoothCw = smoothCloudWater(waterTex, tcAir, resolution);
+    cloudCol = vec3(1.0 / (smoothCw * 0.005 + 1.0));
   }
 
   float cloudOpacity;
@@ -659,39 +647,37 @@ vec4 getAirColor(vec2 fragCoordIn)
 
   shadowLight += fireIntensity * 2.5;                                                                                 // 1.5
 
+  // Soft sun-facing shading (gradual highlight ↔ shadow, no hard blocks)
   if (cloudOpacity > 0.01 && !nightTime) {
     vec2 tc = tcAir;
-    vec2 pixRay = sunlightRayToSun(texelSize, tc, sunAngle, sunAzimuth, enableTwilightUnderglow, enableRadialSunShadows);
-    float sunwardL = (enableSmoothCloudLighting > 0.5)
-      ? smoothSunlightSample(lightTex, tc + pixRay, texelSize) / standardSunBrightness
-      : texture(lightTex, tc + pixRay)[SUNLIGHT] / standardSunBrightness;
-    float scat = clamp(map_range(abs(sunAngle), 75.0 * deg2rad, 90.0 * deg2rad, 0.0, 1.0), 0.0, 1.0);
+    vec2 sunPos = sunScreenPositionForLight(sunAngle, sunAzimuth);
+    vec2 toSun = sunPos - tc;
+    toSun.x *= texelSize.y / texelSize.x;
+    vec2 lDir = length(toSun) > 1e-5 ? normalize(toSun) : vec2(0.0, 1.0);
 
-    if (enableSmoothCloudLighting > 0.5) {
-      vec2 sunPos = sunScreenPositionForLight(sunAngle, sunAzimuth, enableTwilightUnderglow);
-      vec2 toSun = sunPos - tc;
-      toSun.x *= texelSize.y / texelSize.x;
-      vec2 lDir = length(toSun) > 1e-5 ? normalize(toSun) : vec2(0.0, 1.0);
-      float gradStep = 2.25;
-      vec2 grad = vec2(
-        smoothCloudWater(waterTex, tc + vec2(texelSize.x * gradStep, 0.0), resolution) -
-          smoothCloudWater(waterTex, tc - vec2(texelSize.x * gradStep, 0.0), resolution),
-        smoothCloudWater(waterTex, tc + vec2(0.0, texelSize.y * gradStep), resolution) -
-          smoothCloudWater(waterTex, tc - vec2(0.0, texelSize.y * gradStep), resolution));
-      vec2 n = length(grad) > 1e-6 ? normalize(vec2(-grad.x, -grad.y)) : vec2(0.0, 1.0);
-      float facing = smoothstep(-0.12, 0.88, clamp(dot(n, lDir), -0.15, 1.0));
-      float leewardL = smoothSunlightSample(lightTex, tc - pixRay, texelSize) / standardSunBrightness;
-      float lightMix = mix(leewardL, sunwardL, 0.38 + 0.62 * facing);
-      lightMix = mix(lightMix, max(sunwardL, lightMix), twilightFill * 0.65);
-      float softLit = smoothstep(0.08, 0.72, lightMix) * smoothstep(-0.05, 0.35, facing);
-      vec3 gold = mix(vec3(1.0, 0.94, 0.82), vec3(1.0, 0.58, 0.14), scat);
-      vec3 shadowCol = cloudCol * mix(vec3(0.62, 0.66, 0.78), vec3(0.48, 0.42, 0.52), scat);
-      vec3 litCol = cloudCol * mix(vec3(1.0), gold, 0.25 + scat * 0.35);
-      litCol += gold * softLit * (0.12 + scat * 0.22) * cloudOpacity;
-      cloudCol = mix(shadowCol, litCol, softLit * (0.55 + twilightFill * 0.35) + twilightFill * 0.12);
-    } else {
-      cloudCol *= mix(1.0, 0.35 + 0.65 * sunwardL, scat * 0.85);
-    }
+    float gradStep = 2.25;
+    vec2 grad = vec2(
+      smoothCloudWater(waterTex, tc + vec2(texelSize.x * gradStep, 0.0), resolution) -
+        smoothCloudWater(waterTex, tc - vec2(texelSize.x * gradStep, 0.0), resolution),
+      smoothCloudWater(waterTex, tc + vec2(0.0, texelSize.y * gradStep), resolution) -
+        smoothCloudWater(waterTex, tc - vec2(0.0, texelSize.y * gradStep), resolution));
+    vec2 n = length(grad) > 1e-6 ? normalize(vec2(-grad.x, -grad.y)) : vec2(0.0, 1.0);
+    float facing = clamp(dot(n, lDir), -0.15, 1.0);
+    facing = smoothstep(-0.12, 0.88, facing);
+
+    vec2 pixRay = sunlightRayToSun(texelSize, tc, sunAngle, sunAzimuth);
+    float sunwardL = smoothSunlightSample(lightTex, tc + pixRay, texelSize) / standardSunBrightness;
+    float leewardL = smoothSunlightSample(lightTex, tc - pixRay, texelSize) / standardSunBrightness;
+    float scat = clamp(map_range(sunAngle, 1.38, 1.58, 0.0, 1.0), 0.0, 1.0);
+    float lightMix = mix(leewardL, sunwardL, 0.38 + 0.62 * facing);
+    lightMix = mix(lightMix, max(sunwardL, lightMix), twilightFill * 0.65);
+    float softLit = smoothstep(0.08, 0.72, lightMix) * smoothstep(-0.05, 0.35, facing);
+
+    vec3 gold = mix(vec3(1.0, 0.94, 0.82), vec3(1.0, 0.58, 0.14), scat);
+    vec3 shadowCol = cloudCol * mix(vec3(0.62, 0.66, 0.78), vec3(0.48, 0.42, 0.52), scat);
+    vec3 litCol = cloudCol * mix(vec3(1.0), gold, 0.25 + scat * 0.35);
+    litCol += gold * softLit * (0.12 + scat * 0.22) * cloudOpacity;
+    cloudCol = mix(shadowCol, litCol, softLit * (0.55 + twilightFill * 0.35) + twilightFill * 0.12);
   }
 
   float opacity = 1. - (1. - smokeOpacity) * (1. - cloudOpacity) * (1. - fogMistOpacity);                     // alpha blending with fog/mist
@@ -734,22 +720,16 @@ void main()
   vec2 bndFragCoord = vec2(fragCoord.x, clamp(fragCoord.y, 0., resolution.y)); // bound y within range
   base = smoothBilerpWallVis(baseTex, wallTex, bndFragCoord);
   wall = texture(wallTex, bndFragCoord * texelSize);                           // texCoord
-  water = (enableSmoothCloudLighting > 0.5)
-    ? smoothBilerpWallVis(waterTex, wallTex, bndFragCoord)
-    : bilerpWallVis(waterTex, wallTex, bndFragCoord);
+  water = smoothBilerpWallVis(waterTex, wallTex, bndFragCoord);
   vec2 tcAir = bndFragCoord * texelSize;
-  lightIntensity = (enableSmoothCloudLighting > 0.5)
-    ? smoothSunlightSample(lightTex, tcAir, texelSize) / standardSunBrightness
-    : texture(lightTex, tcAir)[SUNLIGHT] / standardSunBrightness;
+  lightIntensity = smoothSunlightSample(lightTex, tcAir, texelSize) / standardSunBrightness;
 
   ivec4 wallX0Ym = texture(wallTex, texCoordX0Ym);
 
   float realTemp = potentialToRealT(base[TEMPERATURE]);
 
-  bool nightTime = enableTwilightUnderglow > 0.5
-    ? (sunAngle > 1.72)
-    : (abs(sunAngle) > 85.0 * deg2rad);
-  float twilightFill = twilightUnderglowStrength(sunAngle, enableTwilightUnderglow);
+  bool nightTime = sunAngle > 1.72; // deep night (~8.5° below horizon)
+  float twilightFill = twilightUnderglowStrength(sunAngle);
 
   shadowLight = minShadowLight;
 
@@ -763,9 +743,7 @@ void main()
 
     color = getWallColor(depth);
 
-    lightIntensity = (enableSmoothCloudLighting > 0.5)
-      ? smoothSunlightSample(lightTex, bndFragCoord * texelSize, texelSize) / standardSunBrightness
-      : texture(lightTex, bndFragCoord * texelSize)[SUNLIGHT] / standardSunBrightness;
+    lightIntensity = smoothSunlightSample(lightTex, bndFragCoord * texelSize, texelSize) / standardSunBrightness;
     lightIntensity = min(lightIntensity, 0.35);
 
   } else if (texCoord.y > 1.0) {                                                                  // above simulation area
@@ -1286,32 +1264,18 @@ void main()
   }
 
 
-  float scatering = clamp(map_range(abs(sunAngle), 75. * deg2rad, 90. * deg2rad, 0., 1.), 0., 1.);
-  if (enableTwilightUnderglow > 0.5)
-    scatering = max(scatering, clamp(map_range(sunAngle, 1.38, 1.58, 0., 1.), 0., 1.));
+  float scatering = clamp(map_range(sunAngle, 1.38, 1.58, 0., 1.), 0., 1.); // how red the sunlight is
 
+  // Sample light from direction toward sun at this pixel (radial, not parallel)
   vec2 tcMain = bndFragCoord * texelSize;
-  float adjustedLightIntensity = lightIntensity;
-  if (enableRadialSunShadows > 0.5 || enableSmoothCloudLighting > 0.5 || enableTwilightUnderglow > 0.5) {
-    vec2 pixRayToSun = sunlightRayToSun(texelSize, tcMain, sunAngle, sunAzimuth, enableTwilightUnderglow, enableRadialSunShadows);
-    float sunwardLight = (enableSmoothCloudLighting > 0.5)
-      ? smoothSunlightSample(lightTex, tcMain + pixRayToSun, texelSize) / standardSunBrightness
-      : texture(lightTex, tcMain + pixRayToSun)[SUNLIGHT] / standardSunBrightness;
-    float leewardLight = (enableSmoothCloudLighting > 0.5)
-      ? smoothSunlightSample(lightTex, tcMain - pixRayToSun, texelSize) / standardSunBrightness
-      : texture(lightTex, tcMain - pixRayToSun)[SUNLIGHT] / standardSunBrightness;
-    if (enableRadialSunShadows > 0.5) {
-      float lightBlend = smoothstep(0.0, 0.35, sunwardLight - leewardLight);
-      adjustedLightIntensity = mix(lightIntensity, max(sunwardLight, lightIntensity), 0.35 + 0.65 * lightBlend);
-      adjustedLightIntensity = mix(adjustedLightIntensity, max(sunwardLight, leewardLight * 0.85), lightBlend * 0.45);
-      adjustedLightIntensity *= mix(1.0, 0.92 + lightBlend * 0.08, 1.0 - twilightFill * 0.35);
-    } else {
-      adjustedLightIntensity = max(lightIntensity, sunwardLight * 0.85);
-      adjustedLightIntensity *= 1.0 - smoothstep(0.02, 0.2, leewardLight - sunwardLight) * 0.35;
-    }
-    if (enableTwilightUnderglow > 0.5)
-      adjustedLightIntensity += twilightFill * 0.22 * (0.35 + sunwardLight * 0.65);
-  }
+  vec2 pixRayToSun = sunlightRayToSun(texelSize, tcMain, sunAngle, sunAzimuth);
+  float sunwardLight = smoothSunlightSample(lightTex, tcMain + pixRayToSun, texelSize) / standardSunBrightness;
+  float leewardLight = smoothSunlightSample(lightTex, tcMain - pixRayToSun, texelSize) / standardSunBrightness;
+  float lightBlend = smoothstep(0.0, 0.35, sunwardLight - leewardLight);
+  float adjustedLightIntensity = mix(lightIntensity, max(sunwardLight, lightIntensity), 0.35 + 0.65 * lightBlend);
+  adjustedLightIntensity = mix(adjustedLightIntensity, max(sunwardLight, leewardLight * 0.85), lightBlend * 0.45);
+  adjustedLightIntensity += twilightFill * 0.22 * (0.35 + sunwardLight * 0.65);
+  adjustedLightIntensity *= mix(1.0, 0.92 + lightBlend * 0.08, 1.0 - twilightFill * 0.35);
 
   if (enhancedLooks > 0.5) {
     adjustedLightIntensity = pow(adjustedLightIntensity, 1.5) * 0.85 + adjustedLightIntensity * 0.15;

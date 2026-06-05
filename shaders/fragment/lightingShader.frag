@@ -34,15 +34,12 @@ layout(location = 1) out vec4 reflectedLight;
 
 uniform float dryLapse;
 
-uniform float enableTwilightUnderglow;
-uniform float enableRadialSunShadows;
-
 #include "common.glsl"
 
 void main()
 {
-  float twilightTop = twilightUnderglowStrength(sunAngle, enableTwilightUnderglow);
-  float topSun = sunIntensity * mix(1.0, 0.42 * twilightTop, step(PI * 0.5, sunAngle) * enableTwilightUnderglow);
+  float twilightTop = twilightUnderglowStrength(sunAngle);
+  float topSun = sunIntensity * mix(1.0, 0.42 * twilightTop, step(PI * 0.5, sunAngle));
 
   if (fragCoord.y >= resolution.y - 1.)
     light = vec4(topSun, 0, 0, 0); // at top: sun (or brief twilight underglow below horizon)
@@ -53,19 +50,17 @@ void main()
     // Parallel propagation (stable over many iterations) × radial line-of-sight to sun (position-dependent shadows)
     vec2 sunRay = sunlightSampleOffset(texelSize, sunAngle, sunAzimuth);
     float sunlight = texture(lightTex, texCoord + sunRay)[SUNLIGHT];
-    float sunVisible = sunLineOfSightVisibility(waterTex, wallTex, texCoord, texelSize, sunAngle, sunAzimuth, enableTwilightUnderglow, enableRadialSunShadows);
+    float sunVisible = sunLineOfSightVisibility(waterTex, wallTex, texCoord, texelSize, sunAngle, sunAzimuth);
 
-    if (enableRadialSunShadows > 0.5) {
-      vec2 sunPos = sunScreenPositionForLight(sunAngle, sunAzimuth, enableTwilightUnderglow);
-      vec2 toSun = sunPos - texCoord;
-      toSun.x *= texelSize.y / texelSize.x;
-      float distSun = length(toSun);
-      if (distSun > length(texelSize)) {
-        vec2 stepToSun = (toSun / distSun) * texelSize;
-        vec2 sp = texCoord + stepToSun;
-        if (sp.y > 1.0 || sp.x < 0.0 || sp.x > 1.0 || sp.y < 0.0)
-          sunlight = max(sunlight, sunIntensity * sunVisible);
-      }
+    vec2 sunPos = sunScreenPosition(sunAngle, sunAzimuth);
+    vec2 toSun = sunPos - texCoord;
+    toSun.x *= texelSize.y / texelSize.x;
+    float distSun = length(toSun);
+    if (distSun > length(texelSize)) {
+      vec2 stepToSun = (toSun / distSun) * texelSize;
+      vec2 sp = texCoord + stepToSun;
+      if (sp.y > 1.0 || sp.x < 0.0 || sp.x > 1.0 || sp.y < 0.0)
+        sunlight = max(sunlight, sunIntensity * sunVisible);
     }
 
     sunlight *= sunVisible;

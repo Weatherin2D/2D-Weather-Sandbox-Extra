@@ -122,10 +122,8 @@ vec2 sunScreenPosition(float sunZenithAngle, float sunAzimuth)
 }
 
 // Lighting sun can sit below the screen horizon briefly after sunset (upward rays).
-vec2 sunScreenPositionForLight(float sunZenithAngle, float sunAzimuth, float enableUnderglow)
+vec2 sunScreenPositionForLight(float sunZenithAngle, float sunAzimuth)
 {
-  if (enableUnderglow < 0.5)
-    return sunScreenPosition(sunZenithAngle, sunAzimuth);
   float horiz = 0.5 + 0.44 * sin(sunAzimuth);
   float elev = PI * 0.5 - sunZenithAngle;
   if (elev >= 0.0)
@@ -136,10 +134,8 @@ vec2 sunScreenPositionForLight(float sunZenithAngle, float sunAzimuth, float ena
 }
 
 // 0 at day/deep night; peaks just after sunset with light from below the horizon.
-float twilightUnderglowStrength(float sunZenithAngle, float enableUnderglow)
+float twilightUnderglowStrength(float sunZenithAngle)
 {
-  if (enableUnderglow < 0.5)
-    return 0.0;
   float z = sunZenithAngle;
   float below = max(z - PI * 0.5, 0.0);
   float under = (1.0 - smoothstep(0.0, 0.20, below)) * smoothstep(0.0, 0.035, below);
@@ -148,11 +144,9 @@ float twilightUnderglowStrength(float sunZenithAngle, float enableUnderglow)
 }
 
 // Unit step toward the sun in texCoord space (aspect-corrected).
-vec2 sunlightRayToSun(vec2 texelSize, vec2 texCoord, float sunZenithAngle, float sunAzimuth, float enableUnderglow, float enableRadial)
+vec2 sunlightRayToSun(vec2 texelSize, vec2 texCoord, float sunZenithAngle, float sunAzimuth)
 {
-  if (enableRadial < 0.5)
-    return sunlightSampleOffset(texelSize, sunZenithAngle, sunAzimuth);
-  vec2 sunPos = sunScreenPositionForLight(sunZenithAngle, sunAzimuth, enableUnderglow);
+  vec2 sunPos = sunScreenPositionForLight(sunZenithAngle, sunAzimuth);
   vec2 toSun = sunPos - texCoord;
   toSun.x *= texelSize.y / texelSize.x;
   float len = length(toSun);
@@ -162,11 +156,9 @@ vec2 sunlightRayToSun(vec2 texelSize, vec2 texCoord, float sunZenithAngle, float
 }
 
 // Per-pixel visibility to the sun (0 = in shadow, 1 = full sun). Shadows fan out from sun position.
-float sunLineOfSightVisibility(sampler2D waterTex, isampler2D wallTex, vec2 texCoord, vec2 texelSize, float sunZenithAngle, float sunAzimuth, float enableUnderglow, float enableRadial)
+float sunLineOfSightVisibility(sampler2D waterTex, isampler2D wallTex, vec2 texCoord, vec2 texelSize, float sunZenithAngle, float sunAzimuth)
 {
-  if (enableRadial < 0.5)
-    return 1.0;
-  vec2 sunPos = sunScreenPositionForLight(sunZenithAngle, sunAzimuth, enableUnderglow);
+  vec2 sunPos = sunScreenPositionForLight(sunZenithAngle, sunAzimuth);
   vec2 toSun = sunPos - texCoord;
   toSun.x *= texelSize.y / texelSize.x;
   float dist = length(toSun);

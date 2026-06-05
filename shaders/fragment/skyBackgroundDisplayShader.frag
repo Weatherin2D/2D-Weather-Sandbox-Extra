@@ -25,9 +25,6 @@ uniform float sunAngle;
 uniform float timeOfDay;
 uniform float month;
 
-uniform float enableSunMoonSky;
-uniform float enableTwilightSky;
-
 uniform float iterNum;
 
 uniform float simHeight;
@@ -258,20 +255,16 @@ void main()
   twilightSky = mix(twilightSky, vec3(1.0, 0.94, 0.68), exp(-length(relSun) * 2.2) * 0.65);
 
   float twilightAmt = 0.0;
-  if (enableTwilightSky > 0.5) {
-    if (isMorning) {
-      twilightAmt = max(
-        smoothstep(0.03, 0.16, sunRiseAmount) * (1.0 - smoothstep(0.16, 0.38, sunRiseAmount)),
-        smoothstep(1.32, 1.50, abs(sunAngle)) * smoothstep(0.02, 0.10, sunRiseAmount) * 0.85);
-    } else {
-      twilightAmt = smoothstep(0.04, 0.92, scatter) * (1.0 - smoothstep(0.04, 0.34, sunRiseAmount));
-      twilightAmt = max(twilightAmt, smoothstep(1.22, 1.50, abs(sunAngle)) * smoothstep(0.02, 0.14, sunRiseAmount));
-    }
+  if (isMorning) {
+    twilightAmt = max(
+      smoothstep(0.03, 0.16, sunRiseAmount) * (1.0 - smoothstep(0.16, 0.38, sunRiseAmount)),
+      smoothstep(1.32, 1.50, abs(sunAngle)) * smoothstep(0.02, 0.10, sunRiseAmount) * 0.85);
+  } else {
+    twilightAmt = smoothstep(0.04, 0.92, scatter) * (1.0 - smoothstep(0.04, 0.34, sunRiseAmount));
+    twilightAmt = max(twilightAmt, smoothstep(1.22, 1.50, abs(sunAngle)) * smoothstep(0.02, 0.14, sunRiseAmount));
   }
 
-  vec3 mixedCol = (enableTwilightSky > 0.5)
-    ? mix(daySky, twilightSky, clamp(twilightAmt, 0.0, 1.0))
-    : daySky;
+  vec3 mixedCol = mix(daySky, twilightSky, clamp(twilightAmt, 0.0, 1.0));
 
   // Star field - only visible at night (sun below horizon)
   vec3 starColor = vec3(0.0);
@@ -381,14 +374,12 @@ void main()
     hazeBoost = max(hazeBoost, smoothstep(1.24, 1.50, sunAngleRad) * smoothstep(0.02, 0.14, sunRiseAmount));
   }
 
-  if (enableTwilightSky > 0.5) {
-    float hazeStrength = clamp(twilightAmt * 0.85 + hazeBoost * bandMask, 0.0, 1.0);
-    mixedCol = mix(mixedCol, hazeCol, hazeStrength * 0.55);
-    mixedCol += hazeCol * bandMask * hazeBoost * sunProximity * 0.45;
-  }
+  float hazeStrength = clamp(twilightAmt * 0.85 + hazeBoost * bandMask, 0.0, 1.0);
+  mixedCol = mix(mixedCol, hazeCol, hazeStrength * 0.55);
+  mixedCol += hazeCol * bandMask * hazeBoost * sunProximity * 0.45;
 
   // Crepuscular rays from sun (reference photo god-rays)
-  if (enableTwilightSky > 0.5 && (twilightAmt > 0.15 || scatter > 0.3)) {
+  if (twilightAmt > 0.15 || scatter > 0.3) {
     vec2 rel = texCoord - sunCenter;
     rel.x *= aspectRatios.x;
     float dist = length(rel);
@@ -406,7 +397,7 @@ void main()
   vec3 celestialEmit = vec3(0.0);
 
   vec3 sunSkyGlow = vec3(0.0);
-  if (enableSunMoonSky > 0.5 && sunVisibility > 0.001) {
+  if (sunVisibility > 0.001) {
     vec3 sunCol = renderSun(texCoord, sunCenter, scatter, horizonLine, sunEmitStrength);
     float emerge = isMorning
       ? smoothstep(0.02, 0.11, sunRiseAmount)
@@ -426,14 +417,14 @@ void main()
     sunSkyGlow = glowTint * (skyGlow + wideGlow);
   }
 
-  if (enableSunMoonSky > 0.5 && moonVisibility > 0.001) {
+  if (moonVisibility > 0.001) {
     float moonPhase = fract((month - 1.0) * 30.44 / 29.53);
     vec3 moonCol = renderMoon(texCoord, moonCenter, moonPhase, moonEmitStrength);
     celestialCol += moonCol * moonVisibility;
     celestialEmit += vec3(0.85, 0.88, 0.95) * moonEmitStrength * moonVisibility;
   }
 
-  vec3 celestialLight = enableSunMoonSky > 0.5 ? celestialEmit : vec3(0.0);
+  vec3 celestialLight = celestialEmit;
 
   vec3 airplaneLights;
 
