@@ -25,12 +25,48 @@
         body {
             margin: 0;
             font-family: 'Arial', sans-serif;
-            background: url('resources/img/background.png') bottom left no-repeat;
-            background-size: cover;
-            background-attachment: fixed;
+            background: #000;
             color: var(--text-color);
             line-height: 1.6;
             overflow-x: hidden;
+        }
+
+        #menuBackground {
+            position: fixed;
+            inset: 0;
+            z-index: -1;
+            overflow: hidden;
+            background: #000;
+        }
+
+        .menu-bg-layer {
+            position: absolute;
+            inset: -4%;
+            background-size: cover;
+            background-position: center center;
+            background-repeat: no-repeat;
+            opacity: 0;
+            transform: scale(1.08) translateX(-2%);
+            transition: opacity 2.5s ease-in-out;
+            will-change: opacity, transform;
+        }
+
+        .menu-bg-layer.visible {
+            opacity: 1;
+        }
+
+        .menu-bg-layer.panning {
+            animation: menuBgPan var(--menu-bg-slide-duration, 12s) ease-in-out forwards;
+        }
+
+        @keyframes menuBgPan {
+            from {
+                transform: scale(1.08) translateX(-2%);
+            }
+
+            to {
+                transform: scale(1.12) translateX(2%);
+            }
         }
 
 
@@ -45,7 +81,7 @@
             padding: 0rem 2rem 0rem 2rem;
             background: rgba(0, 0, 0, 0.13);
             backdrop-filter: blur(10px);
-            z-index: 0;
+            z-index: 1;
             box-shadow: 0 2px 10px rgba(0, 0, 0, 0.3);
         }
 
@@ -93,6 +129,8 @@
         }
 
         #IntroScreen {
+            position: relative;
+            z-index: 1;
             padding: 20px;
             max-width: 1200px;
             margin: 20px;
@@ -755,7 +793,11 @@
     </style>
 </head>
 
-<body id="body" onload="updateSetupSliders();">
+<body id="body" onload="updateSetupSliders(); startMenuBackgroundSlideshow();">
+    <div id="menuBackground" aria-hidden="true">
+        <div class="menu-bg-layer" id="menuBgA"></div>
+        <div class="menu-bg-layer" id="menuBgB"></div>
+    </div>
     <nav class="main-nav">
         <div class="nav-title">
             <h1>2D Weather Sandbox EXTRA</h1>
@@ -1103,6 +1145,102 @@
     <canvas id="mainCanvas">
         Your browser does not support HTML5, you must be using a really old browser!
     </canvas>
+    <script>
+        const MENU_BG_SOURCE_COUNT = 10;
+        const MENU_BG_SLIDE_MS = 12000;
+
+        let menuBgPlaylist = [];
+        let menuBgIndex = 0;
+        let menuBgActiveLayer = 'A';
+        let menuBgTimer = null;
+
+        function buildMenuBgImageList() {
+            const images = [];
+            for (let i = 1; i <= MENU_BG_SOURCE_COUNT; i++) {
+                const num = String(i).padStart(2, '0');
+                images.push('resources/img/menu-bg/menu-bg-' + num + '-sat.png');
+            }
+            return images;
+        }
+
+        function shuffleMenuBgPlaylist(images, avoidFirst) {
+            const shuffled = images.slice();
+            for (let i = shuffled.length - 1; i > 0; i--) {
+                const j = Math.floor(Math.random() * (i + 1));
+                const temp = shuffled[i];
+                shuffled[i] = shuffled[j];
+                shuffled[j] = temp;
+            }
+            if (avoidFirst && shuffled.length > 1 && shuffled[0] === avoidFirst) {
+                const swapIndex = 1 + Math.floor(Math.random() * (shuffled.length - 1));
+                const temp = shuffled[0];
+                shuffled[0] = shuffled[swapIndex];
+                shuffled[swapIndex] = temp;
+            }
+            return shuffled;
+        }
+
+        function reshuffleMenuBgPlaylistIfNeeded() {
+            if (menuBgIndex >= menuBgPlaylist.length) {
+                const lastShown = menuBgPlaylist.length > 0
+                    ? menuBgPlaylist[menuBgPlaylist.length - 1]
+                    : null;
+                menuBgPlaylist = shuffleMenuBgPlaylist(buildMenuBgImageList(), lastShown);
+                menuBgIndex = 0;
+            }
+        }
+
+        function showMenuBackgroundSlide(imagePath) {
+            const layerA = document.getElementById('menuBgA');
+            const layerB = document.getElementById('menuBgB');
+            if (!layerA || !layerB) return;
+
+            const nextLayer = menuBgActiveLayer === 'A' ? layerB : layerA;
+            const currentLayer = menuBgActiveLayer === 'A' ? layerA : layerB;
+
+            nextLayer.style.backgroundImage = "url('" + imagePath + "')";
+            nextLayer.classList.remove('panning');
+            void nextLayer.offsetWidth;
+            nextLayer.classList.add('panning', 'visible');
+            currentLayer.classList.remove('visible');
+
+            menuBgActiveLayer = menuBgActiveLayer === 'A' ? 'B' : 'A';
+        }
+
+        function advanceMenuBackgroundSlide() {
+            reshuffleMenuBgPlaylistIfNeeded();
+            showMenuBackgroundSlide(menuBgPlaylist[menuBgIndex]);
+            menuBgIndex++;
+        }
+
+        function startMenuBackgroundSlideshow() {
+            const container = document.getElementById('menuBackground');
+            if (!container) return;
+
+            if (menuBgTimer) {
+                clearInterval(menuBgTimer);
+                menuBgTimer = null;
+            }
+
+            container.style.setProperty('--menu-bg-slide-duration', (MENU_BG_SLIDE_MS / 1000) + 's');
+
+            menuBgPlaylist = shuffleMenuBgPlaylist(buildMenuBgImageList());
+            menuBgIndex = 0;
+            menuBgActiveLayer = 'A';
+            advanceMenuBackgroundSlide();
+
+            menuBgTimer = setInterval(advanceMenuBackgroundSlide, MENU_BG_SLIDE_MS);
+        }
+
+        function stopMenuBackgroundSlideshow() {
+            if (menuBgTimer) {
+                clearInterval(menuBgTimer);
+                menuBgTimer = null;
+            }
+            const container = document.getElementById('menuBackground');
+            if (container) container.remove();
+        }
+    </script>
 </body>
 
 </html>

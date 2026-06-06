@@ -618,6 +618,7 @@ var particleLightningReadBuffer = new Float32Array(4);
 var procLightningPosArr = new Float32Array(32);
 var procLightningDestArr = new Float32Array(32);
 var procLightningMetaArr = new Float32Array(32);
+var procLightningRouteArr = new Float32Array(32);
 var lightningBurstState = typeof LightningV2 !== 'undefined' ? LightningV2.createBurstState() : { phase: 'burst', burstIntensity: 1.0 };
 var lightningEventLog = [];
 var lightningEventIdCounter = 0;
@@ -7136,12 +7137,12 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     radar_folder.add(guiControls, 'radarOverlay').name('Overlay on Realistic View').listen();
     refreshRadarOverlaySourceDropdown();
     radar_folder.add(guiControls, 'radarLightningIcons').name('Lightning Strike Icons').listen();
-    radar_folder.add(guiControls, 'radarLightningIconDuration', 0.5, 30, 0.5).name('Lightning Icon Duration (s)').listen();
+    radar_folder.add(guiControls, 'radarLightningIconDuration', 30, 120, 0.5).name('Lightning Icon Duration (s)').listen();
     radar_folder.add(guiControls, 'dbzOpacityEnabled').name('dBZ-Based Opacity').listen();
     radar_folder.add(guiControls, 'dbzOpacityStrength', 0.0, 10.0, 0.05).name('dBZ Opacity Strength').listen();
     radar_folder.add(guiControls, 'worldRadarProduct', buildWorldRadarProductGuiOptions())
       .name('World Radar Product').listen();
-    radar_folder.add(guiControls, 'worldRadarResolution', 0.3, 100.0, 0.1).name('World PPI Gate Resolution').listen();
+    radar_folder.add(guiControls, 'worldRadarResolution', 0.3, 500.0, 0.1).name('World PPI Gate Resolution').listen();
     radar_folder.add(guiControls, 'worldRadarSensitivity', 0.0, 10.0, 0.01).name('World Radar Sensitivity').listen();
     radar_folder.add(guiControls, 'radarCappiHeight', 0.05, 0.95, 0.01).name('CAPPI Height (fraction)').listen();
     guiControls.resetRadarAccumulation = function() { resetRadarAccumulation(); };
@@ -7687,39 +7688,92 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
 {
   const spdKt = msToKnots(Math.hypot(uMs, vMs));
   if (spdKt < 1) return;
-  const barbLen = Math.min(34, 8 + spdKt * 0.42);
-  const tipX = stemX - barbLen;
+  
+  // Calculate wind direction (flip to show wind direction correctly)
+  const windDir = Math.atan2(-uMs, vMs); // opposite of velocity direction
+  
+  // Stem length based on speed
+  const stemLen = Math.min(34, 8 + spdKt * 0.42);
+  
+  // Calculate stem endpoint
+  const tipX = stemX - stemLen * Math.sin(windDir);
+  const tipY = y - stemLen * Math.cos(windDir);
+  
+  // Draw stem
   ctx.beginPath();
   ctx.moveTo(stemX, y);
-  ctx.lineTo(tipX, y);
+  ctx.lineTo(tipX, tipY);
   ctx.stroke();
+  
+  // Break down speed into barb components
   let flags = Math.floor(spdKt / 50);
   let rem = spdKt - flags * 50;
   let pennants = Math.floor(rem / 10);
   rem -= pennants * 10;
   let half = rem >= 5 ? 1 : 0;
-  let px = tipX;
-  const step = 5;
+  
+  // Calculate perpendicular direction (for barbs) - at 45 degree angle from stem
+  const barbAngle = windDir - Math.PI / 4; // 45 degrees to the right of stem
+  const barbLen = 10;
+  
+  // Start position along stem
+  let barb_pos = 0;
+  const step = 4; // spacing between barbs
+  
+  // Draw 50-knot flags (filled triangles)
   for (let i = 0; i < flags; i++) {
+    const pos_t = barb_pos / stemLen;
+    const px = stemX + (tipX - stemX) * pos_t;
+    const py = y + (tipY - y) * pos_t;
+    
+    // Next point along stem
+    const nextPos_t = Math.min(1, (barb_pos + step) / stemLen);
+    const nextPx = stemX + (tipX - stemX) * nextPos_t;
+    const nextPy = y + (tipY - y) * nextPos_t;
+    
+    // Barb endpoint
+    const barbEndX = px + barbLen * Math.cos(barbAngle);
+    const barbEndY = py + barbLen * Math.sin(barbAngle);
+    
     ctx.beginPath();
-    ctx.moveTo(px, y);
-    ctx.lineTo(px + 7, y - 9);
-    ctx.lineTo(px, y - 9);
+    ctx.moveTo(px, py);
+    ctx.lineTo(barbEndX, barbEndY);
+    ctx.lineTo(nextPx, nextPy);
     ctx.closePath();
     ctx.fill();
-    px += step;
+    
+    barb_pos += step;
   }
+  
+  // Draw 10-knot pennants (lines at 45 degrees)
   for (let i = 0; i < pennants; i++) {
+    const pos_t = barb_pos / stemLen;
+    const px = stemX + (tipX - stemX) * pos_t;
+    const py = y + (tipY - y) * pos_t;
+    
+    const barbEndX = px + barbLen * Math.cos(barbAngle);
+    const barbEndY = py + barbLen * Math.sin(barbAngle);
+    
     ctx.beginPath();
-    ctx.moveTo(px, y);
-    ctx.lineTo(px + 6, y - 7);
+    ctx.moveTo(px, py);
+    ctx.lineTo(barbEndX, barbEndY);
     ctx.stroke();
-    px += step;
+    
+    barb_pos += step;
   }
+  
+  // Draw 5-knot half-barb
   if (half) {
+    const pos_t = barb_pos / stemLen;
+    const px = stemX + (tipX - stemX) * pos_t;
+    const py = y + (tipY - y) * pos_t;
+    
+    const barbEndX = px + barbLen * 0.5 * Math.cos(barbAngle);
+    const barbEndY = py + barbLen * 0.5 * Math.sin(barbAngle);
+    
     ctx.beginPath();
-    ctx.moveTo(px, y);
-    ctx.lineTo(px + 4, y - 5);
+    ctx.moveTo(px, py);
+    ctx.lineTo(barbEndX, barbEndY);
     ctx.stroke();
   }
 }
@@ -12191,7 +12245,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
 
   const lightningTextures = [];
   const numLightningTextures = 12;
-  const lightningTextureTypes = ['CG', 'CG', 'POSITIVE', 'POSITIVE', 'CC', 'CC', 'SPIDER', 'SPIDER', 'ANVIL', 'ANVIL', 'CG', 'CC'];
+  const lightningTextureTypes = ['CG', 'CG', 'POSITIVE', 'POSITIVE', 'CC', 'CC', 'SPIDER', 'SPIDER', 'ANVIL', 'ANVIL', 'IC', 'IC'];
 
   const temperatureChangeHistoryTextures = [
     gl.createTexture(),
@@ -14939,6 +14993,9 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
 
   await loadingBar.set(95, 'Loading sounds'); // loading complete
   await loadingBar.remove();
+  if (typeof stopMenuBackgroundSlideshow === 'function') {
+    stopMenuBackgroundSlideshow();
+  }
 
   var srcVAO;
   var destVAO;
@@ -15026,6 +15083,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   const uloc_real_ltStrikePos          = gl.getUniformLocation(realisticDisplayProgram, 'ltStrikePos[0]');
   const uloc_real_ltStrikeDest         = gl.getUniformLocation(realisticDisplayProgram, 'ltStrikeDest[0]');
   const uloc_real_ltStrikeMeta         = gl.getUniformLocation(realisticDisplayProgram, 'ltStrikeMeta[0]');
+  const uloc_real_ltStrikeRoute        = gl.getUniformLocation(realisticDisplayProgram, 'ltStrikeRoute[0]');
   const uloc_real_ltBrightness         = gl.getUniformLocation(realisticDisplayProgram, 'ltBrightness');
   const uloc_real_ltContrast           = gl.getUniformLocation(realisticDisplayProgram, 'ltContrast');
   const uloc_real_ltChannelThickness   = gl.getUniformLocation(realisticDisplayProgram, 'ltChannelThickness');
@@ -15047,6 +15105,16 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   const uloc_real_ltEnableTerrainIllum = gl.getUniformLocation(realisticDisplayProgram, 'ltEnableTerrainIllum');
   const uloc_real_ltEnableChannelGlow  = gl.getUniformLocation(realisticDisplayProgram, 'ltEnableChannelGlow');
   const uloc_real_ltEnableVolumetric   = gl.getUniformLocation(realisticDisplayProgram, 'ltEnableVolumetric');
+  const uloc_real_ltIcChannelVis       = gl.getUniformLocation(realisticDisplayProgram, 'ltIcChannelVis');
+  const uloc_real_ltCcChannelVis       = gl.getUniformLocation(realisticDisplayProgram, 'ltCcChannelVis');
+  const uloc_real_ltSpiderChannelVis   = gl.getUniformLocation(realisticDisplayProgram, 'ltSpiderChannelVis');
+  const uloc_real_ltAnvilChannelVis    = gl.getUniformLocation(realisticDisplayProgram, 'ltAnvilChannelVis');
+  const uloc_real_ltCloudBranchDensity = gl.getUniformLocation(realisticDisplayProgram, 'ltCloudBranchDensity');
+  const uloc_real_ltCloudBranchLength  = gl.getUniformLocation(realisticDisplayProgram, 'ltCloudBranchLength');
+  const uloc_real_ltCloudChannelOpacity = gl.getUniformLocation(realisticDisplayProgram, 'ltCloudChannelOpacity');
+  const uloc_real_ltCloudObscuration   = gl.getUniformLocation(realisticDisplayProgram, 'ltCloudObscuration');
+  const uloc_real_ltChannelIllumRatio  = gl.getUniformLocation(realisticDisplayProgram, 'ltChannelIllumRatio');
+  const uloc_real_ltStrobeFlicker      = gl.getUniformLocation(realisticDisplayProgram, 'ltStrobeFlicker');
 
   // precipDisplay per-frame
   const uloc_precipDisp_aspectRatios   = gl.getUniformLocation(precipDisplayProgram, 'aspectRatios');
@@ -15718,7 +15786,11 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
 
   function getActiveLightningChannels()
   {
-    return getLightningChannels().filter(ch => ch.freq() > 0);
+    return getLightningChannels().filter(ch => {
+      if (ch.id === 'strobe' && guiControls.enableStrobeLightning === false)
+        return false;
+      return ch.freq() > 0;
+    });
   }
 
   function findActiveLightningEventJS(frameIter)
@@ -15974,6 +16046,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     if (ltType === 2) return 'cc';
     if (ltType === 9) return 'upward';
     if (ltType === 10) return 'bftb';
+    if (ltType === 11) return 'dry';
     return 'intracloud';
   }
 
@@ -16013,19 +16086,63 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     return getViewCenterLightningPick(ltType);
   }
 
-  function buildStrikeFromPick(pick, ltType, eventId, slot)
+  function packStrikeRouteForStrike(strike)
   {
+    if (strike.viaMidpoint && strike.midX != null && strike.midY != null) {
+      return [
+        strike.midX / sim_res_x,
+        strike.midY / sim_res_y,
+        1.0,
+        0.0,
+      ];
+    }
+    const r = strike.routePoints;
+    if (r && r.length >= 3) {
+      const i1 = Math.max(1, Math.floor(r.length * 0.33));
+      const i2 = Math.max(i1 + 1, Math.floor(r.length * 0.66));
+      return [
+        r[i1].x / sim_res_x, r[i1].y / sim_res_y,
+        r[i2].x / sim_res_x, r[i2].y / sim_res_y,
+      ];
+    }
+    const ox = strike.originX;
+    const oy = strike.originY;
+    const dx = strike.destX;
+    const dy = strike.destY;
+    return [
+      (ox + (dx - ox) * 0.33) / sim_res_x,
+      (oy + (dy - oy) * 0.33) / sim_res_y,
+      (ox + (dx - ox) * 0.66) / sim_res_x,
+      (oy + (dy - oy) * 0.66) / sim_res_y,
+    ];
+  }
+
+  function cloudChannelVisibilityForType(ltType)
+  {
+    if (ltType === 1) return guiControls.intracloudChannelVisibility ?? 1;
+    if (ltType === 2) return guiControls.cloudToCloudChannelVisibility ?? 1;
+    if (ltType === 7) return guiControls.spiderChannelVisibility ?? 1;
+    if (ltType === 8) return guiControls.anvilChannelVisibility ?? 1;
+    return 1;
+  }
+
+  function buildStrikeFromPick(pick, ltType, eventId, slot, opts)
+  {
+    opts = opts || {};
     const originMag = Math.max(
       Math.abs(pick.chargeVal || 0),
       (pick.potential || readPotentialCached(pick.originX, pick.originY)) * 0.5,
       0.35);
     const seed = lightningStrikeSeedJS(eventId, slot, pick.originX, pick.originY);
-    let flashSize = ltType === 3 || ltType === 1
+    let flashSize = ltType === 3 || ltType === 1 || ltType === 2
       ? computeCloudFlashSize(originMag, eventId, slot) : 1.0;
-    const numReturnStrokes = typeof LightningV2 !== 'undefined'
+    let numReturnStrokes = typeof LightningV2 !== 'undefined'
       ? LightningV2.numReturnStrokesForType(ltType, originMag, seed, guiControls) : 1;
+    if (opts.strobeBurst)
+      numReturnStrokes = Math.min(guiControls.maxReturnStrokes || 4,
+        Math.max(numReturnStrokes, 2 + Math.floor(shaderRand(seed + 883) * 2)));
     const brightness = typeof LightningV2 !== 'undefined'
-      ? LightningV2.brightnessForType(ltType, originMag, guiControls) : originMag;
+      ? LightningV2.brightnessForType(ltType, originMag, guiControls, opts) : originMag;
     const illumRadius = typeof LightningV2 !== 'undefined'
       ? LightningV2.illuminationRadiusForType(ltType, guiControls) : 1.0;
     let groundStrike = typeof LightningV2 !== 'undefined'
@@ -16033,96 +16150,82 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     let destX = pick.originX;
     let destY = pick.originY;
     let routePoints = null;
+    let boltBranches = null;
+    let boltPathLengthNorm = 0;
+    let boltBranchCount = 0;
+    let boltVisibilityMult = 1;
+    let flashInFront = false;
+    let flashOnly = false;
+    let midX = null;
+    let midY = null;
+    let viaMidpoint = false;
+    let precipOnly = typeof LightningV2 !== 'undefined'
+      ? LightningV2.rollPrecipOnlyStrike(seed, ltType, guiControls) : false;
     const profile = getStormElectricalProfile();
 
-    if (typeof LightningV2 !== 'undefined' && LightningV2.isDryLightningType(ltType)) {
-      const dry = LightningV2.placementForDryStrike(pick, sim_res_x, sim_res_y, seed);
-      destX = dry.destX;
-      destY = dry.destY;
-      flashSize = dry.flashSize;
+    if (typeof LightningV2 !== 'undefined' && lightningFieldCache
+        && LightningV2.isFlashOnlyType(ltType, opts.strobeBurst)) {
+      const flash = LightningV2.buildFlashPlacement(
+        ltType, pick, lightningFieldCache, eventId, slot, sim_res_x, sim_res_y, seed, guiControls, opts);
+      destX = flash.destX;
+      destY = flash.destY;
+      routePoints = flash.routePoints;
+      boltBranches = flash.branches;
+      boltPathLengthNorm = 0;
+      boltBranchCount = 0;
+      boltVisibilityMult = flash.visibilityMult;
+      flashSize = flash.flashSize;
+      flashInFront = flash.flashInFront;
+      flashOnly = true;
       groundStrike = false;
-    } else if (groundStrike && typeof LightningV2 !== 'undefined') {
-      const dest = LightningV2.pickGroundTarget(
-        lightningFieldCache,
-        { x: pick.originX, y: pick.originY, chargeVal: pick.chargeVal },
-        eventId, slot, sim_res_x, sim_res_y, guiControls);
-      destX = dest.x;
-      destY = dest.y;
-    } else if (typeof LightningV2 !== 'undefined' && (ltType === 7 || ltType === 8)) {
-      const placement = LightningV2.placementForSpiderAnvil(
-        pick, profile, sim_res_x, sim_res_y, seed, ltType);
-      destX = placement.destX;
-      destY = placement.destY;
-      flashSize = Math.max(flashSize, placement.flashSize || flashSize);
-      routePoints = [{ x: pick.originX, y: pick.originY }];
-      let cx = pick.originX;
-      let cy = pick.originY;
-      const dx = destX - pick.originX;
-      const dy = destY - pick.originY;
-      const horizSteps = ltType === 7 ? 16 : 13;
-      for (let step = 0; step < horizSteps; step++) {
-        const t = (step + 1) / horizSteps;
-        const targetX = pick.originX + dx * t;
-        const targetY = pick.originY + dy * t;
-        let best = { x: targetX, y: targetY, score: -1 };
-        for (let a = 0; a < 9; a++) {
-          const theta = Math.atan2(dy, dx) + (a - 4) * 0.22;
-          const nx = clamp(cx + Math.cos(theta) * sim_res_x * 0.045, 0, sim_res_x - 1);
-          const ny = clamp(cy + Math.sin(theta) * sim_res_y * 0.02, sim_res_y * 0.1, sim_res_y * 0.92);
-          const cloud = readCloudCached(nx, ny);
-          const pot = readPotentialCached(nx, ny);
-          const toward = 1.0 - clamp(Math.hypot(nx - targetX, ny - targetY) / (sim_res_x * 0.08), 0, 1);
-          const score = cloud * 1.6 + pot * 0.7 + toward * 0.5;
-          if (score > best.score) best = { x: nx, y: ny, score };
-        }
-        if (best.score < 0.05) break;
-        cx = best.x;
-        cy = best.y;
-        routePoints.push({ x: cx, y: cy });
+      midX = flash.midX;
+      midY = flash.midY;
+      viaMidpoint = flash.viaMidpoint;
+    } else if (typeof LightningV2 !== 'undefined' && lightningFieldCache) {
+      const boltOpts = opts.dryBurst && ltType === 7 ? { smallSpider: true } : opts;
+      const bolt = LightningV2.buildBoltGeometry(
+        ltType, pick, lightningFieldCache, profile, eventId, slot, sim_res_x, sim_res_y, guiControls, boltOpts);
+      if (bolt) {
+        destX = bolt.destX;
+        destY = bolt.destY;
+        routePoints = bolt.routePoints;
+        midX = bolt.midX;
+        midY = bolt.midY;
+        viaMidpoint = bolt.viaMidpoint;
+        boltBranches = bolt.branches;
+        boltPathLengthNorm = bolt.pathLengthNorm;
+        boltBranchCount = bolt.branchCount;
+        boltVisibilityMult = bolt.visibilityMult;
+        flashSize = Math.max(flashSize, bolt.flashSize || flashSize);
       }
-      const end = routePoints[routePoints.length - 1];
-      destX = end.x;
-      destY = end.y;
-    } else if (typeof LightningV2 !== 'undefined' && (ltType === 1 || ltType === 2) && lightningFieldCache) {
-      routePoints = [{ x: pick.originX, y: pick.originY }];
-      let cx = pick.originX;
-      let cy = pick.originY;
-      const baseAngle = shaderRand(eventId * 2.37 + slot * 53) * Math.PI * 2;
-      for (let step = 0; step < 14; step++) {
-        let best = { x: cx, y: cy, score: -1 };
-        for (let a = 0; a < 9; a++) {
-          const theta = baseAngle + (a - 4) * 0.34 + step * 0.05;
-          const nx = clamp(cx + Math.cos(theta) * sim_res_x * 0.042, 0, sim_res_x - 1);
-          const ny = clamp(cy + Math.sin(theta) * sim_res_y * 0.032, sim_res_y * 0.08, sim_res_y * 0.9);
-          const cloud = readCloudCached(nx, ny);
-          if (cloud < 0.06) continue;
-          const pot = readPotentialCached(nx, ny);
-          const chg = Math.abs(readChargeCached(nx, ny));
-          const grad = readConductivityCached(nx, ny);
-          const score = cloud * 1.4 + pot * 0.9 + chg * 0.35 + grad * 0.25;
-          if (score > best.score) best = { x: nx, y: ny, score };
-        }
-        if (best.score < 0) break;
-        cx = best.x;
-        cy = best.y;
-        routePoints.push({ x: cx, y: cy });
-      }
-      const end = routePoints[routePoints.length - 1];
-      destX = end.x;
-      destY = end.y;
-    } else if (ltType === 9) {
-      destY = clamp(pick.originY + sim_res_y * 0.22, 0, sim_res_y - 1);
-    } else if (ltType === 10) {
-      destX = clamp(pick.originX + (shaderRand(seed + 11) - 0.5) * sim_res_x * 0.28, 0, sim_res_x - 1);
-      destY = clamp(pick.originY - sim_res_y * 0.38, sim_res_y * 0.08, sim_res_y - 1);
+      groundStrike = LightningV2.isGroundStrike(ltType);
     }
 
     const texIndex = typeof LightningV2 !== 'undefined'
       ? LightningV2.boltTextureIndexForType(ltType, seed) : 0;
+    let pathLengthNorm = boltPathLengthNorm;
+    let branchCount = boltBranchCount;
+    let visibilityMult = boltVisibilityMult;
+    if (pathLengthNorm <= 0 && routePoints && routePoints.length > 1 && typeof LightningV2 !== 'undefined')
+      pathLengthNorm = LightningV2.pathLengthNorm(routePoints, sim_res_x, sim_res_y);
+    if (branchCount <= 0 && routePoints)
+      branchCount = ltType === 7 ? 4 : ltType === 8 ? 3 : ltType === 2 ? 3 : ltType === 1 ? 2 : 2;
+    if (visibilityMult >= 0.99) {
+      const cloudAtOrigin = readCloudAtSimPixel(pick.originX, pick.originY);
+      const pierce = guiControls.cloudObscurationStrength ?? 0.55;
+      visibilityMult = clamp(0.88 + cloudAtOrigin * 0.12 * pierce, 0.88, 1.2);
+    }
+
+    const originX = routePoints && routePoints.length > 0 ? routePoints[0].x : pick.originX;
+    const originY = routePoints && routePoints.length > 0 ? routePoints[0].y : pick.originY;
+
     return {
-      originX: pick.originX,
-      originY: pick.originY,
+      originX,
+      originY,
       destX, destY,
+      midX,
+      midY,
+      viaMidpoint,
       ltType,
       chargeVal: pick.chargeVal,
       seed,
@@ -16137,6 +16240,13 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       texIndex,
       eventRecordId: ++lightningEventIdCounter,
       routePoints,
+      branches: boltBranches,
+      pathLengthNorm,
+      branchCount,
+      visibilityMult,
+      flashInFront,
+      flashOnly,
+      precipOnly,
     };
   }
 
@@ -16154,9 +16264,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
 
     queueChargeDischargeForStrike(strike);
     const eventKey = 'lt-forced-' + eventId + '-t' + strike.ltType;
-    if (guiControls.radarLightningIcons)
-      registerRadarLightningStrike(eventKey, strike.groundStrike ? strike.destX : strike.originX,
-        strike.groundStrike ? strike.destY : strike.originY);
+    registerRadarIconForStrike(strike, eventKey);
     if (guiControls.enableThunder !== false)
       playThunderForStrike(eventKey, (strike.groundStrike ? strike.destX : strike.originX) / sim_res_x,
         (strike.groundStrike ? strike.destY : strike.originY) / sim_res_y,
@@ -16170,11 +16278,75 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     }
   }
 
+  function activateForcedDryBurst(eventId)
+  {
+    const channel = { id: 'dry', salt: 6311, freq: () => guiControls.dryLightningFrequency || 1 };
+    proceduralLightningState.trackedEventId = eventId;
+    proceduralLightningState.trackedChannel = channel;
+    proceduralLightningState.eventId = eventId;
+    proceduralLightningState.eventAge = 0;
+    proceduralLightningState.builtEventId = eventId;
+    proceduralLightningState.channelId = 'dry';
+    proceduralLightningState.strikes = buildProceduralStrikesForEvent(eventId, channel);
+    for (let s = 0; s < proceduralLightningState.strikes.length; s++) {
+      const st = proceduralLightningState.strikes[s];
+      queueChargeDischargeForStrike(st);
+      const eventKey = 'lt-dry-' + eventId + '-s' + s;
+      registerRadarIconForStrike(st, eventKey);
+      if (guiControls.enableThunder !== false)
+        playThunderForStrike(eventKey, st.originX / sim_res_x, st.originY / sim_res_y,
+          thunderIntensityForType(st.ltType, st.originMag) * 0.32);
+      if (typeof LightningV2 !== 'undefined') {
+        const rec = LightningV2.createEventRecord(st, eventId, iterNum);
+        lightningEventLog.push(rec);
+      }
+    }
+    const maxEv = guiControls.maxActiveLightningEvents || 24;
+    if (lightningEventLog.length > maxEv)
+      lightningEventLog.splice(0, lightningEventLog.length - maxEv);
+  }
+
+  function activateForcedStrobeBurst(eventId)
+  {
+    const channel = { id: 'strobe', salt: 1913, freq: () => guiControls.strobeLightningFrequency || 1 };
+    proceduralLightningState.trackedEventId = eventId;
+    proceduralLightningState.trackedChannel = channel;
+    proceduralLightningState.eventId = eventId;
+    proceduralLightningState.eventAge = 0;
+    proceduralLightningState.builtEventId = eventId;
+    proceduralLightningState.channelId = 'strobe';
+    proceduralLightningState.strikes = buildProceduralStrikesForEvent(eventId, channel);
+    for (let s = 0; s < proceduralLightningState.strikes.length; s++) {
+      const st = proceduralLightningState.strikes[s];
+      queueChargeDischargeForStrike(st);
+      const eventKey = 'lt-strobe-' + eventId + '-s' + s;
+      registerRadarIconForStrike(st, eventKey);
+      if (guiControls.enableThunder !== false)
+        playThunderForStrike(eventKey, st.originX / sim_res_x, st.originY / sim_res_y,
+          thunderIntensityForType(st.ltType, st.originMag) * 0.45);
+      if (typeof LightningV2 !== 'undefined') {
+        const rec = LightningV2.createEventRecord(st, eventId, iterNum);
+        lightningEventLog.push(rec);
+      }
+    }
+    const maxEv = guiControls.maxActiveLightningEvents || 24;
+    if (lightningEventLog.length > maxEv)
+      lightningEventLog.splice(0, lightningEventLog.length - maxEv);
+  }
+
   function forceSpawnLightningType(ltType)
   {
     if (typeof LightningV2 === 'undefined')
       return;
     const eventId = iterNum + ltType * 131;
+    if (ltType === 4) {
+      activateForcedStrobeBurst(eventId);
+      return;
+    }
+    if (ltType === 11) {
+      activateForcedDryBurst(eventId);
+      return;
+    }
     const pick = getForcedLightningPick(ltType, eventId);
     const strike = buildStrikeFromPick(pick, ltType, eventId, 0);
     activateForcedLightningStrike(strike);
@@ -16202,18 +16374,59 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   {
     const freq = channel.freq();
     const maxBolts = guiControls.maxActiveBolts || 8;
-    let numStrikes = 1 + Math.floor(shaderRand(eventId * 29 + 401 + channel.salt)
-      * Math.min(Math.max(freq * 0.04 + 0.5, 1), 4));
-    if (lightningBurstState.phase === 'burst')
+    const isStrobe = typeof LightningV2 !== 'undefined' && LightningV2.isStrobeChannel(channel.id);
+    const isDry = typeof LightningV2 !== 'undefined' && LightningV2.isDryChannel(channel.id);
+    const dryMode = isDry && typeof LightningV2 !== 'undefined'
+      ? LightningV2.dryBurstMode(eventId) : null;
+    let numStrikes = isStrobe && typeof LightningV2 !== 'undefined'
+      ? LightningV2.strobeBurstStrikeCount(eventId, channel, maxBolts, guiControls)
+      : isDry && typeof LightningV2 !== 'undefined'
+        ? LightningV2.dryBurstStrikeCount(eventId, channel, maxBolts, guiControls, dryMode)
+        : 1 + Math.floor(shaderRand(eventId * 29 + 401 + channel.salt)
+          * Math.min(Math.max(freq * 0.04 + 0.5, 1), 4));
+    if (!isStrobe && !isDry && lightningBurstState.phase === 'burst')
       numStrikes = Math.min(maxBolts, numStrikes + Math.floor(lightningBurstState.burstIntensity * 2));
     numStrikes = Math.min(numStrikes, maxBolts);
     const strikes = [];
+    let anchorPick = null;
     for (let s = 0; s < numStrikes; s++) {
-      const pick = pickLightningOriginCached(eventId, s, numStrikes, channel.id);
-      const strike = evaluateProceduralStrikeCached(pick, channel, eventId, s);
-      if (!strike)
+      let pick;
+      if ((isStrobe || isDry) && s > 0 && anchorPick && typeof LightningV2 !== 'undefined') {
+        pick = LightningV2.jitterPickNearAnchor(
+          anchorPick, eventId, s, sim_res_x, sim_res_y, lightningFieldCache);
+      } else {
+        pick = pickLightningOriginCached(eventId, s, numStrikes, channel.id);
+        if ((isStrobe || isDry) && !anchorPick)
+          anchorPick = pick;
+      }
+      let ltType;
+      if (isDry && typeof LightningV2 !== 'undefined')
+        ltType = LightningV2.selectTypeForDryBurst(eventId, s, dryMode, numStrikes);
+      else if (isStrobe && typeof LightningV2 !== 'undefined')
+        ltType = LightningV2.selectTypeForStrobeBurst(eventId, s);
+      else {
+        const strike = evaluateProceduralStrikeCached(pick, channel, eventId, s);
+        if (!strike)
+          continue;
+        ltType = strike.ltType;
+      }
+      if (!ltType)
         continue;
-      strikes.push(buildStrikeFromPick(pick, strike.ltType, eventId, s));
+      if (!isStrobe && !isDry) {
+        const gate = pick.cloudGate ?? 0.5;
+        const potential = pick.potential || 0;
+        if (gate < 0.12 && potential < 0.15)
+          continue;
+      }
+      const strike = buildStrikeFromPick(pick, ltType, eventId, s, {
+        strobeBurst: isStrobe,
+        dryBurst: isDry,
+      });
+      if (isStrobe)
+        strike.strobeBurst = true;
+      if (isDry)
+        strike.dryBurst = true;
+      strikes.push(strike);
     }
     return strikes;
   }
@@ -16264,25 +16477,24 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       proceduralLightningState.builtEventId = active.eventId;
       proceduralLightningState.strikes = buildProceduralStrikesForEvent(active.eventId, active.channel);
 
-      if (active.eventAge <= 0.5) {
-        for (let s = 0; s < proceduralLightningState.strikes.length; s++) {
-          const st = proceduralLightningState.strikes[s];
-          queueChargeDischargeForStrike(st);
-          const eventKey = 'lt-' + active.eventId + '-s' + s;
-          if (guiControls.radarLightningIcons)
-            registerRadarLightningStrike(eventKey, st.groundStrike ? st.destX : st.originX,
-              st.groundStrike ? st.destY : st.originY);
-          if (guiControls.enableThunder !== false)
-            playThunderForStrike(eventKey, (st.groundStrike ? st.destX : st.originX) / sim_res_x,
-              (st.groundStrike ? st.destY : st.originY) / sim_res_y,
-              thunderIntensityForType(st.ltType, st.originMag));
-          if (typeof LightningV2 !== 'undefined') {
-            const rec = LightningV2.createEventRecord(st, active.eventId, iterNum);
-            lightningEventLog.push(rec);
-            const maxEv = guiControls.maxActiveLightningEvents || 24;
-            if (lightningEventLog.length > maxEv)
-              lightningEventLog.splice(0, lightningEventLog.length - maxEv);
-          }
+      for (let s = 0; s < proceduralLightningState.strikes.length; s++) {
+        const st = proceduralLightningState.strikes[s];
+        queueChargeDischargeForStrike(st);
+        const eventKey = 'lt-' + active.eventId + '-s' + s;
+        registerRadarIconForStrike(st, eventKey);
+        if (guiControls.enableThunder !== false) {
+          const thunderMult = active.channel.id === 'strobe' ? 0.45
+            : active.channel.id === 'dry' ? 0.32 : 1.0;
+          playThunderForStrike(eventKey, (st.groundStrike ? st.destX : st.originX) / sim_res_x,
+            (st.groundStrike ? st.destY : st.originY) / sim_res_y,
+            thunderIntensityForType(st.ltType, st.originMag) * thunderMult);
+        }
+        if (typeof LightningV2 !== 'undefined') {
+          const rec = LightningV2.createEventRecord(st, active.eventId, iterNum);
+          lightningEventLog.push(rec);
+          const maxEv = guiControls.maxActiveLightningEvents || 24;
+          if (lightningEventLog.length > maxEv)
+            lightningEventLog.splice(0, lightningEventLog.length - maxEv);
         }
       }
     }
@@ -16301,6 +16513,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     procLightningPosArr.fill(0);
     procLightningDestArr.fill(0);
     procLightningMetaArr.fill(0);
+    procLightningRouteArr.fill(0);
     for (let i = 0; i < count; i++) {
       const s = st.strikes[i];
       procLightningPosArr[i * 4] = s.originX / sim_res_x;
@@ -16311,14 +16524,24 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       procLightningDestArr[i * 4 + 1] = s.destY / sim_res_y;
       procLightningDestArr[i * 4 + 2] = s.originMag;
       procLightningDestArr[i * 4 + 3] = s.numReturnStrokes || s.numFlashes || 1;
-      procLightningMetaArr[i * 4] = s.flashSize || 1;
-      procLightningMetaArr[i * 4 + 1] = s.illumRadius || 1;
-      procLightningMetaArr[i * 4 + 2] = s.groundStrike ? 1 : 0;
+      procLightningMetaArr[i * 4] = s.flashOnly
+        ? (s.flashSize || 0.3) : (s.pathLengthNorm || s.flashSize || 0.1);
+      procLightningMetaArr[i * 4 + 1] = typeof LightningV2 !== 'undefined'
+        ? LightningV2.encodeStrikeMetaY(s)
+        : (s.flashOnly ? (s.flashInFront ? 1.0 : 0.0) : ((s.branchCount || 0) / 8.0));
+      procLightningMetaArr[i * 4 + 2] = s.visibilityMult ?? 1.0;
       procLightningMetaArr[i * 4 + 3] = s.brightness || s.originMag;
+      const route = packStrikeRouteForStrike(s);
+      procLightningRouteArr[i * 4] = route[0];
+      procLightningRouteArr[i * 4 + 1] = route[1];
+      procLightningRouteArr[i * 4 + 2] = route[2];
+      procLightningRouteArr[i * 4 + 3] = route[3];
     }
     gl.uniform4fv(uloc_real_ltStrikePos, procLightningPosArr);
     gl.uniform4fv(uloc_real_ltStrikeDest, procLightningDestArr);
     gl.uniform4fv(uloc_real_ltStrikeMeta, procLightningMetaArr);
+    if (uloc_real_ltStrikeRoute)
+      gl.uniform4fv(uloc_real_ltStrikeRoute, procLightningRouteArr);
 
     const zoomNorm = clamp(cam.curZoom / sim_res_x / (guiControls.lightningLODDistance || 1), 0, 1);
     const lod = guiControls.dynamicLOD ? clamp(zoomNorm * 2.5, 0, 1) : 1.0;
@@ -16343,6 +16566,26 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     gl.uniform1i(uloc_real_ltEnableTerrainIllum, guiControls.ltEnableTerrainIllumination !== false ? 1 : 0);
     gl.uniform1i(uloc_real_ltEnableChannelGlow, guiControls.ltEnablePersistentChannelGlow !== false ? 1 : 0);
     gl.uniform1i(uloc_real_ltEnableVolumetric, guiControls.ltEnableVolumetricCloudFlashing !== false ? 1 : 0);
+    if (uloc_real_ltIcChannelVis)
+      gl.uniform1f(uloc_real_ltIcChannelVis, guiControls.intracloudChannelVisibility ?? 1);
+    if (uloc_real_ltCcChannelVis)
+      gl.uniform1f(uloc_real_ltCcChannelVis, guiControls.cloudToCloudChannelVisibility ?? 1);
+    if (uloc_real_ltSpiderChannelVis)
+      gl.uniform1f(uloc_real_ltSpiderChannelVis, guiControls.spiderChannelVisibility ?? 1);
+    if (uloc_real_ltAnvilChannelVis)
+      gl.uniform1f(uloc_real_ltAnvilChannelVis, guiControls.anvilChannelVisibility ?? 1);
+    if (uloc_real_ltCloudBranchDensity)
+      gl.uniform1f(uloc_real_ltCloudBranchDensity, guiControls.cloudLightningBranchDensity ?? 1.35);
+    if (uloc_real_ltCloudBranchLength)
+      gl.uniform1f(uloc_real_ltCloudBranchLength, guiControls.cloudLightningBranchLength ?? 0.45);
+    if (uloc_real_ltCloudChannelOpacity)
+      gl.uniform1f(uloc_real_ltCloudChannelOpacity, guiControls.cloudLightningOpacity ?? 1);
+    if (uloc_real_ltCloudObscuration)
+      gl.uniform1f(uloc_real_ltCloudObscuration, guiControls.cloudObscurationStrength ?? 0.55);
+    if (uloc_real_ltChannelIllumRatio)
+      gl.uniform1f(uloc_real_ltChannelIllumRatio, guiControls.channelIllumRatio ?? 0.5);
+    if (uloc_real_ltStrobeFlicker)
+      gl.uniform1f(uloc_real_ltStrobeFlicker, st.channelId === 'strobe' ? 1.0 : 0.0);
   }
 
   function thunderIntensityForType(ltType, originMag)
@@ -16373,6 +16616,20 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     soundSystem.soundThunder(normX, normY, intensity);
   }
 
+  function radarIconSimPositionForStrike(strike)
+  {
+    if (strike.groundStrike)
+      return { simX: strike.destX, simY: strike.destY };
+    // Horizontal / long cloud paths: icon at midpoint so radar shows the visible flash area
+    if (strike.ltType === 2 || strike.ltType === 7 || strike.ltType === 8) {
+      return {
+        simX: (strike.originX + strike.destX) * 0.5,
+        simY: (strike.originY + strike.destY) * 0.5,
+      };
+    }
+    return { simX: strike.originX, simY: strike.originY };
+  }
+
   function registerRadarLightningStrike(eventKey, simX, simY)
   {
     if (!guiControls.radarLightningIcons || registeredLightningEvents.has(eventKey))
@@ -16385,6 +16642,14 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     });
     if (registeredLightningEvents.size > 500)
       registeredLightningEvents.clear();
+  }
+
+  function registerRadarIconForStrike(strike, eventKey)
+  {
+    if (!guiControls.radarLightningIcons)
+      return;
+    const pos = radarIconSimPositionForStrike(strike);
+    registerRadarLightningStrike(eventKey, pos.simX, pos.simY);
   }
 
   function detectParticleLightningStrike()
@@ -16450,8 +16715,14 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       || guiControls.debugShowActiveLightningEvents || guiControls.debugShowThunderRadius
       || guiControls.debugShowPerformanceMetrics || guiControls.debugShowSurfaceCharge
       || guiControls.debugShowChargeOrganization || guiControls.debugShowSpiderRoutes
-      || guiControls.debugShowAnvilRoutes || guiControls.debugShowCloudPaths
-      || guiControls.debugShowLightningProbability;
+      || guiControls.debugShowAnvilRoutes       || guiControls.debugShowCloudPaths
+      || guiControls.debugShowLightningProbability
+      || guiControls.debugShowChannelVisibilityMask
+      || guiControls.debugShowCloudObscurationMask
+      || guiControls.debugShowGeneratedCloudPath
+      || guiControls.debugShowRenderedCloudPath
+      || guiControls.debugShowBoltGeometryStats
+      || guiControls.debugShowBoltDiagnostics;
   }
 
   function drawLightningFieldHeatmap(ctx, channelIndex, colorFn, alpha)
@@ -16536,18 +16807,78 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
           ctx.fillStyle = 'rgba(100, 180, 255, 0.85)';
           ctx.fill();
         }
+        const isCloudBolt = st.ltType >= 1 && st.ltType <= 3 || st.ltType === 7 || st.ltType === 8
+          || st.ltType === 9 || st.ltType === 10;
         const showRoute = (st.ltType === 7 && guiControls.debugShowSpiderRoutes)
           || (st.ltType === 8 && guiControls.debugShowAnvilRoutes)
-          || ((st.ltType === 1 || st.ltType === 2) && guiControls.debugShowCloudPaths);
-        if (showRoute && st.routePoints && st.routePoints.length > 1) {
-          ctx.strokeStyle = st.ltType === 7 ? 'rgba(180, 120, 255, 0.75)'
-            : st.ltType === 8 ? 'rgba(140, 200, 255, 0.7)' : 'rgba(100, 220, 255, 0.55)';
-          ctx.lineWidth = st.ltType === 7 ? 2 : 1.5;
+          || ((st.ltType === 1 || st.ltType === 2) && guiControls.debugShowCloudPaths)
+          || (guiControls.debugShowGeneratedCloudPath && isCloudBolt)
+          || guiControls.debugShowBoltDiagnostics;
+        if (st.flashOnly && guiControls.debugShowBoltDiagnostics) {
+          const mx = (st.originX + st.destX) * 0.5;
+          const my = (st.originY + st.destY) * 0.5;
+          const sx = simToScreenX(mx);
+          const sy = simToScreenY(my);
+          ctx.beginPath();
+          ctx.arc(sx, sy, st.flashInFront ? 14 : 10, 0, Math.PI * 2);
+          ctx.strokeStyle = st.flashInFront ? 'rgba(255, 255, 180, 0.9)' : 'rgba(180, 200, 255, 0.75)';
+          ctx.lineWidth = 2;
+          ctx.stroke();
+        }
+        if (showRoute && st.routePoints && st.routePoints.length > 1 && !st.flashOnly) {
+          ctx.strokeStyle = st.ltType === 7 ? 'rgba(180, 120, 255, 0.85)'
+            : st.ltType === 8 ? 'rgba(140, 200, 255, 0.8)' : 'rgba(100, 220, 255, 0.65)';
+          ctx.lineWidth = st.ltType === 7 ? 2.5 : 1.8;
+          ctx.setLineDash(guiControls.debugShowGeneratedCloudPath ? [6, 4] : []);
           ctx.beginPath();
           ctx.moveTo(simToScreenX(st.routePoints[0].x), simToScreenY(st.routePoints[0].y));
           for (let ri = 1; ri < st.routePoints.length; ri++)
             ctx.lineTo(simToScreenX(st.routePoints[ri].x), simToScreenY(st.routePoints[ri].y));
           ctx.stroke();
+          ctx.setLineDash([]);
+        }
+        if (guiControls.debugShowRenderedCloudPath && isCloudBolt && st.routePoints && st.routePoints.length > 1) {
+          const r = packStrikeRouteForStrike(st);
+          const knots = [
+            { x: st.originX, y: st.originY },
+            { x: r[0] * sim_res_x, y: r[1] * sim_res_y },
+            { x: r[2] * sim_res_x, y: r[3] * sim_res_y },
+            { x: st.destX, y: st.destY },
+          ];
+          ctx.strokeStyle = 'rgba(255, 255, 80, 0.9)';
+          ctx.lineWidth = 3;
+          ctx.beginPath();
+          ctx.moveTo(simToScreenX(knots[0].x), simToScreenY(knots[0].y));
+          for (let ki = 1; ki < knots.length; ki++)
+            ctx.lineTo(simToScreenX(knots[ki].x), simToScreenY(knots[ki].y));
+          ctx.stroke();
+        }
+        if (st.branches && st.branches.length > 0 && guiControls.debugShowGeneratedCloudPath) {
+          ctx.strokeStyle = 'rgba(255, 160, 255, 0.55)';
+          ctx.lineWidth = 1;
+          for (const br of st.branches) {
+            ctx.beginPath();
+            ctx.moveTo(simToScreenX(br.x), simToScreenY(br.y));
+            ctx.lineTo(simToScreenX(br.ex), simToScreenY(br.ey));
+            ctx.stroke();
+          }
+        }
+        if ((guiControls.debugShowBoltGeometryStats || guiControls.debugShowBoltDiagnostics)
+            && (isCloudBolt || st.flashOnly)) {
+          const sx = simToScreenX(st.originX);
+          const sy = simToScreenY(st.originY);
+          const pts = st.routePoints ? st.routePoints.length : 0;
+          const stats = st.flashOnly
+            ? 'FLASH ' + (st.flashInFront ? 'front' : 'behind')
+              + (st.precipOnly ? ' precip' : '') + ' sz=' + (st.flashSize || 0).toFixed(2)
+            : 'pts=' + pts + ' br=' + (st.branchCount || 0)
+              + ' len=' + (st.pathLengthNorm || 0).toFixed(2)
+              + ' vis=' + (st.visibilityMult ?? 1).toFixed(2);
+          ctx.fillStyle = 'rgba(0,0,0,0.65)';
+          ctx.fillRect(sx + 6, sy - 22, 160, 16);
+          ctx.fillStyle = '#ff8';
+          ctx.font = '10px monospace';
+          ctx.fillText(stats, sx + 10, sy - 10);
         }
         if (guiControls.debugShowStrikeDestinations && (st.groundStrike || showRoute)) {
           const dx = simToScreenX(st.destX);
@@ -16572,6 +16903,33 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
           ctx.font = '11px sans-serif';
           ctx.fillText(label, simToScreenX(st.originX) + 8, simToScreenY(st.originY) - 8);
         }
+        if (guiControls.debugShowChannelVisibilityMask || guiControls.debugShowCloudObscurationMask) {
+          const mx = (st.originX + st.destX) * 0.5;
+          const my = (st.originY + st.destY) * 0.5;
+          const sx = simToScreenX(mx);
+          const sy = simToScreenY(my);
+          const cloud = readCloudAtSimPixel(mx, my);
+          if (guiControls.debugShowChannelVisibilityMask) {
+            const vis = cloudChannelVisibilityForType(st.ltType);
+            ctx.beginPath();
+            ctx.arc(sx, sy, 16, 0, Math.PI * 2);
+            ctx.fillStyle = 'rgba(80, 255, 140, ' + (clamp(vis, 0, 2) * 0.28) + ')';
+            ctx.fill();
+            ctx.strokeStyle = 'rgba(120, 255, 180, 0.7)';
+            ctx.lineWidth = 1.5;
+            ctx.stroke();
+          }
+          if (guiControls.debugShowCloudObscurationMask) {
+            const obs = clamp(cloud * 13.6, 0, 2.5);
+            const obsT = clamp((obs - 0.12) / 0.88, 0, 1);
+            const obsFade = obsT * obsT * (3 - 2 * obsT);
+            const pierce = 0.72 + obsFade * (guiControls.cloudObscurationStrength ?? 0.55) * 0.55;
+            ctx.beginPath();
+            ctx.arc(sx, sy, 11, 0, Math.PI * 2);
+            ctx.fillStyle = 'rgba(255, 200, 80, ' + (pierce * 0.35) + ')';
+            ctx.fill();
+          }
+        }
       }
     }
 
@@ -16593,6 +16951,47 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       if (last && typeof LightningV2 !== 'undefined')
         ctx.fillText((LightningV2.LT_NAMES[last.ltType] || 'Strike') + ' @ ' + Math.floor(last.time), 14, lightningDebugCanvas.height - 46);
       ctx.fillText('Burst: ' + lightningBurstState.phase, 14, lightningDebugCanvas.height - 30);
+    }
+
+    if (guiControls.debugShowBoltDiagnostics) {
+      const strikes = proceduralLightningState.strikes || [];
+      const panelH = 36 + strikes.length * 54;
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.78)';
+      ctx.fillRect(8, 8, 360, panelH);
+      ctx.fillStyle = '#bdf';
+      ctx.font = 'bold 12px monospace';
+      const burstLabel = proceduralLightningState.channelId === 'strobe'
+        ? 'Lightning V2.6 Strobe Burst'
+        : proceduralLightningState.channelId === 'dry'
+          ? 'Lightning V2.6 Dry Burst' : 'Lightning V2.6 Bolt Diagnostics';
+      ctx.fillText(burstLabel, 14, 24);
+      ctx.font = '10px monospace';
+      ctx.fillStyle = '#9ef';
+      ctx.fillText('Rendered bolts: ' + strikes.length + '  Event age: '
+        + (proceduralLightningState.eventAge >= 0 ? proceduralLightningState.eventAge.toFixed(1) : '—'), 14, 38);
+      let y = 52;
+      for (let si = 0; si < strikes.length; si++) {
+        const st = strikes[si];
+        const typeName = typeof LightningV2 !== 'undefined'
+          ? (LightningV2.LT_NAMES[st.ltType] || ('Type ' + st.ltType)) : ('Type ' + st.ltType);
+        ctx.fillStyle = '#fff';
+        ctx.fillText('#' + si + ' ' + typeName, 14, y);
+        y += 12;
+        ctx.fillStyle = '#ccc';
+        ctx.fillText('  O(' + st.originX + ',' + st.originY + ') D(' + st.destX + ',' + st.destY + ')', 14, y);
+        y += 12;
+        const pts = st.routePoints ? st.routePoints.length : 0;
+        const br = st.branches ? st.branches.length : (st.branchCount || 0);
+        ctx.fillText('  pathPts=' + pts + ' branches=' + br + ' rendered='
+          + (st.flashOnly ? 'flash' : '1') + (st.precipOnly ? ' precip' : '')
+          + ' tex=' + (st.texIndex ?? 0), 14, y);
+        y += 12;
+        const depth = st.precipOnly ? 'precip-only'
+          : st.flashOnly ? (st.flashInFront ? 'in-front' : 'behind') : 'bolt';
+        ctx.fillText('  len=' + (st.pathLengthNorm || 0).toFixed(3) + ' depth=' + depth
+          + ' bright=' + (st.brightness || 0).toFixed(2), 14, y);
+        y += 18;
+      }
     }
 
     if (guiControls.debugShowPerformanceMetrics) {
@@ -16717,8 +17116,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       proceduralLightningState.trackedChannel = null;
     }
 
-    if (iterationIndex === 0 || iterationIndex === numIterations - 1)
-      updateProceduralLightningState();
+    // Run every iteration so strikes are detected at age 0 and radar icons register reliably
+    updateProceduralLightningState();
   }
 
   function draw()
@@ -17344,9 +17743,9 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         gl.uniform1f(uloc_real_displayVectorField, 0.0);
       }
 
-      let lightningTexNum = Math.floor(iterNum / 400) % numLightningTextures;
+      let lightningTexNum = Math.floor(iterNum / 400) % 4;
       if (proceduralLightningState.strikes.length > 0 && proceduralLightningState.strikes[0].texIndex != null)
-        lightningTexNum = proceduralLightningState.strikes[0].texIndex % numLightningTextures;
+        lightningTexNum = proceduralLightningState.strikes[0].texIndex % 4;
       gl.activeTexture(gl.TEXTURE7);
       gl.bindTexture(gl.TEXTURE_2D, lightningTextures[lightningTexNum]);
       gl.activeTexture(gl.TEXTURE8);

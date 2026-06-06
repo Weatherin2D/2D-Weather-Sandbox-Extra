@@ -7,6 +7,9 @@ onmessage = (event) => {
   const boltType = msg.type || 'CG';
 
   switch(boltType) {
+    case 'IC':
+      imgElement = generateIntracloudBolt(msg.width, msg.height);
+      break;
     case 'CC':
       imgElement = generateCloudToCloudBolt(msg.width, msg.height);
       break;
@@ -149,6 +152,66 @@ function generateLightningBolt(width, height)
     ctx.strokeStyle = genLightningColor(line_width);
     ctx.stroke();
   }
+}
+
+// Compact jagged intracloud channel (short vertical reach, branches)
+function generateIntracloudBolt(width, height)
+{
+  const canvas = new OffscreenCanvas(width, height);
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, width, height);
+
+  function getColor(lineWidth) {
+    const b = Math.pow(lineWidth, 2.0);
+    return `rgb(${12 * b}, ${13 * b}, ${16 * b})`;
+  }
+
+  const startX = width * 0.5;
+  const startY = height * 0.32;
+  const endY = height * 0.68;
+  let x = startX;
+  let y = startY;
+  let angle = (Math.random() - 0.5) * 0.6;
+  let lineWidth = 7.0;
+
+  ctx.beginPath();
+  ctx.moveTo(x, y);
+  ctx.lineWidth = lineWidth;
+
+  while (y < endY) {
+    const nextX = x + Math.sin(angle) * 1.4;
+    const nextY = y + Math.cos(angle) * 1.2;
+    angle += (Math.random() - 0.5) * 1.2;
+    angle *= 0.88;
+    ctx.lineTo(nextX, nextY);
+    x = nextX;
+    y = nextY;
+
+    if (Math.random() < 0.025) {
+      ctx.strokeStyle = getColor(lineWidth);
+      ctx.stroke();
+      let bx = x;
+      let by = y;
+      const bAng = angle + (Math.random() - 0.5) * 1.6;
+      ctx.beginPath();
+      ctx.moveTo(bx, by);
+      ctx.lineWidth = lineWidth * 0.55;
+      for (let i = 0; i < 18; i++) {
+        bx += Math.sin(bAng + (Math.random() - 0.5) * 0.8) * 1.1;
+        by += Math.cos(bAng + (Math.random() - 0.5) * 0.8) * 0.9;
+        ctx.lineTo(bx, by);
+      }
+      ctx.strokeStyle = getColor(lineWidth * 0.55);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(x, y);
+      ctx.lineWidth = lineWidth;
+    }
+  }
+
+  ctx.strokeStyle = getColor(lineWidth);
+  ctx.stroke();
+  return ctx.getImageData(0, 0, width, height);
 }
 
 // Generate horizontal cloud-to-cloud lightning bolt
