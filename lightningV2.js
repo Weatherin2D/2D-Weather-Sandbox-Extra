@@ -1591,9 +1591,9 @@
         if (controls.lightningPerformanceTier !== 'Custom')
           applyPerformanceTier(controls);
       });
-    perfFolder.add(controls, 'maxActiveLightningEvents', 4, 48, 1).name('Max Events');
-    perfFolder.add(controls, 'maxActiveBolts', 1, 12, 1).name('Max Bolts');
-    perfFolder.add(controls, 'maxBranchCount', 8, 96, 4).name('Max Branches');
+    perfFolder.add(controls, 'maxActiveLightningEvents', 4, 500, 1).name('Max Events');
+    perfFolder.add(controls, 'maxActiveBolts', 1, 500, 1).name('Max Bolts');
+    perfFolder.add(controls, 'maxBranchCount', 8, 500, 4).name('Max Branches');
     perfFolder.add(controls, 'maxIlluminationRadius', 0.2, 2, 0.05).name('Illumination Radius');
     perfFolder.add(controls, 'lightningLODDistance', 0.2, 3, 0.05).name('LOD Distance');
     perfFolder.add(controls, 'gpuEffectQuality', 0.2, 2, 0.05).name('GPU Effect Quality');
