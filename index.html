@@ -34,38 +34,47 @@
         #menuBackground {
             position: fixed;
             inset: 0;
-            z-index: -1;
+            z-index: 0;
             overflow: hidden;
             background: #000;
+            isolation: isolate;
+            pointer-events: none;
         }
 
         .menu-bg-layer {
             position: absolute;
-            inset: -4%;
-            background-size: cover;
-            background-position: center center;
-            background-repeat: no-repeat;
+            inset: 0;
             opacity: 0;
-            transform: scale(1.08) translateX(-2%);
             transition: opacity 2.5s ease-in-out;
-            will-change: opacity, transform;
+            overflow: hidden;
         }
 
         .menu-bg-layer.visible {
             opacity: 1;
         }
 
-        .menu-bg-layer.panning {
+        .menu-bg-img {
+            position: absolute;
+            width: 112%;
+            height: 112%;
+            left: -6%;
+            top: -6%;
+            object-fit: cover;
+            transform: translate3d(-2%, 0, 0) scale(1.08);
+            backface-visibility: hidden;
+        }
+
+        .menu-bg-layer.panning .menu-bg-img {
             animation: menuBgPan var(--menu-bg-slide-duration, 12s) ease-in-out forwards;
         }
 
         @keyframes menuBgPan {
             from {
-                transform: scale(1.08) translateX(-2%);
+                transform: translate3d(-2%, 0, 0) scale(1.08);
             }
 
             to {
-                transform: scale(1.12) translateX(2%);
+                transform: translate3d(2%, 0, 0) scale(1.12);
             }
         }
 
@@ -795,8 +804,8 @@
 
 <body id="body" onload="updateSetupSliders(); startMenuBackgroundSlideshow();">
     <div id="menuBackground" aria-hidden="true">
-        <div class="menu-bg-layer" id="menuBgA"></div>
-        <div class="menu-bg-layer" id="menuBgB"></div>
+        <div class="menu-bg-layer" id="menuBgA"><img class="menu-bg-img" alt=""></div>
+        <div class="menu-bg-layer" id="menuBgB"><img class="menu-bg-img" alt=""></div>
     </div>
     <nav class="main-nav">
         <div class="nav-title">
@@ -1153,6 +1162,8 @@
         let menuBgIndex = 0;
         let menuBgActiveLayer = 'A';
         let menuBgTimer = null;
+        let menuBgAdvancing = false;
+        const menuBgCache = new Map();
 
         function buildMenuBgImageList() {
             const images = [];
@@ -1161,6 +1172,32 @@
                 images.push('resources/img/menu-bg/menu-bg-' + num + '-sat.png');
             }
             return images;
+        }
+
+        function preloadMenuBgImage(path) {
+            if (menuBgCache.has(path)) {
+                return menuBgCache.get(path);
+            }
+
+            const promise = new Promise(function (resolve) {
+                const img = new Image();
+                img.onload = function () { resolve(img); };
+                img.onerror = function () { resolve(null); };
+                img.src = path;
+            });
+            menuBgCache.set(path, promise);
+            return promise;
+        }
+
+        function waitForMenuBgImg(img) {
+            return new Promise(function (resolve) {
+                if (img.complete && img.naturalWidth > 0) {
+                    resolve();
+                    return;
+                }
+                img.onload = function () { resolve(); };
+                img.onerror = function () { resolve(); };
+            });
         }
 
         function shuffleMenuBgPlaylist(images, avoidFirst) {
@@ -1190,51 +1227,86 @@
             }
         }
 
-        function showMenuBackgroundSlide(imagePath) {
+        async function showMenuBackgroundSlide(imagePath) {
             const layerA = document.getElementById('menuBgA');
             const layerB = document.getElementById('menuBgB');
             if (!layerA || !layerB) return;
 
+            await preloadMenuBgImage(imagePath);
+
             const nextLayer = menuBgActiveLayer === 'A' ? layerB : layerA;
             const currentLayer = menuBgActiveLayer === 'A' ? layerA : layerB;
+            const nextImg = nextLayer.querySelector('.menu-bg-img');
 
-            nextLayer.style.backgroundImage = "url('" + imagePath + "')";
-            nextLayer.classList.remove('panning');
+            nextLayer.classList.remove('visible', 'panning');
+            nextImg.src = imagePath;
+            await waitForMenuBgImg(nextImg);
+
             void nextLayer.offsetWidth;
-            nextLayer.classList.add('panning', 'visible');
-            currentLayer.classList.remove('visible');
+            nextLayer.classList.add('panning');
+            requestAnimationFrame(function () {
+                nextLayer.classList.add('visible');
+            });
+
+            if (currentLayer.classList.contains('visible')) {
+                const outgoing = currentLayer;
+                const onFadeEnd = function (e) {
+                    if (e.target !== outgoing || e.propertyName !== 'opacity') return;
+                    outgoing.removeEventListener('transitionend', onFadeEnd);
+                    outgoing.classList.remove('panning');
+                };
+                outgoing.addEventListener('transitionend', onFadeEnd);
+                currentLayer.classList.remove('visible');
+            } else {
+                currentLayer.classList.remove('panning');
+            }
 
             menuBgActiveLayer = menuBgActiveLayer === 'A' ? 'B' : 'A';
         }
 
-        function advanceMenuBackgroundSlide() {
-            reshuffleMenuBgPlaylistIfNeeded();
-            showMenuBackgroundSlide(menuBgPlaylist[menuBgIndex]);
-            menuBgIndex++;
+        async function advanceMenuBackgroundSlide() {
+            if (menuBgAdvancing) return;
+            menuBgAdvancing = true;
+            try {
+                reshuffleMenuBgPlaylistIfNeeded();
+                await showMenuBackgroundSlide(menuBgPlaylist[menuBgIndex]);
+                menuBgIndex++;
+            } finally {
+                menuBgAdvancing = false;
+            }
         }
 
-        function startMenuBackgroundSlideshow() {
+        function scheduleMenuBackgroundSlide() {
+            menuBgTimer = setTimeout(async function () {
+                await advanceMenuBackgroundSlide();
+                scheduleMenuBackgroundSlide();
+            }, MENU_BG_SLIDE_MS);
+        }
+
+        async function startMenuBackgroundSlideshow() {
             const container = document.getElementById('menuBackground');
             if (!container) return;
 
             if (menuBgTimer) {
-                clearInterval(menuBgTimer);
+                clearTimeout(menuBgTimer);
                 menuBgTimer = null;
             }
 
             container.style.setProperty('--menu-bg-slide-duration', (MENU_BG_SLIDE_MS / 1000) + 's');
 
-            menuBgPlaylist = shuffleMenuBgPlaylist(buildMenuBgImageList());
+            const images = buildMenuBgImageList();
+            await Promise.all(images.map(preloadMenuBgImage));
+
+            menuBgPlaylist = shuffleMenuBgPlaylist(images);
             menuBgIndex = 0;
             menuBgActiveLayer = 'A';
-            advanceMenuBackgroundSlide();
-
-            menuBgTimer = setInterval(advanceMenuBackgroundSlide, MENU_BG_SLIDE_MS);
+            await advanceMenuBackgroundSlide();
+            scheduleMenuBackgroundSlide();
         }
 
         function stopMenuBackgroundSlideshow() {
             if (menuBgTimer) {
-                clearInterval(menuBgTimer);
+                clearTimeout(menuBgTimer);
                 menuBgTimer = null;
             }
             const container = document.getElementById('menuBackground');

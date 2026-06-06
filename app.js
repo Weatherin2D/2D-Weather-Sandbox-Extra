@@ -4910,8 +4910,8 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       this.audioCtx = new window.AudioContext();
       this.jetEngineSound = new JetEngineSoundGenerator(this.audioCtx);
       // load sound files asynchronously
-      this.loadThunderSounds('cc', 13).then(buffers => { this.thunderCCSounds = buffers; });
-      this.loadThunderSounds('cg', 13).then(buffers => { this.thunderCGSounds = buffers; });
+      this.loadThunderSounds('cc', 8).then(buffers => { this.thunderCCSounds = buffers; });
+      this.loadThunderSounds('cg', 8).then(buffers => { this.thunderCGSounds = buffers; });
 
       this.loadSound('urban.m4a').then(buffer => { this.urban_sound = this.playLoop(buffer, 0.0); });
       this.loadSound('forest.mp3').then(buffer => { this.forest_sound = this.playLoop(buffer, 0.0); });
@@ -11918,7 +11918,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   const precipitationProgram = createProgram(precipitationVertexShader, precipitationShader, [ 'position_out', 'mass_out', 'density_out' ]);
 
   // Radar display setup
-  const radarVertexShader = await loadShader('radarDisplayShader.vert');
+  const radarVertexShader = await loadShader('dispShader.vert');
   const radarFragmentShader = await loadShader('radarDisplayShader.frag');
   let radarDisplayProgram; try { radarDisplayProgram = createProgram(radarVertexShader, radarFragmentShader, []); } catch(e) { loadingBar.showError("Radar link error: " + e.message); throw e; }
 
