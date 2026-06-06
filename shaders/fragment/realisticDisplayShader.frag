@@ -264,19 +264,18 @@ vec4 getAirColor(vec2 fragCoordIn)
   float currentLightningIntensity = lightningIntensityOverTime(lightningTime, lightningPos, lightningData[INTENSITY]);
 
 
+  float nightFactor = clamp(map_range(abs(sunAngle), 60. * deg2rad, 90. * deg2rad, 0., 1.), 0., 1.);
+  float ltCloudPierce = 1.0 + clamp(cloudDensity * 0.22, 0.0, 5.5);
+
   if (lightningData[INTENSITY] > 1.0) { // legacy particle CG
-    emittedLight += displayLightning(lightningPos, lightningTime, currentLightningIntensity);
-    emittedLight /= 1. + cloudDensity * 100.0;
+    emittedLight += displayLightning(lightningPos, lightningTime, currentLightningIntensity) * ltCloudPierce;
   }
 
-  float nightFactor = clamp(map_range(abs(sunAngle), 60. * deg2rad, 90. * deg2rad, 0., 1.), 0., 1.);
-
-  // Lightning V2 procedural bolts and atmospheric illumination
+  // Lightning V2.6 — unified CG bolt renderer for all types
   vec3 ltBolts = ltRenderStrikeBolts(texCoord, aspectRatios[0], cloudwater);
-  emittedLight += ltBolts;
-  emittedLight /= 1. + cloudDensity * 18.0;
+  emittedLight += ltBolts * ltCloudPierce;
   vec3 ltIllum = ltComputeStrikeIllumination(texCoord, aspectRatios[0], cloudwater, water[PRECIPITATION], nightFactor);
-  onLight += ltIllum;
+  onLight += min(ltIllum, vec3(0.06));
 
 #define lightningOnLightBrightness 0.004 // 0.002
 
@@ -602,6 +601,18 @@ void main()
 
 
   float scatering = clamp(map_range(abs(sunAngle), 75. * deg2rad, 90. * deg2rad, 0., 1.), 0., 1.); // how red the sunlight is
+  float nightFactor = clamp(map_range(abs(sunAngle), 60. * deg2rad, 90. * deg2rad, 0., 1.), 0., 1.);
+  float precipF = clamp(water[PRECIPITATION], 0.0, 1.0);
+
+  vec3 icccEmit = vec3(0.0);
+  vec3 icccCloud = vec3(0.0);
+  vec3 icccSurf = vec3(0.0);
+  vec3 precipBoltShafts = vec3(0.0);
+  if (texCoord.y >= 0.0 && texCoord.y <= 1.0) {
+    ltGetICCCFlash(texCoord, aspectRatios[0], cloudwater, precipF, nightFactor, icccEmit, icccCloud, icccSurf);
+    ltGetPrecipBoltShafts(texCoord, aspectRatios[0], precipF, nightFactor, precipBoltShafts);
+    emittedLight += icccEmit;
+  }
 
   vec3 finalLight = sunColor(scatering) * lightIntensity;
 
@@ -620,10 +631,20 @@ void main()
 
   finalLight += sunColor(scatering) * shadowLight + onLight;
 
-  opacity += min(length(emittedLight) * 0.08, 0.15);
+  if (wall[DISTANCE] == 0)
+    finalLight += icccSurf + precipBoltShafts;
+  else if (texCoord.y > 0.0 && texCoord.y <= 1.0)
+    finalLight += icccCloud + (icccSurf + precipBoltShafts) * max(precipF, 0.18);
+  else if (texCoord.y < 0.0)
+    finalLight += icccSurf + precipBoltShafts;
+
+  opacity += min(length(emittedLight) * 0.1, 0.2);
   opacity = clamp(opacity, 0.0, 1.0);
-  vec3 safeEmitted = emittedLight / (vec3(1.0) + emittedLight * 0.28);
-  fragmentColor = vec4(max(color * finalLight, 0.) + safeEmitted, opacity);
+  vec3 litBase = max(color * finalLight, 0.);
+  vec3 safeEmitted = emittedLight / (vec3(1.0) + emittedLight * 0.2);
+  float boltAmt = clamp(length(safeEmitted) * 2.8, 0.0, 1.0);
+  vec3 finalColor = mix(litBase + safeEmitted, max(litBase, safeEmitted * 1.4), boltAmt * 0.82);
+  fragmentColor = vec4(finalColor, opacity);
 
   drawCursor(cursor, view); // over everything else
 }
