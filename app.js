@@ -6944,7 +6944,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       .listen();
     UI_folder.add(guiControls, 'brushSize', 1, 200, 1).name('Brush Diameter').listen();
     UI_folder.add(guiControls, 'wholeWidth').name('Whole Width Brush').listen();
-    UI_folder.add(guiControls, 'brushIntensity', 0.005, 0.05, 0.001).name('Brush Intensity');
+    UI_folder.add(guiControls, 'brushIntensity', 0.005, 1, 0.001).name('Brush Intensity');
     UI_folder.add(guiControls, 'invertTool').name('Invert Tool (charge − / +)').listen();
     UI_folder.add(guiControls, 'allowCaves')
       .onChange(function() {
@@ -6973,7 +6973,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       .name('Sun Angle')
       .listen();
 
-    radiation_folder.add(guiControls, 'sunIntensity', 0.0, 2.0, 0.01).onChange(function() { updateSunlight('MANUAL_ANGLE'); }).name('Sun Intensity');
+    radiation_folder.add(guiControls, 'sunIntensity', 0.0, 4.0, 0.01).onChange(function() { updateSunlight('MANUAL_ANGLE'); }).name('Sun Intensity');
 
     radiation_folder.add(guiControls, 'greenhouseGases', 0.0, 0.01, 0.0001)
       .onChange(function() {
@@ -7013,7 +7013,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'dynamicWaterTemperature'), guiControls.dynamicWaterTemperature ? 1.0 : 0.0);
     });
 
-    water_folder.add(guiControls, 'landEvaporation', 0.0, 0.0002, 0.00001)
+    water_folder.add(guiControls, 'landEvaporation', 0.0, 0.0004, 0.00001)
       .onChange(function() {
         gl.useProgram(boundaryProgram);
         gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'landEvaporation'), guiControls.landEvaporation);
@@ -7141,7 +7141,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     radar_folder.add(guiControls, 'radarOverlay').name('Overlay on Realistic View').listen();
     refreshRadarOverlaySourceDropdown();
     radar_folder.add(guiControls, 'radarLightningIcons').name('Lightning Strike Icons').listen();
-    radar_folder.add(guiControls, 'radarLightningIconDuration', 30, 120, 0.5).name('Lightning Icon Duration (s)').listen();
+    radar_folder.add(guiControls, 'radarLightningIconDuration', 1, 120, 0.5).name('Lightning Icon Duration (s)').listen();
     radar_folder.add(guiControls, 'dbzOpacityEnabled').name('dBZ-Based Opacity').listen();
     radar_folder.add(guiControls, 'dbzOpacityStrength', 0.0, 10.0, 0.05).name('dBZ Opacity Strength').listen();
     radar_folder.add(guiControls, 'worldRadarProduct', buildWorldRadarProductGuiOptions())
@@ -7202,7 +7202,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       .add(guiControls, 'displayMode', displayModeOptions)
       .name('Display Mode')
       .listen();
-    display_folder.add(guiControls, 'exposure', 0.5, 5.0, 0.01)
+    display_folder.add(guiControls, 'exposure', 0.25, 5.0, 0.01)
       .onChange(function() {
         gl.useProgram(postProcessingProgram);
         gl.uniform1f(gl.getUniformLocation(postProcessingProgram, 'exposure'), guiControls.exposure);
@@ -17644,7 +17644,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     opts = opts || {};
     const originMag = Math.max(
       Math.abs(pick.chargeVal || 0),
-      (pick.potential || readPotentialCached(pick.originX, pick.originY)) * 0.35);
+      (pick.potential || readPotentialCached(pick.originX, pick.originY)) * 0.45);
     const seed = lightningStrikeSeedJS(eventId, slot, pick.originX, pick.originY);
     let flashSize = ltType === 3 || ltType === 1 || ltType === 2
       ? computeCloudFlashSize(originMag, eventId, slot) : 1.0;
@@ -17721,7 +17721,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     if (pathLengthNorm <= 0 && routePoints && routePoints.length > 1 && typeof LightningV2 !== 'undefined')
       pathLengthNorm = LightningV2.pathLengthNorm(routePoints, sim_res_x, sim_res_y);
     if (branchCount <= 0 && routePoints)
-      branchCount = ltType === 7 ? 4 : ltType === 8 ? 3 : ltType === 2 ? 3 : ltType === 1 ? 2 : 2;
+      branchCount = ltType === 7 ? 4 : ltType === 8 ? 3 : ltType === 2 ? 4 : ltType === 1 ? 3 : 3;
     if (visibilityMult >= 0.99) {
       const cloudAtOrigin = readCloudAtSimPixel(pick.originX, pick.originY);
       const pierce = guiControls.cloudObscurationStrength ?? 0.55;
@@ -18088,12 +18088,6 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     gl.uniform1f(uloc_real_ltNightFlash, guiControls.nighttimeFlashStrength || 1);
     gl.uniform1f(uloc_real_ltDayFlash, guiControls.daytimeFlashStrength || 0.45);
     gl.uniform1f(uloc_real_ltLODLevel, lod * gpuQuality);
-    gl.uniform1i(uloc_real_ltEnableAtmos, guiControls.ltEnableAtmosphericLighting !== false ? 1 : 0);
-    gl.uniform1i(uloc_real_ltEnableCloudIllum, guiControls.ltEnableCloudIllumination !== false ? 1 : 0);
-    gl.uniform1i(uloc_real_ltEnableRainIllum, guiControls.ltEnableRainShaftIllumination !== false ? 1 : 0);
-    gl.uniform1i(uloc_real_ltEnableTerrainIllum, guiControls.ltEnableTerrainIllumination !== false ? 1 : 0);
-    gl.uniform1i(uloc_real_ltEnableChannelGlow, guiControls.ltEnablePersistentChannelGlow !== false ? 1 : 0);
-    gl.uniform1i(uloc_real_ltEnableVolumetric, guiControls.ltEnableVolumetricCloudFlashing !== false ? 1 : 0);
     if (uloc_real_ltIcChannelVis)
       gl.uniform1f(uloc_real_ltIcChannelVis, guiControls.intracloudChannelVisibility ?? 1);
     if (uloc_real_ltCcChannelVis)
@@ -18102,12 +18096,18 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       gl.uniform1f(uloc_real_ltSpiderChannelVis, guiControls.spiderChannelVisibility ?? 1);
     if (uloc_real_ltAnvilChannelVis)
       gl.uniform1f(uloc_real_ltAnvilChannelVis, guiControls.anvilChannelVisibility ?? 1);
+    if (uloc_real_ltCloudChannelOpacity)
+      gl.uniform1f(uloc_real_ltCloudChannelOpacity, guiControls.cloudLightningOpacity ?? 1);
+    gl.uniform1i(uloc_real_ltEnableAtmos, guiControls.ltEnableAtmosphericLighting !== false ? 1 : 0);
+    gl.uniform1i(uloc_real_ltEnableCloudIllum, guiControls.ltEnableCloudIllumination !== false ? 1 : 0);
+    gl.uniform1i(uloc_real_ltEnableRainIllum, guiControls.ltEnableRainShaftIllumination !== false ? 1 : 0);
+    gl.uniform1i(uloc_real_ltEnableTerrainIllum, guiControls.ltEnableTerrainIllumination !== false ? 1 : 0);
+    gl.uniform1i(uloc_real_ltEnableChannelGlow, guiControls.ltEnablePersistentChannelGlow !== false ? 1 : 0);
+    gl.uniform1i(uloc_real_ltEnableVolumetric, guiControls.ltEnableVolumetricCloudFlashing !== false ? 1 : 0);
     if (uloc_real_ltCloudBranchDensity)
       gl.uniform1f(uloc_real_ltCloudBranchDensity, guiControls.cloudLightningBranchDensity ?? 1.35);
     if (uloc_real_ltCloudBranchLength)
       gl.uniform1f(uloc_real_ltCloudBranchLength, guiControls.cloudLightningBranchLength ?? 0.45);
-    if (uloc_real_ltCloudChannelOpacity)
-      gl.uniform1f(uloc_real_ltCloudChannelOpacity, guiControls.cloudLightningOpacity ?? 1);
     if (uloc_real_ltCloudObscuration)
       gl.uniform1f(uloc_real_ltCloudObscuration, guiControls.cloudObscurationStrength ?? 0.55);
     if (uloc_real_ltChannelIllumRatio)

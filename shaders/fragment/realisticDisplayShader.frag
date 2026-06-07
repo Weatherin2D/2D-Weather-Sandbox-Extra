@@ -254,13 +254,10 @@ void applyAirLightning(vec2 uv, float cloudwater, float precip, float cloudDensi
     emittedLight += displayLightning(lightningPos, lightningTime, currentLightningIntensity) * ltCloudPierce;
   }
 
-  if (ltLODLevel < 0.05)
-    return;
-
   vec3 ltBolts = ltRenderStrikeBolts(uv, aspectRatios[0], cloudwater);
   emittedLight += ltBolts * ltCloudPierce;
   vec3 ltIllum = ltComputeStrikeIllumination(uv, aspectRatios[0], cloudwater, precip, nightFactor);
-  onLight += min(ltIllum, vec3(0.06));
+  onLight += ltIllum;
 
   const float lightningOnLightBrightness = 0.004;
 
@@ -624,7 +621,7 @@ void main()
   if (wall[DISTANCE] == 0)
     finalLight += icccSurf + precipBoltShafts;
   else if (texCoord.y > 0.0 && texCoord.y <= 1.0)
-    finalLight += icccCloud + (icccSurf + precipBoltShafts) * max(precipF, 0.18);
+    finalLight += icccCloud + icccSurf * max(precipF, 0.22);
   else if (texCoord.y < 0.0)
     finalLight += icccSurf + precipBoltShafts;
 

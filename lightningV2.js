@@ -698,7 +698,7 @@
     }
     if (strike.flashOnly)
       return strike.flashInFront ? 1.0 : 0.0;
-    return (strike.branchCount || 0) / 8.0;
+    return (strike.branchCount || 3) / 8.0;
   }
 
   /** Pick origin/dest with opposing charge and enforced vertical separation. */
