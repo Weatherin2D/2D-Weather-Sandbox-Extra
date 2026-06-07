@@ -50,6 +50,7 @@ uniform vec4 cursor; // Xpos   Ypos  Size   type
 uniform float displayVectorField;
 
 uniform float iterNum;
+uniform float visualQuality;
 
 out vec4 fragmentColor;
 
@@ -204,89 +205,72 @@ vec3 spectral_zucconi(float w)
 }
 
 
-vec4 getAirColor(vec2 fragCoordIn)
+float normalizedSunlightAt(vec2 tc)
 {
-  vec2 bndFragCoord = vec2(fragCoordIn.x, clamp(fragCoordIn.y, 0., resolution.y)); // bound y within range
-  base = bilerpWallVis(baseTex, wallTex, bndFragCoord);
-  wall = texture(wallTex, bndFragCoord * texelSize);                               // texCoord
-  water = bilerpWallVis(waterTex, wallTex, bndFragCoord);
-  lightIntensity = smoothSunlightSample(lightTex, bndFragCoord * texelSize, texelSize) / standardSunBrightness;
+  return smoothSunlightSample(lightTex, tc, texelSize, visualQuality) / standardSunBrightness;
+}
 
-  ivec4 wallX0Ym = texture(wallTex, texCoordX0Ym);
-
-  float realTemp = potentialToRealT(base[TEMPERATURE]);
-
-  bool nightTime = abs(sunAngle) > 85.0 * deg2rad; // false = day time
-
-  shadowLight = minShadowLight;
-
-  // fragmentColor = vec4(vec3(light),1); return; // View light texture for debugging
-
-  float cloudwater = water[CLOUD];
-
-  vec3 cloudCol = vec3(1.0 / (cloudwater * 0.005 + 1.0)); // 0.10 white to black
+vec4 computeCloudSmokeColor(float cloudwater, float precip, float smokeAmt, float localLightIntensity)
+{
+  vec3 cloudCol = vec3(1.0 / (cloudwater * 0.005 + 1.0));
 
   float cloudDensity = max(cloudwater * 13.6, 0.0);
-
-  float totalDensity = cloudDensity + water[PRECIPITATION] * 0.8; // visualize precipitation
-
-
-  // float cloudOpacity = clamp(cloudwater * 4.0, 0.0, 1.0);
+  float totalDensity = cloudDensity + precip * 0.8;
   float cloudOpacity = clamp(1.0 - (1.0 / (1. + totalDensity)), 0.0, 1.0);
 
-  // Blue tint on thick cloud undersides only when actually in shadow.
   float thickCloudMask = smoothstep(0.45, 0.90, cloudOpacity);
-  float cloudShadow = (1.0 - smoothstep(0.06, 0.22, lightIntensity)) * thickCloudMask;
+  float cloudShadow = (1.0 - smoothstep(0.06, 0.22, localLightIntensity)) * thickCloudMask;
   cloudCol = mix(cloudCol, cloudCol * vec3(0.45, 0.58, 0.85), cloudShadow * 0.45);
 
   const vec3 smokeThinCol = vec3(0.8, 0.51, 0.26);
   const vec3 smokeThickCol = vec3(0., 0., 0.);
 
-
-  float smokeOpacity = clamp(1. - (1. / (water[SMOKE] + 1.)), 0.0, 1.0);
+  float smokeOpacity = clamp(1. - (1. / (smokeAmt + 1.)), 0.0, 1.0);
   float fireIntensity = clamp((smokeOpacity - 0.8) * 25., 0.0, 1.0);
-
-  vec3 fireCol = hsv2rgb(vec3(fireIntensity * 0.008, 0.98, 5.0)) * 1.0; // 1.0, 0.7, 0.0
-
+  vec3 fireCol = hsv2rgb(vec3(fireIntensity * 0.008, 0.98, 5.0)) * 1.0;
   vec3 smokeOrFireCol = mix(mix(smokeThinCol, smokeThickCol, smokeOpacity), fireCol, fireIntensity);
 
-  shadowLight += fireIntensity * 2.5;                                                                                 // 1.5
+  shadowLight += fireIntensity * 2.5;
 
-  float opacity = 1. - (1. - smokeOpacity) * (1. - cloudOpacity);                                                     // alpha blending
-  vec3 color = (smokeOrFireCol * smokeOpacity / opacity) + (cloudCol * cloudOpacity * (1. - smokeOpacity) / opacity); // color blending
+  float outOpacity = 1. - (1. - smokeOpacity) * (1. - cloudOpacity);
+  vec3 outColor = (smokeOrFireCol * smokeOpacity / outOpacity)
+    + (cloudCol * cloudOpacity * (1. - smokeOpacity) / outOpacity);
 
+  return vec4(outColor, outOpacity);
+}
 
+void applyAirLightning(vec2 uv, float cloudwater, float precip, float cloudDensity)
+{
   vec4 lightningData = texture(lightningDataTex, vec2(0.5));
   vec2 lightningPos = lightningData.xy;
   float lightningStartIterNum = lightningData[START_ITERNUM];
-
   float lightningTime = calcLightningTime(lightningStartIterNum);
   float currentLightningIntensity = lightningIntensityOverTime(lightningTime, lightningPos, lightningData[INTENSITY]);
-
 
   float nightFactor = clamp(map_range(abs(sunAngle), 60. * deg2rad, 90. * deg2rad, 0., 1.), 0., 1.);
   float ltCloudPierce = 1.0 + clamp(cloudDensity * 0.22, 0.0, 5.5);
 
-  if (lightningData[INTENSITY] > 1.0) { // legacy particle CG
+  if (lightningData[INTENSITY] > 1.0) {
     emittedLight += displayLightning(lightningPos, lightningTime, currentLightningIntensity) * ltCloudPierce;
   }
 
-  // Lightning V2.6 — unified CG bolt renderer for all types
-  vec3 ltBolts = ltRenderStrikeBolts(texCoord, aspectRatios[0], cloudwater);
+  if (ltLODLevel < 0.05)
+    return;
+
+  vec3 ltBolts = ltRenderStrikeBolts(uv, aspectRatios[0], cloudwater);
   emittedLight += ltBolts * ltCloudPierce;
-  vec3 ltIllum = ltComputeStrikeIllumination(texCoord, aspectRatios[0], cloudwater, water[PRECIPITATION], nightFactor);
+  vec3 ltIllum = ltComputeStrikeIllumination(uv, aspectRatios[0], cloudwater, precip, nightFactor);
   onLight += min(ltIllum, vec3(0.06));
 
-#define lightningOnLightBrightness 0.004 // 0.002
+  const float lightningOnLightBrightness = 0.004;
 
-  vec2 dist = vec2(lightningPos.x - texCoord.x, max((abs(lightningPos.y / 2. - texCoord.y) - 0.1), 0.));
+  vec2 dist = vec2(lightningPos.x - uv.x, max((abs(lightningPos.y / 2. - uv.y) - 0.1), 0.));
   dist.x *= aspectRatios[0];
   float lightningOnLight = lightningOnLightBrightness / (pow(length(dist), 2.) + 0.03);
   lightningOnLight *= currentLightningIntensity;
   onLight += vec3(lightningOnLight);
-
-  return vec4(color, opacity);
 }
+
 
 float rand(float n) { return fract(sin(n) * 43758.5453123); }
 
@@ -296,7 +280,7 @@ void main()
   base = bilerpWallVis(baseTex, wallTex, bndFragCoord);
   wall = texture(wallTex, bndFragCoord * texelSize);                           // texCoord
   water = bilerpWallVis(waterTex, wallTex, bndFragCoord);
-  lightIntensity = smoothSunlightSample(lightTex, bndFragCoord * texelSize, texelSize) / standardSunBrightness;
+  lightIntensity = normalizedSunlightAt(bndFragCoord * texelSize);
 
   ivec4 wallX0Ym = texture(wallTex, texCoordX0Ym);
 
@@ -393,10 +377,16 @@ void main()
       float waterLevel = 0.8 + waveSignalL * max(-windSpeed, 0.) + waveSignalR * max(windSpeed, 0.);
 
       if (wall[VERT_DISTANCE] == 0 && fract(fragCoord.y) > waterLevel) { // air
-        vec4 airColor = getAirColor(fragCoord + vec2(0., 0.5));
-
+        vec2 airFC = fragCoord + vec2(0., 0.5);
+        vec2 airUV = airFC * texelSize;
+        vec2 airBnd = vec2(airFC.x, clamp(airFC.y, 0., resolution.y));
+        vec4 airWater = bilerpWallVis(waterTex, wallTex, airBnd);
+        float airCloud = airWater[CLOUD];
+        float airPrecip = airWater[PRECIPITATION];
+        vec4 airColor = computeCloudSmokeColor(airCloud, airPrecip, airWater[SMOKE], normalizedSunlightAt(airUV));
         opacity = airColor.a;
         color = airColor.rgb;
+        applyAirLightning(airUV, airCloud, airPrecip, max(airCloud * 13.6, 0.0));
       } else {
         color = vec3(0, 0.5, 1.0); // water
       }
@@ -427,10 +417,10 @@ void main()
     }
   } else { // air
 
-    vec4 airColor = getAirColor(fragCoord);
-
+    vec4 airColor = computeCloudSmokeColor(cloudwater, water[PRECIPITATION], water[SMOKE], lightIntensity);
     opacity = airColor.a;
     color = airColor.rgb;
+    applyAirLightning(texCoord, cloudwater, water[PRECIPITATION], max(cloudwater * 13.6, 0.0));
 
 
     vec2 rainbowCenter = vec2(0.0, -1.5 + abs(sunAngle) * 0.60);

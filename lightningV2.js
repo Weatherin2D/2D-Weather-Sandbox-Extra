@@ -124,6 +124,7 @@
     terrainInfluence: 1.0,
     stormOrganizationInfluence: 1.0,
     lightningClusteringStrength: 0.7,
+    lightningSpawnStrictness: 1.0,
     enableChargeTransport: true,
     enableGroundConductivity: true,
     enableElectricalBurstCycles: true,
@@ -151,7 +152,7 @@
     atmosphericLightingResolution: 1.0,
     dynamicLOD: true,
     adaptiveLightningQuality: true,
-    performanceAutoScaling: false,
+    performanceAutoScaling: true,
 
     debugShowChargeField: false,
     debugShowChargeGradient: false,
@@ -453,6 +454,95 @@
     return clamp(1.0 - 1.0 / (1.0 + cloud * 13.0), 0, 1);
   }
 
+  function getSpawnThresholds(controls, channelId) {
+    let cloudTh = controls.cloudLightningThreshold ?? 0.3;
+    if (channelId === 'cg')
+      cloudTh = controls.cloudGroundLightningThreshold ?? 0.3;
+    else if (channelId === 'strobe')
+      cloudTh = controls.strobeLightningThreshold ?? 0.3;
+    else if (channelId === 'sheet' || channelId === 'flash')
+      cloudTh = controls.cloudFlashThreshold ?? 0.25;
+    else if (channelId === 'dry')
+      cloudTh = Math.max(controls.cloudLightningThreshold ?? 0.3, 0.35);
+    const scale = controls.lightningSpawnStrictness ?? 1.0;
+    return {
+      minCloudGate: (0.34 + cloudTh * 0.56) * scale,
+      minChargeMag: (0.32 + cloudTh * 0.52) * scale,
+      minPotential: (0.30 + cloudTh * 0.40) * scale,
+      minRawCloud: (controls.chargeMinCloudDensity ?? 0.32) * (0.88 + cloudTh * 0.48) * scale,
+    };
+  }
+
+  function isSimInCloudLayer(simX, simY, simResX, simResY, allowGround) {
+    if (!Number.isFinite(simX) || !Number.isFinite(simY))
+      return false;
+    if (simX < 0 || simX > simResX - 1 || simY < 0 || simY > simResY - 1)
+      return false;
+    if (allowGround)
+      return simY >= simResY * 0.02 && simY <= simResY * 0.98;
+    return simY >= simResY * 0.07 && simY <= simResY * 0.88;
+  }
+
+  function clampLightningSimPos(simX, simY, simResX, simResY, allowGround) {
+    const yMin = allowGround ? simResY * 0.02 : simResY * 0.07;
+    const yMax = allowGround ? simResY * 0.98 : simResY * 0.88;
+    return {
+      x: clamp(simX, 0, simResX - 1),
+      y: clamp(simY, yMin, yMax),
+    };
+  }
+
+  function isChargeValidForLtType(charge, ltType, controls, channelId) {
+    const t = getSpawnThresholds(controls, channelId || 'intracloud');
+    const min = t.minChargeMag;
+    const c = Number.isFinite(charge) ? charge : 0;
+    if (ltType === LT.CG)
+      return c <= -min * 0.88;
+    if (ltType === LT.CG_POSITIVE)
+      return c >= min * 0.92;
+    if (ltType === LT.UPWARD)
+      return c >= min * 0.78;
+    if (ltType === LT.SPIDER || ltType === LT.ANVIL_CRAWLER)
+      return c >= min * 0.62;
+    if (ltType === LT.BOLT_FROM_BLUE)
+      return c <= -min * 0.55;
+    return Math.abs(c) >= min * 0.88;
+  }
+
+  function isOriginEligibleForStrike(cache, pick, controls, channelId, ltType, simResX, simResY) {
+    if (!cache || !pick)
+      return false;
+    const t = getSpawnThresholds(controls, channelId);
+    const ox = pick.originX ?? pick.x;
+    const oy = pick.originY ?? pick.y;
+    const charge = pick.chargeVal ?? pick.charge ?? readCharge(cache, ox, oy);
+    const cloud = pick.cloud ?? readCloud(cache, ox, oy);
+    const cg = pick.cloudGate ?? cloudGate(cloud);
+    const chargeMag = Math.abs(charge);
+    const sx = simResX ?? 1;
+    const sy = simResY ?? 1;
+
+    if (!isSimInCloudLayer(ox, oy, sx, sy, false))
+      return false;
+    if (cloud < t.minRawCloud || cg < t.minCloudGate)
+      return false;
+    if (chargeMag < t.minChargeMag)
+      return false;
+    if (chargeMag * cg < t.minChargeMag * t.minCloudGate * 0.90)
+      return false;
+
+    if (ltType != null)
+      return isChargeValidForLtType(charge, ltType, controls, channelId);
+
+    if (channelId === 'cg')
+      return charge <= -t.minChargeMag * 0.75 || charge >= t.minChargeMag * 0.95;
+    if (channelId === 'upward')
+      return charge >= t.minChargeMag * 0.78;
+    if (channelId === 'spider' || channelId === 'anvil')
+      return charge >= t.minChargeMag * 0.62;
+    return chargeMag >= t.minChargeMag;
+  }
+
   function computeLightningPotentialAt(cache, simX, simY) {
     const charge = readCharge(cache, simX, simY);
     const cloud = readCloud(cache, simX, simY);
@@ -461,12 +551,14 @@
     return potential * 0.55 + Math.abs(charge) * cg * 0.35 + cloud * cg * 0.1;
   }
 
-  function pickOriginFromPotential(cache, eventId, slot, numSlots, simResX, simResY, channelId) {
+  function pickOriginFromPotential(cache, eventId, slot, numSlots, simResX, simResY, channelId, controls) {
+    controls = controls || {};
     let bestScore = -1;
-    let best = { x: simResX * 0.5, y: simResY * 0.35, charge: 0, cloud: 0, potential: 0 };
+    let best = null;
     const anvilBias = channelId === 'spider' || channelId === 'anvil';
+    const thresholds = getSpawnThresholds(controls, channelId);
 
-    for (let c = 0; c < 8; c++) {
+    for (let c = 0; c < 14; c++) {
       const cs = c * 503 + slot * 131;
       const xSlot = (slot + shaderRand(eventId * 1.37 + cs) * 0.85) / Math.max(numSlots, 1);
       const ox = (xSlot * 0.75 + shaderRand(eventId * 2.11 + cs) * 0.18 + 0.04) * simResX;
@@ -474,24 +566,37 @@
         ? (shaderRand(eventId * 3.07 + cs) * 0.35 + 0.48) * simResY
         : (shaderRand(eventId * 3.07 + cs) * 0.75 + 0.12) * simResY;
 
-      for (let v = 0; v < 4; v++) {
-        const vy = clamp(probeY + (v - 1.5) * simResY * 0.05, simResY * 0.05, simResY * 0.92);
-        let score = computeLightningPotentialAt(cache, ox, vy);
+      for (let v = 0; v < 5; v++) {
+        const vy = clamp(probeY + (v - 2) * simResY * 0.05, simResY * 0.05, simResY * 0.92);
         const cloud = readCloud(cache, ox, vy);
+        const charge = readCharge(cache, ox, vy);
+        const potential = readPotential(cache, ox, vy);
+        const cg = cloudGate(cloud);
+        const candidate = {
+          x: ox, y: vy, charge, cloud, potential,
+          originX: ox, originY: vy, chargeVal: charge, cloudGate: cg,
+        };
+        if (!isOriginEligibleForStrike(cache, candidate, controls, channelId, null, simResX, simResY))
+          continue;
+        let score = computeLightningPotentialAt(cache, ox, vy);
+        score += Math.abs(charge) * 0.25 + cg * 0.18 + potential * 0.12;
         if (anvilBias) score *= 0.55 + cloud * 1.1 + (vy > simResY * 0.42 ? 0.35 : 0.0);
+        if (cloud < thresholds.minRawCloud) score *= 0.35;
         const noise = 0.55 + shaderRand(eventId * 5.03 + cs + v * 17) * 0.9;
         if (score * noise > bestScore) {
           bestScore = score * noise;
-          best = {
-            x: ox, y: vy,
-            charge: readCharge(cache, ox, vy),
-            cloud,
-            potential: readPotential(cache, ox, vy),
-          };
+          best = candidate;
         }
       }
     }
-    return best;
+    if (best)
+      return best;
+    return {
+      x: -1, y: -1,
+      charge: 0, cloud: 0, potential: 0,
+      originX: -1, originY: -1,
+      chargeVal: 0, cloudGate: 0, eligible: false,
+    };
   }
 
   function pickGroundTarget(cache, origin, eventId, slot, simResX, simResY, controls) {
@@ -1024,12 +1129,25 @@
   }
 
   /** Strobe burst composition: sheet + intracloud flashes + anvil/spider crawlers. */
-  function selectTypeForStrobeBurst(eventId, slot) {
+  function selectTypeForStrobeBurst(eventId, slot, charge, controls) {
+    controls = controls || {};
     const r = shaderRand(eventId * 5.31 + slot * 73.0 + 1913.0);
-    if (r < 0.34) return LT.SHEET;
-    if (r < 0.67) return LT.INTRACLOUD;
-    if (r < 0.84) return LT.SPIDER;
-    return LT.ANVIL_CRAWLER;
+    const pool = [
+      [0.34, LT.SHEET],
+      [0.33, LT.INTRACLOUD],
+      [0.17, LT.SPIDER],
+      [0.16, LT.ANVIL_CRAWLER],
+    ].filter(([, type]) => isChargeValidForLtType(charge, type, controls, 'strobe'));
+    if (pool.length === 0)
+      return null;
+    const sum = pool.reduce((acc, [w]) => acc + w, 0);
+    let pick = r * sum;
+    for (const [w, type] of pool) {
+      pick -= w;
+      if (pick <= 0)
+        return type;
+    }
+    return pool[pool.length - 1][1];
   }
 
   function strobeBurstStrikeCount(eventId, channel, maxBolts, controls) {
@@ -1057,33 +1175,51 @@
     return Math.min(maxBolts, mode === 'ic_plus_spider' ? base + 1 : base);
   }
 
-  function selectTypeForDryBurst(eventId, slot, mode, numStrikes) {
-    if (mode === 'spider_only') return LT.SPIDER;
-    if (mode === 'ic_plus_spider' && slot === numStrikes - 1) return LT.SPIDER;
-    return LT.INTRACLOUD;
+  function selectTypeForDryBurst(eventId, slot, mode, numStrikes, charge, controls) {
+    controls = controls || {};
+    const icOk = isChargeValidForLtType(charge, LT.INTRACLOUD, controls, 'dry');
+    const spiderOk = isChargeValidForLtType(charge, LT.SPIDER, controls, 'dry');
+    if (mode === 'spider_only')
+      return spiderOk ? LT.SPIDER : null;
+    if (mode === 'ic_plus_spider' && slot === numStrikes - 1)
+      return spiderOk ? LT.SPIDER : (icOk ? LT.INTRACLOUD : null);
+    return icOk ? LT.INTRACLOUD : null;
   }
 
-  function jitterPickNearAnchor(anchor, eventId, slot, simResX, simResY, cache) {
+  function jitterPickNearAnchor(anchor, eventId, slot, simResX, simResY, cache, controls, channelId) {
+    controls = controls || {};
+    const thresholds = getSpawnThresholds(controls, channelId || 'intracloud');
+    const minCloud = thresholds.minRawCloud;
     const spreadX = simResX * (0.06 + shaderRand(eventId + slot * 37) * 0.10);
     const spreadY = simResY * (0.03 + shaderRand(eventId + slot * 53) * 0.06);
     let ox = clamp(anchor.originX + (shaderRand(eventId * 2.1 + slot * 11) - 0.5) * spreadX, 0, simResX - 1);
     let oy = clamp(anchor.originY + (shaderRand(eventId * 3.7 + slot * 19) - 0.5) * spreadY, simResY * 0.12, simResY * 0.88);
     if (cache) {
       let best = { x: ox, y: oy, score: -1 };
-      for (let i = 0; i < 8; i++) {
+      for (let i = 0; i < 10; i++) {
         const tx = clamp(ox + (shaderRand(eventId + i * 23) - 0.5) * spreadX * 0.5, 0, simResX - 1);
         const ty = clamp(oy + (shaderRand(eventId + i * 31) - 0.5) * spreadY * 0.5, simResY * 0.10, simResY * 0.90);
-        const score = scoreCloudCell(cache, tx, ty, { simResX, simResY, minCloud: 0.04 });
-        if (score > best.score) best = { x: tx, y: ty, score };
+        const score = scoreCloudCell(cache, tx, ty, { simResX, simResY, minCloud });
+        if (score > best.score)
+          best = { x: tx, y: ty, score };
       }
-      if (best.score > 0) { ox = best.x; oy = best.y; }
+      if (best.score > 0) {
+        ox = best.x;
+        oy = best.y;
+      }
     }
+    const cloud = cache ? readCloud(cache, ox, oy) : (anchor.cloud ?? 0);
+    const charge = cache ? readCharge(cache, ox, oy) : (anchor.chargeVal ?? 0);
+    const potential = cache ? readPotential(cache, ox, oy) : (anchor.potential ?? 0);
+    const cg = cloudGate(cloud);
     return {
       originX: ox,
       originY: oy,
-      cloudGate: anchor.cloudGate ?? 0.6,
-      chargeVal: anchor.chargeVal ?? 0.35,
-      potential: anchor.potential ?? 0.4,
+      cloud,
+      cloudGate: cg,
+      chargeVal: charge,
+      charge,
+      potential,
     };
   }
 
@@ -1319,7 +1455,8 @@
 
   function selectTypeForChannel(channelId, origin, eventId, slot, controls, isDry) {
     const r = shaderRand(eventId * 3.17 + slot * 41 + channelId.length * 7);
-    const chargeMag = Math.abs(origin.charge);
+    const charge = origin.charge ?? 0;
+    const chargeMag = Math.abs(charge);
     const isHigh = chargeMag > 0.42 || origin.potential > 0.55;
 
     if (isDry && r < 0.72) return LT.INTRACLOUD;
@@ -1327,15 +1464,29 @@
       case 'intracloud': return LT.INTRACLOUD;
       case 'cc': return r > 0.35 ? LT.CLOUD_TO_CLOUD : LT.INTRACLOUD;
       case 'sheet': return LT.SHEET;
-      case 'strobe': return selectTypeForStrobeBurst(eventId, slot);
+      case 'strobe': return selectTypeForStrobeBurst(eventId, slot, charge, controls);
       case 'cg':
-        if (isHigh && r < 0.12 * (controls.positiveCgFrequency + 0.1))
+        if (charge >= 0.18 && isHigh && r < 0.12 * (controls.positiveCgFrequency + 0.1))
           return LT.CG_POSITIVE;
+        if (charge > -0.12)
+          return null;
         return LT.CG;
-      case 'spider': return LT.SPIDER;
-      case 'anvil': return LT.ANVIL_CRAWLER;
-      case 'upward': return LT.UPWARD;
-      case 'bftb': return LT.BOLT_FROM_BLUE;
+      case 'spider':
+        if (charge < 0.08)
+          return null;
+        return LT.SPIDER;
+      case 'anvil':
+        if (charge < 0.08)
+          return null;
+        return LT.ANVIL_CRAWLER;
+      case 'upward':
+        if (charge < 0.12)
+          return null;
+        return LT.UPWARD;
+      case 'bftb':
+        if (charge > -0.08)
+          return null;
+        return LT.BOLT_FROM_BLUE;
       case 'dry': return LT.INTRACLOUD;
       default: return LT.SHEET;
     }
@@ -1419,10 +1570,10 @@
 
   function strikeChance(freq, burstIntensity, clustering) {
     const norm = clamp(freq / 100, 0, 1);
-    let chance = norm * 0.22 + norm * norm * 0.18 + 0.003;
-    chance = Math.min(0.82, chance);
-    chance *= Math.max(0.2, burstIntensity);
-    if (clustering > 0.5) chance *= 1.0 + (clustering - 0.5) * 0.6;
+    let chance = norm * 0.14 + norm * norm * 0.11 + 0.001;
+    chance = Math.min(0.58, chance);
+    chance *= Math.max(0.08, burstIntensity);
+    if (clustering > 0.5) chance *= 1.0 + (clustering - 0.5) * 0.45;
     return chance;
   }
 
@@ -1567,6 +1718,8 @@
     behaviorFolder.add(controls, 'terrainInfluence', 0, 3, 0.05).name('Terrain Influence');
     behaviorFolder.add(controls, 'stormOrganizationInfluence', 0, 3, 0.05).name('Storm Organization');
     behaviorFolder.add(controls, 'lightningClusteringStrength', 0, 1, 0.05).name('Clustering Strength');
+    behaviorFolder.add(controls, 'lightningSpawnStrictness', 0.6, 2.0, 0.05).name('Spawn Strictness')
+      .onChange(() => { controls.lightningPreset = 'Custom'; callbacks.onSettingsChanged(); });
     behaviorFolder.add(controls, 'enableChargeTransport').name('Charge Transport');
     behaviorFolder.add(controls, 'enableGroundConductivity').name('Ground Conductivity');
     behaviorFolder.add(controls, 'enableElectricalBurstCycles').name('Electrical Bursts');
@@ -1673,6 +1826,11 @@
     pathLengthNorm,
     placementForSpiderAnvil,
     cloudGate,
+    getSpawnThresholds,
+    isOriginEligibleForStrike,
+    isChargeValidForLtType,
+    isSimInCloudLayer,
+    clampLightningSimPos,
     computeLightningPotentialAt,
     pickOriginFromPotential,
     pickGroundTarget,

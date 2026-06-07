@@ -569,6 +569,7 @@ const guiControls_default = {
   menuWidth : 400,
   hodograph2DNodes : 30,
   hodographProfileNodes : 30,
+  analogRelevancy : 50,
 };
 
 var horizontalDisplayMult = 3.0; // 3.0 to cover srceen while zoomed out
@@ -4435,6 +4436,9 @@ function setLoadingBar()
     var element = document.getElementById('IntroScreen');
     element.parentNode.removeChild(element); // remove introscreen div
 
+    var nav = document.querySelector('.main-nav');
+    if (nav) nav.classList.add('sim-running');
+
     document.body.style.backgroundColor = 'black';
 
     loadingBar = new LoadingBar(1);
@@ -7444,6 +7448,12 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     datGui.add(guiControls, 'openSkyEditor').name('Open Sky Editor');
     datGui.add(guiControls, 'hodograph2DNodes', 5, 100, 1).name('2D Hodograph Nodes');
     datGui.add(guiControls, 'hodographProfileNodes', 5, 100, 1).name('Profile Hodograph Nodes');
+    datGui.add(guiControls, 'analogRelevancy', 0, 100, 1).name('Analog Relevancy').onChange(() => {
+      if (typeof soundingGraph !== 'undefined' && soundingGraph) {
+        soundingGraph._similarAnalogsFingerprint = '';
+        soundingGraph.renderMetricsSimilarSection(soundingGraph._lastAnalogSnapshot, true);
+      }
+    });
 
     datGui.width = 400;
   }
@@ -7471,15 +7481,19 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     adaptiveSimIters = 6;
     smoothedFrameMs = 18;
 
-    clockEl.innerHTML = ''
-    clockEl.style.position = 'absolute';
-    clockEl.style.fontFamily = 'Monospace';
-    clockEl.style.fontSize = '35px';
-    clockEl.style.color = 'white';
+    clockEl.innerHTML = '';
+    clockEl.style.position = 'fixed';
+    clockEl.style.zIndex = '3';
+    clockEl.style.left = '0';
+    clockEl.style.top = '10px';
     clockEl.style.width = '100%';
     clockEl.style.textAlign = 'center';
-    clockEl.style.top = '0';
-    clockEl.style.left = '200px';
+    clockEl.style.fontFamily = "'Segoe UI', Arial, sans-serif";
+    clockEl.style.fontSize = '32px';
+    clockEl.style.fontWeight = '700';
+    clockEl.style.color = '#ffffff';
+    clockEl.style.textShadow = '0 1px 3px rgba(0, 0, 0, 0.95), 0 0 10px rgba(0, 0, 0, 0.7)';
+    clockEl.style.webkitFontSmoothing = 'antialiased';
     clockEl.style.pointerEvents = 'none';
 
     simDateTime = new Date(2000, Math.floor(guiControls.month) - 1, (guiControls.month % 1) * 30.417);
@@ -7817,7 +7831,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
           dash.setAttribute('aria-hidden', 'false');
         }
         const metricsPanel = document.getElementById('soundingMetricsPanel');
-        if (metricsPanel) metricsPanel.style.display = 'block';
+        if (metricsPanel) metricsPanel.style.display = 'flex';
       } else {
         style.display = 'none';
         const dash = document.getElementById('soundingDashboard');
@@ -7902,20 +7916,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
           this.saveCurrentSounding();
         });
       }
-      const toggleFreeze = () => {
-        if (guiControls.graphFixedPosition) {
-          guiControls.graphFixedPosition = false;
-        } else {
-          guiControls.graphFixedPosition = true;
-          guiControls.graphFixedX = Math.floor(Math.abs(mod(mouseXinSim * sim_res_x, sim_res_x)));
-          guiControls.graphFixedY = Math.floor(mouseYinSim * sim_res_y);
-        }
-        const freezeBtnEl = document.getElementById('soundingFreezeBtn');
-        if (freezeBtnEl) {
-          freezeBtnEl.textContent = guiControls.graphFixedPosition ? 'Unlock' : 'Freeze';
-        }
-      };
-      if (freezeBtn) freezeBtn.addEventListener('click', toggleFreeze);
+      if (freezeBtn) freezeBtn.addEventListener('click', () => toggleSoundingFreeze());
       bindToggle('togLayoutEdit', 'soundingLayoutEdit');
       const layoutResetBtn = document.getElementById('soundingLayoutResetBtn');
       if (layoutResetBtn) {
@@ -7928,14 +7929,14 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       const shareBtn = document.getElementById('soundingShareImageBtn');
       if (shareBtn) {
         shareBtn.addEventListener('click', () => {
-          const link = document.createElement('a');
-          link.download = 'sounding-column.png';
-          link.href = this.exportSoundingPng();
-          link.click();
+          if (!this.downloadSoundingPng()) {
+            alert('Could not download sounding image. Open the Skew-T graph (G) and try again.');
+          }
         });
       }
       this.initLayoutEditor();
       this.setLayoutEditMode(guiControls.soundingLayoutEdit);
+      this.initAnalogsPanel();
     },
     _escapeHtml : function(str) {
       return String(str)
@@ -8467,53 +8468,304 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       ctx.stroke();
       ctx.restore();
     },
+    _exportDrawMetricsSectionTitle : function(ctx, box, scaleX, scaleY, y, title) {
+      y += 4 * scaleY;
+      ctx.fillStyle = 'rgba(255,255,255,0.06)';
+      this._exportFillRoundRect(ctx, box.x + 6 * scaleX, y - 8 * scaleY, box.w - 12 * scaleX, 12 * scaleY, 2);
+      ctx.fill();
+      ctx.fillStyle = '#7a8fa0';
+      ctx.font = `bold ${Math.round(9 * scaleY)}px Segoe UI, Arial`;
+      ctx.fillText(title, box.x + 10 * scaleX, y);
+      return y + 12 * scaleY;
+    },
+    _exportParseCssColor : function(el, fallback) {
+      if (!el) return fallback || '#88aacc';
+      const bg = el.style.background || el.style.backgroundColor;
+      if (bg) return bg;
+      return fallback || '#88aacc';
+    },
+    _exportDrawMetricsBar : function(ctx, el, box, scaleX, scaleY, y) {
+      const nameEl = el.querySelector('.name');
+      const pctEl = el.querySelector('.pct');
+      const fillEl = el.querySelector('.fill');
+      if (!nameEl || !pctEl) return y;
+      const barH = 11 * scaleY;
+      const trackH = 4 * scaleY;
+      ctx.fillStyle = nameEl.style.color || '#7a8fa0';
+      ctx.font = `${Math.round(9 * scaleY)}px Segoe UI, Arial`;
+      ctx.fillText(nameEl.textContent, box.x + 8 * scaleX, y);
+      ctx.textAlign = 'right';
+      ctx.fillStyle = pctEl.style.color || nameEl.style.color || '#7a8fa0';
+      ctx.fillText(pctEl.textContent, box.x + box.w - 8 * scaleX, y);
+      ctx.textAlign = 'left';
+      y += 4 * scaleY;
+      const trackX = box.x + 8 * scaleX;
+      const trackW = box.w - 16 * scaleX;
+      ctx.fillStyle = 'rgba(255,255,255,0.08)';
+      ctx.fillRect(trackX, y, trackW, trackH);
+      const pct = parseInt(pctEl.textContent, 10) || 0;
+      ctx.fillStyle = this._exportParseCssColor(fillEl, '#88aacc');
+      ctx.fillRect(trackX, y, trackW * Math.max(0, Math.min(1, pct / 100)), trackH);
+      return y + barH;
+    },
+    _exportDrawAnalogMatchData : function(ctx, analog, score, box, scaleX, scaleY, y) {
+      const pct = Math.max(0, Math.min(100, score || 0));
+      const severity = this.computeAnalogSeverityScore(analog);
+      const nameColor = this.severityScoreToColor(severity);
+      const subColor = this._lerpColor(nameColor, '#7a8fa0', 0.35);
+      const barH = 11 * scaleY;
+      const trackH = 4 * scaleY;
+      ctx.font = `600 ${Math.round(9 * scaleY)}px Segoe UI, Arial`;
+      const name = analog.name || 'Analog';
+      if (this._textColorNeedsGlow(nameColor)) {
+        ctx.shadowColor = 'rgba(255,255,255,0.85)';
+        ctx.shadowBlur = 4 * scaleY;
+      }
+      ctx.fillStyle = nameColor;
+      ctx.fillText(name, box.x + 8 * scaleX, y);
+      ctx.textAlign = 'right';
+      ctx.fillText(pct + '%', box.x + box.w - 8 * scaleX, y);
+      ctx.textAlign = 'left';
+      ctx.shadowBlur = 0;
+      y += 4 * scaleY;
+      const trackX = box.x + 8 * scaleX;
+      const trackW = box.w - 16 * scaleX;
+      ctx.fillStyle = 'rgba(255,255,255,0.08)';
+      ctx.fillRect(trackX, y, trackW, trackH);
+      ctx.fillStyle = nameColor;
+      ctx.fillRect(trackX, y, trackW * (pct / 100), trackH);
+      y += barH - 2 * scaleY;
+      const sub = this._analogMatchSubline(analog);
+      if (sub) {
+        ctx.fillStyle = subColor;
+        ctx.font = `${Math.round(8 * scaleY)}px Segoe UI, Arial`;
+        ctx.fillText(sub, box.x + 10 * scaleX, y);
+        y += 10 * scaleY;
+      }
+      return y;
+    },
+    _exportDrawAnalogMatchDataCompact : function(ctx, analog, score, box, scaleX, scaleY, y, maxY) {
+      if (y > maxY) return y;
+      return this._exportDrawAnalogMatchData(ctx, analog, score, box, scaleX, scaleY, y);
+    },
+    _getSimilarAnalogsForExport : function(limit) {
+      const cap = limit || 4;
+      if (Array.isArray(this._lastSimilarAnalogsRendered) && this._lastSimilarAnalogsRendered.length) {
+        return this._lastSimilarAnalogsRendered.slice(0, cap);
+      }
+      return this.getSimilarAnalogs(this._lastAnalogSnapshot, cap);
+    },
+    _exportEstimateMetricsPanelHeight : function(scaleY) {
+      const rows = this._metricsPanelRowsBase || [];
+      let lines = 2;
+      for (const row of rows) {
+        if (row.section) lines += 1.4;
+        else if (row.miniBar) lines += 1.1;
+        else lines += 1;
+      }
+      const snap = this._lastAnalogSnapshot;
+      if (snap && Array.isArray(snap.hazards)) {
+        lines += Math.min(6, snap.hazards.filter(h => (h.pct || 0) >= 10).length) * 1.1;
+      }
+      const similarN = this._getSimilarAnalogsForExport(4).length;
+      const overlayN = (this._overlayAnalogIds || []).length;
+      lines += similarN > 0 ? 1.4 + similarN * 2.2 : 0;
+      lines += overlayN > 0 ? 1.4 + overlayN * 1.8 : 0;
+      return lines * 11 * scaleY + 28 * scaleY;
+    },
+    _exportExpandMetricsPanelBox : function(box, gcRect, scaleX, scaleY) {
+      const gc = this.graphCanvas;
+      const neededH = this._exportEstimateMetricsPanelHeight(scaleY);
+      let maxBottom = gc ? gc.height - 8 : box.y + neededH;
+      const footer = document.querySelector('.sounding-footer');
+      if (footer && gcRect) {
+        const fbox = this._exportMapRect(footer.getBoundingClientRect(), gcRect, scaleX, scaleY);
+        if (fbox.y > box.y + 40 * scaleY) maxBottom = fbox.y - 4 * scaleY;
+      }
+      box.h = Math.min(Math.max(box.h, neededH), maxBottom - box.y);
+      return box;
+    },
+    _exportDrawMiniBarFromData : function(ctx, row, box, scaleX, scaleY, y) {
+      const pct = Math.max(0, Math.min(100, row.pct || 0));
+      const name = row.shortLabel || row.label || '';
+      const barH = 11 * scaleY;
+      const trackH = 4 * scaleY;
+      ctx.fillStyle = '#7a8fa0';
+      ctx.font = `${Math.round(9 * scaleY)}px Segoe UI, Arial`;
+      ctx.fillText(name, box.x + 8 * scaleX, y);
+      ctx.textAlign = 'right';
+      ctx.fillText(pct + '%', box.x + box.w - 8 * scaleX, y);
+      ctx.textAlign = 'left';
+      y += 4 * scaleY;
+      const trackX = box.x + 8 * scaleX;
+      const trackW = box.w - 16 * scaleX;
+      ctx.fillStyle = 'rgba(255,255,255,0.08)';
+      ctx.fillRect(trackX, y, trackW, trackH);
+      ctx.fillStyle = row.color || '#88aacc';
+      ctx.fillRect(trackX, y, trackW * (pct / 100), trackH);
+      return y + barH;
+    },
+    _exportDrawMetricsRowsFromData : function(ctx, rows, box, scaleX, scaleY, y, maxY) {
+      if (!rows || !rows.length) return y;
+      for (const row of rows) {
+        if (y > maxY) break;
+        if (row.section) {
+          y = this._exportDrawMetricsSectionTitle(ctx, box, scaleX, scaleY, y, row.section);
+        } else if (row.miniBar) {
+          y = this._exportDrawMiniBarFromData(ctx, row, box, scaleX, scaleY, y);
+        } else if (row.label) {
+          ctx.fillStyle = '#7a8fa0';
+          ctx.font = `${Math.round(10 * scaleY)}px Consolas, monospace`;
+          ctx.fillText(row.label, box.x + 8 * scaleX, y);
+          ctx.fillStyle = row.color || '#e8eef2';
+          ctx.textAlign = 'right';
+          ctx.fillText(row.value != null ? String(row.value) : '—', box.x + box.w - 8 * scaleX, y);
+          ctx.textAlign = 'left';
+          y += 11 * scaleY;
+        }
+      }
+      return y;
+    },
+    _exportDrawHazardBarsFromSnapshot : function(ctx, snap, box, scaleX, scaleY, y, maxY) {
+      const hazards = (snap && snap.hazards) || [];
+      const list = hazards.filter(h => (h.pct || 0) >= 10).slice(0, 6);
+      if (!list.length) return y;
+      for (const h of list) {
+        if (y > maxY) break;
+        const pct = Math.max(0, Math.min(100, h.pct || 0));
+        const barH = 11 * scaleY;
+        const trackH = 4 * scaleY;
+        ctx.fillStyle = '#7a8fa0';
+        ctx.font = `${Math.round(9 * scaleY)}px Segoe UI, Arial`;
+        ctx.fillText(h.label || 'Hazard', box.x + 8 * scaleX, y);
+        ctx.textAlign = 'right';
+        ctx.fillText(pct + '%', box.x + box.w - 8 * scaleX, y);
+        ctx.textAlign = 'left';
+        y += 4 * scaleY;
+        const trackX = box.x + 8 * scaleX;
+        const trackW = box.w - 16 * scaleX;
+        ctx.fillStyle = 'rgba(255,255,255,0.08)';
+        ctx.fillRect(trackX, y, trackW, trackH);
+        ctx.fillStyle = h.color || '#88aacc';
+        ctx.fillRect(trackX, y, trackW * (pct / 100), trackH);
+        y += barH;
+      }
+      return y;
+    },
+    _exportDrawSimilarAnalogsFromData : function(ctx, box, scaleX, scaleY, y, maxY) {
+      const matches = this._getSimilarAnalogsForExport(4);
+      if (!matches.length) {
+        const src = this._analogSourceFilter || 'all';
+        const srcLabel = src === 'builtin' ? 'real world' : (src === 'custom' ? 'custom' : '');
+        y = this._exportDrawMetricsSectionTitle(ctx, box, scaleX, scaleY, y, 'Similar Analogs');
+        ctx.fillStyle = '#7a8fa0';
+        ctx.font = `${Math.round(9 * scaleY)}px Segoe UI, Arial`;
+        ctx.fillText(
+          srcLabel ? ('No similar ' + srcLabel + ' analogs') : 'No similar analogs',
+          box.x + 10 * scaleX,
+          y
+        );
+        return y + 10 * scaleY;
+      }
+      y = this._exportDrawMetricsSectionTitle(ctx, box, scaleX, scaleY, y, 'Similar Analogs');
+      for (const { analog, score } of matches) {
+        if (y > maxY) break;
+        y = this._exportDrawAnalogMatchDataCompact(ctx, analog, score, box, scaleX, scaleY, y, maxY);
+      }
+      return y;
+    },
+    _exportDrawOverlayAnalogsSection : function(ctx, box, scaleX, scaleY, y, maxY, compact) {
+      const ids = this._overlayAnalogIds || [];
+      if (!ids.length) return y;
+      y = this._exportDrawMetricsSectionTitle(ctx, box, scaleX, scaleY, y, 'Skew-T Overlays');
+      const snap = this._lastAnalogSnapshot;
+      let colorIdx = 0;
+      for (const id of ids) {
+        if (y > maxY) break;
+        const analog = this.findAnalogById(id);
+        if (!analog) continue;
+        const lineColor = this._analogOverlayColors[colorIdx % this._analogOverlayColors.length];
+        const severity = this.computeAnalogSeverityScore(analog);
+        const nameColor = this.severityScoreToColor(severity);
+        const subColor = this._lerpColor(nameColor, '#7a8fa0', 0.35);
+        colorIdx++;
+        const swatchY = y - 7 * scaleY;
+        ctx.fillStyle = lineColor;
+        ctx.fillRect(box.x + 8 * scaleX, swatchY, 8 * scaleX, 8 * scaleY);
+        ctx.fillStyle = nameColor;
+        ctx.font = `600 ${Math.round(9 * scaleY)}px Segoe UI, Arial`;
+        let line = analog.name || 'Analog';
+        const sim = snap ? this.computeAnalogSimilarity(analog, snap) : null;
+        if (sim != null) line += ' · ' + sim + '% match';
+        ctx.fillText(line, box.x + 20 * scaleX, y);
+        y += 10 * scaleY;
+        const meta = this._analogMatchSubline(analog);
+        if (meta) {
+          ctx.fillStyle = subColor;
+          ctx.font = `${Math.round(8 * scaleY)}px Segoe UI, Arial`;
+          ctx.fillText(meta, box.x + 20 * scaleX, y);
+          y += 10 * scaleY;
+        }
+      }
+      return y;
+    },
     _exportDrawMetricsPanel : function(ctx, panelEl, gcRect, scaleX, scaleY) {
       if (!panelEl || panelEl.style.display === 'none') return;
       const dom = panelEl.getBoundingClientRect();
       if (dom.width < 4 || dom.height < 4) return;
-      const box = this._exportMapRect(dom, gcRect, scaleX, scaleY);
+      const box = this._exportExpandMetricsPanelBox(
+        this._exportMapRect(dom, gcRect, scaleX, scaleY),
+        gcRect,
+        scaleX,
+        scaleY
+      );
+      const maxY = box.y + box.h - 4 * scaleY;
       ctx.save();
       this._exportDrawPanelChrome(ctx, box, scaleY);
       let y = box.y + 12 * scaleY;
-      const timeEl = panelEl.querySelector('.sounding-metrics-time');
-      if (timeEl && timeEl.textContent) {
+      const timeLine = this._metricsTimeLine ||
+        (panelEl.querySelector('.sounding-metrics-time') || {}).textContent || '';
+      if (timeLine) {
         ctx.fillStyle = '#8899aa';
         ctx.font = `${Math.round(10 * scaleY)}px Consolas, monospace`;
-        ctx.fillText(timeEl.textContent, box.x + 8 * scaleX, y);
+        ctx.fillText(timeLine, box.x + 8 * scaleX, y);
         y += 14 * scaleY;
       }
-      const body = panelEl.querySelector('#soundingMetricsBody');
-      if (!body) {
-        ctx.restore();
-        return;
-      }
-      for (const el of body.children) {
-        if (y > box.y + box.h - 4 * scaleY) break;
-        if (el.classList.contains('sounding-metrics-section')) {
-          y += 4 * scaleY;
-          ctx.fillStyle = 'rgba(255,255,255,0.06)';
-          this._exportFillRoundRect(ctx, box.x + 6 * scaleX, y - 8 * scaleY, box.w - 12 * scaleX, 12 * scaleY, 2);
-          ctx.fill();
-          ctx.fillStyle = '#7a8fa0';
-          ctx.font = `bold ${Math.round(9 * scaleY)}px Segoe UI, Arial`;
-          ctx.fillText(el.textContent.trim(), box.x + 10 * scaleX, y);
-          y += 12 * scaleY;
-        } else if (el.classList.contains('sounding-metrics-row')) {
-          const lbl = el.querySelector('.lbl');
-          const val = el.querySelector('.val');
-          if (!lbl || !val) continue;
-          ctx.fillStyle = '#7a8fa0';
-          ctx.font = `${Math.round(10 * scaleY)}px Consolas, monospace`;
-          ctx.fillText(lbl.textContent, box.x + 8 * scaleX, y);
-          ctx.fillStyle = val.style.color || '#e8eef2';
-          ctx.textAlign = 'right';
-          ctx.fillText(val.textContent, box.x + box.w - 8 * scaleX, y);
-          ctx.textAlign = 'left';
-          y += 11 * scaleY;
-        } else if (el.classList.contains('sounding-metrics-bar')) {
-          y += 2 * scaleY;
+      const rows = this._metricsPanelRowsBase;
+      if (rows && rows.length) {
+        y = this._exportDrawMetricsRowsFromData(ctx, rows, box, scaleX, scaleY, y, maxY);
+      } else {
+        const body = panelEl.querySelector('#soundingMetricsBody');
+        if (body) {
+          for (const el of body.children) {
+            if (y > maxY) break;
+            if (el.classList.contains('sounding-metrics-section')) {
+              y = this._exportDrawMetricsSectionTitle(ctx, box, scaleX, scaleY, y, el.textContent.trim());
+            } else if (el.classList.contains('sounding-metrics-row')) {
+              const lbl = el.querySelector('.lbl');
+              const val = el.querySelector('.val');
+              if (!lbl || !val) continue;
+              ctx.fillStyle = '#7a8fa0';
+              ctx.font = `${Math.round(10 * scaleY)}px Consolas, monospace`;
+              ctx.fillText(lbl.textContent, box.x + 8 * scaleX, y);
+              ctx.fillStyle = val.style.color || '#e8eef2';
+              ctx.textAlign = 'right';
+              ctx.fillText(val.textContent, box.x + box.w - 8 * scaleX, y);
+              ctx.textAlign = 'left';
+              y += 11 * scaleY;
+            } else if (el.classList.contains('sounding-metrics-bar')) {
+              y = this._exportDrawMetricsBar(ctx, el, box, scaleX, scaleY, y);
+            }
+          }
         }
       }
+      const snap = this._lastAnalogSnapshot;
+      if (snap && Array.isArray(snap.hazards) && snap.hazards.some(h => (h.pct || 0) >= 10)) {
+        y = this._exportDrawMetricsSectionTitle(ctx, box, scaleX, scaleY, y, 'HAZARD PROBABILITIES');
+        y = this._exportDrawHazardBarsFromSnapshot(ctx, snap, box, scaleX, scaleY, y, maxY);
+      }
+      y = this._exportDrawSimilarAnalogsFromData(ctx, box, scaleX, scaleY, y, maxY);
+      y = this._exportDrawOverlayAnalogsSection(ctx, box, scaleX, scaleY, y, maxY, true);
       ctx.restore();
     },
     _exportDrawHeader : function(ctx, headerEl, gcRect, scaleX, scaleY) {
@@ -8546,26 +8798,55 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       }
       ctx.restore();
     },
-    exportSoundingPng : function() {
+    buildSoundingExportCanvas : function() {
       const gc = this.graphCanvas;
-      if (!gc) return '';
+      if (!gc || gc.width < 1 || gc.height < 1) return null;
       const dash = document.getElementById('soundingDashboard');
       const out = document.createElement('canvas');
       out.width = gc.width;
       out.height = gc.height;
       const ctx = out.getContext('2d');
+      if (!ctx) return null;
       ctx.drawImage(gc, 0, 0);
-      if (!dash || !dash.classList.contains('visible') || !guiControls.showGraph) {
-        return out.toDataURL('image/png');
+      if (this._lastSkewTExportHelpers && this._overlayAnalogIds && this._overlayAnalogIds.length) {
+        this.drawAnalogOverlays(ctx, this._lastSkewTExportHelpers);
       }
-      const {gcRect, scaleX, scaleY} = this._exportCanvasScale();
-      this._exportDrawHeader(ctx, dash.querySelector('.sounding-header'), gcRect, scaleX, scaleY);
-      this._exportDrawMetricsPanel(ctx, document.getElementById('soundingMetricsPanel'), gcRect, scaleX, scaleY);
-      this._exportDrawFooterBar(ctx, gcRect, scaleX, scaleY);
-      this._exportDrawFooterPanel(ctx, document.getElementById('soundingReadoutPanel'), gcRect, scaleX, scaleY);
-      this._exportDrawFooterPanel(ctx, document.getElementById('soundingParcelPanel'), gcRect, scaleX, scaleY);
-      this._exportDrawFooterPanel(ctx, document.getElementById('soundingControlsPanel'), gcRect, scaleX, scaleY);
-      return out.toDataURL('image/png');
+      if (dash && dash.classList.contains('visible') && guiControls.showGraph) {
+        try {
+          const {gcRect, scaleX, scaleY} = this._exportCanvasScale();
+          this._exportDrawHeader(ctx, dash.querySelector('.sounding-header'), gcRect, scaleX, scaleY);
+          this._exportDrawMetricsPanel(ctx, document.getElementById('soundingMetricsPanel'), gcRect, scaleX, scaleY);
+          this._exportDrawFooterBar(ctx, gcRect, scaleX, scaleY);
+          this._exportDrawFooterPanel(ctx, document.getElementById('soundingReadoutPanel'), gcRect, scaleX, scaleY);
+          this._exportDrawFooterPanel(ctx, document.getElementById('soundingParcelPanel'), gcRect, scaleX, scaleY);
+          this._exportDrawFooterPanel(ctx, document.getElementById('soundingControlsPanel'), gcRect, scaleX, scaleY);
+        } catch (err) {
+          console.warn('Sounding dashboard export overlay failed; graph canvas still exported.', err);
+        }
+      }
+      return out;
+    },
+    exportSoundingPng : function() {
+      const out = this.buildSoundingExportCanvas();
+      return out ? out.toDataURL('image/png') : '';
+    },
+    downloadSoundingPng : function(filename) {
+      let dataUrl = '';
+      try {
+        dataUrl = this.exportSoundingPng();
+      } catch (err) {
+        console.error('Sounding PNG export failed:', err);
+        return false;
+      }
+      if (!dataUrl || !dataUrl.startsWith('data:image/png')) return false;
+      const link = document.createElement('a');
+      link.download = filename || 'sounding-column.png';
+      link.href = dataUrl;
+      link.style.display = 'none';
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      return true;
     },
     renderMetricsPanel : function(rows, timeLine) {
       const body = document.getElementById('soundingMetricsBody');
@@ -8576,6 +8857,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       }
       let html = '';
       for (const row of rows || []) {
+        if (row.analogSourceBar || row.analogMatch) continue;
         if (row.section) {
           html += '<div class="sounding-metrics-section">' + this._escapeHtml(row.section) + '</div>';
         } else if (row.miniBar) {
@@ -8594,6 +8876,1131 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         }
       }
       body.innerHTML = html;
+      this.renderMetricsSimilarSection(this._lastAnalogSnapshot);
+    },
+    SOUNDING_ANALOGS_STORAGE_KEY : 'soundingAnalogs_v1',
+    SOUNDING_ANALOGS_USER_KEY : 'soundingAnalogsUser_v1',
+    SOUNDING_ANALOGS_HIDDEN_KEY : 'soundingAnalogsHidden_v1',
+    SOUNDING_ANALOGS_TAB_KEY : 'soundingMetricsTab_v1',
+    SOUNDING_ANALOGS_SOURCE_KEY : 'soundingAnalogSourceFilter_v1',
+    SOUNDING_ANALOGS_SKIP_DELETE_CONFIRM_KEY : 'soundingAnalogSkipDeleteConfirm_v1',
+    _userAnalogs : [],
+    _hiddenBuiltinIds : [],
+    _analogSearch : '',
+    _analogFilter : 'all',
+    _analogSourceFilter : 'all',
+    _skipAnalogDeleteConfirm : false,
+    _metricsPanelRowsBase : null,
+    _metricsTimeLine : '',
+    _metricsSimilarReady : false,
+    _similarAnalogsFingerprint : '',
+    _lastSimilarAnalogsRendered : null,
+    _analogsPanelFingerprint : '',
+    _analogsListEventsReady : false,
+    _lastSkewTExportHelpers : null,
+    _metricsTab : 'metrics',
+    _overlayAnalogIds : [],
+    _lastAnalogSnapshot : null,
+    _analogsUiReady : false,
+    _analogOverlayColors : ['#FFD700', '#FF69B4', '#00FA9A', '#DA70D6', '#FFA500', '#7DF9FF'],
+    getBuiltinAnalogs : function() {
+      const presets = (typeof SOUNDING_ANALOG_PRESETS !== 'undefined' && Array.isArray(SOUNDING_ANALOG_PRESETS))
+        ? SOUNDING_ANALOG_PRESETS : [];
+      const hidden = new Set(this._hiddenBuiltinIds || []);
+      return presets.filter(a => a && a.id && !hidden.has(a.id));
+    },
+    getUserAnalogs : function() {
+      return (this._userAnalogs || []).filter(a => a && a.id);
+    },
+    getAllAnalogs : function() {
+      return this.getBuiltinAnalogs().concat(this.getUserAnalogs());
+    },
+    findAnalogById : function(id) {
+      return this.getAllAnalogs().find(a => a.id === id);
+    },
+    loadAnalogs : function() {
+      try {
+        const rawUser = localStorage.getItem(this.SOUNDING_ANALOGS_USER_KEY);
+        const rawLegacy = localStorage.getItem(this.SOUNDING_ANALOGS_STORAGE_KEY);
+        let user = rawUser ? JSON.parse(rawUser) : null;
+        if (!Array.isArray(user) && rawLegacy) {
+          const legacy = JSON.parse(rawLegacy);
+          user = Array.isArray(legacy) ? legacy.filter(a => a && a.id && !a.builtin) : [];
+        }
+        this._userAnalogs = Array.isArray(user) ? user.filter(a => a && a.id && !a.builtin) : [];
+      } catch (e) {
+        this._userAnalogs = [];
+      }
+      try {
+        const rawHidden = localStorage.getItem(this.SOUNDING_ANALOGS_HIDDEN_KEY);
+        this._hiddenBuiltinIds = rawHidden ? JSON.parse(rawHidden) : [];
+        if (!Array.isArray(this._hiddenBuiltinIds)) this._hiddenBuiltinIds = [];
+      } catch (e) {
+        this._hiddenBuiltinIds = [];
+      }
+      try {
+        const tab = localStorage.getItem(this.SOUNDING_ANALOGS_TAB_KEY);
+        if (tab === 'metrics' || tab === 'analogs') this._metricsTab = tab;
+      } catch (e) { /* ignore */ }
+      try {
+        const src = localStorage.getItem(this.SOUNDING_ANALOGS_SOURCE_KEY);
+        if (src === 'all' || src === 'builtin' || src === 'custom') this._analogSourceFilter = src;
+      } catch (e) { /* ignore */ }
+      try {
+        this._skipAnalogDeleteConfirm = localStorage.getItem(this.SOUNDING_ANALOGS_SKIP_DELETE_CONFIRM_KEY) === '1';
+      } catch (e) { /* ignore */ }
+    },
+    saveAnalogs : function() {
+      try {
+        localStorage.setItem(this.SOUNDING_ANALOGS_USER_KEY, JSON.stringify(this.getUserAnalogs()));
+      } catch (e) { /* ignore quota */ }
+    },
+    saveHiddenBuiltins : function() {
+      try {
+        localStorage.setItem(this.SOUNDING_ANALOGS_HIDDEN_KEY, JSON.stringify(this._hiddenBuiltinIds || []));
+      } catch (e) { /* ignore quota */ }
+    },
+    _newAnalogId : function() {
+      return 'analog_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8);
+    },
+    setMetricsTab : function(tab) {
+      if (tab !== 'metrics' && tab !== 'analogs') return;
+      this._metricsTab = tab;
+      try {
+        localStorage.setItem(this.SOUNDING_ANALOGS_TAB_KEY, tab);
+      } catch (e) { /* ignore */ }
+      const metricsBody = document.getElementById('soundingMetricsBody');
+      const analogsBody = document.getElementById('soundingAnalogsBody');
+      const timeEl = document.getElementById('soundingMetricsTime');
+      document.querySelectorAll('.sounding-metrics-tab').forEach(btn => {
+        const active = btn.dataset.tab === tab;
+        btn.classList.toggle('active', active);
+        btn.setAttribute('aria-selected', active ? 'true' : 'false');
+      });
+      if (metricsBody) {
+        metricsBody.hidden = tab !== 'metrics';
+        metricsBody.style.display = tab === 'metrics' ? '' : 'none';
+      }
+      if (analogsBody) {
+        analogsBody.hidden = tab !== 'analogs';
+        analogsBody.style.display = tab === 'analogs' ? 'flex' : 'none';
+      }
+      if (timeEl) timeEl.style.display = tab === 'metrics' ? '' : 'none';
+      const similarBlock = document.getElementById('soundingMetricsSimilarBlock');
+      if (similarBlock) {
+        similarBlock.style.display = tab === 'metrics' ? '' : 'none';
+      }
+      if (tab === 'analogs') {
+        this._syncAnalogSourceFilterUi();
+        this._analogsPanelFingerprint = '';
+        this.renderAnalogsPanel(true);
+      } else if (tab === 'metrics') {
+        this._syncAnalogSourceFilterUi();
+        this.renderMetricsSimilarSection(this._lastAnalogSnapshot);
+      }
+    },
+    initAnalogsPanel : function() {
+      if (this._analogsUiReady) return;
+      this._analogsUiReady = true;
+      this.loadAnalogs();
+      document.querySelectorAll('.sounding-metrics-tab').forEach(btn => {
+        btn.addEventListener('click', () => this.setMetricsTab(btn.dataset.tab));
+      });
+      const createBtn = document.getElementById('soundingAnalogCreateBtn');
+      if (createBtn) {
+        createBtn.addEventListener('click', () => this.createAnalogFromCurrent());
+      }
+      const importBtn = document.getElementById('soundingAnalogImportBtn');
+      const importInput = document.getElementById('soundingAnalogImportInput');
+      if (importBtn && importInput) {
+        importBtn.addEventListener('click', () => importInput.click());
+        importInput.addEventListener('change', () => {
+          const file = importInput.files && importInput.files[0];
+          if (!file) return;
+          const reader = new FileReader();
+          reader.onload = () => {
+            const n = this.importAnalogsFromText(String(reader.result || ''));
+            importInput.value = '';
+            if (n > 0) alert('Imported ' + n + ' analog(s).');
+            else alert('No valid analogs found in file.');
+          };
+          reader.readAsText(file);
+        });
+      }
+      const exportAllBtn = document.getElementById('soundingAnalogExportAllBtn');
+      if (exportAllBtn) {
+        exportAllBtn.addEventListener('click', () => this.exportAllAnalogs());
+      }
+      const skipDeleteConfirmEl = document.getElementById('soundingAnalogSkipDeleteConfirm');
+      if (skipDeleteConfirmEl) {
+        skipDeleteConfirmEl.checked = !!this._skipAnalogDeleteConfirm;
+        skipDeleteConfirmEl.addEventListener('change', () => {
+          this._skipAnalogDeleteConfirm = skipDeleteConfirmEl.checked;
+          try {
+            localStorage.setItem(
+              this.SOUNDING_ANALOGS_SKIP_DELETE_CONFIRM_KEY,
+              this._skipAnalogDeleteConfirm ? '1' : '0'
+            );
+          } catch (e) { /* ignore */ }
+        });
+      }
+      const pasteBtn = document.getElementById('soundingAnalogPasteBtn');
+      if (pasteBtn) {
+        pasteBtn.addEventListener('click', async () => {
+          let text = '';
+          try {
+            text = await navigator.clipboard.readText();
+          } catch (e) { /* fall through to prompt */ }
+          if (!text || !text.includes('WSE-ANALOG')) {
+            text = prompt('Paste an analog share code (WSE-ANALOG:…):', text || '');
+          }
+          if (!text) return;
+          const n = this.importAnalogsFromText(text);
+          if (n > 0) alert('Imported ' + n + ' analog(s).');
+          else alert('No valid analog found in that code.');
+        });
+      }
+      const searchEl = document.getElementById('soundingAnalogSearch');
+      if (searchEl) {
+        searchEl.addEventListener('input', () => {
+          this._analogSearch = searchEl.value || '';
+          this.renderAnalogsPanel();
+        });
+      }
+      const filterEl = document.getElementById('soundingAnalogFilters');
+      if (filterEl) {
+        filterEl.querySelectorAll('button[data-filter]').forEach(btn => {
+          btn.addEventListener('click', () => {
+            this._analogFilter = btn.dataset.filter || 'all';
+            filterEl.querySelectorAll('button[data-filter]').forEach(b => b.classList.toggle('active', b === btn));
+            this.renderAnalogsPanel();
+          });
+        });
+      }
+      const sourceEl = document.getElementById('soundingAnalogSourceFilters');
+      if (sourceEl) {
+        sourceEl.querySelectorAll('button[data-source]').forEach(btn => {
+          btn.addEventListener('click', () => this.setAnalogSourceFilter(btn.dataset.source));
+        });
+        this._syncAnalogSourceFilterUi();
+      }
+      this.initMetricsSimilarSection();
+      this.initAnalogsListEvents();
+      this.setMetricsTab(this._metricsTab);
+    },
+    initAnalogsListEvents : function() {
+      if (this._analogsListEventsReady) return;
+      const listEl = document.getElementById('soundingAnalogsList');
+      if (!listEl) return;
+      this._analogsListEventsReady = true;
+      listEl.addEventListener('click', (e) => {
+        const overlayBtn = e.target.closest('[data-analog-overlay]');
+        if (overlayBtn) {
+          e.preventDefault();
+          this.toggleAnalogOverlay(overlayBtn.dataset.analogOverlay);
+          return;
+        }
+        const shareBtn = e.target.closest('[data-analog-share]');
+        if (shareBtn) {
+          e.preventDefault();
+          this.shareAnalog(shareBtn.dataset.analogShare);
+          return;
+        }
+        const removeBtn = e.target.closest('[data-analog-remove]');
+        if (removeBtn) {
+          e.preventDefault();
+          this.requestRemoveAnalog(removeBtn.dataset.analogRemove);
+        }
+      });
+      listEl.addEventListener('change', (e) => {
+        const input = e.target.closest('[data-analog-rename]');
+        if (input && !input.readOnly) {
+          this.renameAnalog(input.dataset.analogRename, input.value);
+        }
+      });
+      listEl.addEventListener('focusout', (e) => {
+        const input = e.target.closest('[data-analog-rename]');
+        if (input && !input.readOnly) {
+          this.renameAnalog(input.dataset.analogRename, input.value);
+        }
+      });
+    },
+    initMetricsSimilarSection : function() {
+      if (this._metricsSimilarReady) return;
+      const block = document.getElementById('soundingMetricsSimilarBlock');
+      if (!block) return;
+      this._metricsSimilarReady = true;
+      block.addEventListener('click', (e) => {
+        const srcBtn = e.target.closest('[data-analog-source]');
+        if (srcBtn && block.contains(srcBtn)) {
+          e.preventDefault();
+          this.setAnalogSourceFilter(srcBtn.dataset.analogSource);
+          return;
+        }
+        const pickEl = e.target.closest('[data-analog-pick]');
+        if (pickEl) {
+          const id = pickEl.dataset.analogPick;
+          if (!id) return;
+          if (!this._overlayAnalogIds.includes(id)) this.toggleAnalogOverlay(id);
+          this.setMetricsTab('analogs');
+        }
+      });
+      this._syncAnalogSourceFilterUi();
+    },
+    setAnalogSourceFilter : function(source) {
+      if (source !== 'all' && source !== 'builtin' && source !== 'custom') return;
+      this._analogSourceFilter = source;
+      try {
+        localStorage.setItem(this.SOUNDING_ANALOGS_SOURCE_KEY, source);
+      } catch (e) { /* ignore */ }
+      this._syncAnalogSourceFilterUi();
+      this.renderAnalogsPanel();
+      this.renderMetricsSimilarSection(this._lastAnalogSnapshot, true);
+    },
+    _syncAnalogSourceFilterUi : function() {
+      const src = this._analogSourceFilter || 'all';
+      document.querySelectorAll('#soundingAnalogSourceFilters button[data-source]').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.source === src);
+      });
+      const metricsSrc = document.getElementById('soundingMetricsAnalogSource');
+      if (metricsSrc) {
+        metricsSrc.querySelectorAll('button[data-analog-source]').forEach(btn => {
+          btn.classList.toggle('active', btn.dataset.analogSource === src);
+        });
+      }
+    },
+    _analogMatchesSource : function(analog) {
+      const src = this._analogSourceFilter || 'all';
+      if (src === 'builtin') return !!analog.builtin;
+      if (src === 'custom') return !analog.builtin;
+      return true;
+    },
+    _analogMatchesFilter : function(analog) {
+      if (!this._analogMatchesSource(analog)) return false;
+      const f = this._analogFilter || 'all';
+      if (f === 'all') return true;
+      const hazards = analog.hazards || [];
+      const top = hazards.slice(0, 4).map(h => (h.label || '').toLowerCase());
+      const name = (analog.name + ' ' + (analog.columnLabel || '')).toLowerCase();
+      if (f === 'tornado') return top.some(l => l.includes('tornado')) || name.includes('tornado') || name.includes('ef');
+      if (f === 'hail') return top.some(l => l.includes('hail')) || name.includes('hail');
+      if (f === 'wind') return top.some(l => l.includes('wind')) || name.includes('derecho') || name.includes('haboob') || name.includes('microburst');
+      if (f === 'flood') return top.some(l => l.includes('flood')) || name.includes('flood') || name.includes('harvey') || name.includes('training');
+      return true;
+    },
+    _analogMatchesSearch : function(analog) {
+      const q = (this._analogSearch || '').trim().toLowerCase();
+      if (!q) return true;
+      const hay = [
+        analog.name, analog.columnLabel, analog.simTimeLabel, analog.obsTimeLabel,
+        analog.convMode, analog.risk && analog.risk.label,
+        ...(analog.hazards || []).map(h => h.label),
+      ].join(' ').toLowerCase();
+      return hay.includes(q);
+    },
+    _buildAllHazardScores : function(ctx) {
+      function hf(v, min, moderate, full) {
+        if (v < min) return 0;
+        if (v >= full) return 1;
+        if (v <= moderate) return map_range_C(v, min, moderate, 0.08, 0.42);
+        return map_range_C(v, moderate, full, 0.42, 1);
+      }
+      function hazardProbability(factors, cap) {
+        if (factors.length === 0) return 0;
+        if (factors.some(f => f <= 0)) return 0;
+        const gm = Math.pow(factors.reduce((a, b) => a * b, 1), 1 / factors.length);
+        return Math.min(cap, Math.round(Math.pow(gm, 1.55) * 100));
+      }
+      const moistF = hf(ctx.moistEnv, 0.45, 0.65, 0.88);
+      const lapseN = Number.isFinite(ctx.lapse03) ? ctx.lapse03 : 0;
+      const rows = [
+        ['PDS Tornado', '#FF00FF', hazardProbability([
+          hf(ctx.stp, 2.5, 5, 10), hf(ctx.vtp, 1.5, 3.5, 7), hf(ctx.srh3km, 200, 320, 480),
+          hf(ctx.muCape, 2200, 3200, 5000), moistF,
+        ], 52)],
+        ['Tornado', '#FF0066', hazardProbability([
+          hf(ctx.stp, 0.8, 2, 5), hf(ctx.vtp, 0.6, 1.8, 4), hf(ctx.srh3km, 100, 200, 380),
+          hf(ctx.shear3km, 10, 16, 26), moistF,
+        ], 48)],
+        ['Supercell', '#FF4400', hazardProbability([
+          hf(ctx.muCape, 900, 1600, 3200), hf(ctx.shear6km, 14, 20, 32),
+          hf(ctx.srh3km, 80, 180, 320), moistF,
+        ], 55)],
+        ['Giant Hail', '#AA00FF', hazardProbability([
+          hf(ctx.muCape, 1800, 2600, 4500), hf(lapseN, 7.8, 8.5, 9.8),
+          hf(ctx.shear6km, 18, 24, 36), hf(ctx.mixedPhaseKm, 3.5, 5.5, 8), moistF,
+        ], 50)],
+        ['Large Hail', '#FF8800', hazardProbability([
+          hf(ctx.muCape, 1100, 1800, 3200), hf(lapseN, 7.0, 7.8, 9.0),
+          hf(ctx.estHailIn, 0.85, 1.25, 2.2), moistF,
+        ], 45)],
+        ['Hail', '#FFCC00', hazardProbability([
+          hf(ctx.muCape, 550, 1000, 2200), hf(lapseN, 6.2, 7.0, 8.5),
+          hf(ctx.mixedPhaseKm, 1.8, 3.5, 7), moistF,
+        ], 42)],
+        ['Destructive Winds', '#FF4400', hazardProbability([
+          hf(ctx.dcape, 1100, 1700, 2800), hf(ctx.shear6km, 20, 28, 40),
+          hf(ctx.drySlotStrength, 0.35, 0.55, 0.85),
+        ], 48)],
+        ['Damaging Winds', '#FF8800', hazardProbability([
+          hf(ctx.dcape, 650, 1000, 1800), hf(ctx.shear6km, 16, 22, 34),
+          hf(Math.max(ctx.dcape / 1200, ctx.drySlotStrength), 0.45, 0.7, 1.0),
+        ], 40)],
+        ['Flooding/Heavy Rain', '#0088FF', hazardProbability([
+          hf(ctx.pwat_mm, 32, 42, 58), hf(ctx.muCape, 350, 800, 1800),
+          hf(1 - map_range_C(ctx.shear6km, 6, 18, 0, 1), 0.35, 0.55, 0.85), moistF,
+        ], 45)],
+      ];
+      if (ctx.muCape >= 200) {
+        rows.push(['General Thunderstorm', '#AAAAAA', hazardProbability([
+          hf(ctx.muCape, 200, 500, 1400), hf(ctx.pwat_mm, 12, 22, 40),
+        ], 38)]);
+      }
+      return rows
+        .map(([label, color, pct]) => ({label, color, pct}))
+        .sort((a, b) => b.pct - a.pct);
+    },
+    _sampleSoundingProfile : function(envTempsC, envDewC, baseTextureValues, surfaceLevel, simResY, dz) {
+      const levels = [];
+      const step = Math.max(1, Math.round(300 / dz));
+      for (let y = surfaceLevel; y < simResY; y += step) {
+        levels.push({
+          a: Math.round((y - surfaceLevel) * dz),
+          t: Math.round(envTempsC[y] * 10) / 10,
+          d: Math.round(envDewC[y] * 10) / 10,
+          u: Math.round(rawVelocityTo_ms(baseTextureValues[4 * y]) * 10) / 10,
+          v: Math.round(rawVelocityTo_ms(baseTextureValues[4 * y + 1]) * 10) / 10,
+        });
+      }
+      return levels;
+    },
+    buildAnalogSuggestedName : function(stormTypesObj, hazards, risk, indices, convMode) {
+      const types = (stormTypesObj && stormTypesObj.types) ? [...stormTypesObj.types] : [];
+      types.sort((a, b) => (b.score || 0) - (a.score || 0));
+      const hazList = hazards || [];
+      const topHaz = hazList.find(h => (h.pct || 0) >= 12);
+      const idx = indices || {};
+
+      let stormPick = null;
+      for (const t of types) {
+        if ((t.score || 0) < 8) break;
+        if (t.key === 'pulse') {
+          const runner = types.find(x => x.key !== 'pulse' && (x.score || 0) >= 8);
+          if (runner && (t.score || 0) - (runner.score || 0) < 12) continue;
+        }
+        stormPick = t;
+        break;
+      }
+
+      const hazPriority = [
+        'PDS Tornado', 'Tornado', 'Giant Hail', 'Large Hail', 'Destructive Winds',
+        'Damaging Winds', 'Supercell', 'Hail', 'Flooding/Heavy Rain',
+      ];
+      let hazPick = null;
+      for (const label of hazPriority) {
+        const h = hazList.find(x => x.label === label && (x.pct || 0) >= 12);
+        if (h) { hazPick = h; break; }
+      }
+      if (!hazPick && topHaz) hazPick = topHaz;
+
+      let primary = '';
+      if (hazPick && (hazPick.pct || 0) >= 18) {
+        primary = hazPick.label;
+      } else if (stormPick && (stormPick.score || 0) >= 12) {
+        primary = stormPick.shortLabel || stormPick.label;
+      } else if (hazPick) {
+        primary = hazPick.label;
+      } else if (stormPick) {
+        primary = stormPick.shortLabel || stormPick.label;
+      } else if (risk && risk.label && !['None', 'Marginal', 'Thunderstorm'].includes(risk.label)) {
+        primary = risk.label + ' setup';
+      } else if (convMode && convMode !== 'None') {
+        primary = convMode + ' storms';
+      } else {
+        primary = 'Thunderstorm';
+      }
+
+      const tags = [];
+      if (Number.isFinite(idx.stp) && idx.stp >= 3) tags.push('STP ' + idx.stp.toFixed(1));
+      else if (Number.isFinite(idx.muCape) && idx.muCape >= 2000) tags.push(Math.round(idx.muCape) + ' MU CAPE');
+      if (Number.isFinite(idx.estHailIn) && idx.estHailIn >= 1.5 && primary.indexOf('Hail') < 0) {
+        tags.push(printHailSize(idx.estHailIn));
+      }
+      if (stormPick && stormPick.key !== 'pulse' && primary.indexOf(stormPick.shortLabel || '') < 0 &&
+          (stormPick.score || 0) >= 15) {
+        tags.push(stormPick.shortLabel || stormPick.label);
+      }
+
+      let name = primary;
+      if (tags.length) name += ' · ' + tags.slice(0, 2).join(' · ');
+      return name.slice(0, 64);
+    },
+    storeAnalogSnapshot : function(snapshot) {
+      this._lastAnalogSnapshot = snapshot;
+      const nameInput = document.getElementById('soundingAnalogNameInput');
+      if (nameInput && snapshot && snapshot.suggestedName) {
+        nameInput.placeholder = snapshot.suggestedName;
+      }
+    },
+    createAnalogFromCurrent : function(name) {
+      const snap = this._lastAnalogSnapshot;
+      if (!snap) {
+        alert('No sounding data available yet. Open the Skew-T graph and try again.');
+        return null;
+      }
+      const nameInput = document.getElementById('soundingAnalogNameInput');
+      const customName = name != null ? name : (nameInput ? nameInput.value : '');
+      const resolvedName = String(customName || '').trim() ||
+        snap.suggestedName ||
+        ('Analog ' + (this.getUserAnalogs().length + 1));
+      const analog = {
+        id: this._newAnalogId(),
+        name: resolvedName.trim(),
+        createdAt: Date.now(),
+        builtin: false,
+        ...snap,
+      };
+      this._userAnalogs.unshift(analog);
+      this.saveAnalogs();
+      if (nameInput) nameInput.value = '';
+      this.setMetricsTab('analogs');
+      this.renderAnalogsPanel();
+      return analog;
+    },
+    requestRemoveAnalog : function(id) {
+      if (!id) return;
+      if (this._skipAnalogDeleteConfirm) {
+        this.removeAnalog(id);
+        return;
+      }
+      const analog = this.findAnalogById(id);
+      const msg = analog && analog.builtin
+        ? 'Hide this library analog from the list?'
+        : 'Remove this analog?';
+      if (confirm(msg)) this.removeAnalog(id);
+    },
+    removeAnalog : function(id) {
+      const analog = this.findAnalogById(id);
+      if (!analog) return;
+      if (analog.builtin) {
+        if (!this._hiddenBuiltinIds.includes(id)) this._hiddenBuiltinIds.push(id);
+        this.saveHiddenBuiltins();
+      } else {
+        this._userAnalogs = this._userAnalogs.filter(a => a.id !== id);
+        this.saveAnalogs();
+      }
+      this._overlayAnalogIds = this._overlayAnalogIds.filter(oid => oid !== id);
+      this.renderAnalogsPanel();
+    },
+    renameAnalog : function(id, name) {
+      const analog = this._userAnalogs.find(a => a.id === id);
+      if (!analog || analog.builtin) return;
+      analog.name = String(name || '').trim() || analog.name;
+      this.saveAnalogs();
+    },
+    toggleAnalogOverlay : function(id) {
+      const idx = this._overlayAnalogIds.indexOf(id);
+      if (idx >= 0) this._overlayAnalogIds.splice(idx, 1);
+      else this._overlayAnalogIds.push(id);
+      this._analogsPanelFingerprint = '';
+      this._updateAnalogOverlayButton(id);
+    },
+    _updateAnalogOverlayButton : function(id) {
+      const listEl = document.getElementById('soundingAnalogsList');
+      if (!listEl || !id) return;
+      const safeId = typeof CSS !== 'undefined' && CSS.escape ? CSS.escape(id) : id.replace(/"/g, '\\"');
+      const card = listEl.querySelector('[data-analog-id="' + safeId + '"]');
+      if (!card) return;
+      const overlayOn = this._overlayAnalogIds.includes(id);
+      card.classList.toggle('selected', overlayOn);
+      const btn = card.querySelector('[data-analog-overlay]');
+      if (btn) {
+        btn.classList.toggle('active', overlayOn);
+        btn.textContent = overlayOn ? 'Overlay on' : 'Overlay';
+      }
+    },
+    _analogSharePayload : function(analog) {
+      return {v: 1, type: 'wse-sounding-analog', analog};
+    },
+    _encodeAnalogShare : function(payload) {
+      return 'WSE-ANALOG:' + btoa(unescape(encodeURIComponent(JSON.stringify(payload))));
+    },
+    _decodeAnalogShare : function(text) {
+      const raw = String(text || '').trim();
+      let jsonStr = raw;
+      if (raw.startsWith('WSE-ANALOG:')) {
+        jsonStr = decodeURIComponent(escape(atob(raw.slice('WSE-ANALOG:'.length))));
+      }
+      const parsed = JSON.parse(jsonStr);
+      if (parsed && parsed.type === 'wse-sounding-analog' && parsed.analog) return parsed.analog;
+      if (parsed && parsed.id && parsed.hazards) return parsed;
+      if (Array.isArray(parsed)) return parsed;
+      if (parsed && Array.isArray(parsed.analogs)) return parsed.analogs;
+      return null;
+    },
+    _normalizeImportedAnalog : function(raw) {
+      if (!raw || typeof raw !== 'object') return null;
+      const hazards = Array.isArray(raw.hazards) ? raw.hazards : [];
+      if (!hazards.length && !raw.indices) return null;
+      return {
+        id: raw.id || this._newAnalogId(),
+        name: String(raw.name || 'Imported Analog').trim() || 'Imported Analog',
+        createdAt: raw.createdAt || Date.now(),
+        columnLabel: raw.columnLabel || '—',
+        simTimeLabel: raw.simTimeLabel || '—',
+        obsTimeLabel: raw.obsTimeLabel || '',
+        hazards,
+        indices: raw.indices || {},
+        stormTypes: raw.stormTypes || [],
+        convMode: raw.convMode || '—',
+        risk: raw.risk || {label: '—', color: '#888888'},
+        profile: Array.isArray(raw.profile) ? raw.profile : [],
+        notes: raw.notes || '',
+      };
+    },
+    importAnalogsFromText : function(text) {
+      let items = null;
+      try {
+        items = this._decodeAnalogShare(text);
+      } catch (e) {
+        return 0;
+      }
+      if (!items) return 0;
+      const list = Array.isArray(items) ? items : [items];
+      let added = 0;
+      for (const item of list) {
+        const analog = this._normalizeImportedAnalog(item);
+        if (!analog) continue;
+        analog.id = this._newAnalogId();
+        analog.createdAt = Date.now();
+        analog.builtin = false;
+        this._userAnalogs.unshift(analog);
+        added++;
+      }
+      if (added > 0) {
+        this.saveAnalogs();
+        this.setMetricsTab('analogs');
+        this.renderAnalogsPanel();
+      }
+      return added;
+    },
+    shareAnalog : async function(id) {
+      const analog = this.findAnalogById(id);
+      if (!analog) return;
+      const code = this._encodeAnalogShare(this._analogSharePayload(analog));
+      try {
+        await navigator.clipboard.writeText(code);
+        alert('Analog share code copied to clipboard.');
+      } catch (e) {
+        prompt('Copy this analog share code:', code);
+      }
+    },
+    exportAllAnalogs : function() {
+      const user = this.getUserAnalogs();
+      if (!user.length) {
+        alert('No custom analogs to export. Library analogs stay built-in — share individual ones with Share.');
+        return;
+      }
+      const payload = {v: 1, type: 'wse-sounding-analogs', analogs: user};
+      const blob = new Blob([JSON.stringify(payload, null, 2)], {type: 'application/json'});
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'sounding-analogs.json';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    },
+    _similarityVal : function(a, b, logScale) {
+      if (!Number.isFinite(a) || !Number.isFinite(b)) return null;
+      let av = a;
+      let bv = b;
+      if (logScale) {
+        av = Math.log1p(Math.max(0, av));
+        bv = Math.log1p(Math.max(0, bv));
+      }
+      const denom = Math.max(Math.abs(av), Math.abs(bv), 0.001);
+      return 1 - Math.min(1, Math.abs(av - bv) / denom);
+    },
+    _hazardProfileSimilarity : function(analog, snap) {
+      const aHaz = analog.hazards || [];
+      const bHaz = snap.hazards || [];
+      if (!aHaz.length || !bHaz.length) return null;
+      const bMap = {};
+      for (const h of bHaz) bMap[h.label] = h.pct || 0;
+      let sum = 0;
+      let n = 0;
+      for (const h of aHaz) {
+        if (!bMap.hasOwnProperty(h.label)) continue;
+        const ap = (h.pct || 0) / 100;
+        const bp = (bMap[h.label] || 0) / 100;
+        sum += 1 - Math.min(1, Math.abs(ap - bp) / Math.max(ap, bp, 0.08));
+        n++;
+      }
+      return n ? sum / n : null;
+    },
+    computeAnalogSimilarity : function(analog, snap) {
+      if (!analog || !snap || !analog.indices || !snap.indices) return null;
+      const ai = analog.indices;
+      const bi = snap.indices;
+      const parts = [
+        [this._similarityVal(ai.muCape, bi.muCape, true), 1.25],
+        [this._similarityVal(ai.stp, bi.stp, false), 1.5],
+        [this._similarityVal(ai.srh3km, bi.srh3km, false), 1.35],
+        [this._similarityVal(ai.shear6km, bi.shear6km, false), 1.1],
+        [this._similarityVal(ai.dcape, bi.dcape, true), 1.0],
+        [this._similarityVal(ai.pwat_mm, bi.pwat_mm, false), 1.0],
+        [this._similarityVal(ai.estHailIn, bi.estHailIn, false), 0.85],
+      ];
+      let sum = 0;
+      let wSum = 0;
+      for (const [sim, w] of parts) {
+        if (sim == null) continue;
+        sum += sim * w;
+        wSum += w;
+      }
+      const hazSim = this._hazardProfileSimilarity(analog, snap);
+      if (hazSim != null) {
+        sum += hazSim * 1.4;
+        wSum += 1.4;
+      }
+      if (!wSum) return null;
+      return Math.round((sum / wSum) * 100);
+    },
+    getAnalogRelevancyMinScore : function() {
+      const v = guiControls.analogRelevancy;
+      if (v == null || !Number.isFinite(v)) return 50;
+      return Math.max(0, Math.min(100, Math.round(v)));
+    },
+    _HAZARD_DAMAGE_RANK : {
+      'General Thunderstorm': 1,
+      'Flooding/Heavy Rain': 2,
+      'Hail': 3,
+      'Damaging Winds': 4,
+      'Large Hail': 5,
+      'Supercell': 6,
+      'Destructive Winds': 7,
+      'Giant Hail': 8,
+      'Tornado': 9,
+      'PDS Tornado': 10,
+    },
+    _SEVERITY_TEXT_COLORS : ['#888888', '#4488ff', '#33cc66', '#dddd22', '#ff9900', '#ff3333', '#ff66cc', '#f5f5f5', '#1a1a1a'],
+    _hexToRgb : function(hex) {
+      const h = String(hex || '').replace('#', '');
+      if (h.length === 3) {
+        return [parseInt(h[0] + h[0], 16), parseInt(h[1] + h[1], 16), parseInt(h[2] + h[2], 16)];
+      }
+      if (h.length >= 6) {
+        return [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16)];
+      }
+      return [136, 136, 136];
+    },
+    _rgbToHex : function(r, g, b) {
+      const c = (n) => Math.max(0, Math.min(255, Math.round(n))).toString(16).padStart(2, '0');
+      return '#' + c(r) + c(g) + c(b);
+    },
+    _lerpColor : function(c1, c2, t) {
+      const a = this._hexToRgb(c1);
+      const b = this._hexToRgb(c2);
+      const f = Math.max(0, Math.min(1, t));
+      return this._rgbToHex(
+        a[0] + (b[0] - a[0]) * f,
+        a[1] + (b[1] - a[1]) * f,
+        a[2] + (b[2] - a[2]) * f
+      );
+    },
+    severityScoreToColor : function(score) {
+      const colors = this._SEVERITY_TEXT_COLORS;
+      const t = Math.max(0, Math.min(1, (score || 0) / 100)) * (colors.length - 1);
+      const i = Math.floor(t);
+      const f = t - i;
+      if (i >= colors.length - 1) return colors[colors.length - 1];
+      return this._lerpColor(colors[i], colors[i + 1], f);
+    },
+    _textColorNeedsGlow : function(hex) {
+      const rgb = this._hexToRgb(hex);
+      return (rgb[0] * 0.299 + rgb[1] * 0.587 + rgb[2] * 0.114) < 52;
+    },
+    _severityTextShadowCss : function(hex) {
+      return this._textColorNeedsGlow(hex)
+        ? 'text-shadow:0 0 2px rgba(255,255,255,0.95),0 0 5px rgba(255,255,255,0.55);'
+        : '';
+    },
+    computeAnalogSeverityScore : function(analog) {
+      if (!analog) return 0;
+      let peak = 0;
+      for (const h of (analog.hazards || [])) {
+        const rank = this._HAZARD_DAMAGE_RANK[h.label] || 3;
+        const pct = Math.max(0, Math.min(100, h.pct || 0));
+        const score = (rank / 10) * (0.35 + 0.65 * pct / 100);
+        peak = Math.max(peak, score);
+      }
+      const idx = analog.indices || {};
+      if (Number.isFinite(idx.stp) && idx.stp > 0) {
+        peak = Math.max(peak, Math.min(1, idx.stp / 12));
+      }
+      if (Number.isFinite(idx.estHailIn) && idx.estHailIn >= 1.5) {
+        peak = Math.max(peak, 0.5 + Math.min(0.4, idx.estHailIn / 12));
+      }
+      const riskLabel = analog.risk && analog.risk.label;
+      if (riskLabel === 'High') peak = Math.min(1, peak * 1.08 + 0.05);
+      else if (riskLabel === 'Moderate') peak = Math.min(1, peak * 1.02);
+      return Math.round(peak * 100);
+    },
+    getSimilarAnalogs : function(snap, limit, minScore) {
+      if (!snap) return [];
+      const cap = limit || 5;
+      const min = minScore != null ? minScore : this.getAnalogRelevancyMinScore();
+      return this.getAllAnalogs()
+        .filter(a => this._analogMatchesSource(a))
+        .map(analog => ({ analog, score: this.computeAnalogSimilarity(analog, snap) }))
+        .filter(x => x.score != null && x.score >= min)
+        .sort((a, b) => {
+          const sevDiff = this.computeAnalogSeverityScore(b.analog) - this.computeAnalogSeverityScore(a.analog);
+          if (sevDiff !== 0) return sevDiff;
+          return b.score - a.score;
+        })
+        .slice(0, cap);
+    },
+    _fingerprintSimilarAnalogs : function(matches) {
+      const src = this._analogSourceFilter || 'all';
+      const min = this.getAnalogRelevancyMinScore();
+      if (!matches || !matches.length) return src + '|min' + min + '|empty';
+      return src + '|min' + min + '|' + matches.map(({ analog, score }) =>
+        analog.id + ':' + Math.round(score / 5) * 5 + ':' + this.computeAnalogSeverityScore(analog)
+      ).join(',');
+    },
+    _analogMatchSubline : function(analog) {
+      const topH = (analog.hazards || []).find(h => (h.pct || 0) >= 15) || (analog.hazards || [])[0];
+      const typeTag = analog.builtin ? 'Real world' : 'Custom';
+      return typeTag + ' · ' + (analog.columnLabel || '') + ' · ' +
+        (topH ? topH.label + ' ' + topH.pct + '%' : analog.simTimeLabel || '');
+    },
+    _parseEfFromAnalogName : function(name) {
+      const m = String(name || '').match(/\bEF\s*-?\s*([0-5])\b/i);
+      return m ? parseInt(m[1], 10) : null;
+    },
+    _estimateTornadoEf : function(analog) {
+      const fromName = this._parseEfFromAnalogName(analog && analog.name);
+      if (fromName != null) return fromName;
+      const idx = (analog && analog.indices) || {};
+      const stp = idx.stp;
+      if (!Number.isFinite(stp)) return null;
+      let ef = 0;
+      if (stp < 0.5) ef = 0;
+      else if (stp < 1.5) ef = 1;
+      else if (stp < 3) ef = 2;
+      else if (stp < 5) ef = 3;
+      else if (stp < 8) ef = 4;
+      else ef = 5;
+      const srh = idx.srh3km;
+      const cape = idx.muCape;
+      if (stp >= 6 && Number.isFinite(srh) && srh >= 350 && Number.isFinite(cape) && cape >= 3500) ef = 5;
+      else if (stp >= 4 && Number.isFinite(srh) && srh >= 300) ef = Math.max(ef, 4);
+      return ef;
+    },
+    _formatTornadoEf : function(ef) {
+      if (ef == null || !Number.isFinite(ef)) return null;
+      const n = Math.max(0, Math.min(5, Math.round(ef)));
+      const labels = ['EF0', 'EF1', 'EF2', 'EF3', 'EF4', 'EF5'];
+      const desc = ['Weak', 'Moderate', 'Significant', 'Intense', 'Devastating', 'Incredible'];
+      return labels[n] + ' (' + desc[n] + ')';
+    },
+    _estWindGustMs : function(idx) {
+      if (!idx) return null;
+      const dcape = idx.dcape;
+      const shear = idx.shear6km;
+      let gust = null;
+      if (Number.isFinite(dcape) && dcape > 0) {
+        gust = Math.sqrt(2 * dcape) * 0.55;
+      }
+      if (Number.isFinite(shear)) {
+        const shearGust = shear * 0.42;
+        gust = gust != null ? Math.max(gust, shearGust) : shearGust;
+      }
+      return gust;
+    },
+    _formatRainfallLevel : function(pwat_mm) {
+      if (!Number.isFinite(pwat_mm)) return null;
+      const mm = Math.round(pwat_mm);
+      if (pwat_mm < 20) return 'Low · ' + mm + ' mm PWAT';
+      if (pwat_mm < 32) return 'Moderate · ' + mm + ' mm PWAT';
+      if (pwat_mm < 45) return 'Heavy · ' + mm + ' mm PWAT';
+      if (pwat_mm < 55) return 'Very heavy · ' + mm + ' mm PWAT';
+      return 'Extreme · ' + mm + ' mm PWAT · flash flood risk';
+    },
+    _activeAnalogHazards : function(analog, minPct) {
+      const min = minPct != null ? minPct : 10;
+      return (analog && analog.hazards || [])
+        .filter(h => (h.pct || 0) >= min)
+        .sort((a, b) => (b.pct || 0) - (a.pct || 0));
+    },
+    _hazardLabelMatches : function(label, keys) {
+      const l = String(label || '').toLowerCase();
+      return keys.some(k => l.includes(k));
+    },
+    getAnalogHazardDetails : function(analog) {
+      if (!analog) return [];
+      const hazards = this._activeAnalogHazards(analog, 10);
+      const idx = analog.indices || {};
+      const details = [];
+      const seen = new Set();
+
+      const push = (key, text) => {
+        if (!text || seen.has(key)) return;
+        seen.add(key);
+        details.push(text);
+      };
+
+      const hasTornado = hazards.some(h => this._hazardLabelMatches(h.label, ['pds tornado', 'tornado']));
+      const hasHail = hazards.some(h => this._hazardLabelMatches(h.label, ['hail']));
+      const hasWind = hazards.some(h => this._hazardLabelMatches(h.label, ['destructive wind', 'damaging wind', 'wind']));
+      const hasFlood = hazards.some(h => this._hazardLabelMatches(h.label, ['flood', 'rain']));
+      const hasSupercell = hazards.some(h => this._hazardLabelMatches(h.label, ['supercell']));
+
+      if (hasTornado) {
+        const efStr = this._formatTornadoEf(this._estimateTornadoEf(analog));
+        const parts = [];
+        if (efStr) parts.push(efStr);
+        if (Number.isFinite(idx.stp)) parts.push('STP ' + idx.stp.toFixed(1));
+        if (Number.isFinite(idx.srh3km)) parts.push('SRH ' + Math.round(idx.srh3km));
+        if (Number.isFinite(idx.tornadoPct) && idx.tornadoPct >= 12) {
+          parts.push('tor prob ' + Math.round(idx.tornadoPct) + '%');
+        }
+        if (parts.length) push('tornado', 'Tornado: ' + parts.join(' · '));
+      }
+
+      if (hasHail && Number.isFinite(idx.estHailIn) && idx.estHailIn >= 0.05) {
+        const parts = [printHailSize(idx.estHailIn) + ' est.'];
+        if (Number.isFinite(idx.ship) && idx.ship >= 1) parts.push('SHIP ' + idx.ship.toFixed(1));
+        if (Number.isFinite(idx.muCape) && idx.muCape >= 500) {
+          parts.push('MLCAPE ' + Math.round(idx.muCape) + ' J/kg');
+        }
+        push('hail', 'Hail: ' + parts.join(' · '));
+      }
+
+      if (hasWind) {
+        const gust = this._estWindGustMs(idx);
+        const parts = [];
+        if (gust != null) parts.push('~' + printVelocity(gust) + ' gust potential');
+        if (Number.isFinite(idx.dcape)) parts.push('DCAPE ' + Math.round(idx.dcape) + ' J/kg');
+        if (Number.isFinite(idx.shear6km)) parts.push('0–6 km shear ' + printShear(idx.shear6km));
+        if (parts.length) push('wind', 'Wind: ' + parts.join(' · '));
+      }
+
+      if (hasFlood) {
+        const rain = this._formatRainfallLevel(idx.pwat_mm);
+        const parts = [];
+        if (rain) parts.push(rain);
+        if (Number.isFinite(idx.muCape) && idx.muCape >= 300) {
+          parts.push('CAPE ' + Math.round(idx.muCape) + ' J/kg');
+        }
+        if (parts.length) push('flood', 'Rainfall: ' + parts.join(' · '));
+      }
+
+      if (hasSupercell && !seen.has('tornado')) {
+        const parts = [];
+        if (Number.isFinite(idx.muCape)) parts.push('MLCAPE ' + Math.round(idx.muCape) + ' J/kg');
+        if (Number.isFinite(idx.srh3km)) parts.push('SRH ' + Math.round(idx.srh3km));
+        if (Number.isFinite(idx.shear6km)) parts.push('shear ' + printShear(idx.shear6km));
+        if (parts.length) push('supercell', 'Supercell: ' + parts.join(' · '));
+      }
+
+      if (!details.length && hazards.length) {
+        const top = hazards[0];
+        push('generic', top.label + ' ' + (top.pct || 0) + '%');
+      }
+
+      return details;
+    },
+    _formatAnalogHazardDetailsHtml : function(analog, color) {
+      const details = this.getAnalogHazardDetails(analog);
+      if (!details.length) return '';
+      const c = color || '#8899aa';
+      return '<div class="sounding-analog-hazard-details" style="color:' + c + '">' +
+        details.map(d => '<span>' + this._escapeHtml(d) + '</span>').join('') + '</div>';
+    },
+    _renderSimilarAnalogMatchHtml : function(analog, score) {
+      const pct = Math.max(0, Math.min(100, score || 0));
+      const severity = this.computeAnalogSeverityScore(analog);
+      const nameColor = this.severityScoreToColor(severity);
+      const subColor = this._lerpColor(nameColor, '#7a8fa0', 0.35);
+      const glow = this._severityTextShadowCss(nameColor);
+      const sub = this._analogMatchSubline(analog);
+      const detailsHtml = this._formatAnalogHazardDetailsHtml(analog, subColor);
+      return '<div class="sounding-metrics-analog-match" data-analog-pick="' + this._escapeHtml(analog.id) +
+        '" title="Click to overlay on Skew-T">' +
+        '<div class="sounding-metrics-bar"><span class="name" style="color:' + nameColor + ';' + glow + '">' +
+        this._escapeHtml(analog.name) + '</span><span class="pct" style="color:' + nameColor + ';' + glow + '">' + pct +
+        '%</span><div class="track"><div class="fill" style="width:' + pct + '%;background:' + nameColor +
+        '"></div></div></div>' +
+        '<div class="sub" style="color:' + subColor + '">' + this._escapeHtml(sub) + '</div>' +
+        detailsHtml + '</div>';
+    },
+    renderMetricsSimilarSection : function(snap, force) {
+      const listEl = document.getElementById('soundingMetricsSimilarList');
+      if (!listEl) return;
+      const similarAnalogs = this.getSimilarAnalogs(snap, 12);
+      const fingerprint = this._fingerprintSimilarAnalogs(similarAnalogs);
+      if (!force && fingerprint === this._similarAnalogsFingerprint) return;
+      const scrollTop = listEl.scrollTop;
+      this._similarAnalogsFingerprint = fingerprint;
+      this._lastSimilarAnalogsRendered = similarAnalogs;
+      if (!similarAnalogs.length) {
+        const srcLabel = this._analogSourceFilter === 'builtin' ? 'real world'
+          : (this._analogSourceFilter === 'custom' ? 'custom' : '');
+        listEl.innerHTML = '<div class="sounding-metrics-row"><span class="lbl">No matches</span><span class="val" style="color:#7a8fa0">' +
+          this._escapeHtml(srcLabel ? ('No similar ' + srcLabel + ' analogs') : 'No similar analogs') +
+          '</span></div>';
+      } else {
+        listEl.innerHTML = similarAnalogs.map(({ analog, score }) =>
+          this._renderSimilarAnalogMatchHtml(analog, score)
+        ).join('');
+      }
+      listEl.scrollTop = scrollTop;
+      this._syncAnalogSourceFilterUi();
+    },
+    _formatAnalogHazardBars : function(hazards, maxRows) {
+      const list = (hazards || []).filter(h => (h.pct || 0) >= 10).slice(0, maxRows || 5);
+      if (!list.length) {
+        return (hazards || []).slice(0, 3).map(h => this._formatOneHazardBar(h)).join('');
+      }
+      return list.map(h => this._formatOneHazardBar(h)).join('');
+    },
+    _formatOneHazardBar : function(h) {
+      const pct = Math.max(0, Math.min(100, h.pct || 0));
+      const dim = pct < 12 ? ' dim' : '';
+      return '<div class="sounding-metrics-bar' + dim + '"><span class="name">' + this._escapeHtml(h.label) +
+        '</span><span class="pct">' + pct + '%</span><div class="track"><div class="fill" style="width:' +
+        pct + '%;background:' + (h.color || '#88aacc') + '"></div></div></div>';
+    },
+    _renderAnalogCard : function(analog, snap) {
+      const overlayOn = this._overlayAnalogIds.includes(analog.id);
+      const sim = this._escapeHtml(analog.simTimeLabel || '—');
+      const col = this._escapeHtml(analog.columnLabel || '—');
+      const simLine = col + ' · ' + sim;
+      const hazardHtml = this._formatAnalogHazardBars(analog.hazards, 5);
+      const severity = this.computeAnalogSeverityScore(analog);
+      const detailColor = this._lerpColor(this.severityScoreToColor(severity), '#7a8fa0', 0.25);
+      const detailsHtml = this._formatAnalogHazardDetailsHtml(analog, detailColor);
+      const simPct = snap ? this.computeAnalogSimilarity(analog, snap) : null;
+      const simBadge = simPct != null ? '<span>Match: ' + simPct + '%</span>' : '';
+      const builtinCls = analog.builtin ? ' builtin' : '';
+      const removeLabel = analog.builtin ? 'Hide' : 'Remove';
+      return '<div class="sounding-analog-card' + builtinCls + (overlayOn ? ' selected' : '') + '" data-analog-id="' +
+        this._escapeHtml(analog.id) + '">' +
+        '<div class="sounding-analog-card-body">' +
+        '<div class="sounding-analog-card-head"><input type="text" value="' + this._escapeHtml(analog.name) +
+        '" data-analog-rename="' + this._escapeHtml(analog.id) + '" maxlength="64" ' +
+        (analog.builtin ? 'readonly tabindex="-1"' : '') + '></div>' +
+        '<div class="sounding-analog-sim">' + simLine + '</div>' +
+        (detailsHtml || '') +
+        (simBadge ? '<div class="sounding-analog-meta">' + simBadge + '</div>' : '') +
+        '<div class="sounding-analog-hazards">' + hazardHtml + '</div>' +
+        '<div class="sounding-analog-actions">' +
+        '<button type="button" class="' + (overlayOn ? 'active' : '') + '" data-analog-overlay="' + this._escapeHtml(analog.id) + '">' +
+        (overlayOn ? 'Overlay on' : 'Overlay') + '</button>' +
+        '<button type="button" data-analog-share="' + this._escapeHtml(analog.id) + '">Share</button>' +
+        '<button type="button" class="danger" data-analog-remove="' + this._escapeHtml(analog.id) + '">' + removeLabel + '</button>' +
+        '</div></div></div>';
+    },
+    _fingerprintAnalogsPanel : function(builtins, users, snap) {
+      const matchKey = (list) => list.map(a => {
+        const sim = snap ? this.computeAnalogSimilarity(a, snap) : null;
+        const bucket = sim != null ? Math.round(sim / 5) * 5 : -1;
+        return a.id + ':' + bucket;
+      }).join(';');
+      return [
+        this._analogSearch || '',
+        this._analogFilter || 'all',
+        this._analogSourceFilter || 'all',
+        [...(this._overlayAnalogIds || [])].sort().join(','),
+        builtins.map(a => a.id).join(';'),
+        users.map(a => a.id + '|' + (a.name || '')).join(';'),
+        matchKey(builtins),
+        matchKey(users),
+      ].join('||');
+    },
+    renderAnalogsPanel : function(force) {
+      const listEl = document.getElementById('soundingAnalogsList');
+      if (!listEl) return;
+      const builtins = this.getBuiltinAnalogs().filter(a => this._analogMatchesSearch(a) && this._analogMatchesFilter(a));
+      const users = this.getUserAnalogs().filter(a => this._analogMatchesSearch(a) && this._analogMatchesFilter(a));
+      const snap = this._lastAnalogSnapshot;
+      const src = this._analogSourceFilter || 'all';
+      const showBuiltins = src === 'all' || src === 'builtin';
+      const showUsers = src === 'all' || src === 'custom';
+      const fingerprint = this._fingerprintAnalogsPanel(
+        showBuiltins ? builtins : [],
+        showUsers ? users : [],
+        snap
+      );
+      if (!force && fingerprint === this._analogsPanelFingerprint) return;
+      this._analogsPanelFingerprint = fingerprint;
+      if (!builtins.length && !users.length) {
+        const hint = src === 'builtin' ? 'real world' : (src === 'custom' ? 'custom' : '');
+        listEl.innerHTML = '<div class="sounding-analogs-empty">No ' + (hint || '') +
+          ' analogs match your search. Try another keyword, hazard filter, or source filter.</div>';
+        return;
+      }
+      const scrollTop = listEl.scrollTop;
+      let html = '';
+      if (showBuiltins && builtins.length) {
+        html += '<div class="sounding-analogs-section-title">Real world (' + builtins.length + ')</div>';
+        for (const analog of builtins) html += this._renderAnalogCard(analog, snap);
+      }
+      if (showUsers && users.length) {
+        html += '<div class="sounding-analogs-section-title">Custom (' + users.length + ')</div>';
+        for (const analog of users) html += this._renderAnalogCard(analog, snap);
+      }
+      listEl.innerHTML = html;
+      listEl.scrollTop = scrollTop;
+    },
+    drawAnalogOverlays : function(c, helpers) {
+      if (!this._overlayAnalogIds.length) return;
+      const {surfaceLevel, dz, plotTop, plotBottom, scrYFromSimY, T_to_Xpos, skewTLeft, skewTPlotRight} = helpers;
+      let colorIdx = 0;
+      for (const id of this._overlayAnalogIds) {
+        const analog = this.findAnalogById(id);
+        if (!analog || !analog.profile || !analog.profile.length) continue;
+        const color = this._analogOverlayColors[colorIdx % this._analogOverlayColors.length];
+        colorIdx++;
+        c.save();
+        c.setLineDash([5, 4]);
+        c.lineWidth = 2;
+        c.strokeStyle = color;
+        c.beginPath();
+        let started = false;
+        for (const pt of analog.profile) {
+          const simY = surfaceLevel + Math.round(pt.a / dz);
+          const scrY = scrYFromSimY(simY);
+          if (scrY < plotTop || scrY > plotBottom) continue;
+          const x = T_to_Xpos(pt.t, scrY);
+          if (x < skewTLeft || x > skewTPlotRight) continue;
+          if (!started) { c.moveTo(x, scrY); started = true; }
+          else c.lineTo(x, scrY);
+        }
+        if (started) c.stroke();
+        c.strokeStyle = color + '99';
+        c.beginPath();
+        started = false;
+        for (const pt of analog.profile) {
+          const simY = surfaceLevel + Math.round(pt.a / dz);
+          const scrY = scrYFromSimY(simY);
+          if (scrY < plotTop || scrY > plotBottom) continue;
+          const x = T_to_Xpos(pt.d, scrY);
+          if (x < skewTLeft || x > skewTPlotRight) continue;
+          if (!started) { c.moveTo(x, scrY); started = true; }
+          else c.lineTo(x, scrY);
+        }
+        if (started) c.stroke();
+        c.setLineDash([]);
+        c.font = 'bold 9px Arial';
+        c.fillStyle = color;
+        c.fillText(analog.name, skewTLeft + 4, plotTop + 12 + colorIdx * 12);
+        c.restore();
+      }
     },
     updateSoundingDashboard : function(data) {
       const dashRoot = document.getElementById('soundingDashboard');
@@ -8628,7 +10035,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
           }
         }
         if (metricsPanel) {
-          metricsPanel.style.display = 'block';
+          metricsPanel.style.display = 'flex';
           if (!L.panels || !L.panels.metrics) {
             metricsPanel.style.left = Math.round(L.metricsLeft) + 'px';
             metricsPanel.style.top = Math.round(L.metricsTop) + 'px';
@@ -9763,6 +11170,36 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       panelRows.push({ label: 'Risk', value: risk.label, color: risk.color });
       panelRows.push({ label: 'Fire', value: fireRisk.label, color: fireRisk.color });
 
+      const allHazards = this._buildAllHazardScores({
+        stp, vtp, srh3km, shear3km, shear6km, muCape, lapse03, mixedPhaseKm,
+        estHailIn, dcape, drySlotStrength: drySlot.strength, pwat_mm, moistEnv,
+      });
+      const colXSnap = Math.floor(Math.abs(mod(simXpos, sim_res_x)));
+      this.storeAnalogSnapshot({
+        suggestedName: this.buildAnalogSuggestedName(
+          stormTypes, allHazards, risk,
+          { sbCape, muCape, stp, estHailIn }, stormTypes.convMode),
+        columnLabel: 'Column ' + colXSnap,
+        simTimeLabel: formatSoundingSimTimeLabel(),
+        obsTimeLabel: formatSoundingObsTimeLabel() || '',
+        hazards: allHazards,
+        indices: {
+          sbCape, muCape, mlCape, cape3km, sbCinh, dcape, stp, ship, scp, ehi,
+          srh3km, shear1km, shear3km, shear6km, pwat_mm, estHailIn, tornadoPct,
+          liftedIndex: Number.isFinite(liftedIndex) ? liftedIndex : null,
+        },
+        stormTypes: stormTypes.types.map(st => ({
+          key: st.key, label: st.label, shortLabel: st.shortLabel, score: st.score, color: st.color,
+        })),
+        convMode: stormTypes.convMode,
+        risk: {label: risk.label, color: risk.color},
+        profile: this._sampleSoundingProfile(
+          envTempsC, envDewC, baseTextureValues, surfaceLevel, sim_res_y, dz),
+      });
+
+      this._metricsPanelRowsBase = panelRows.slice();
+      this._metricsTimeLine = timeLine;
+
       infoBoxWidth = METRICS_PANEL_W;
       this._panelWidth = infoBoxWidth;
       updateSoundingLayout();
@@ -10312,6 +11749,18 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       this.saveButtonBounds = null;
       this.unlockButtonBounds = null;
 
+      this._lastSkewTExportHelpers = {
+        surfaceLevel,
+        dz,
+        plotTop,
+        plotBottom,
+        scrYFromSimY,
+        T_to_Xpos,
+        skewTLeft,
+        skewTPlotRight,
+      };
+      this.drawAnalogOverlays(c, this._lastSkewTExportHelpers);
+
       let hoverY = Math.min(Math.max(simYpos, surfaceLevel), sim_res_y - 1);
       if (wallTextureValues[4 * hoverY + 1] === 0) {
         for (let dy = 1; dy < 40 && hoverY + dy < sim_res_y; dy++) {
@@ -10568,7 +12017,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
           guiControls.wholeWidth = !guiControls.wholeWidth;
       },
       onUp() { bPressed = false; lastBpressTime = new Date().getTime(); } },
-    { id: 'toggleCamFollow', name: 'Toggle camera follow (airplane)', category: 'Airplane', defaultCode: 'KeyF',
+    { id: 'toggleCamFollow', name: 'Toggle camera follow (airplane)', category: 'Airplane', defaultCode: null,
       onDown() { airplane.toggleCamFollow(); } },
     { id: 'displayTempChange', name: 'Temperature change display', category: 'Display', defaultCode: 'KeyJ',
       onDown() { guiControls.displayMode = 'DISP_TEMPERATURE_CHANGE'; } },
@@ -10734,13 +12183,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       } },
     { id: 'toggleReadoutCursor', name: 'Toggle cursor readout', category: 'Graph & UI', defaultCode: null,
       onDown() { guiControls.readoutCursor = !guiControls.readoutCursor; } },
-    { id: 'graphFreezeAtCursor', name: 'Freeze sounding graph at cursor', category: 'Graph & UI', defaultCode: null,
-      onDown() {
-        if (!guiControls.showGraph) return;
-        guiControls.graphFixedPosition = true;
-        guiControls.graphFixedX = Math.floor(Math.abs(mod(mouseXinSim * sim_res_x, sim_res_x)));
-        guiControls.graphFixedY = Math.floor(mouseYinSim * sim_res_y);
-      } },
+    { id: 'toggleSoundingFreeze', name: 'Toggle freeze sounding graph', category: 'Graph & UI', defaultCode: 'KeyF',
+      onDown() { toggleSoundingFreeze(); } },
     { id: 'graphUnfreeze', name: 'Unfreeze sounding graph (follow cursor)', category: 'Graph & UI', defaultCode: null,
       onDown() { guiControls.graphFixedPosition = false; } },
     { id: 'openAllRadarMenus', name: 'Open all radar menus', category: 'Radar', defaultCode: null,
@@ -11428,8 +12872,49 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   var adaptiveSimIters = 6;
   var smoothedFrameMs = 18;
   var useLiteVisualsThisFrame = false;
+  var realisticVisualQuality = 1.0;
   var realtimeLastWallClockMs = 0;
   var realtimeIterAccumulator = 0;
+
+  function useLiteVisualsMode()
+  {
+    return useLiteVisualsThisFrame
+      || smoothedFrameMs > TARGET_FRAME_MS + 5
+      || (guiControls.performanceAutoScaling && smoothedFrameMs > TARGET_FRAME_MS);
+  }
+
+  function getRealisticVisualQuality()
+  {
+    let quality = guiControls.gpuEffectQuality || 1.0;
+    if (guiControls.adaptiveLightningQuality !== false || guiControls.performanceAutoScaling) {
+      const framePressure = clamp((smoothedFrameMs - TARGET_FRAME_MS) / 40.0, 0, 1);
+      quality *= 1.0 - framePressure * 0.55;
+    }
+    if (useLiteVisualsMode())
+      quality *= 0.82;
+    return clamp(quality, 0.35, 1.2);
+  }
+
+  function getAmbientBlurPasses()
+  {
+    return useLiteVisualsMode() ? 1 : 2;
+  }
+
+  function getAmbientLevelCount()
+  {
+    return useLiteVisualsMode()
+      ? Math.min(ambientLightFBOs.length, 4)
+      : ambientLightFBOs.length;
+  }
+
+  function getBloomLevelCount()
+  {
+    if (!guiControls.enableBloom)
+      return 0;
+    return useLiteVisualsMode()
+      ? Math.min(bloomFBOs.length, 5)
+      : bloomFBOs.length;
+  }
 
   function getMaxSafeIterationsPerFrame()
   {
@@ -14929,6 +16414,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   gl.uniform1i(gl.getUniformLocation(realisticDisplayProgram, 'ambientLightTex'), 9);
   gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'dryLapse'), dryLapse);
   gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'cellHeight'), cellHeight);
+  gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'visualQuality'), 1.0);
 
   gl.useProgram(lightningLocationProgram);
   gl.uniform1i(gl.getUniformLocation(lightningLocationProgram, 'precipFeedbackTex'), 0);
@@ -15078,6 +16564,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   const uloc_real_Xmult                = gl.getUniformLocation(realisticDisplayProgram, 'Xmult');
   const uloc_real_iterNum              = gl.getUniformLocation(realisticDisplayProgram, 'iterNum');
   const uloc_real_displayVectorField   = gl.getUniformLocation(realisticDisplayProgram, 'displayVectorField');
+  const uloc_real_visualQuality        = gl.getUniformLocation(realisticDisplayProgram, 'visualQuality');
   const uloc_real_ltEventAge           = gl.getUniformLocation(realisticDisplayProgram, 'ltEventAge');
   const uloc_real_ltNumStrikes         = gl.getUniformLocation(realisticDisplayProgram, 'ltNumStrikes');
   const uloc_real_ltStrikePos          = gl.getUniformLocation(realisticDisplayProgram, 'ltStrikePos[0]');
@@ -15810,7 +17297,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
 
       const hits = [];
       for (const ch of channels) {
-        const burstMult = lightningBurstState.phase === 'burst' ? lightningBurstState.burstIntensity : 0.15;
+        const burstMult = lightningBurstState.phase === 'burst' ? lightningBurstState.burstIntensity : 0.07;
         const strikeChance = typeof LightningV2 !== 'undefined'
           ? LightningV2.strikeChance(ch.freq(), burstMult, guiControls.lightningClusteringStrength)
           : lightningStrikeChance(ch.freq());
@@ -15832,13 +17319,11 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
 
   function isStrikeStartChargeValidForChannel(eventId, channel)
   {
-    for (let s = 0; s < 3; s++) {
-      const pick = pickLightningOriginCached(eventId, s, 3);
-      const potential = pick.potential || readPotentialCached(pick.originX, pick.originY);
-      const originMag = Math.max(Math.abs(pick.chargeVal || readChargeCached(pick.originX, pick.originY)), potential * 0.45);
-      if (pick.cloudGate < 0.10 && potential < 0.12)
-        continue;
-      if (originMag >= 0.12 || potential >= 0.22)
+    for (let s = 0; s < 4; s++) {
+      const pick = pickLightningOriginCached(eventId, s, 4, channel.id);
+      if (typeof LightningV2 !== 'undefined' && lightningFieldCache
+          && LightningV2.isOriginEligibleForStrike(
+            lightningFieldCache, pick, guiControls, channel.id, null, sim_res_x, sim_res_y))
         return true;
     }
     return false;
@@ -15913,13 +17398,16 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   {
     if (typeof LightningV2 !== 'undefined' && lightningFieldCache) {
       const pick = LightningV2.pickOriginFromPotential(
-        lightningFieldCache, eventId, strikeSlot, numStrikeSlots, sim_res_x, sim_res_y, channelId);
+        lightningFieldCache, eventId, strikeSlot, numStrikeSlots, sim_res_x, sim_res_y, channelId, guiControls);
       return {
         originX: pick.x,
         originY: pick.y,
         cloudGate: LightningV2.cloudGate(pick.cloud),
         chargeVal: pick.charge,
         potential: pick.potential,
+        cloud: pick.cloud,
+        eligible: pick.x >= 0 && pick.y >= 0 && LightningV2.isOriginEligibleForStrike(
+          lightningFieldCache, pick, guiControls, channelId, null, sim_res_x, sim_res_y),
       };
     }
     return {
@@ -15933,14 +17421,26 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
 
   function evaluateProceduralStrikeCached(pick, channel, eventId, slot)
   {
+    if (pick.originX < 0 || pick.originY < 0)
+      return null;
+    if (typeof LightningV2 !== 'undefined' && lightningFieldCache) {
+      if (!LightningV2.isOriginEligibleForStrike(
+          lightningFieldCache, pick, guiControls, channel.id, null, sim_res_x, sim_res_y))
+        return null;
+    } else {
+      const originMag = Math.abs(pick.chargeVal);
+      const potential = pick.potential || 0;
+      if (pick.cloudGate < 0.28 || originMag < 0.24)
+        return null;
+    }
     const originMag = Math.abs(pick.chargeVal);
     const potential = pick.potential || readPotentialCached(pick.originX, pick.originY);
-    if (pick.cloudGate < 0.12 && potential < 0.15)
-      return null;
-    if (originMag < 0.08 && potential < 0.2)
-      return null;
     const ltType = assignLtTypeForChannel(channel, pick, eventId, slot);
     if (!ltType)
+      return null;
+    if (typeof LightningV2 !== 'undefined'
+        && !LightningV2.isOriginEligibleForStrike(
+          lightningFieldCache, pick, guiControls, channel.id, ltType, sim_res_x, sim_res_y))
       return null;
     return { ltType, chargeVal: pick.chargeVal, originMag: Math.max(originMag, potential * 0.5), cloudGate: pick.cloudGate };
   }
@@ -16071,19 +17571,32 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     refreshLightningFieldCache();
     const channelId = channelIdForLtType(ltType);
     if (typeof LightningV2 !== 'undefined' && lightningFieldCache) {
-      const pick = LightningV2.pickOriginFromPotential(
-        lightningFieldCache, eventId, 0, 1, sim_res_x, sim_res_y, channelId);
-      if (pick.potential > 0.06 || pick.cloud > 0.08) {
+      for (let attempt = 0; attempt < 8; attempt++) {
+        const pick = LightningV2.pickOriginFromPotential(
+          lightningFieldCache, eventId + attempt * 17, attempt, 8, sim_res_x, sim_res_y, channelId, guiControls);
+        if (pick.x < 0 || pick.y < 0)
+          continue;
+        if (!LightningV2.isOriginEligibleForStrike(
+            lightningFieldCache, pick, guiControls, channelId, ltType, sim_res_x, sim_res_y))
+          continue;
         return {
           originX: pick.x,
           originY: pick.y,
           cloudGate: LightningV2.cloudGate(pick.cloud),
-          chargeVal: pick.charge || (ltType === 6 ? 0.48 : -0.38),
+          chargeVal: pick.charge,
           potential: pick.potential,
+          cloud: pick.cloud,
         };
       }
     }
-    return getViewCenterLightningPick(ltType);
+    return {
+      originX: -1,
+      originY: -1,
+      cloudGate: 0,
+      chargeVal: 0,
+      potential: 0,
+      cloud: 0,
+    };
   }
 
   function packStrikeRouteForStrike(strike)
@@ -16131,8 +17644,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     opts = opts || {};
     const originMag = Math.max(
       Math.abs(pick.chargeVal || 0),
-      (pick.potential || readPotentialCached(pick.originX, pick.originY)) * 0.5,
-      0.35);
+      (pick.potential || readPotentialCached(pick.originX, pick.originY)) * 0.35);
     const seed = lightningStrikeSeedJS(eventId, slot, pick.originX, pick.originY);
     let flashSize = ltType === 3 || ltType === 1 || ltType === 2
       ? computeCloudFlashSize(originMag, eventId, slot) : 1.0;
@@ -16348,6 +17860,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       return;
     }
     const pick = getForcedLightningPick(ltType, eventId);
+    if (pick.originX < 0 || pick.originY < 0)
+      return;
     const strike = buildStrikeFromPick(pick, ltType, eventId, 0);
     activateForcedLightningStrike(strike);
   }
@@ -16393,17 +17907,26 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       let pick;
       if ((isStrobe || isDry) && s > 0 && anchorPick && typeof LightningV2 !== 'undefined') {
         pick = LightningV2.jitterPickNearAnchor(
-          anchorPick, eventId, s, sim_res_x, sim_res_y, lightningFieldCache);
+          anchorPick, eventId, s, sim_res_x, sim_res_y, lightningFieldCache, guiControls, channel.id);
       } else {
         pick = pickLightningOriginCached(eventId, s, numStrikes, channel.id);
-        if ((isStrobe || isDry) && !anchorPick)
-          anchorPick = pick;
+      }
+      if (pick.originX < 0 || pick.originY < 0)
+        continue;
+      if (typeof LightningV2 !== 'undefined' && lightningFieldCache) {
+        if (!LightningV2.isOriginEligibleForStrike(
+            lightningFieldCache, pick, guiControls, channel.id, null, sim_res_x, sim_res_y))
+          continue;
+      } else {
+        const gate = pick.cloudGate ?? 0.5;
+        if (gate < 0.28 || Math.abs(pick.chargeVal || 0) < 0.24)
+          continue;
       }
       let ltType;
       if (isDry && typeof LightningV2 !== 'undefined')
-        ltType = LightningV2.selectTypeForDryBurst(eventId, s, dryMode, numStrikes);
+        ltType = LightningV2.selectTypeForDryBurst(eventId, s, dryMode, numStrikes, pick.chargeVal, guiControls);
       else if (isStrobe && typeof LightningV2 !== 'undefined')
-        ltType = LightningV2.selectTypeForStrobeBurst(eventId, s);
+        ltType = LightningV2.selectTypeForStrobeBurst(eventId, s, pick.chargeVal, guiControls);
       else {
         const strike = evaluateProceduralStrikeCached(pick, channel, eventId, s);
         if (!strike)
@@ -16412,12 +17935,12 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       }
       if (!ltType)
         continue;
-      if (!isStrobe && !isDry) {
-        const gate = pick.cloudGate ?? 0.5;
-        const potential = pick.potential || 0;
-        if (gate < 0.12 && potential < 0.15)
-          continue;
-      }
+      if (typeof LightningV2 !== 'undefined' && lightningFieldCache
+          && !LightningV2.isOriginEligibleForStrike(
+            lightningFieldCache, pick, guiControls, channel.id, ltType, sim_res_x, sim_res_y))
+        continue;
+      if ((isStrobe || isDry) && !anchorPick)
+        anchorPick = pick;
       const strike = buildStrikeFromPick(pick, ltType, eventId, s, {
         strobeBurst: isStrobe,
         dryBurst: isDry,
@@ -16544,7 +18067,12 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       gl.uniform4fv(uloc_real_ltStrikeRoute, procLightningRouteArr);
 
     const zoomNorm = clamp(cam.curZoom / sim_res_x / (guiControls.lightningLODDistance || 1), 0, 1);
-    const lod = guiControls.dynamicLOD ? clamp(zoomNorm * 2.5, 0, 1) : 1.0;
+    let lod = guiControls.dynamicLOD ? clamp(zoomNorm * 2.5, 0, 1) : 1.0;
+    let gpuQuality = realisticVisualQuality;
+    if (guiControls.adaptiveLightningQuality !== false) {
+      const frameLod = clamp(1.0 - (smoothedFrameMs - TARGET_FRAME_MS) / 38.0, 0.35, 1.0);
+      lod *= frameLod;
+    }
     gl.uniform1f(uloc_real_ltBrightness, guiControls.lightningBrightness || 1);
     gl.uniform1f(uloc_real_ltContrast, guiControls.lightningContrast || 1);
     gl.uniform1f(uloc_real_ltChannelThickness, guiControls.channelThickness || 1);
@@ -16559,7 +18087,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     gl.uniform1f(uloc_real_ltTerrainIllum, guiControls.terrainIlluminationStrength || 1);
     gl.uniform1f(uloc_real_ltNightFlash, guiControls.nighttimeFlashStrength || 1);
     gl.uniform1f(uloc_real_ltDayFlash, guiControls.daytimeFlashStrength || 0.45);
-    gl.uniform1f(uloc_real_ltLODLevel, lod * (guiControls.gpuEffectQuality || 1));
+    gl.uniform1f(uloc_real_ltLODLevel, lod * gpuQuality);
     gl.uniform1i(uloc_real_ltEnableAtmos, guiControls.ltEnableAtmosphericLighting !== false ? 1 : 0);
     gl.uniform1i(uloc_real_ltEnableCloudIllum, guiControls.ltEnableCloudIllumination !== false ? 1 : 0);
     gl.uniform1i(uloc_real_ltEnableRainIllum, guiControls.ltEnableRainShaftIllumination !== false ? 1 : 0);
@@ -16618,22 +18146,52 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
 
   function radarIconSimPositionForStrike(strike)
   {
-    if (strike.groundStrike)
-      return { simX: strike.destX, simY: strike.destY };
-    // Horizontal / long cloud paths: icon at midpoint so radar shows the visible flash area
-    if (strike.ltType === 2 || strike.ltType === 7 || strike.ltType === 8) {
+    const cloudTop = sim_res_y * 0.88;
+    const cloudBot = sim_res_y * 0.07;
+    const clampX = (x) => clamp(x, 0, sim_res_x - 1);
+    const clampCloudY = (y) => clamp(y, cloudBot, cloudTop);
+    if (strike.flashOnly || strike.ltType === 1 || strike.ltType === 2 || strike.ltType === 3) {
       return {
-        simX: (strike.originX + strike.destX) * 0.5,
-        simY: (strike.originY + strike.destY) * 0.5,
+        simX: clampX((strike.originX + strike.destX) * 0.5),
+        simY: clampCloudY((strike.originY + strike.destY) * 0.5),
       };
     }
-    return { simX: strike.originX, simY: strike.originY };
+    if (strike.ltType === 7 || strike.ltType === 8) {
+      return {
+        simX: clampX((strike.originX + strike.destX) * 0.5),
+        simY: clampCloudY((strike.originY + strike.destY) * 0.5),
+      };
+    }
+    return {
+      simX: clampX(strike.originX),
+      simY: clampCloudY(strike.originY),
+    };
   }
 
-  function registerRadarLightningStrike(eventKey, simX, simY)
+  function registerRadarLightningStrike(eventKey, simX, simY, ltType)
   {
     if (!guiControls.radarLightningIcons || registeredLightningEvents.has(eventKey))
       return;
+    if (typeof LightningV2 !== 'undefined') {
+      if (!LightningV2.isSimInCloudLayer(simX, simY, sim_res_x, sim_res_y, false))
+        return;
+      const clamped = LightningV2.clampLightningSimPos(simX, simY, sim_res_x, sim_res_y, false);
+      simX = clamped.x;
+      simY = clamped.y;
+      refreshLightningFieldCache();
+      if (lightningFieldCache && ltType) {
+        const charge = readChargeCached(simX, simY);
+        const cloud = readCloudCached(simX, simY);
+        const channelId = channelIdForLtType(ltType);
+        const thresholds = LightningV2.getSpawnThresholds(guiControls, channelId);
+        if (cloud < thresholds.minRawCloud * 0.92)
+          return;
+        if (!LightningV2.isChargeValidForLtType(charge, ltType, guiControls, channelId))
+          return;
+        if (Math.abs(charge) * LightningV2.cloudGate(cloud) < thresholds.minChargeMag * thresholds.minCloudGate * 0.88)
+          return;
+      }
+    }
     registeredLightningEvents.add(eventKey);
     radarLightningStrikes.push({
       simX,
@@ -16649,7 +18207,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     if (!guiControls.radarLightningIcons)
       return;
     const pos = radarIconSimPositionForStrike(strike);
-    registerRadarLightningStrike(eventKey, pos.simX, pos.simY);
+    registerRadarLightningStrike(eventKey, pos.simX, pos.simY, strike.ltType);
   }
 
   function detectParticleLightningStrike()
@@ -16666,14 +18224,35 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     // Only react to a strike written this exact iteration (ignore stale texture data)
     if (Math.floor(startIter + 0.5) !== iterNum)
       return;
-    const simX = data[0] * sim_res_x;
-    const simY = data[1] * sim_res_y;
-    const cloudGate = cloudGateFromDensity(readCloudAtSimPixel(simX, simY));
-    if (cloudGate < guiControls.cloudLightningThreshold * 0.35 || data[3] < 0.05)
-      return;
+    const simX = clamp(data[0] * sim_res_x, 0, sim_res_x - 1);
+    const simY = clamp(data[1] * sim_res_y, sim_res_y * 0.07, sim_res_y * 0.88);
+    refreshLightningFieldCache();
+    const cloud = readCloudCached(simX, simY);
+    const charge = readChargeCached(simX, simY);
+    const cloudGate = cloudGateFromDensity(cloud);
+    if (typeof LightningV2 !== 'undefined') {
+      const thresholds = LightningV2.getSpawnThresholds(guiControls, 'intracloud');
+      if (cloud < thresholds.minRawCloud * 0.92)
+        return;
+      if (cloudGate < thresholds.minCloudGate * 0.92)
+        return;
+      if (Math.abs(charge) < thresholds.minChargeMag * 0.92)
+        return;
+      if (Math.abs(charge) * cloudGate < thresholds.minChargeMag * thresholds.minCloudGate * 0.88)
+        return;
+      if (!LightningV2.isChargeValidForLtType(charge, 1, guiControls, 'intracloud'))
+        return;
+    } else {
+      if (cloudGate < guiControls.cloudLightningThreshold * 0.65)
+        return;
+      if (cloud < (guiControls.chargeMinCloudDensity ?? 0.32) * 0.82)
+        return;
+      if (Math.abs(charge) < 0.22)
+        return;
+    }
     const eventKey = 'particle-' + Math.floor(startIter);
     if (guiControls.radarLightningIcons)
-      registerRadarLightningStrike(eventKey, simX, simY);
+      registerRadarLightningStrike(eventKey, simX, simY, 1);
     const intensity = Math.max(data[3], 1.2);
     playThunderForStrike(eventKey, data[0], data[1], intensity);
   }
@@ -17031,9 +18610,14 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     ctx.clearRect(0, 0, radarLightningCanvas.width, radarLightningCanvas.height);
 
     for (const strike of radarLightningStrikes) {
+      if (typeof LightningV2 !== 'undefined'
+          && !LightningV2.isSimInCloudLayer(strike.simX, strike.simY, sim_res_x, sim_res_y, false))
+        continue;
       const sx = simToScreenX(strike.simX);
       const sy = simToScreenY(strike.simY);
       if (sx < -30 || sx > canvas.width + 30 || sy < -30 || sy > canvas.height + 30)
+        continue;
+      if (sx < 0 || sx > canvas.width || sy < 0 || sy > canvas.height)
         continue;
       const fadeMs = Math.max(200, getRadarLightningIconDurationMs() * 0.16);
       const fade = guiControls.paused
@@ -17620,6 +19204,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
 
     if (guiControls.displayMode == 'DISP_REAL') {
 
+      realisticVisualQuality = getRealisticVisualQuality();
+
       { //  Abient Light Calculation
         gl.bindVertexArray(postProcessingVao);
 
@@ -17633,11 +19219,12 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         gl.useProgram(bloomBlurProgram);
         gl.uniform1i(uloc_bloom_bloomTexture, 0);
 
-        const ambientBlurPasses = useLiteVisualsThisFrame ? 1 : 2;
+        const ambientBlurPasses = getAmbientBlurPasses();
+        const ambientLevels = getAmbientLevelCount();
         for (let blurTimes = 0; blurTimes < ambientBlurPasses; blurTimes++) {
 
           // downsample
-          for (let i = 1; i < ambientLightFBOs.length; i++) {
+          for (let i = 1; i < ambientLevels; i++) {
             let destFBO = ambientLightFBOs[i];
             gl.uniform2f(uloc_bloom_texelSize, prevFBO.texelSizeX, prevFBO.texelSizeY);
 
@@ -17658,7 +19245,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
           gl.blendFunc(gl.ONE, gl.ONE); // add to the existing texture in the framebuffer
           gl.enable(gl.BLEND);
 
-          for (let i = ambientLightFBOs.length - 2; i >= 0; i--) {
+          for (let i = ambientLevels - 2; i >= 0; i--) {
             let destFBO = ambientLightFBOs[i];
 
             gl.uniform2f(uloc_bloom_texelSize, prevFBO.texelSizeX, prevFBO.texelSizeY);
@@ -17735,6 +19322,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       gl.uniform4f(uloc_real_cursor, mouseXinSim, mouseYinSim, guiControls.brushSize * 0.5, cursorType);
       gl.uniform1f(uloc_real_Xmult, horizontalDisplayMult);
       gl.uniform1f(uloc_real_iterNum, iterNum);
+      if (uloc_real_visualQuality !== null)
+        gl.uniform1f(uloc_real_visualQuality, realisticVisualQuality);
 
       // Don't display vectors when zoomed out because you would just see noise
       if (cam.curZoom / sim_res_x > 0.003) {
@@ -17777,14 +19366,15 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
 
 
       // BLOOM
-      if (guiControls.enableBloom) {
+      const bloomLevels = getBloomLevelCount();
+      if (bloomLevels > 1) {
         let prevFBO = bloomFBOs[0]; // the previous FBO
 
         gl.useProgram(bloomBlurProgram);
         gl.uniform1i(uloc_bloom_bloomTexture, 0);
 
         // downsample
-        for (let i = 1; i < bloomFBOs.length; i++) {
+        for (let i = 1; i < bloomLevels; i++) {
           let destFBO = bloomFBOs[i];
           gl.uniform2f(uloc_bloom_texelSize, prevFBO.texelSizeX, prevFBO.texelSizeY);
 
@@ -17805,7 +19395,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         gl.blendFunc(gl.ONE, gl.ONE); // add to the existing texture in the framebuffer
         gl.enable(gl.BLEND);
 
-        for (let i = bloomFBOs.length - 2; i >= 0; i--) {
+        for (let i = bloomLevels - 2; i >= 0; i--) {
           let destFBO = bloomFBOs[i];
 
           gl.uniform2f(uloc_bloom_texelSize, prevFBO.texelSizeX, prevFBO.texelSizeY);
@@ -18725,7 +20315,7 @@ drawNukeOverlay();
         dash.classList.add('visible');
         dash.setAttribute('aria-hidden', 'false');
       }
-      if (metricsPanel) metricsPanel.style.display = 'block';
+      if (metricsPanel) metricsPanel.style.display = 'flex';
       soundingGraph.initSoundingDashboard();
     } else {
       soundingGraph.graphCanvas.style.display = 'none';
@@ -18734,6 +20324,22 @@ drawNukeOverlay();
         dash.setAttribute('aria-hidden', 'true');
       }
       if (metricsPanel) metricsPanel.style.display = 'none';
+    }
+  }
+
+  function toggleSoundingFreeze()
+  {
+    if (!guiControls.showGraph) return;
+    if (guiControls.graphFixedPosition) {
+      guiControls.graphFixedPosition = false;
+    } else {
+      guiControls.graphFixedPosition = true;
+      guiControls.graphFixedX = Math.floor(Math.abs(mod(mouseXinSim * sim_res_x, sim_res_x)));
+      guiControls.graphFixedY = Math.floor(mouseYinSim * sim_res_y);
+    }
+    const freezeBtnEl = document.getElementById('soundingFreezeBtn');
+    if (freezeBtnEl) {
+      freezeBtnEl.textContent = guiControls.graphFixedPosition ? 'Unlock' : 'Freeze';
     }
   }
 

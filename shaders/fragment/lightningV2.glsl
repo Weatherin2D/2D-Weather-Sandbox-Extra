@@ -26,6 +26,7 @@ uniform int ltEnableVolumetric;
 uniform float ltCloudObscuration;
 uniform float ltChannelIllumRatio;
 uniform float ltStrobeFlicker;
+uniform float ltLODLevel;
 
 const vec3 LT_CG_COL = vec3(0.70, 0.57, 1.0);
 const float LT_TEX_ASPECT = 2500.0 / 5000.0;
@@ -71,6 +72,32 @@ float ltPropagate(float age, float ltType) {
   if (ltCG(ltType) || ltDry(ltType)) return 1.0;
   float step = (floor(ltPhase(age) * 5.0) + 1.0) / 5.0;
   return clamp(step, 0.2, 1.0);
+}
+
+int ltEffectiveStrikeLimit() {
+  if (ltLODLevel < 0.12) return 0;
+  return min(ltNumStrikes, max(1, int(ceil(float(ltNumStrikes) * ltLODLevel))));
+}
+
+float ltDistToSegment(vec2 p, vec2 a, vec2 b) {
+  vec2 ab = b - a;
+  float denom = dot(ab, ab);
+  if (denom < 1e-6) return length(p - a);
+  float t = clamp(dot(p - a, ab) / denom, 0.0, 1.0);
+  return length(p - (a + ab * t));
+}
+
+bool ltNearStrike(vec2 uv, float aspect, vec2 origin, vec2 dest, float ltType) {
+  float margin = mix(0.035, 0.17, ltLODLevel);
+  vec2 p = vec2(uv.x * aspect, uv.y);
+  vec2 oA = vec2(origin.x * aspect, origin.y);
+  vec2 dA = vec2(dest.x * aspect, dest.y);
+  if (ltChordPath(ltType) || ltUpward(ltType))
+    return ltDistToSegment(p, oA, dA) < margin;
+  float horiz = abs(uv.x - origin.x) * aspect;
+  float top = max(origin.y, dest.y) + margin;
+  float bot = min(origin.y, dest.y) - margin;
+  return horiz < margin * 0.65 && uv.y <= top && uv.y >= bot;
 }
 
 float ltCloudEmbedVis(float cloud, float visMult) {
@@ -159,24 +186,28 @@ vec3 ltDisplayCGBolt(vec2 uv, float aspect, vec2 origin, vec2 dest, float lightn
 
 vec3 ltRenderStrikeBolts(vec2 uv, float aspect, float cloudwater) {
   vec3 result = vec3(0.0);
-  if (ltNumStrikes <= 0 || ltEventAge < 0.0) return result;
+  if (ltNumStrikes <= 0 || ltEventAge < 0.0 || ltLODLevel < 0.05) return result;
 
   float lightningTime = ltEventAge / 5.0;
   if (lightningTime > 4.0) return result;
 
+  int strikeLimit = ltEffectiveStrikeLimit();
+  bool allowBentPath = ltLODLevel >= 0.55;
+
   for (int i = 0; i < LT_MAX_STRIKES; i++) {
-    if (i >= ltNumStrikes) break;
+    if (i >= strikeLimit) break;
     float ltType = ltStrikePos[i].z;
     if (ltStrikeIsFlash(ltType, ltStrikeMeta[i].y)) continue;
     if (ltPrecipOnly(ltStrikeMeta[i].y)) continue;
     vec2 origin = ltStrikePos[i].xy;
     vec2 dest = ltStrikeDest[i].xy;
+    if (!ltNearStrike(uv, aspect, origin, dest, ltType)) continue;
     vec4 route = ltStrikeRoute[i];
     float visMult = ltStrikeMeta[i].z;
     float intensity = ltStrikeDest[i].z;
     float brightMult = ltStrikeMeta[i].w;
 
-    if (ltStrikeUsesBentPath(route)) {
+    if (allowBentPath && ltStrikeUsesBentPath(route)) {
       vec2 mid = route.xy;
       result += ltDisplayCGBolt(uv, aspect, origin, mid, lightningTime, intensity, ltType, visMult, brightMult, cloudwater);
       result += ltDisplayCGBolt(uv, aspect, mid, dest, lightningTime, intensity, ltType, visMult, brightMult, cloudwater);
@@ -224,23 +255,27 @@ void ltGetICCCFlash(vec2 uv, float aspect, float cloudwater, float precip, float
   flashEmitted = vec3(0.0);
   flashCloudLight = vec3(0.0);
   flashSurfaceLight = vec3(0.0);
-  if (ltNumStrikes <= 0 || ltEventAge < 0.0) return;
+  if (ltNumStrikes <= 0 || ltEventAge < 0.0 || ltLODLevel < 0.08) return;
 
   float flashPhase = ltFlashEnvelope(ltEventAge);
   if (flashPhase < 0.01) return;
+  int strikeLimit = ltEffectiveStrikeLimit();
   float dayNight = mix(ltDayFlash, ltNightFlash, nightFactor);
   float cloudMask = smoothstep(0.06, 0.32, cloudwater);
   float precipMask = smoothstep(0.04, 0.22, precip);
 
   for (int i = 0; i < LT_MAX_STRIKES; i++) {
-    if (i >= ltNumStrikes) break;
+    if (i >= strikeLimit) break;
     float ltType = ltStrikePos[i].z;
     if (!ltStrikeIsFlash(ltType, ltStrikeMeta[i].y)) continue;
 
     vec2 origin = ltStrikePos[i].xy;
     vec2 dest = ltStrikeDest[i].xy;
     vec4 route = ltStrikeRoute[i];
-    vec2 center = ltStrikeUsesBentPath(route) ? route.xy : mix(origin, dest, 0.5);
+    vec2 center = (ltLODLevel >= 0.55 && ltStrikeUsesBentPath(route)) ? route.xy : mix(origin, dest, 0.5);
+    vec2 delta = vec2((uv.x - center.x) * aspect, uv.y - center.y);
+    float flashRadius = 0.035 + max(ltStrikeMeta[i].x, 0.15) * 0.11;
+    if (length(delta) > flashRadius * mix(2.8, 5.5, ltLODLevel)) continue;
     float flashSize = max(ltStrikeMeta[i].x, 0.15);
     if (ltSheet(ltType)) flashSize *= 1.35;
     bool precipOnly = ltPrecipOnly(ltStrikeMeta[i].y);
@@ -258,7 +293,6 @@ void ltGetICCCFlash(vec2 uv, float aspect, float cloudwater, float precip, float
       continue;
     }
 
-    vec2 delta = vec2((uv.x - center.x) * aspect, uv.y - center.y);
     float dist = length(delta);
     float flash = flashPhase * intensity * dayNight / (dist * dist / radius + 0.018);
     flash *= scale;
@@ -280,18 +314,20 @@ void ltGetICCCFlash(vec2 uv, float aspect, float cloudwater, float precip, float
 void ltGetPrecipBoltShafts(vec2 uv, float aspect, float precip, float nightFactor,
     out vec3 flashSurfaceLight) {
   flashSurfaceLight = vec3(0.0);
-  if (ltNumStrikes <= 0 || ltEventAge < 0.0 || ltEnableRainIllum == 0) return;
+  if (ltNumStrikes <= 0 || ltEventAge < 0.0 || ltEnableRainIllum == 0 || ltLODLevel < 0.3) return;
+  int strikeLimit = ltEffectiveStrikeLimit();
   float flashPhase = ltFlashEnvelope(ltEventAge);
   if (flashPhase < 0.01) return;
   float dayNight = mix(ltDayFlash, ltNightFlash, nightFactor);
   float scale = ltBrightness * ltContrast / max(sqrt(float(ltNumStrikes)), 1.0);
 
   for (int i = 0; i < LT_MAX_STRIKES; i++) {
-    if (i >= ltNumStrikes) break;
+    if (i >= strikeLimit) break;
     if (!ltPrecipOnly(ltStrikeMeta[i].y)) continue;
     if (ltStrikeIsFlash(ltStrikePos[i].z, ltStrikeMeta[i].y)) continue;
     vec2 origin = ltStrikePos[i].xy;
     vec2 dest = ltStrikeDest[i].xy;
+    if (!ltNearStrike(uv, aspect, origin, dest, ltStrikePos[i].z)) continue;
     float flashSize = max(ltStrikeMeta[i].x, 0.12);
     float intensity = ltStrikeDest[i].z * ltStrikeMeta[i].w;
     float curtain = ltPrecipCurtain(uv, aspect, origin, dest, flashSize, flashPhase,
@@ -313,19 +349,22 @@ float ltPolyGlow(vec2 p, vec2 o, vec2 d, float prop, float cloud) {
 
 vec3 ltComputeStrikeIllumination(vec2 uv, float aspect, float cloudwater, float precip, float nightFactor) {
   vec3 illum = vec3(0.0);
-  if (ltNumStrikes <= 0 || ltEventAge < 0.0 || ltEnableAtmos == 0) return illum;
+  if (ltNumStrikes <= 0 || ltEventAge < 0.0 || ltEnableAtmos == 0 || ltLODLevel < 0.2) return illum;
 
   float dayNight = mix(ltDayFlash, ltNightFlash, nightFactor);
   float illumScale = ltChannelIllumRatio * ltCloudIllum * 0.85;
   vec2 p = vec2(uv.x * aspect, uv.y);
+  int strikeLimit = ltEffectiveStrikeLimit();
+  bool allowVolumetric = ltLODLevel >= 0.5 && ltEnableVolumetric == 1;
 
   for (int i = 0; i < LT_MAX_STRIKES; i++) {
-    if (i >= ltNumStrikes) break;
+    if (i >= strikeLimit) break;
     vec2 origin = ltStrikePos[i].xy;
     vec2 dest = ltStrikeDest[i].xy;
     float ltType = ltStrikePos[i].z;
     if (ltStrikeIsFlash(ltType, ltStrikeMeta[i].y)) continue;
     if (ltPrecipOnly(ltStrikeMeta[i].y)) continue;
+    if (!ltNearStrike(uv, aspect, origin, dest, ltType)) continue;
     float prop = ltPropagate(ltEventAge, ltType);
     float flashPhase = ltPhase(ltEventAge);
     if (flashPhase < 0.03) continue;
@@ -335,7 +374,7 @@ vec3 ltComputeStrikeIllumination(vec2 uv, float aspect, float cloudwater, float 
     str /= max(sqrt(float(ltNumStrikes)), 1.0);
 
     float pathGlow;
-    if (ltStrikeUsesBentPath(route)) {
+    if (ltLODLevel >= 0.55 && ltStrikeUsesBentPath(route)) {
       vec2 mA = vec2(route.x * aspect, route.y);
       vec2 oA = vec2(origin.x * aspect, origin.y);
       vec2 dA = vec2(dest.x * aspect, dest.y);
@@ -348,7 +387,7 @@ vec3 ltComputeStrikeIllumination(vec2 uv, float aspect, float cloudwater, float 
     float cloudPierce = max(0.9, ltCloudEmbedVis(cloudwater, ltStrikeMeta[i].z));
     if (ltEnableCloudIllum == 1)
       illum += LT_CG_COL * pathGlow * str * illumScale * 0.08 * cloudPierce;
-    if (ltEnableVolumetric == 1)
+    if (allowVolumetric)
       illum += LT_CG_COL * pathGlow * str * illumScale * 0.035 * cloudPierce;
     if (ltEnableRainIllum == 1)
       illum += LT_CG_COL * pathGlow * str * ltRainIllum * min(precip, 1.0)
