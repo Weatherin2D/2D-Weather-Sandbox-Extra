@@ -3706,11 +3706,11 @@ class Nuke
     const x = Math.floor(this.#x);
     const y = Math.floor(this.#y);
     if (x >= 0 && x < sim_res_x && y >= 0 && y < sim_res_y) {
-      const wallPixel = new Int8Array(4);
+      if (!this._wallPixel) this._wallPixel = new Int8Array(4); // reuse buffer
       gl.bindFramebuffer(gl.FRAMEBUFFER, window.frameBuff_1 || frameBuff_1);
       gl.readBuffer(gl.COLOR_ATTACHMENT2);
-      gl.readPixels(x, y, 1, 1, gl.RGBA_INTEGER, gl.BYTE, wallPixel);
-      if (wallPixel[1] <= 0) {
+      gl.readPixels(x, y, 1, 1, gl.RGBA_INTEGER, gl.BYTE, this._wallPixel);
+      if (this._wallPixel[1] <= 0) {
         this.explode();
         return;
       }
@@ -4756,7 +4756,8 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         this.curZoom += zoomDif;
       }
 
-      if (guiControls.sound && !guiControls.paused) {
+      // Throttle sound readbacks to every 4th frame — audible change rate is ~15 Hz, well above 4-6 Hz
+      if (guiControls.sound && !guiControls.paused && (frameNum % 4 === 0)) {
         soundSystem.updateAmbientSound(this.curXpos, this.curYpos, this.curZoom);
       }
     }
@@ -5034,7 +5035,12 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
         gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_0);
         gl.readBuffer(gl.COLOR_ATTACHMENT2); // walltexture
-        var wallTextureValues = new Int8Array(4 * sampleWidth);
+
+        // Reuse a pre-allocated buffer sized to the max possible sampleWidth (200)
+        // to avoid allocating a new Int8Array on every call (GC pressure).
+        if (!this._wallScratch || this._wallScratch.length < 4 * 200)
+          this._wallScratch = new Int8Array(4 * 200);
+        const wallTextureValues = this._wallScratch;
         gl.readPixels(simXpos - sampleWidth_2, simYpos, sampleWidth, 1, gl.RGBA_INTEGER, gl.BYTE, wallTextureValues);
 
         let cellsAboveSurface = wallTextureValues[sampleWidth_2 * 4 + 2];
@@ -5045,40 +5051,43 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
         let distanceToSurface = vecCamToSurface.mag();
 
-        let forest = new Vec2D();
-        let beach = new Vec2D();
-        let urban = new Vec2D();
+        // Use plain scalars instead of Vec2D objects to avoid GC pressure in the hot loop
+        let forestL = 0, forestR = 0, beachL = 0, beachR = 0, urbanL = 0, urbanR = 0;
 
         let distVolumeMult = map_range_C(1.0 / (clamp(distanceToSurface, 1000, 5000) / 1000.0), 0.2, 1.0, 0.0, 1.0); // multiplier based on camera distance to surface
 
+        const sq3 = sampleWidth_3 * sampleWidth_3;
         for (let i = 0; i < sampleWidth; i++) {
+          const Lgain = clamp((sampleWidth_3 - Math.abs(i - sampleWidth_3)) / sq3, 0., 1.);
+          const Rgain = clamp((sampleWidth_3 - Math.abs(i - sampleWidth_3 * 2)) / sq3, 0., 1.);
+          const wType = wallTextureValues[i * 4 + 0];
 
-          let Lgain = clamp((sampleWidth_3 - Math.abs(i - sampleWidth_3)) / (sampleWidth_3 * sampleWidth_3), 0., 1.);
-          let Rgain = clamp((sampleWidth_3 - Math.abs(i - sampleWidth_3 * 2)) / (sampleWidth_3 * sampleWidth_3), 0., 1.);
-          let gain = new Vec2D(Lgain, Rgain);
-
-          if (wallTextureValues[i * 4 + 0] == 1) { // land vegetation
-            let vegetationNorm = wallTextureValues[i * 4 + 3] / 127.0;
-            forest.add(gain.mult(vegetationNorm));
-          } else if (wallTextureValues[i * 4 + 0] == 2) {                                      // water
-            beach.add(gain);
-          } else if (wallTextureValues[i * 4 + 0] == 4 || wallTextureValues[i * 4 + 0] == 6) { // urban or industrial
-            urban.add(gain);
+          if (wType == 1) { // land vegetation
+            const vegetationNorm = wallTextureValues[i * 4 + 3] / 127.0;
+            forestL += Lgain * vegetationNorm;
+            forestR += Rgain * vegetationNorm;
+          } else if (wType == 2) { // water
+            beachL += Lgain;
+            beachR += Rgain;
+          } else if (wType == 4 || wType == 6) { // urban or industrial
+            urbanL += Lgain;
+            urbanR += Rgain;
           }
         }
 
-        forest.mult(distVolumeMult * 0.15);
-        beach.mult(distVolumeMult * 1.0);
-        urban.mult(distVolumeMult * 1.0);
+        const forest = new Vec2D(forestL * distVolumeMult * 0.15, forestR * distVolumeMult * 0.15);
+        const beach  = new Vec2D(beachL  * distVolumeMult * 1.0,  beachR  * distVolumeMult * 1.0);
+        const urban  = new Vec2D(urbanL  * distVolumeMult * 1.0,  urbanR  * distVolumeMult * 1.0);
 
         const ambientMult = guiControls.soundAmbientEnabled ? guiControls.soundVolumeAmbient : 0.0;
         this.setSoundLeftRight(this.forest_sound, forest.x * ambientMult, forest.y * ambientMult);
         this.setSoundLeftRight(this.beach_sound,  beach.x  * ambientMult, beach.y  * ambientMult);
         this.setSoundLeftRight(this.urban_sound,  urban.x  * ambientMult, urban.y  * ambientMult);
 
-        // wind sound
+        // wind sound — reuse pre-allocated Float32Array
         gl.readBuffer(gl.COLOR_ATTACHMENT0); // basetexture
-        var baseTextureValues = new Float32Array(4);
+        if (!this._baseScratch) this._baseScratch = new Float32Array(4);
+        const baseTextureValues = this._baseScratch;
         let justAboveSurfaceCellY = simYpos - cellsAboveSurface + 3;
         gl.readPixels(simXpos, justAboveSurfaceCellY, 1, 1, gl.RGBA, gl.FLOAT, baseTextureValues); // read single cell at mouse position
 
@@ -5096,7 +5105,8 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         if (tempC > 0) {
 
           gl.readBuffer(gl.COLOR_ATTACHMENT1); // watertexture
-          var waterTextureValues = new Float32Array(4);
+          if (!this._waterScratch) this._waterScratch = new Float32Array(4);
+          const waterTextureValues = this._waterScratch;
 
           gl.readPixels(simXpos, justAboveSurfaceCellY, 1, 1, gl.RGBA, gl.FLOAT, waterTextureValues);
 
@@ -12874,23 +12884,26 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
 
   function getAmbientLevelCount()
   {
-    return useLiteVisualsMode()
-      ? Math.min(ambientLightFBOs.length, 4)
-      : ambientLightFBOs.length;
+    // Cap at 6 mip levels — levels beyond 6 are tiny (< 10 px) and contribute
+    // negligible light while each extra level costs a downsample + upsample pass.
+    const cap = useLiteVisualsMode() ? 4 : 6;
+    return Math.min(ambientLightFBOs.length, cap);
   }
 
   function getBloomLevelCount()
   {
     if (!guiControls.enableBloom)
       return 0;
-    return useLiteVisualsMode()
-      ? Math.min(bloomFBOs.length, 5)
-      : bloomFBOs.length;
+    // Cap bloom levels: beyond 7 levels the lower mips are tiny and imperceptible
+    // while each level costs a downsample + upsample draw call.
+    const cap = useLiteVisualsMode() ? 5 : 7;
+    return Math.min(bloomFBOs.length, cap);
   }
 
   function updateFrameTimeStats(frameMs)
   {
-    smoothedFrameMs = smoothedFrameMs * 0.88 + frameMs * 0.12;
+    // Faster EMA (0.80 vs old 0.88) so the auto-iter controller reacts in ~5 frames instead of ~8
+    smoothedFrameMs = smoothedFrameMs * 0.80 + frameMs * 0.20;
   }
 
   function handlePause()
@@ -17150,7 +17163,10 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   {
     if (!isProceduralLightningEnabled())
       return;
-    if (lightningFieldCacheFrame === frameNum && lightningFieldCache)
+    // Throttle: rebuild at most every 3 frames. Lightning spawning is measured
+    // in simulation-seconds so 3-frame staleness is imperceptible, and this
+    // eliminates the synchronous readPixels stall from every frame.
+    if (lightningFieldCacheFrame >= frameNum - 2 && lightningFieldCache)
       return;
     if (!lightningSummaryBuffer || lightningCacheW < 1)
       return;
@@ -18052,6 +18068,11 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     }
   }
 
+  // Cache key for static lightning settings uniforms — avoids ~25 gl.uniform calls per frame
+  // when settings haven't changed.
+  var _ltStaticUniformsKey = null;
+  var _ltStaticUniformsLod = -1;
+
   function uploadProceduralLightningUniforms()
   {
     if (!lightningV2InRealisticShader || !uloc_real_ltNumStrikes)
@@ -18095,6 +18116,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     if (uloc_real_ltStrikeRoute)
       gl.uniform4fv(uloc_real_ltStrikeRoute, procLightningRouteArr);
 
+    // Static settings uniforms: only re-upload when the value key changes.
+    // These ~25 gl.uniform calls were happening every frame even with no lightning active.
     const zoomNorm = clamp(cam.curZoom / sim_res_x / (guiControls.lightningLODDistance || 1), 0, 1);
     let lod = guiControls.dynamicLOD ? clamp(zoomNorm * 2.5, 0, 1) : 1.0;
     let gpuQuality = realisticVisualQuality;
@@ -18102,47 +18125,74 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       const frameLod = clamp(1.0 - (smoothedFrameMs - TARGET_FRAME_MS) / 38.0, 0.35, 1.0);
       lod *= frameLod;
     }
-    gl.uniform1f(uloc_real_ltBrightness, guiControls.lightningBrightness || 1);
-    gl.uniform1f(uloc_real_ltContrast, guiControls.lightningContrast || 1);
-    gl.uniform1f(uloc_real_ltChannelThickness, guiControls.channelThickness || 1);
-    gl.uniform1f(uloc_real_ltBranchDensity, guiControls.branchDensity || 1);
-    gl.uniform1f(uloc_real_ltBranchLength, guiControls.branchLength || 1);
-    gl.uniform1f(uloc_real_ltFlashDuration, guiControls.flashDuration || 1);
-    gl.uniform1f(uloc_real_ltGlowDuration, guiControls.channelGlowDuration || 1);
-    gl.uniform1f(uloc_real_ltGlowStrength, guiControls.glowStrength || 1);
-    gl.uniform1f(uloc_real_ltAtmosIllum, guiControls.atmosphericIlluminationStrength || 1);
-    gl.uniform1f(uloc_real_ltCloudIllum, guiControls.cloudIlluminationStrength || 1);
-    gl.uniform1f(uloc_real_ltRainIllum, guiControls.rainShaftIlluminationStrength || 1);
-    gl.uniform1f(uloc_real_ltTerrainIllum, guiControls.terrainIlluminationStrength || 1);
-    gl.uniform1f(uloc_real_ltNightFlash, guiControls.nighttimeFlashStrength || 1);
-    gl.uniform1f(uloc_real_ltDayFlash, guiControls.daytimeFlashStrength || 0.45);
-    gl.uniform1f(uloc_real_ltLODLevel, lod * gpuQuality);
-    if (uloc_real_ltIcChannelVis)
-      gl.uniform1f(uloc_real_ltIcChannelVis, guiControls.intracloudChannelVisibility ?? 1);
-    if (uloc_real_ltCcChannelVis)
-      gl.uniform1f(uloc_real_ltCcChannelVis, guiControls.cloudToCloudChannelVisibility ?? 1);
-    if (uloc_real_ltSpiderChannelVis)
-      gl.uniform1f(uloc_real_ltSpiderChannelVis, guiControls.spiderChannelVisibility ?? 1);
-    if (uloc_real_ltAnvilChannelVis)
-      gl.uniform1f(uloc_real_ltAnvilChannelVis, guiControls.anvilChannelVisibility ?? 1);
-    if (uloc_real_ltCloudChannelOpacity)
-      gl.uniform1f(uloc_real_ltCloudChannelOpacity, guiControls.cloudLightningOpacity ?? 1);
-    gl.uniform1i(uloc_real_ltEnableAtmos, guiControls.ltEnableAtmosphericLighting !== false ? 1 : 0);
-    gl.uniform1i(uloc_real_ltEnableCloudIllum, guiControls.ltEnableCloudIllumination !== false ? 1 : 0);
-    gl.uniform1i(uloc_real_ltEnableRainIllum, guiControls.ltEnableRainShaftIllumination !== false ? 1 : 0);
-    gl.uniform1i(uloc_real_ltEnableTerrainIllum, guiControls.ltEnableTerrainIllumination !== false ? 1 : 0);
-    gl.uniform1i(uloc_real_ltEnableChannelGlow, guiControls.ltEnablePersistentChannelGlow !== false ? 1 : 0);
-    gl.uniform1i(uloc_real_ltEnableVolumetric, guiControls.ltEnableVolumetricCloudFlashing !== false ? 1 : 0);
-    if (uloc_real_ltCloudBranchDensity)
-      gl.uniform1f(uloc_real_ltCloudBranchDensity, guiControls.cloudLightningBranchDensity ?? 1.35);
-    if (uloc_real_ltCloudBranchLength)
-      gl.uniform1f(uloc_real_ltCloudBranchLength, guiControls.cloudLightningBranchLength ?? 0.45);
-    if (uloc_real_ltCloudObscuration)
-      gl.uniform1f(uloc_real_ltCloudObscuration, guiControls.cloudObscurationStrength ?? 0.55);
-    if (uloc_real_ltChannelIllumRatio)
-      gl.uniform1f(uloc_real_ltChannelIllumRatio, guiControls.channelIllumRatio ?? 0.5);
-    if (uloc_real_ltStrobeFlicker)
-      gl.uniform1f(uloc_real_ltStrobeFlicker, st.channelId === 'strobe' ? 1.0 : 0.0);
+    const lodVal = lod * gpuQuality;
+
+    // Build a fast key from settings that change infrequently.
+    const newKey = (guiControls.lightningBrightness || 1) + '|' + (guiControls.lightningContrast || 1) + '|' +
+      (guiControls.channelThickness || 1) + '|' + (guiControls.branchDensity || 1) + '|' +
+      (guiControls.branchLength || 1) + '|' + (guiControls.flashDuration || 1) + '|' +
+      (guiControls.channelGlowDuration || 1) + '|' + (guiControls.glowStrength || 1) + '|' +
+      (guiControls.atmosphericIlluminationStrength || 1) + '|' + (guiControls.cloudIlluminationStrength || 1) + '|' +
+      (guiControls.rainShaftIlluminationStrength || 1) + '|' + (guiControls.terrainIlluminationStrength || 1) + '|' +
+      (guiControls.nighttimeFlashStrength || 1) + '|' + (guiControls.daytimeFlashStrength || 0.45) + '|' +
+      (guiControls.ltEnableAtmosphericLighting !== false ? 1 : 0) + '|' +
+      (guiControls.ltEnableCloudIllumination !== false ? 1 : 0) + '|' +
+      (guiControls.ltEnableRainShaftIllumination !== false ? 1 : 0) + '|' +
+      (guiControls.ltEnableTerrainIllumination !== false ? 1 : 0) + '|' +
+      (guiControls.ltEnablePersistentChannelGlow !== false ? 1 : 0) + '|' +
+      (guiControls.ltEnableVolumetricCloudFlashing !== false ? 1 : 0) + '|' +
+      (guiControls.cloudLightningBranchDensity ?? 1.35) + '|' + (guiControls.cloudLightningBranchLength ?? 0.45) + '|' +
+      (guiControls.cloudObscurationStrength ?? 0.55) + '|' + (guiControls.channelIllumRatio ?? 0.5) + '|' +
+      (st.channelId === 'strobe' ? 1 : 0) + '|' +
+      (guiControls.intracloudChannelVisibility ?? 1) + '|' + (guiControls.cloudToCloudChannelVisibility ?? 1) + '|' +
+      (guiControls.spiderChannelVisibility ?? 1) + '|' + (guiControls.anvilChannelVisibility ?? 1) + '|' +
+      (guiControls.cloudLightningOpacity ?? 1);
+
+    if (newKey !== _ltStaticUniformsKey || Math.abs(lodVal - _ltStaticUniformsLod) > 0.005) {
+      _ltStaticUniformsKey = newKey;
+      _ltStaticUniformsLod = lodVal;
+      gl.uniform1f(uloc_real_ltBrightness, guiControls.lightningBrightness || 1);
+      gl.uniform1f(uloc_real_ltContrast, guiControls.lightningContrast || 1);
+      gl.uniform1f(uloc_real_ltChannelThickness, guiControls.channelThickness || 1);
+      gl.uniform1f(uloc_real_ltBranchDensity, guiControls.branchDensity || 1);
+      gl.uniform1f(uloc_real_ltBranchLength, guiControls.branchLength || 1);
+      gl.uniform1f(uloc_real_ltFlashDuration, guiControls.flashDuration || 1);
+      gl.uniform1f(uloc_real_ltGlowDuration, guiControls.channelGlowDuration || 1);
+      gl.uniform1f(uloc_real_ltGlowStrength, guiControls.glowStrength || 1);
+      gl.uniform1f(uloc_real_ltAtmosIllum, guiControls.atmosphericIlluminationStrength || 1);
+      gl.uniform1f(uloc_real_ltCloudIllum, guiControls.cloudIlluminationStrength || 1);
+      gl.uniform1f(uloc_real_ltRainIllum, guiControls.rainShaftIlluminationStrength || 1);
+      gl.uniform1f(uloc_real_ltTerrainIllum, guiControls.terrainIlluminationStrength || 1);
+      gl.uniform1f(uloc_real_ltNightFlash, guiControls.nighttimeFlashStrength || 1);
+      gl.uniform1f(uloc_real_ltDayFlash, guiControls.daytimeFlashStrength || 0.45);
+      gl.uniform1f(uloc_real_ltLODLevel, lodVal);
+      if (uloc_real_ltIcChannelVis)
+        gl.uniform1f(uloc_real_ltIcChannelVis, guiControls.intracloudChannelVisibility ?? 1);
+      if (uloc_real_ltCcChannelVis)
+        gl.uniform1f(uloc_real_ltCcChannelVis, guiControls.cloudToCloudChannelVisibility ?? 1);
+      if (uloc_real_ltSpiderChannelVis)
+        gl.uniform1f(uloc_real_ltSpiderChannelVis, guiControls.spiderChannelVisibility ?? 1);
+      if (uloc_real_ltAnvilChannelVis)
+        gl.uniform1f(uloc_real_ltAnvilChannelVis, guiControls.anvilChannelVisibility ?? 1);
+      if (uloc_real_ltCloudChannelOpacity)
+        gl.uniform1f(uloc_real_ltCloudChannelOpacity, guiControls.cloudLightningOpacity ?? 1);
+      gl.uniform1i(uloc_real_ltEnableAtmos, guiControls.ltEnableAtmosphericLighting !== false ? 1 : 0);
+      gl.uniform1i(uloc_real_ltEnableCloudIllum, guiControls.ltEnableCloudIllumination !== false ? 1 : 0);
+      gl.uniform1i(uloc_real_ltEnableRainIllum, guiControls.ltEnableRainShaftIllumination !== false ? 1 : 0);
+      gl.uniform1i(uloc_real_ltEnableTerrainIllum, guiControls.ltEnableTerrainIllumination !== false ? 1 : 0);
+      gl.uniform1i(uloc_real_ltEnableChannelGlow, guiControls.ltEnablePersistentChannelGlow !== false ? 1 : 0);
+      gl.uniform1i(uloc_real_ltEnableVolumetric, guiControls.ltEnableVolumetricCloudFlashing !== false ? 1 : 0);
+      if (uloc_real_ltCloudBranchDensity)
+        gl.uniform1f(uloc_real_ltCloudBranchDensity, guiControls.cloudLightningBranchDensity ?? 1.35);
+      if (uloc_real_ltCloudBranchLength)
+        gl.uniform1f(uloc_real_ltCloudBranchLength, guiControls.cloudLightningBranchLength ?? 0.45);
+      if (uloc_real_ltCloudObscuration)
+        gl.uniform1f(uloc_real_ltCloudObscuration, guiControls.cloudObscurationStrength ?? 0.55);
+      if (uloc_real_ltChannelIllumRatio)
+        gl.uniform1f(uloc_real_ltChannelIllumRatio, guiControls.channelIllumRatio ?? 0.5);
+      if (uloc_real_ltStrobeFlicker)
+        gl.uniform1f(uloc_real_ltStrobeFlicker, st.channelId === 'strobe' ? 1.0 : 0.0);
+    }
   }
 
   function thunderIntensityForType(ltType, originMag)
@@ -19087,14 +19137,11 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
               // sample to count number of inactive droplets
               if (iterNum % 600 == 0) {
                 gl.readBuffer(gl.COLOR_ATTACHMENT0);
-                var sampleValues = new Float32Array(4);
-                // console.time('cnt');
-                gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.FLOAT, sampleValues);
-                // console.timeEnd('cnt')         // 1 - 100 ms huge variation
-                // console.log(sampleValues[0]);  // number of inactive droplets
-                guiControls.inactiveDroplets = sampleValues[0];
+                if (!window._inactiveDropletScratch) window._inactiveDropletScratch = new Float32Array(4);
+                gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.FLOAT, window._inactiveDropletScratch);
+                guiControls.inactiveDroplets = window._inactiveDropletScratch[0];
                 // gl.useProgram(precipitationProgram); // already set
-                gl.uniform1f(uloc_precip_inactiveDroplets, sampleValues[0]);
+                gl.uniform1f(uloc_precip_inactiveDroplets, window._inactiveDropletScratch[0]);
               }
 
               gl.bindTransformFeedback(gl.TRANSFORM_FEEDBACK, null);
@@ -20314,6 +20361,23 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
 
 drawNukeOverlay();
     updateFrameTimeStats(performance.now() - frameDrawStart);
+
+    // Auto-adjust iterations per frame every frame using smoothedFrameMs instead of
+    // waiting for the 1-second FPS counter. This reacts in ~5 frames rather than ~60.
+    if (!guiControls.paused && guiControls.auto_IterPerFrame
+        && !airplaneMode && !guiControls.slowMotion && !guiControls.realtimeMode) {
+      // Target: keep smoothedFrameMs close to TARGET_FRAME_MS (28 ms = ~35 fps headroom).
+      // Reduce aggressively if over budget, grow slowly when comfortable.
+      const msOverBudget = smoothedFrameMs - TARGET_FRAME_MS;
+      if (msOverBudget > 4) {
+        // Over budget: drop by 1 immediately
+        adjIterPerFrame(-1);
+      } else if (msOverBudget < -6 && frameNum % 15 === 0) {
+        // Well under budget: grow by 1 every ~15 frames (~0.25s)
+        adjIterPerFrame(1);
+      }
+    }
+
     frameNum++;
   requestAnimationFrame(draw);
 } // end of draw() outer
@@ -20613,17 +20677,8 @@ drawNukeOverlay();
       FPS = frameNum - lastFrameNum;
       lastFrameNum = frameNum;
 
-
       if (!guiControls.paused) {
         console.log(FPS + ' FPS   ' + guiControls.IterPerFrame + ' Iterations / frame      ' + FPS * guiControls.IterPerFrame + ' Iterations / second');
-
-        if (guiControls.auto_IterPerFrame && !airplaneMode && !guiControls.slowMotion && !guiControls.realtimeMode) {
-          const fpsTarget = 60;
-          adjIterPerFrame((FPS / fpsTarget - 1.0) * 5.0); // example: ((30 / 60)-1.0) = -0.5
-
-          if (FPS == fpsTarget)
-            adjIterPerFrame(1);
-        }
       }
       // calculate total amounts of water and smoke for verification of fluid simulation
       /*
