@@ -38,6 +38,7 @@ uniform float sunAzimuth;
 uniform float iterNum; // used as seed for random function
 
 uniform float dynamicWaterTemperature;
+uniform float meltingHeat;
 
 layout(location = 0) out vec4 base;
 layout(location = 1) out vec4 water;
@@ -97,7 +98,7 @@ void main()
 
     wall[TYPE] = wallX0Ym[TYPE];                     // copy wall type from wall below
 
-    if (wall[TYPE] != WALLTYPE_WATER)
+    if (!isLiquidWaterType(wall[TYPE]) && wall[TYPE] != WALLTYPE_ICE)
       base[TEMPERATURE] += light[NET_HEATING]; // IR heating/cooling effect
 
     base[TEMPERATURE] += precipFeedback[HEAT]; // rain cools air and riming heats air
@@ -168,7 +169,7 @@ void main()
       nextToWall = true;
       wall[DISTANCE] = 1;                     // dist to nearest wall = 1
 
-      if (wallXmY0[TYPE] == WALLTYPE_WATER) { // if left is water, build a dyke
+      if (isLiquidWaterType(wallXmY0[TYPE])) { // if left is water, build a dyke
         wall[TYPE] = WALLTYPE_LAND;
         wall[DISTANCE] = 0;
       }
@@ -179,14 +180,14 @@ void main()
       nextToWall = true;
       wall[DISTANCE] = 1;                     // dist to nearest wall = 1
 
-      if (wallXpY0[TYPE] == WALLTYPE_WATER) { // if right is water, build a dyke
+      if (isLiquidWaterType(wallXpY0[TYPE])) { // if right is water, build a dyke
         wall[TYPE] = WALLTYPE_LAND;
         wall[DISTANCE] = 0;
       }
     }
     if (wallX0Yp[DISTANCE] == 0) {                                                  // above is wall
       nextToWall = true;
-      if (texCoord.y < 0.99 && (!allowCaves || wallX0Yp[TYPE] == WALLTYPE_WATER)) { // Fill in land below
+      if (texCoord.y < 0.99 && (!allowCaves || isAnyWaterType(wallX0Yp[TYPE]))) { // Fill in land below
         wall[TYPE] = WALLTYPE_LAND;
         wall[DISTANCE] = 0;                                                         //  set this to wall
       } else {
@@ -208,7 +209,7 @@ void main()
     //}
 
     if (nextToWall) {
-      if (wall[TYPE] != WALLTYPE_WATER) { // any land
+      if (!isAnyWaterType(wall[TYPE])) { // any land
         // Uniform horizontal-surface irradiance (same as water); not screen-space sun direction.
         float lightPower = max(light[SUNLIGHT] * cos(sunAngle), 0.0);
 
@@ -353,12 +354,15 @@ void main()
           }
         }
         break;
+      case WALLTYPE_FRESH_WATER:
       case WALLTYPE_WATER:
+      case WALLTYPE_ICE:
         if (wall[VERT_DISTANCE] <= wallVerticalInfluence) {
-          float LocalWaterTemperature = texture(baseTex, texCoordX0Ym)[TEMPERATURE];                                       // water temperature
-          base[TEMPERATURE] += (LocalWaterTemperature - realTemp - 1.0) / influenceDevider * waterHeatExchangeRate;        // air heated or cooled by water
+          float LocalWaterTemperature = texture(baseTex, texCoordX0Ym)[TEMPERATURE];                                       // water / ice temperature
+          base[TEMPERATURE] += (LocalWaterTemperature - realTemp - 1.0) / influenceDevider * waterHeatExchangeRate;        // air heated or cooled by surface below
 
-          water[TOTAL] += max((maxWater(LocalWaterTemperature) - water[TOTAL]) * waterEvaporation / influenceDevider, 0.); // water evaporating
+          if (isLiquidWaterType(wallX0Ym[TYPE]))
+            water[TOTAL] += max((maxWater(LocalWaterTemperature) - water[TOTAL]) * waterEvaporation / influenceDevider, 0.); // water evaporating
         }
         break;
       }
@@ -369,12 +373,13 @@ void main()
 
     if (wall[VERT_DISTANCE] < 0) {                                         // below surface
       water.ba = texture(waterTex, texCoordX0Yp).ba;                       // soil moisture and snow is copied from above
+      water[SUSTAINED_MOISTURE] = texture(waterTex, texCoordX0Yp)[SUSTAINED_MOISTURE];
       wall[VEGETATION] = wallX0Yp[VEGETATION];                             // vegetation is copied from above
 
       if (wallX0Yp[DISTANCE] == 0) {                                       // if above is wall
-        if (wallX0Yp[TYPE] != WALLTYPE_WATER) {                            // above is not water
+        if (!isAnyWaterType(wallX0Yp[TYPE])) {                             // above is not water
           wall[TYPE] = wallX0Yp[TYPE];                                     // copy walltype from above
-        } else if (wall[TYPE] == WALLTYPE_WATER) {                         // this is water
+        } else if (isAnyWaterType(wall[TYPE])) {                         // this is water / ice
                                                                            //   wall[TYPE] = wallX0Yp[TYPE];                                     // land can't be over water. copy walltype from above
           base[TEMPERATURE] = texture(baseTex, texCoordX0Yp)[TEMPERATURE]; // copy water temperature from above
         }
@@ -405,9 +410,26 @@ void main()
               wall[TYPE] = WALLTYPE_LAND;             // turn off fire
           }
         }
-      case WALLTYPE_LAND:                                                                                          // no break,can also be fire or urban:
-        water[SOIL_MOISTURE] = clamp(water[SOIL_MOISTURE] + precipDeposition[RAIN_DEPOSITION] * 0.1, 0.0, 1000.0); // rain accumulation
-        water[SNOW] = clamp(water[SNOW] + precipDeposition[SNOW_DEPOSITION] * snowMassToHeight, 0.0, 4000.0);      // snow accumulation in cm
+      case WALLTYPE_LAND:                                                                                     // no break,can also be fire or urban:
+        {
+          float rainInput = precipDeposition[RAIN_DEPOSITION] * 0.1;
+          float poreSpace = max(soilFieldCapacity - water[SOIL_MOISTURE], 0.0);
+          float infiltration = min(rainInput, min(maxInfiltrationRate, poreSpace * 0.25 + maxInfiltrationRate * 0.3));
+
+          water[SOIL_MOISTURE] = clamp(water[SOIL_MOISTURE] + infiltration, 0.0, 1000.0);
+
+          if (water[SOIL_MOISTURE] > soilFieldCapacity) { // runoff from saturated soil
+            float excess = water[SOIL_MOISTURE] - soilFieldCapacity;
+            water[SOIL_MOISTURE] -= excess * 0.08;
+          }
+
+          // Legacy saves: seed climate moisture from established vegetation, not one-off rain spikes
+          if (water[SUSTAINED_MOISTURE] < 0.01 && wall[VEGETATION] > 15)
+            water[SUSTAINED_MOISTURE] = min(float(wall[VEGETATION]) * 0.25, 40.0);
+
+          water[SUSTAINED_MOISTURE] = clamp(water[SUSTAINED_MOISTURE] + infiltration * sustainedMoistureGain - sustainedMoistureDecay, 0.0, 100.0);
+        }
+        water[SNOW] = clamp(water[SNOW] + precipDeposition[SNOW_DEPOSITION] * snowMassToHeight, 0.0, 4000.0); // snow accumulation in cm
 
 
         vec4 baseAboveSurface = texture(baseTex, texCoordX0Yp);
@@ -425,19 +447,23 @@ void main()
           // average out snow cover
           const float snowSmoothingRate = 0.02; // max 0.9
           const float moistureSmoothingRate = 0.02;
+          const float sustainedSmoothingRate = 0.01;
 
           float numNeighbors = 0.;
           float totalNeighborSnow = 0.0;
           float totalNeighborSoilMoisture = 0.0;
+          float totalNeighborSustainedMoisture = 0.0;
 
           if (wallXmY0[VERT_DISTANCE] == 0 && (wallXmY0[TYPE] == WALLTYPE_LAND || wallXmY0[TYPE] == WALLTYPE_URBAN)) {
             totalNeighborSnow += texture(waterTex, texCoordXmY0)[SNOW];
             totalNeighborSoilMoisture += texture(waterTex, texCoordXmY0)[SOIL_MOISTURE];
+            totalNeighborSustainedMoisture += texture(waterTex, texCoordXmY0)[SUSTAINED_MOISTURE];
             numNeighbors += 1.;
           }
           if (wallXpY0[VERT_DISTANCE] == 0 && (wallXpY0[TYPE] == WALLTYPE_LAND || wallXpY0[TYPE] == WALLTYPE_URBAN)) {
             totalNeighborSnow += texture(waterTex, texCoordXpY0)[SNOW];
             totalNeighborSoilMoisture += texture(waterTex, texCoordXpY0)[SOIL_MOISTURE];
+            totalNeighborSustainedMoisture += texture(waterTex, texCoordXpY0)[SUSTAINED_MOISTURE];
             numNeighbors += 1.;
           }
           if (numNeighbors > 0.) { // prevent devide by 0
@@ -446,16 +472,25 @@ void main()
 
             float avgNeighborSoilMoisture = totalNeighborSoilMoisture / numNeighbors;
             water[SOIL_MOISTURE] += (avgNeighborSoilMoisture - water[SOIL_MOISTURE]) * moistureSmoothingRate;
+
+            float avgNeighborSustainedMoisture = totalNeighborSustainedMoisture / numNeighbors;
+            water[SUSTAINED_MOISTURE] += (avgNeighborSustainedMoisture - water[SUSTAINED_MOISTURE]) * sustainedSmoothingRate;
           }
 
-          // dynamic vegetation
+          // dynamic vegetation — growth driven by sustained climate moisture, not one-off rain spikes
+          float climateMoisture = water[SUSTAINED_MOISTURE];
 
-          int vegetationGrowthRate = int(water[SOIL_MOISTURE] * sqrt(lightAboveSurface[SUNLIGHT]) * 0.01);
+          int vegetationGrowthRate = 0;
+          if (climateMoisture >= minVegetationMoisture)
+            vegetationGrowthRate = int((climateMoisture - minVegetationMoisture) * sqrt(lightAboveSurface[SUNLIGHT]) * 0.008);
 
           if (vegetationGrowthRate > 0 && int(iterNum) % ((100 / vegetationGrowthRate) * 100) == 0) {      // growth interval
             if (int(map_rangeC(realTempAboveSurface, CtoK(0.0), CtoK(25.0), 0., 127.)) > wall[VEGETATION]) // limit vegetation growth at lower temperatures
               wall[VEGETATION] += 1;
           }
+
+          if (climateMoisture < 6.0 && wall[VEGETATION] > 10 && int(iterNum) % 500 == 0) // slow dieback during prolonged drought
+            wall[VEGETATION] -= 1;
 
           int subInterval = int(iterNum) / 100;
 
@@ -466,57 +501,137 @@ void main()
           //}
         }
         break;
+      case WALLTYPE_FRESH_WATER:
+        water[SALINITY] = 0.0;
       case WALLTYPE_WATER:
+        {
+          if (wall[TYPE] == WALLTYPE_WATER && water[SALINITY] < 1.0)
+            water[SALINITY] = oceanSalinityPpt;
 
-        const float waterTempUpdateInterval = 20.0; // Update less often but with bigger value to reduce rounding error
+          const float waterTempUpdateInterval = 20.0;
 
-        if (dynamicWaterTemperature >= 1.0 && mod(iterNum, waterTempUpdateInterval) < 0.5) {
+          if (dynamicWaterTemperature >= 1.0 && mod(iterNum, waterTempUpdateInterval) < 0.5) {
+            float numNeighbors = 0.;
+            float totalNeighborTemp = 0.0;
 
-          // average out temperature
-          float numNeighbors = 0.;
-          float totalNeighborTemp = 0.0;
+            if (isLiquidWaterType(wallXmY0[TYPE])) {
+              totalNeighborTemp += texture(baseTex, texCoordXmY0)[TEMPERATURE];
+              numNeighbors += 1.;
+            }
+            if (isLiquidWaterType(wallXpY0[TYPE])) {
+              totalNeighborTemp += texture(baseTex, texCoordXpY0)[TEMPERATURE];
+              numNeighbors += 1.;
+            }
+            if (numNeighbors > 0.) {
+              float avgNeighborTemp = totalNeighborTemp / numNeighbors;
+              base[TEMPERATURE] += (avgNeighborTemp - base[TEMPERATURE]) * 0.10;
+            }
+            if (base[TEMPERATURE] > 500.0)
+              base[TEMPERATURE] = CtoK(25.0);
 
-          if (wallXmY0[TYPE] == WALLTYPE_WATER) { // left is water
-            totalNeighborTemp += texture(baseTex, texCoordXmY0)[TEMPERATURE];
-            numNeighbors += 1.;
+            float airTemperature = potentialToRealT(texture(baseTex, texCoordX0Yp)[TEMPERATURE], texCoordX0Yp.y);
+            float netWaterHeating = 0.0;
+            netWaterHeating += (airTemperature - base[TEMPERATURE]) * waterHeatExchangeRate;
+            netWaterHeating -= max((maxWater(base[TEMPERATURE]) - waterX0Yp[TOTAL]) * waterEvaporation, 0.) * evapHeat * 0.5;
+
+            float lightPower = max(lightAboveSurface[SUNLIGHT] * cos(sunAngle), 0.0);
+            lightPower *= (1. - ALBEDO_WATER);
+            lightPower *= lightHeatingConst;
+            netWaterHeating += lightPower;
+            netWaterHeating += lightAboveSurface[NET_HEATING];
+            base[TEMPERATURE] += netWaterHeating / waterHeatCapacity * waterTempUpdateInterval;
           }
-          if (wallXpY0[TYPE] == WALLTYPE_WATER) { // right is water
-            totalNeighborTemp += texture(baseTex, texCoordXpY0)[TEMPERATURE];
-            numNeighbors += 1.;
+
+          base[TEMPERATURE] = clamp(base[TEMPERATURE], CtoK(-5.0), CtoK(maxWaterTemp));
+
+          float waterTempC = KtoC(base[TEMPERATURE]);
+          float salinity = salinityForWallType(wall[TYPE], water[SALINITY]);
+          float freezeC = waterFreezeTempC(salinity);
+
+          if (waterTempC <= freezeC) {
+            wall[TYPE] = WALLTYPE_ICE;
+            water[SALINITY] = salinity;
+            water[SNOW] = max(water[SNOW], minIceFormThickness);
           }
-          if (numNeighbors > 0.) { // prevent devide by 0
-            float avgNeighborTemp = totalNeighborTemp / numNeighbors;
-            base[TEMPERATURE] += (avgNeighborTemp - base[TEMPERATURE]) * 0.10;
-          }
-          if (base[TEMPERATURE] > 500.0) { // set water temperature for older savefiles
-            base[TEMPERATURE] = CtoK(25.0);
-          }
 
-          float airTemperature = potentialToRealT(texture(baseTex, texCoordX0Yp)[TEMPERATURE], texCoordX0Yp.y);
-
-          float netWaterHeating = 0.0;
-          netWaterHeating += (airTemperature - base[TEMPERATURE]) * waterHeatExchangeRate; // water heated or cooled by the air above
-
-          netWaterHeating -=
-            max((maxWater(base[TEMPERATURE]) - waterX0Yp[TOTAL]) * waterEvaporation, 0.) * evapHeat * 0.5; // evaporative cooling (half the real value, to prevent boring non convective conditions)
-
-          float lightPower = max(lightAboveSurface[SUNLIGHT] * cos(sunAngle), 0.0);                        // Light power per horizontal surface area;
-
-          lightPower *= (1. - ALBEDO_WATER);
-          lightPower *= lightHeatingConst;
-          netWaterHeating += lightPower; // sun heating water
-
-
-          netWaterHeating += lightAboveSurface[NET_HEATING]; // IR heating/cooling effect
-
-          base[TEMPERATURE] += netWaterHeating / waterHeatCapacity * waterTempUpdateInterval;
+          wall[VEGETATION] = 20;
+          water[SOIL_MOISTURE] = 100.0;
         }
+        break;
+      case WALLTYPE_ICE:
+        {
+          const float waterTempUpdateInterval = 20.0;
+          float iceThickness = water[SNOW];
+          iceThickness += precipDeposition[SNOW_DEPOSITION] * snowMassToHeight;
+          if (KtoC(base[TEMPERATURE]) <= 0.0)
+            iceThickness += precipDeposition[RAIN_DEPOSITION] * 0.05; // freezing rain adds to ice sheet
+          float salinity = salinityForWallType(wall[TYPE], water[SALINITY]);
+          float freezeC = waterFreezeTempC(salinity);
 
-        base[TEMPERATURE] = clamp(base[TEMPERATURE], CtoK(0.0), CtoK(maxWaterTemp)); // limit water temperature range
+          if (dynamicWaterTemperature >= 1.0 && mod(iterNum, waterTempUpdateInterval) < 0.5) {
+            float numNeighbors = 0.;
+            float totalNeighborTemp = 0.0;
 
-        wall[VEGETATION] = 20;
-        water[SOIL_MOISTURE] = 100.0;
-        water[SNOW] = 0.0;
+            if (wallXmY0[TYPE] == WALLTYPE_ICE || isLiquidWaterType(wallXmY0[TYPE])) {
+              totalNeighborTemp += texture(baseTex, texCoordXmY0)[TEMPERATURE];
+              numNeighbors += 1.;
+            }
+            if (wallXpY0[TYPE] == WALLTYPE_ICE || isLiquidWaterType(wallXpY0[TYPE])) {
+              totalNeighborTemp += texture(baseTex, texCoordXpY0)[TEMPERATURE];
+              numNeighbors += 1.;
+            }
+            if (numNeighbors > 0.) {
+              float avgNeighborTemp = totalNeighborTemp / numNeighbors;
+              base[TEMPERATURE] += (avgNeighborTemp - base[TEMPERATURE]) * 0.10;
+            }
+
+            float airTemperature = potentialToRealT(texture(baseTex, texCoordX0Yp)[TEMPERATURE], texCoordX0Yp.y);
+            float netIceHeating = (airTemperature - base[TEMPERATURE]) * waterHeatExchangeRate * 0.5;
+            float lightPower = max(lightAboveSurface[SUNLIGHT] * cos(sunAngle), 0.0);
+            float iceAlbedo = map_rangeC(iceThickness, 0.0, fullWhiteSnowHeight, ALBEDO_WATER, ALBEDO_ICE);
+            lightPower *= (1. - iceAlbedo);
+            lightPower *= lightHeatingConst;
+            netIceHeating += lightPower;
+            netIceHeating += lightAboveSurface[NET_HEATING] * 0.5;
+            base[TEMPERATURE] += netIceHeating / waterHeatCapacity * waterTempUpdateInterval;
+          }
+
+          float iceTempC = KtoC(base[TEMPERATURE]);
+          float windSpeed = abs(texture(baseTex, texCoordX0Yp)[VX]);
+
+          if (iceTempC < freezeC - 2.0 && int(iterNum) % 50 == 0)
+            iceThickness = min(iceThickness + iceGrowthRate, maxIceThickness);
+
+          if (iceTempC > freezeC) {
+            float melting = min((iceTempC - freezeC) * iceMeltRate, iceThickness);
+            iceThickness -= melting;
+            base[TEMPERATURE] += melting / snowMassToHeight * meltingHeat * 0.25;
+          }
+
+          if (iceTempC <= 0.0) {
+            float vaporDeficit = max(maxWater(CtoK(iceTempC)) - waterX0Yp[TOTAL], 0.0);
+            float sublimation = min(vaporDeficit * snowSublimationRate, iceThickness);
+            iceThickness -= sublimation;
+          }
+
+          if (iceThickness < thinIceBreakupCm && (windSpeed > 0.12 || iceTempC > freezeC - 1.5))
+            iceThickness = 0.0;
+
+          water[SNOW] = max(iceThickness, 0.0);
+
+          if (water[SNOW] <= 0.1) {
+            wall[TYPE] = liquidWaterTypeFromSalinity(salinity);
+            if (wall[TYPE] == WALLTYPE_WATER)
+              water[SALINITY] = max(salinity, oceanSalinityPpt);
+            else
+              water[SALINITY] = 0.0;
+            water[SNOW] = 0.0;
+            base[TEMPERATURE] = max(base[TEMPERATURE], CtoK(freezeC + 0.5));
+          }
+
+          wall[VEGETATION] = 0;
+          water[SOIL_MOISTURE] = 100.0;
+        }
         break;
       }
     }

@@ -1191,9 +1191,10 @@ function formatLightningEstimate(flashesPerMin)
 {
   if (flashesPerMin < 0.05) return 'Negligible';
   if (flashesPerMin < 0.35) return 'Low (~' + flashesPerMin.toFixed(1) + '/min)';
-  if (flashesPerMin < 1.2) return 'Mod (~' + flashesPerMin.toFixed(1) + '/min)';
-  if (flashesPerMin < 3.5) return 'High (~' + flashesPerMin.toFixed(1) + '/min)';
-  return 'Very High (~' + flashesPerMin.toFixed(1) + '/min)';
+  if (flashesPerMin < 1.5) return 'Mod (~' + flashesPerMin.toFixed(1) + '/min)';
+  if (flashesPerMin < 5) return 'High (~' + flashesPerMin.toFixed(1) + '/min)';
+  if (flashesPerMin < 15) return 'Very High (~' + flashesPerMin.toFixed(1) + '/min)';
+  return 'Intense (~' + flashesPerMin.toFixed(1) + '/min)';
 }
 
 function convertVelocityToSelectedUnit(ms, unitKey)
@@ -1868,7 +1869,7 @@ function computeColumnSoundingMetrics(envTempsC, envDewC, isFluid, vxRaw, vyRaw,
     const uScore = map_range_C(updraftMs, 8, 40, 0, 1);
     const sScore = map_range_C(shear6km, 5, 18, 0.2, 1);
     const slotScore = 1 - drySlotStrength * 0.6;
-    lightningFlMin = lScore * pScore * mScore * uScore * sScore * slotScore * 6.0;
+    lightningFlMin = lScore * pScore * mScore * uScore * sScore * slotScore * 38.0;
   }
 
   const sfcPress_hPa = 1013.25 * Math.pow(1.0 - 2.25577e-5 * sfcAltM, 5.25588);
@@ -2176,7 +2177,7 @@ const SOUNDING_VIEW_CONFIGS = [
   { mode: 'DISP_VTP',        key: 'vtp',              scaleId: 'vtp',        min: 0,    max: 12,    label: 'VTP',            unit: '' },
   { mode: 'DISP_DCAPE',      key: 'dcape',            scaleId: 'dcape',      min: 0,    max: 3000,  label: 'DCAPE',          unit: 'J/kg' },
   { mode: 'DISP_HAIL',       key: 'estHailIn',        scaleId: 'hail',       min: 0,    max: 4,     label: 'Est. Hail',      unit: 'in' },
-  { mode: 'DISP_LIGHTNING',  key: 'lightningFlMin',   scaleId: 'lightning',  min: 0,    max: 6,     label: 'Lightning',      unit: 'fl/min' },
+  { mode: 'DISP_LIGHTNING',  key: 'lightningFlMin',   scaleId: 'lightning',  min: 0,    max: 40,    label: 'Lightning',      unit: 'fl/min' },
   { mode: 'DISP_LIGHTNING_HOTSPOTS', key: 'lightningHotspotFreq', scaleId: 'lightningHotspots', min: 0, max: 10, label: 'Lightning Frequency (Hotspots)', unit: 'fl/min' },
   { mode: 'DISP_SFC_PRES',   key: 'sfcPress_hPa',     scaleId: 'sfcPres',    min: 900,  max: 1050,  label: 'Sfc Pressure',   unit: 'hPa' },
   { mode: 'DISP_HAZ_PDS_TORNADO', key: 'hazardPdsTornado', scaleId: 'hazardProb', min: 0, max: 100, label: 'PDS Tornado', unit: '%' },
@@ -6689,6 +6690,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     gl.useProgram(advectionProgram);
     gl.uniform1f(gl.getUniformLocation(advectionProgram, 'evapHeat'), guiControls.evapHeat);
     gl.uniform1f(gl.getUniformLocation(advectionProgram, 'meltingHeat'), guiControls.meltingHeat);
+    gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'meltingHeat'), guiControls.meltingHeat);
     gl.uniform1f(gl.getUniformLocation(advectionProgram, 'condensationRate'), guiControls.condensationRate);
     gl.uniform1f(gl.getUniformLocation(advectionProgram, 'globalDrying'), guiControls.globalDrying);
     gl.uniform1f(gl.getUniformLocation(advectionProgram, 'globalHeating'), guiControls.globalHeating);
@@ -6934,7 +6936,10 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         'Temperature' : 'TOOL_TEMPERATURE',
         'Water Vapor / Cloud' : 'TOOL_WATER',
         'Land' : 'TOOL_WALL_LAND',
-        'Lake / Sea' : 'TOOL_WALL_SEA',
+        'Fresh Water / Lake' : 'TOOL_WALL_FRESH',
+        'Salt Water / Ocean' : 'TOOL_WALL_SEA',
+        'Ice Sheet' : 'TOOL_WALL_ICE_SHEET',
+        'Ice Cap / Glacier' : 'TOOL_WALL_ICE_CAP',
         'Urban' : 'TOOL_WALL_URBAN',
         'Runway' : 'TOOL_WALL_RUNWAY',
         'Industrial' : 'TOOL_WALL_INDUSTRIAL',
@@ -7049,6 +7054,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       .onChange(function() {
         gl.useProgram(advectionProgram);
         gl.uniform1f(gl.getUniformLocation(advectionProgram, 'meltingHeat'), guiControls.meltingHeat);
+        gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'meltingHeat'), guiControls.meltingHeat);
         gl.useProgram(precipitationProgram);
         gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'meltingHeat'), guiControls.meltingHeat);
       })
@@ -7373,6 +7379,8 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     });
 
     advanced_folder.add(guiControls, 'enableBloom').name('Enable Bloom');
+    if (guiControls.performanceAutoScaling !== undefined)
+      advanced_folder.add(guiControls, 'performanceAutoScaling').name('Auto Performance Scaling');
     advanced_folder.add(guiControls, 'enableVectorField').name('Vector Field');
     advanced_folder.add(guiControls, 'displayWeatherStations')
       .onChange(function() {
@@ -10153,19 +10161,41 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       // draw graph
       // mouse positions in sim coordinates
 
-      gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_1);
-      gl.readBuffer(gl.COLOR_ATTACHMENT0);
-      var baseTextureValues = new Float32Array(4 * sim_res_y);
-      gl.readPixels(simXpos, 0, 1, sim_res_y, gl.RGBA, gl.FLOAT,
-                    baseTextureValues); // read a vertical culumn of cells
+      const columnKey = simXpos + '|' + (even ? 1 : 0);
+      const reuseColumn = this._columnCacheKey === columnKey
+        && this._columnCacheFrame >= frameNum - 1
+        && this._columnBaseValues
+        && this._columnWaterValues
+        && this._columnWallValues;
+      let baseTextureValues;
+      let waterTextureValues;
+      let wallTextureValues;
+      if (reuseColumn) {
+        baseTextureValues = this._columnBaseValues;
+        waterTextureValues = this._columnWaterValues;
+        wallTextureValues = this._columnWallValues;
+      } else {
+        gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_1);
+        gl.readBuffer(gl.COLOR_ATTACHMENT0);
+        if (!this._columnBaseValues || this._columnBaseValues.length !== 4 * sim_res_y)
+          this._columnBaseValues = new Float32Array(4 * sim_res_y);
+        baseTextureValues = this._columnBaseValues;
+        gl.readPixels(simXpos, 0, 1, sim_res_y, gl.RGBA, gl.FLOAT, baseTextureValues);
 
-      gl.readBuffer(gl.COLOR_ATTACHMENT1);
-      var waterTextureValues = new Float32Array(4 * sim_res_y);
-      gl.readPixels(simXpos, 0, 1, sim_res_y, gl.RGBA, gl.FLOAT, waterTextureValues); // read a vertical culumn of cells
+        gl.readBuffer(gl.COLOR_ATTACHMENT1);
+        if (!this._columnWaterValues || this._columnWaterValues.length !== 4 * sim_res_y)
+          this._columnWaterValues = new Float32Array(4 * sim_res_y);
+        waterTextureValues = this._columnWaterValues;
+        gl.readPixels(simXpos, 0, 1, sim_res_y, gl.RGBA, gl.FLOAT, waterTextureValues);
 
-      gl.readBuffer(gl.COLOR_ATTACHMENT2);
-      var wallTextureValues = new Int32Array(4 * sim_res_y);
-      gl.readPixels(simXpos, 0, 1, sim_res_y, gl.RGBA_INTEGER, gl.INT, wallTextureValues); // read a vertical column of cells
+        gl.readBuffer(gl.COLOR_ATTACHMENT2);
+        if (!this._columnWallValues || this._columnWallValues.length !== 4 * sim_res_y)
+          this._columnWallValues = new Int32Array(4 * sim_res_y);
+        wallTextureValues = this._columnWallValues;
+        gl.readPixels(simXpos, 0, 1, sim_res_y, gl.RGBA_INTEGER, gl.INT, wallTextureValues);
+        this._columnCacheKey = columnKey;
+        this._columnCacheFrame = frameNum;
+      }
 
       let surfaceLevel = 0;
       for (let y = 0; y < sim_res_y; y++) {
@@ -10944,7 +10974,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         const uScore = map_range_C(updraftMs, 8, 40, 0, 1);
         const sScore = map_range_C(shear6km, 5, 18, 0.2, 1);
         const slotScore = 1 - drySlot.strength * 0.6;
-        lightningFlMin = lScore * pScore * mScore * uScore * sScore * slotScore * 6.0;
+        lightningFlMin = lScore * pScore * mScore * uScore * sScore * slotScore * 38.0;
       }
 
       const stormTypes = computeStormTypeComposites({
@@ -12105,8 +12135,14 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       onDown() { guiControls.tool = 'TOOL_WATER'; } },
     { id: 'toolWallLand', name: 'Tool: land wall', category: 'Tools', defaultCode: 'KeyE',
       onDown() { guiControls.tool = 'TOOL_WALL_LAND'; } },
-    { id: 'toolWallSea', name: 'Tool: sea wall', category: 'Tools', defaultCode: 'KeyR',
+    { id: 'toolWallFresh', name: 'Tool: fresh water / lake', category: 'Tools', defaultCode: 'KeyR',
+      onDown() { guiControls.tool = 'TOOL_WALL_FRESH'; } },
+    { id: 'toolWallSea', name: 'Tool: salt water / ocean', category: 'Tools',
       onDown() { guiControls.tool = 'TOOL_WALL_SEA'; } },
+    { id: 'toolWallIceSheet', name: 'Tool: ice sheet', category: 'Tools',
+      onDown() { guiControls.tool = 'TOOL_WALL_ICE_SHEET'; } },
+    { id: 'toolWallIceCap', name: 'Tool: ice cap / glacier', category: 'Tools',
+      onDown() { guiControls.tool = 'TOOL_WALL_ICE_CAP'; } },
     { id: 'toolWallFire', name: 'Tool: fire wall', category: 'Tools', defaultCode: 'KeyT',
       onDown() { guiControls.tool = 'TOOL_WALL_FIRE'; } },
     { id: 'toolSmoke', name: 'Tool: smoke', category: 'Tools', defaultCode: 'KeyY',
@@ -12417,7 +12453,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     var rect = canvas.getBoundingClientRect();
     mouseX = event.clientX - rect.left;
 
-    if (!(guiControls.tool == 'TOOL_WALL_SEA' && leftMousePressed)) // lock y pos while drawing lake / sea
+    if (!((guiControls.tool == 'TOOL_WALL_FRESH' || guiControls.tool == 'TOOL_WALL_SEA') && leftMousePressed)) // lock y pos while drawing water
       mouseY = event.clientY - rect.top;
 
     if (middleMousePressed) {
@@ -12861,32 +12897,50 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   var realtimeLastWallClockMs = 0;
   var realtimeIterAccumulator = 0;
 
+  function getFramePressure()
+  {
+    // 0 = comfortable, 1 = heavy frame pressure. Gradual — not a hard on/off switch.
+    if (guiControls.performanceAutoScaling === false)
+      return 0;
+    return clamp((smoothedFrameMs - TARGET_FRAME_MS) / 36.0, 0, 1);
+  }
+
   function useLiteVisualsMode()
   {
-    // Only trim post-process cost under severe frame drops — never from iteration count alone.
-    return smoothedFrameMs > TARGET_FRAME_MS + 16;
+    return getFramePressure() > 0.42;
   }
 
   function getRealisticVisualQuality()
   {
     let quality = guiControls.gpuEffectQuality || 1.0;
-    if (guiControls.adaptiveLightningQuality !== false) {
-      const framePressure = clamp((smoothedFrameMs - TARGET_FRAME_MS) / 40.0, 0, 1);
+    const framePressure = getFramePressure();
+    if (guiControls.adaptiveLightningQuality !== false)
       quality *= 1.0 - framePressure * 0.55;
-    }
+    // Soften sunlight kernel under pressure — imperceptible until ~30% pressure.
+    quality *= 1.0 - framePressure * 0.38;
     return clamp(quality, 0.35, 1.2);
   }
 
   function getAmbientBlurPasses()
   {
-    return useLiteVisualsMode() ? 1 : 2;
+    const pressure = getFramePressure();
+    if (pressure > 0.72)
+      return 1;
+    if (pressure > 0.28)
+      return 1;
+    return 2;
   }
 
   function getAmbientLevelCount()
   {
     // Cap at 6 mip levels — levels beyond 6 are tiny (< 10 px) and contribute
     // negligible light while each extra level costs a downsample + upsample pass.
-    const cap = useLiteVisualsMode() ? 4 : 6;
+    const pressure = getFramePressure();
+    let cap = 6;
+    if (pressure > 0.55)
+      cap = 4;
+    else if (pressure > 0.22)
+      cap = 5;
     return Math.min(ambientLightFBOs.length, cap);
   }
 
@@ -12896,7 +12950,12 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       return 0;
     // Cap bloom levels: beyond 7 levels the lower mips are tiny and imperceptible
     // while each level costs a downsample + upsample draw call.
-    const cap = useLiteVisualsMode() ? 5 : 7;
+    const pressure = getFramePressure();
+    let cap = 7;
+    if (pressure > 0.55)
+      cap = 5;
+    else if (pressure > 0.22)
+      cap = 6;
     return Math.min(bloomFBOs.length, cap);
   }
 
@@ -16207,6 +16266,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   // gl.uniform1fv(gl.getUniformLocation(boundaryProgram, 'initial_T'), initial_T);
   gl.uniform4fv(gl.getUniformLocation(boundaryProgram, 'initial_Tv'), initial_T);
   gl.uniform1i(gl.getUniformLocation(boundaryProgram, 'allowCaves'), guiControls.allowCaves ? 1 : 0);
+  gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'meltingHeat'), guiControls.meltingHeat);
 
   gl.useProgram(curlProgram);
   gl.uniform2f(gl.getUniformLocation(curlProgram, 'texelSize'), texelSizeX, texelSizeY);
@@ -16496,10 +16556,12 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   const uloc_adv_userInputMove         = gl.getUniformLocation(advectionProgram, 'userInputMove');
   const uloc_adv_wrapHorizontally      = gl.getUniformLocation(advectionProgram, 'wrapHorizontally');
   const uloc_adv_userInputType         = gl.getUniformLocation(advectionProgram, 'userInputType');
+  const uloc_adv_iterNum               = gl.getUniformLocation(advectionProgram, 'iterNum');
 
   // per-frame precipitation
   const uloc_precip_iterNum            = gl.getUniformLocation(precipitationProgram,     'iterNum');
   const uloc_precip_inactiveDroplets   = gl.getUniformLocation(precipitationProgram,     'inactiveDroplets');
+  const uloc_precip_enableLegacyParticleLightning = gl.getUniformLocation(precipitationProgram, 'enableLegacyParticleLightning');
   const uloc_lightningLocation_iterNum = gl.getUniformLocation(lightningLocationProgram, 'iterNum');
 
   // bloom blur
@@ -17058,19 +17120,71 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     lightningFrameCpuCache.originPickByKey = new Map();
   }
 
+  function getMaxFieldCloudCover()
+  {
+    if (!lightningFieldCache)
+      return 0;
+    let maxCloud = 0;
+    const step = Math.max(1, Math.floor(lightningFieldCache.cacheW / 10));
+    for (let y = 0; y < lightningFieldCache.cacheH; y += step) {
+      for (let x = 0; x < lightningFieldCache.cacheW; x += step)
+        maxCloud = Math.max(maxCloud, lightningFieldCache.data[(y * lightningFieldCache.cacheW + x) * 4 + 1]);
+    }
+    return maxCloud;
+  }
+
+  function getMeanFieldCloudCover()
+  {
+    if (!lightningFieldCache)
+      return 0;
+    let sum = 0;
+    let cells = 0;
+    const step = Math.max(1, Math.floor(lightningFieldCache.cacheW / 10));
+    for (let y = 0; y < lightningFieldCache.cacheH; y += step) {
+      for (let x = 0; x < lightningFieldCache.cacheW; x += step) {
+        sum += lightningFieldCache.data[(y * lightningFieldCache.cacheW + x) * 4 + 1];
+        cells++;
+      }
+    }
+    return cells > 0 ? sum / cells : 0;
+  }
+
+  function isFieldStormyEnoughForLightning()
+  {
+    const storm = getCachedStormActivity();
+    const maxCloud = getMaxFieldCloudCover();
+    const meanCloud = getMeanFieldCloudCover();
+    return storm >= 0.14 && maxCloud >= 0.22 && meanCloud >= 0.06;
+  }
+
+  function clearLightningDataTexture()
+  {
+    if (!lightningDataFrameBuff)
+      return;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, lightningDataFrameBuff);
+    gl.drawBuffers([ gl.COLOR_ATTACHMENT0 ]);
+    gl.clearColor(0.0, 0.0, 0.0, 0.0);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  }
+
   function estimateStormActivity()
   {
-    if (!lightningFieldCache) return 0.4;
+    if (!lightningFieldCache)
+      return 0.05;
     let sum = 0;
     const step = Math.max(1, Math.floor(lightningFieldCache.cacheW / 8));
     for (let y = 0; y < lightningFieldCache.cacheH; y += step) {
       for (let x = 0; x < lightningFieldCache.cacheW; x += step) {
         const i = (y * lightningFieldCache.cacheW + x) * 4;
-        sum += Math.abs(lightningFieldCache.data[i]) + lightningFieldCache.data[i + 2] * 0.5;
+        const cloud = lightningFieldCache.data[i + 1];
+        const cloudGate = cloud / (cloud + 0.10);
+        sum += Math.abs(lightningFieldCache.data[i]) * cloudGate
+          + cloud * 0.85 + lightningFieldCache.data[i + 2] * cloudGate * 0.35;
       }
     }
     const cells = Math.ceil(lightningFieldCache.cacheW / step) * Math.ceil(lightningFieldCache.cacheH / step);
-    return clamp(sum / Math.max(cells, 1) * 2.5, 0.1, 1.0);
+    return clamp(sum / Math.max(cells, 1) * 2.0, 0.0, 1.0);
   }
 
   function getCachedStormActivity()
@@ -17091,10 +17205,12 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     const cached = lightningFrameCpuCache.channelStrikeChances.get(channel.id);
     if (cached != null)
       return cached;
-    const burstMult = lightningBurstState.phase === 'burst' ? lightningBurstState.burstIntensity : 0.07;
+    const burstMult = lightningBurstState.phase === 'burst'
+      ? lightningBurstState.burstIntensity
+      : Math.max(0.25, lightningBurstState.burstIntensity * 0.45);
     const chance = typeof LightningV2 !== 'undefined'
       ? LightningV2.strikeChance(channel.freq(), burstMult, guiControls.lightningClusteringStrength)
-      : lightningStrikeChance(channel.freq());
+      : lightningStrikeChance(channel.freq(), burstMult);
     lightningFrameCpuCache.channelStrikeChances.set(channel.id, chance);
     return chance;
   }
@@ -17163,10 +17279,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   {
     if (!isProceduralLightningEnabled())
       return;
-    // Throttle: rebuild at most every 3 frames. Lightning spawning is measured
-    // in simulation-seconds so 3-frame staleness is imperceptible, and this
-    // eliminates the synchronous readPixels stall from every frame.
-    if (lightningFieldCacheFrame >= frameNum - 2 && lightningFieldCache)
+    if (lightningFieldCacheFrame >= frameNum - 3 && lightningFieldCache)
       return;
     if (!lightningSummaryBuffer || lightningCacheW < 1)
       return;
@@ -17284,12 +17397,15 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     return 0.10 + channelCloudThreshold(channel) * 0.35;
   }
 
-  function lightningStrikeChance(freq)
+  function lightningStrikeChance(freq, burstMult)
   {
+    if (typeof LightningV2 !== 'undefined')
+      return LightningV2.strikeChance(freq, burstMult || 1, guiControls.lightningClusteringStrength);
     if (freq <= 0)
       return 0;
-    const norm = freq / 100.0;
-    return Math.min(0.72, norm * norm * 0.50 + norm * 0.38 + 0.003);
+    const effectiveFreq = freq * Math.max(0.05, burstMult || 1);
+    const ltInterval = Math.max(10, 40 / (effectiveFreq + 0.01));
+    return 1 / ltInterval;
   }
 
   function getLightningChannels()
@@ -17307,11 +17423,15 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     if (!lightningFieldCache)
       return { eventAge: -1, eventId: 0, channel: null };
 
+    if (!isFieldStormyEnoughForLightning())
+      return { eventAge: -1, eventId: 0, channel: null };
+
     const channels = getCachedLightningStrikeChannels();
     if (channels.length === 0)
       return { eventAge: -1, eventId: 0, channel: null };
 
-    const maxLook = 11;
+    const storm = getCachedStormActivity();
+    const maxLook = storm < 0.28 ? 8 : (storm < 0.45 ? 14 : 24);
     for (let k = 0; k < maxLook; k++) {
       const startIter = frameIter - k;
       if (startIter < 0)
@@ -17343,14 +17463,13 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     if (lightningFrameCpuCache.chargeValidByKey.has(cacheKey))
       return lightningFrameCpuCache.chargeValidByKey.get(cacheKey);
 
-    for (let s = 0; s < 4; s++) {
-      const pick = pickLightningOriginCached(eventId, s, 4, channel.id);
-      if (typeof LightningV2 !== 'undefined' && lightningFieldCache
-          && LightningV2.isOriginEligibleForStrike(
-            lightningFieldCache, pick, guiControls, channel.id, null, sim_res_x, sim_res_y)) {
-        lightningFrameCpuCache.chargeValidByKey.set(cacheKey, true);
-        return true;
-      }
+    const pick = pickLightningOriginCached(eventId, 0, 1, channel.id);
+    if (typeof LightningV2 !== 'undefined' && lightningFieldCache
+        && pick.originX >= 0 && pick.originY >= 0
+        && LightningV2.isOriginEligibleForStrike(
+          lightningFieldCache, pick, guiControls, channel.id, null, sim_res_x, sim_res_y)) {
+      lightningFrameCpuCache.chargeValidByKey.set(cacheKey, true);
+      return true;
     }
     lightningFrameCpuCache.chargeValidByKey.set(cacheKey, false);
     return false;
@@ -17537,7 +17656,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
 
   function queueChargeDischargeForStrike(strike)
   {
-    if (chargeDischargesThisIter.length >= 4)
+    if (chargeDischargesThisIter.length >= 8)
       return;
     const flashSize = strike.flashSize || 1;
     chargeDischargesThisIter.push({
@@ -17549,12 +17668,12 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     });
   }
 
-  const chargeDischargeUniformData = new Float32Array(16);
-  const chargeDischargeUniformMeta = new Float32Array(16);
+  const chargeDischargeUniformData = new Float32Array(32);
+  const chargeDischargeUniformMeta = new Float32Array(32);
 
   function uploadChargeDischargeUniforms()
   {
-    const count = Math.min(chargeDischargesThisIter.length, 4);
+    const count = Math.min(chargeDischargesThisIter.length, 8);
     gl.uniform1i(uloc_charge_ltDischargeCount, count);
     const disArr = chargeDischargeUniformData;
     const metaArr = chargeDischargeUniformMeta;
@@ -18004,7 +18123,16 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       return;
     }
 
-    // Fast path: skip expensive lookback while an active flash is playing out
+    if (!isFieldStormyEnoughForLightning()) {
+      proceduralLightningState.eventAge = -1;
+      proceduralLightningState.strikes = [];
+      proceduralLightningState.builtEventId = -1;
+      proceduralLightningState.channelId = null;
+      proceduralLightningState.trackedEventId = -1;
+      proceduralLightningState.trackedChannel = null;
+      return;
+    }
+
     if (proceduralLightningState.trackedEventId >= 0 && proceduralLightningState.trackedChannel) {
       const age = iterNum - proceduralLightningState.trackedEventId;
       if (age >= 0 && age < getLightningFlashDuration()) {
@@ -18015,6 +18143,10 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       }
       proceduralLightningState.trackedEventId = -1;
       proceduralLightningState.trackedChannel = null;
+      proceduralLightningState.eventAge = -1;
+      proceduralLightningState.strikes = [];
+      proceduralLightningState.builtEventId = -1;
+      proceduralLightningState.channelId = null;
     }
 
     if (getCachedLightningStrikeChannels().length === 0) {
@@ -18078,15 +18210,17 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     if (!lightningV2InRealisticShader || !uloc_real_ltNumStrikes)
       return;
     const st = proceduralLightningState;
+    const flashDuration = getLightningFlashDuration();
+    if (st.eventAge < 0 || st.eventAge >= flashDuration || st.strikes.length === 0) {
+      gl.uniform1f(uloc_real_ltEventAge, -1);
+      gl.uniform1i(uloc_real_ltNumStrikes, 0);
+      return;
+    }
     const maxShader = typeof LightningV2 !== 'undefined' ? LightningV2.MAX_SHADER_STRIKES : 8;
     const count = Math.min(st.strikes.length, maxShader);
-    gl.uniform1f(uloc_real_ltEventAge, st.eventAge >= 0 ? st.eventAge : -1);
+    gl.uniform1f(uloc_real_ltEventAge, st.eventAge);
     gl.uniform1i(uloc_real_ltNumStrikes, count);
 
-    procLightningPosArr.fill(0);
-    procLightningDestArr.fill(0);
-    procLightningMetaArr.fill(0);
-    procLightningRouteArr.fill(0);
     for (let i = 0; i < count; i++) {
       const s = st.strikes[i];
       procLightningPosArr[i * 4] = s.originX / sim_res_x;
@@ -18110,6 +18244,25 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       procLightningRouteArr[i * 4 + 2] = route[2];
       procLightningRouteArr[i * 4 + 3] = route[3];
     }
+    for (let i = count; i < maxShader; i++) {
+      const j = i * 4;
+      procLightningPosArr[j] = 0;
+      procLightningPosArr[j + 1] = 0;
+      procLightningPosArr[j + 2] = 0;
+      procLightningPosArr[j + 3] = 0;
+      procLightningDestArr[j] = 0;
+      procLightningDestArr[j + 1] = 0;
+      procLightningDestArr[j + 2] = 0;
+      procLightningDestArr[j + 3] = 0;
+      procLightningMetaArr[j] = 0;
+      procLightningMetaArr[j + 1] = 0;
+      procLightningMetaArr[j + 2] = 0;
+      procLightningMetaArr[j + 3] = 0;
+      procLightningRouteArr[j] = 0;
+      procLightningRouteArr[j + 1] = 0;
+      procLightningRouteArr[j + 2] = 0;
+      procLightningRouteArr[j + 3] = 0;
+    }
     gl.uniform4fv(uloc_real_ltStrikePos, procLightningPosArr);
     gl.uniform4fv(uloc_real_ltStrikeDest, procLightningDestArr);
     gl.uniform4fv(uloc_real_ltStrikeMeta, procLightningMetaArr);
@@ -18121,10 +18274,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     const zoomNorm = clamp(cam.curZoom / sim_res_x / (guiControls.lightningLODDistance || 1), 0, 1);
     let lod = guiControls.dynamicLOD ? clamp(zoomNorm * 2.5, 0, 1) : 1.0;
     let gpuQuality = realisticVisualQuality;
-    if (guiControls.adaptiveLightningQuality !== false) {
-      const frameLod = clamp(1.0 - (smoothedFrameMs - TARGET_FRAME_MS) / 38.0, 0.35, 1.0);
-      lod *= frameLod;
-    }
+    if (guiControls.adaptiveLightningQuality !== false)
+      lod *= clamp(1.0 - getFramePressure() * 0.65, 0.35, 1.0);
     const lodVal = lod * gpuQuality;
 
     // Build a fast key from settings that change infrequently.
@@ -18247,11 +18398,11 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     };
   }
 
-  function registerRadarLightningStrike(eventKey, simX, simY, ltType)
+  function registerRadarLightningStrike(eventKey, simX, simY, ltType, skipFieldValidation)
   {
     if (!guiControls.radarLightningIcons || registeredLightningEvents.has(eventKey))
       return;
-    if (typeof LightningV2 !== 'undefined') {
+    if (!skipFieldValidation && typeof LightningV2 !== 'undefined') {
       if (!LightningV2.isSimInCloudLayer(simX, simY, sim_res_x, sim_res_y, false))
         return;
       const clamped = LightningV2.clampLightningSimPos(simX, simY, sim_res_x, sim_res_y, false);
@@ -18286,7 +18437,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     if (!guiControls.radarLightningIcons)
       return;
     const pos = radarIconSimPositionForStrike(strike);
-    registerRadarLightningStrike(eventKey, pos.simX, pos.simY, strike.ltType);
+    registerRadarLightningStrike(eventKey, pos.simX, pos.simY, strike.ltType, true);
   }
 
   function detectParticleLightningStrike()
@@ -18303,6 +18454,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     // Only react to a strike written this exact iteration (ignore stale texture data)
     if (Math.floor(startIter + 0.5) !== iterNum)
       return;
+    const rejectStrike = () => { clearLightningDataTexture(); };
     const simX = clamp(data[0] * sim_res_x, 0, sim_res_x - 1);
     const simY = clamp(data[1] * sim_res_y, sim_res_y * 0.07, sim_res_y * 0.88);
     refreshLightningFieldCache();
@@ -18311,27 +18463,43 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     const cloudGate = cloudGateFromDensity(cloud);
     if (typeof LightningV2 !== 'undefined') {
       const thresholds = LightningV2.getSpawnThresholds(guiControls, 'intracloud');
-      if (cloud < thresholds.minRawCloud * 0.92)
+      if (cloud < thresholds.minRawCloud * 0.92) {
+        rejectStrike();
         return;
-      if (cloudGate < thresholds.minCloudGate * 0.92)
+      }
+      if (cloudGate < thresholds.minCloudGate * 0.92) {
+        rejectStrike();
         return;
-      if (Math.abs(charge) < thresholds.minChargeMag * 0.92)
+      }
+      if (Math.abs(charge) < thresholds.minChargeMag * 0.92) {
+        rejectStrike();
         return;
-      if (Math.abs(charge) * cloudGate < thresholds.minChargeMag * thresholds.minCloudGate * 0.88)
+      }
+      if (Math.abs(charge) * cloudGate < thresholds.minChargeMag * thresholds.minCloudGate * 0.88) {
+        rejectStrike();
         return;
-      if (!LightningV2.isChargeValidForLtType(charge, 1, guiControls, 'intracloud'))
+      }
+      if (!LightningV2.isChargeValidForLtType(charge, 1, guiControls, 'intracloud')) {
+        rejectStrike();
         return;
+      }
     } else {
-      if (cloudGate < guiControls.cloudLightningThreshold * 0.65)
+      if (cloudGate < guiControls.cloudLightningThreshold * 0.65) {
+        rejectStrike();
         return;
-      if (cloud < (guiControls.chargeMinCloudDensity ?? 0.32) * 0.82)
+      }
+      if (cloud < (guiControls.chargeMinCloudDensity ?? 0.32) * 0.82) {
+        rejectStrike();
         return;
-      if (Math.abs(charge) < 0.22)
+      }
+      if (Math.abs(charge) < 0.22) {
+        rejectStrike();
         return;
+      }
     }
     const eventKey = 'particle-' + Math.floor(startIter);
     if (guiControls.radarLightningIcons)
-      registerRadarLightningStrike(eventKey, simX, simY, 1);
+      registerRadarLightningStrike(eventKey, simX, simY, 1, true);
     const intensity = Math.max(data[3], 1.2);
     playThunderForStrike(eventKey, data[0], data[1], intensity);
   }
@@ -18748,7 +18916,6 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
 
     if (typeof LightningV2 !== 'undefined' && iterationIndex === 0) {
       LightningV2.updateBurstState(lightningBurstState, iterNum, guiControls, getCachedStormActivity());
-      // Burst phase affects strike odds — rebuild the per-frame channel caches.
       lightningFrameCpuCache.strikeChannels = null;
       lightningFrameCpuCache.channelStrikeChances = new Map();
     }
@@ -18758,20 +18925,45 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     if (typeof LightningV2 !== 'undefined' && iterationIndex === 0)
       processForcedLightningQueue();
 
-    if (proceduralLightningState.trackedEventId >= 0 && proceduralLightningState.trackedChannel) {
-      const age = iterNum - proceduralLightningState.trackedEventId;
-      if (age >= 0 && age < getLightningFlashDuration()) {
-        proceduralLightningState.eventAge = age;
-        proceduralLightningState.eventId = proceduralLightningState.trackedEventId;
-        proceduralLightningState.channelId = proceduralLightningState.trackedChannel.id;
-        return;
-      }
-      proceduralLightningState.trackedEventId = -1;
-      proceduralLightningState.trackedChannel = null;
-    }
+    // Once per rendered frame — avoids multiplying spawn rate by IterPerFrame.
+    if (iterationIndex === 0)
+      updateProceduralLightningState();
+  }
 
-    // Run every iteration so strikes are detected at age 0 and radar icons register reliably
-    updateProceduralLightningState();
+  function applyUserBrushPass()
+  {
+    gl.viewport(0, 0, sim_res_x, sim_res_y);
+    gl.useProgram(boundaryProgram);
+    gl.uniform1f(uniformLocation_boundaryProgram_iterNum, iterNum);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, baseTexture_1);
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, waterTexture_1);
+    gl.activeTexture(gl.TEXTURE2);
+    gl.bindTexture(gl.TEXTURE_2D, vortForceTexture);
+    gl.activeTexture(gl.TEXTURE3);
+    gl.bindTexture(gl.TEXTURE_2D, wallTexture_1);
+    gl.activeTexture(gl.TEXTURE4);
+    gl.bindTexture(gl.TEXTURE_2D, lightTexture_0);
+    gl.activeTexture(gl.TEXTURE5);
+    gl.bindTexture(gl.TEXTURE_2D, precipitationFeedbackTexture);
+    gl.activeTexture(gl.TEXTURE6);
+    gl.bindTexture(gl.TEXTURE_2D, precipitationDepositionTexture);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_0);
+    gl.drawBuffers([ gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1, gl.COLOR_ATTACHMENT2 ]);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+
+    gl.useProgram(advectionProgram);
+    gl.uniform1f(uloc_adv_iterNum, iterNum);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, baseTexture_0);
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, waterTexture_0);
+    gl.activeTexture(gl.TEXTURE2);
+    gl.bindTexture(gl.TEXTURE_2D, wallTexture_0);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_1);
+    gl.drawBuffers([ gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1, gl.COLOR_ATTACHMENT2 ]);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
   }
 
   function draw()
@@ -18858,8 +19050,14 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
           inputType = 10;
         else if (guiControls.tool == 'TOOL_WALL_LAND')
           inputType = 11;
-        else if (guiControls.tool == 'TOOL_WALL_SEA')
+        else if (guiControls.tool == 'TOOL_WALL_FRESH')
           inputType = 12;
+        else if (guiControls.tool == 'TOOL_WALL_SEA')
+          inputType = 24;
+        else if (guiControls.tool == 'TOOL_WALL_ICE_SHEET')
+          inputType = 25;
+        else if (guiControls.tool == 'TOOL_WALL_ICE_CAP')
+          inputType = 26;
         else if (guiControls.tool == 'TOOL_WALL_FIRE')
           inputType = 13;
         else if (guiControls.tool == 'TOOL_WALL_URBAN')
@@ -18944,7 +19142,10 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
 
           refreshLightningFieldCache();
           resetLightningFrameCpuCache();
+          if (isProceduralLightningEnabled())
+            clearLightningDataTexture();
           let particleLightningCheckPending = guiControls.enablePrecipitation
+            && !isProceduralLightningEnabled()
             && (guiControls.soundThunderEnabled || guiControls.radarLightningIcons);
 
           for (var i = 0; i < numIterations; i++) { // Simulation loop
@@ -19042,9 +19243,10 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
             gl.drawBuffers([ gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1, gl.COLOR_ATTACHMENT2 ]);
             gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
 
-            // calc and apply advection
-            if (!guiControls.skipAdvection) {
+            // calc and apply advection (always run when painting so tools work)
+            if (!guiControls.skipAdvection || (leftMousePressed && inputType > 0)) {
               gl.useProgram(advectionProgram);
+              gl.uniform1f(uloc_adv_iterNum, iterNum);
               gl.activeTexture(gl.TEXTURE0);
               gl.bindTexture(gl.TEXTURE_2D, baseTexture_0);
               gl.activeTexture(gl.TEXTURE1);
@@ -19118,6 +19320,9 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
 
               gl.useProgram(precipitationProgram);
               gl.uniform1f(uloc_precip_iterNum, iterNum);
+              if (uloc_precip_enableLegacyParticleLightning)
+                gl.uniform1f(uloc_precip_enableLegacyParticleLightning,
+                  isProceduralLightningEnabled() ? 0.0 : 1.0);
               gl.enable(gl.BLEND);
               gl.blendFunc(gl.ONE, gl.ONE); // add everything together
               gl.activeTexture(gl.TEXTURE0);
@@ -19148,7 +19353,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
               gl.disable(gl.BLEND);
               gl.bindVertexArray(fluidVao); // set screenfilling rect again
 
-              if (particleLightningCheckPending) {
+              if (particleLightningCheckPending && i === 0) {
                 gl.useProgram(lightningLocationProgram);
                 gl.uniform1f(uloc_lightningLocation_iterNum, iterNum);
                 gl.activeTexture(gl.TEXTURE0);
@@ -19175,6 +19380,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
               && !airplaneMode && !guiControls.slowMotion) {
             updateSunlight(timePerIteration * numIterations);
           }
+        } else if (leftMousePressed && inputType > 0) {
+          applyUserBrushPass();
         }
 
         if (airplaneMode) {
@@ -19414,21 +19621,28 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       gl.bindVertexArray(postProcessingVao);
 
 
-      gl.useProgram(isolateBrightPartsProgram);
+      const bloomLevels = getBloomLevelCount();
+      if (bloomLevels <= 1) {
+        gl.bindFramebuffer(gl.FRAMEBUFFER, bloomFBOs[0].frameBuffer);
+        gl.viewport(0, 0, canvas.width, canvas.height);
+        gl.clearColor(0.0, 0.0, 0.0, 1.0);
+        gl.clear(gl.COLOR_BUFFER_BIT);
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      } else {
+        gl.useProgram(isolateBrightPartsProgram);
 
-      gl.activeTexture(gl.TEXTURE0);
-      gl.bindTexture(gl.TEXTURE_2D, hdrFBO.texture);
-      gl.bindFramebuffer(gl.FRAMEBUFFER, bloomFBOs[0].frameBuffer); // brightPartsFrameBuffer
-      gl.viewport(0, 0, canvas.width, canvas.height);
-      gl.clearColor(0.0, 0.0, 0.0, 1.0);                            // background color
-      gl.clear(gl.COLOR_BUFFER_BIT);
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, hdrFBO.texture);
+        gl.bindFramebuffer(gl.FRAMEBUFFER, bloomFBOs[0].frameBuffer); // brightPartsFrameBuffer
+        gl.viewport(0, 0, canvas.width, canvas.height);
+        gl.clearColor(0.0, 0.0, 0.0, 1.0);
+        gl.clear(gl.COLOR_BUFFER_BIT);
 
-      gl.drawBuffers([ gl.COLOR_ATTACHMENT0 ]);
-      gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4); // render bright parts to seperate texture
-
+        gl.drawBuffers([ gl.COLOR_ATTACHMENT0 ]);
+        gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+      }
 
       // BLOOM
-      const bloomLevels = getBloomLevelCount();
       if (bloomLevels > 1) {
         let prevFBO = bloomFBOs[0]; // the previous FBO
 
@@ -20369,11 +20583,9 @@ drawNukeOverlay();
       // Target: keep smoothedFrameMs close to TARGET_FRAME_MS (28 ms = ~35 fps headroom).
       // Reduce aggressively if over budget, grow slowly when comfortable.
       const msOverBudget = smoothedFrameMs - TARGET_FRAME_MS;
-      if (msOverBudget > 4) {
-        // Over budget: drop by 1 immediately
+      if (msOverBudget > 2) {
         adjIterPerFrame(-1);
-      } else if (msOverBudget < -6 && frameNum % 15 === 0) {
-        // Well under budget: grow by 1 every ~15 frames (~0.25s)
+      } else if (msOverBudget < -5 && frameNum % 10 === 0) {
         adjIterPerFrame(1);
       }
     }
@@ -20642,7 +20854,7 @@ drawNukeOverlay();
     if (opts && opts.skipLightningV2) {
       shaderSource = shaderSource.replace(/#include "lightningV2.glsl"\r?\n?/, '');
       shaderSource = shaderSource.replace(
-        /  \/\/ Lightning V2 procedural bolts and atmospheric illumination\r?\n  vec3 ltBolts = ltRenderStrikeBolts\(texCoord, aspectRatios\[0\], cloudwater\);\r?\n  emittedLight \+= ltBolts;\r?\n  emittedLight \/= 1\. \+ cloudDensity \* 18\.0;\r?\n  vec3 ltIllum = ltComputeStrikeIllumination\(texCoord, aspectRatios\[0\], cloudwater, water\[PRECIPITATION\], nightFactor\);\r?\n  onLight \+= ltIllum;\r?\n/,
+        /  if \(ltNumStrikes > 0 && ltEventAge >= 0\.0\) \{\r?\n    vec3 ltBolts;\r?\n    vec3 ltIllum;\r?\n    ltAccumulateBoltsAndIllum\(uv, aspectRatios\[0\], cloudwater, precip, nightFactor, ltBolts, ltIllum\);\r?\n    emittedLight \+= ltBolts \* ltCloudPierce;\r?\n    onLight \+= ltIllum;\r?\n  \}\r?\n/,
         '  // Lightning V2 disabled (GPU shader link fallback)\n'
       );
     } else if (shaderSource.includes('#include "lightningV2.glsl"')) {

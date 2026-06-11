@@ -1,6 +1,7 @@
 // Lightning V2.6.1 — CG bolts + IC/CC diffuse flashes (in-front / behind cloud)
 // Included by realisticDisplayShader.frag
 
+#define LT_V2_PROCEDURAL 1
 #define LT_MAX_STRIKES 8
 
 uniform int ltNumStrikes;
@@ -170,34 +171,124 @@ float ltFlashEnvelope(float age) {
   return rise * fall;
 }
 
-vec3 ltRenderStrikeBolts(vec2 uv, float aspect, float cloudwater) {
-  vec3 result = vec3(0.0);
-  if (ltNumStrikes <= 0 || ltEventAge < 0.0) return result;
+// Coarse screen-space reject — skips distant pixels before texture / glow work.
+bool ltPixelNearPath(vec2 uv, float aspect, vec2 origin, vec2 dest, float margin) {
+  vec2 p = vec2(uv.x * aspect, uv.y);
+  vec2 oA = vec2(origin.x * aspect, origin.y);
+  vec2 dA = vec2(dest.x * aspect, dest.y);
+  vec2 bmin = min(oA, dA) - vec2(margin);
+  vec2 bmax = max(oA, dA) + vec2(margin);
+  return all(greaterThanEqual(p, bmin)) && all(lessThanEqual(p, bmax));
+}
+
+bool ltPixelNearFlash(vec2 uv, float aspect, vec2 center, float radius) {
+  vec2 delta = vec2((uv.x - center.x) * aspect, uv.y - center.y);
+  float reach = radius * 2.5;
+  return dot(delta, delta) < reach * reach;
+}
+
+bool ltPixelNearPrecipShaft(vec2 uv, float aspect, vec2 origin, vec2 dest, float flashSize) {
+  vec2 center = mix(origin, dest, 0.5);
+  float cloudBase = max(origin.y, dest.y);
+  float horizReach = (0.03 + flashSize * 0.16) * 2.8;
+  float horiz = abs((uv.x - center.x) * aspect);
+  if (horiz > horizReach)
+    return false;
+  return uv.y >= cloudBase - 0.02 && uv.y <= cloudBase + 0.68;
+}
+
+float ltPathGlowPoint(vec2 p, vec2 at, float r) {
+  return exp(-dot(p - at, p - at) / (r * r));
+}
+
+float ltPolyGlow(vec2 p, vec2 o, vec2 d, float prop, float cloud) {
+  float mask = smoothstep(0.02, 0.10, cloud);
+  float r = 0.005 + mask * 0.006;
+  vec2 tip = mix(o, d, clamp(prop, 0.0, 1.0));
+  return ltPathGlowPoint(p, tip, r) * mask;
+}
+
+// Single-pass bolt channels + path illumination (was two separate strike loops).
+void ltAccumulateBoltsAndIllum(vec2 uv, float aspect, float cloudwater, float precip, float nightFactor,
+    out vec3 bolts, out vec3 illum) {
+  bolts = vec3(0.0);
+  illum = vec3(0.0);
+  if (ltNumStrikes <= 0 || ltEventAge < 0.0)
+    return;
 
   float lightningTime = ltEventAge / 5.0;
-  if (lightningTime > 4.0) return result;
+  bool boltsActive = lightningTime <= 4.0;
+  float flashPhase = ltPhase(ltEventAge);
+  bool illumActive = ltEnableAtmos != 0 && flashPhase >= 0.03;
+  if (!boltsActive && !illumActive)
+    return;
+
+  float dayNight = mix(ltDayFlash, ltNightFlash, nightFactor);
+  float strikeNorm = 1.0 / max(sqrt(float(ltNumStrikes)), 1.0);
+  float illumScale = ltChannelIllumRatio * ltCloudIllum * 0.85;
+  vec2 p = vec2(uv.x * aspect, uv.y);
 
   for (int i = 0; i < LT_MAX_STRIKES; i++) {
     if (i >= ltNumStrikes) break;
     float ltType = ltStrikePos[i].z;
-    if (ltStrikeIsFlash(ltType, ltStrikeMeta[i].y)) continue;
-    if (ltPrecipOnly(ltStrikeMeta[i].y)) continue;
+    float metaY = ltStrikeMeta[i].y;
+    if (ltStrikeIsFlash(ltType, metaY) || ltPrecipOnly(metaY))
+      continue;
+
     vec2 origin = ltStrikePos[i].xy;
     vec2 dest = ltStrikeDest[i].xy;
+    float pathMargin = ltSpider(ltType) ? 0.14 : 0.10;
+    if (!ltPixelNearPath(uv, aspect, origin, dest, pathMargin))
+      continue;
+
     vec4 route = ltStrikeRoute[i];
     float visMult = ltStrikeMeta[i].z;
     float intensity = ltStrikeDest[i].z;
     float brightMult = ltStrikeMeta[i].w;
 
-    if (ltStrikeUsesBentPath(route)) {
-      vec2 mid = route.xy;
-      result += ltDisplayCGBolt(uv, aspect, origin, mid, lightningTime, intensity, ltType, visMult, brightMult, cloudwater);
-      result += ltDisplayCGBolt(uv, aspect, mid, dest, lightningTime, intensity, ltType, visMult, brightMult, cloudwater);
-    } else {
-      result += ltDisplayCGBolt(uv, aspect, origin, dest, lightningTime, intensity, ltType, visMult, brightMult, cloudwater);
+    if (boltsActive) {
+      if (ltStrikeUsesBentPath(route)) {
+        vec2 mid = route.xy;
+        bolts += ltDisplayCGBolt(uv, aspect, origin, mid, lightningTime, intensity, ltType, visMult, brightMult, cloudwater);
+        bolts += ltDisplayCGBolt(uv, aspect, mid, dest, lightningTime, intensity, ltType, visMult, brightMult, cloudwater);
+      } else {
+        bolts += ltDisplayCGBolt(uv, aspect, origin, dest, lightningTime, intensity, ltType, visMult, brightMult, cloudwater);
+      }
+    }
+
+    if (illumActive) {
+      float prop = ltPropagate(ltEventAge, ltType);
+      float str = flashPhase * intensity * brightMult * dayNight * strikeNorm;
+      float pathGlow;
+      if (ltStrikeUsesBentPath(route)) {
+        vec2 mA = vec2(route.x * aspect, route.y);
+        vec2 oA = vec2(origin.x * aspect, origin.y);
+        vec2 dA = vec2(dest.x * aspect, dest.y);
+        pathGlow = max(ltPolyGlow(p, oA, mA, prop, cloudwater), ltPolyGlow(p, mA, dA, prop, cloudwater));
+      } else {
+        vec2 oA = vec2(origin.x * aspect, origin.y);
+        vec2 dA = vec2(dest.x * aspect, dest.y);
+        pathGlow = ltPolyGlow(p, oA, dA, prop, cloudwater);
+      }
+
+      float cloudPierce = max(0.9, ltCloudEmbedVis(cloudwater, visMult));
+      if (ltEnableCloudIllum == 1)
+        illum += LT_CG_COL * pathGlow * str * illumScale * 0.08 * cloudPierce;
+      if (ltEnableVolumetric == 1)
+        illum += LT_CG_COL * pathGlow * str * illumScale * 0.035 * cloudPierce;
+      if (ltEnableRainIllum == 1)
+        illum += LT_CG_COL * pathGlow * str * ltRainIllum * min(precip, 1.0)
+          * (ltCG(ltType) ? 0.04 : (ltSpider(ltType) || ltAnvil(ltType) || ltSheet(ltType) ? 0.028 : 0.02));
     }
   }
-  return result;
+  illum = min(illum * 0.0028, vec3(0.06));
+}
+
+vec3 ltRenderStrikeBolts(vec2 uv, float aspect, float cloudwater) {
+  vec3 bolts;
+  vec3 unusedIllum;
+  ltAccumulateBoltsAndIllum(uv, aspect, cloudwater, 0.0, 0.0, bolts, unusedIllum);
+  return bolts;
 }
 
 float ltPrecipCurtain(vec2 uv, float aspect, vec2 origin, vec2 dest, float flashSize,
@@ -219,141 +310,108 @@ float ltPrecipCurtain(vec2 uv, float aspect, vec2 origin, vec2 dest, float flash
   return flashPhase * intensity * curtain * ltRainIllum;
 }
 
-// IC / CC / sheet flashes + precip-only curtain illumination
-void ltGetICCCFlash(vec2 uv, float aspect, float cloudwater, float precip, float nightFactor,
-    out vec3 flashEmitted, out vec3 flashCloudLight, out vec3 flashSurfaceLight) {
+// Single-pass IC/CC/sheet flashes + precip bolt shafts (was two separate strike loops).
+void ltAccumulateFlashes(vec2 uv, float aspect, float cloudwater, float precip, float nightFactor,
+    out vec3 flashEmitted, out vec3 flashCloudLight, out vec3 flashSurfaceLight, out vec3 precipBoltShafts) {
   flashEmitted = vec3(0.0);
   flashCloudLight = vec3(0.0);
   flashSurfaceLight = vec3(0.0);
-  if (ltNumStrikes <= 0 || ltEventAge < 0.0) return;
+  precipBoltShafts = vec3(0.0);
+  if (ltNumStrikes <= 0 || ltEventAge < 0.0)
+    return;
 
   float flashPhase = ltFlashEnvelope(ltEventAge);
-  if (flashPhase < 0.01) return;
+  if (flashPhase < 0.01)
+    return;
+
   float dayNight = mix(ltDayFlash, ltNightFlash, nightFactor);
   float cloudMask = smoothstep(0.06, 0.32, cloudwater);
   float precipMask = smoothstep(0.04, 0.22, precip);
+  float scale = ltBrightness * ltContrast / max(sqrt(float(ltNumStrikes)), 1.0);
+  bool rainShaftsActive = ltEnableRainIllum != 0;
 
   for (int i = 0; i < LT_MAX_STRIKES; i++) {
     if (i >= ltNumStrikes) break;
     float ltType = ltStrikePos[i].z;
-    if (!ltStrikeIsFlash(ltType, ltStrikeMeta[i].y)) continue;
+    float metaY = ltStrikeMeta[i].y;
+    bool precipOnly = ltPrecipOnly(metaY);
+    bool isFlash = ltStrikeIsFlash(ltType, metaY);
+
+    if (!isFlash && !(rainShaftsActive && precipOnly))
+      continue;
 
     vec2 origin = ltStrikePos[i].xy;
     vec2 dest = ltStrikeDest[i].xy;
-    vec2 center = mix(origin, dest, 0.5);
-    float flashSize = max(ltStrikeMeta[i].x, 0.15);
-    if (ltSheet(ltType)) flashSize *= 1.35;
-    bool precipOnly = ltPrecipOnly(ltStrikeMeta[i].y);
-    bool inFront = ltFlashInFront(ltStrikeMeta[i].y);
-    float intensity = ltStrikeDest[i].z * ltStrikeMeta[i].w;
-    float radius = 0.035 + flashSize * 0.11;
-    float scale = ltBrightness * ltContrast / max(sqrt(float(ltNumStrikes)), 1.0);
+    float flashSize = max(ltStrikeMeta[i].x, isFlash ? 0.15 : 0.12);
+    if (ltSheet(ltType))
+      flashSize *= 1.35;
 
-    if (precipOnly) {
+    if (isFlash) {
+      vec2 center = mix(origin, dest, 0.5);
+      float radius = 0.035 + flashSize * 0.11;
+      if (!precipOnly && !ltPixelNearFlash(uv, aspect, center, radius))
+        continue;
+      if (precipOnly && !ltPixelNearPrecipShaft(uv, aspect, origin, dest, flashSize))
+        continue;
+
+      bool inFront = ltFlashInFront(metaY);
+      float intensity = ltStrikeDest[i].z * ltStrikeMeta[i].w;
+
+      if (precipOnly) {
+        float curtain = ltPrecipCurtain(uv, aspect, origin, dest, flashSize, flashPhase,
+          intensity * dayNight * scale * 1.35, precip, ltStrikePos[i].w);
+        flashSurfaceLight += LT_CG_COL * curtain * 0.14;
+        if (inFront)
+          flashCloudLight += LT_CG_COL * curtain * cloudMask * 0.006;
+        continue;
+      }
+
+      vec2 delta = vec2((uv.x - center.x) * aspect, uv.y - center.y);
+      float dist2 = dot(delta, delta);
+      float flash = flashPhase * intensity * dayNight / (dist2 / radius + 0.018);
+      flash *= scale;
+      vec3 col = LT_CG_COL * flash;
+
+      if (inFront) {
+        flashEmitted += col * cloudMask * 0.14;
+        flashCloudLight += col * 0.011;
+        flashSurfaceLight += col * (0.009 + precipMask * 0.006);
+      } else {
+        flashSurfaceLight += col * (0.011 + precipMask * 0.008);
+      }
+      float curtain = ltPrecipCurtain(uv, aspect, origin, dest, flashSize, flashPhase * 0.65,
+        intensity * dayNight * scale, precip, ltStrikePos[i].w);
+      flashSurfaceLight += LT_CG_COL * curtain * 0.05;
+    } else if (rainShaftsActive) {
+      if (!ltPixelNearPrecipShaft(uv, aspect, origin, dest, flashSize))
+        continue;
+      float intensity = ltStrikeDest[i].z * ltStrikeMeta[i].w;
       float curtain = ltPrecipCurtain(uv, aspect, origin, dest, flashSize, flashPhase,
-        intensity * dayNight * scale * 1.35, precip, ltStrikePos[i].w);
-      flashSurfaceLight += LT_CG_COL * curtain * 0.14;
-      if (inFront)
-        flashCloudLight += LT_CG_COL * curtain * cloudMask * 0.006;
-      continue;
+        intensity * dayNight * scale * 1.2, precip, ltStrikePos[i].w);
+      precipBoltShafts += LT_CG_COL * curtain * 0.16;
     }
-
-    vec2 delta = vec2((uv.x - center.x) * aspect, uv.y - center.y);
-    float dist = length(delta);
-    float flash = flashPhase * intensity * dayNight / (dist * dist / radius + 0.018);
-    flash *= scale;
-    vec3 col = LT_CG_COL * flash;
-
-    if (inFront) {
-      flashEmitted += col * cloudMask * 0.14;
-      flashCloudLight += col * 0.011;
-      flashSurfaceLight += col * (0.009 + precipMask * 0.006);
-    } else {
-      flashSurfaceLight += col * (0.011 + precipMask * 0.008);
-    }
-    float curtain = ltPrecipCurtain(uv, aspect, origin, dest, flashSize, flashPhase * 0.65,
-      intensity * dayNight * scale, precip, ltStrikePos[i].w);
-    flashSurfaceLight += LT_CG_COL * curtain * 0.05;
   }
+}
+
+void ltGetICCCFlash(vec2 uv, float aspect, float cloudwater, float precip, float nightFactor,
+    out vec3 flashEmitted, out vec3 flashCloudLight, out vec3 flashSurfaceLight) {
+  vec3 unusedShafts;
+  ltAccumulateFlashes(uv, aspect, cloudwater, precip, nightFactor,
+    flashEmitted, flashCloudLight, flashSurfaceLight, unusedShafts);
 }
 
 void ltGetPrecipBoltShafts(vec2 uv, float aspect, float precip, float nightFactor,
     out vec3 flashSurfaceLight) {
-  flashSurfaceLight = vec3(0.0);
-  if (ltNumStrikes <= 0 || ltEventAge < 0.0 || ltEnableRainIllum == 0) return;
-  float flashPhase = ltFlashEnvelope(ltEventAge);
-  if (flashPhase < 0.01) return;
-  float dayNight = mix(ltDayFlash, ltNightFlash, nightFactor);
-  float scale = ltBrightness * ltContrast / max(sqrt(float(ltNumStrikes)), 1.0);
-
-  for (int i = 0; i < LT_MAX_STRIKES; i++) {
-    if (i >= ltNumStrikes) break;
-    if (!ltPrecipOnly(ltStrikeMeta[i].y)) continue;
-    if (ltStrikeIsFlash(ltStrikePos[i].z, ltStrikeMeta[i].y)) continue;
-    vec2 origin = ltStrikePos[i].xy;
-    vec2 dest = ltStrikeDest[i].xy;
-    float flashSize = max(ltStrikeMeta[i].x, 0.12);
-    float intensity = ltStrikeDest[i].z * ltStrikeMeta[i].w;
-    float curtain = ltPrecipCurtain(uv, aspect, origin, dest, flashSize, flashPhase,
-      intensity * dayNight * scale * 1.2, precip, ltStrikePos[i].w);
-    flashSurfaceLight += LT_CG_COL * curtain * 0.16;
-  }
-}
-
-float ltPathGlowPoint(vec2 p, vec2 at, float r) {
-  return exp(-dot(p - at, p - at) / (r * r));
-}
-
-float ltPolyGlow(vec2 p, vec2 o, vec2 d, float prop, float cloud) {
-  float mask = smoothstep(0.02, 0.10, cloud);
-  float r = 0.005 + mask * 0.006;
-  vec2 tip = mix(o, d, clamp(prop, 0.0, 1.0));
-  return ltPathGlowPoint(p, tip, r) * mask;
+  vec3 unusedEmit;
+  vec3 unusedCloud;
+  vec3 unusedSurf;
+  ltAccumulateFlashes(uv, aspect, 0.0, precip, nightFactor,
+    unusedEmit, unusedCloud, unusedSurf, flashSurfaceLight);
 }
 
 vec3 ltComputeStrikeIllumination(vec2 uv, float aspect, float cloudwater, float precip, float nightFactor) {
-  vec3 illum = vec3(0.0);
-  if (ltNumStrikes <= 0 || ltEventAge < 0.0 || ltEnableAtmos == 0) return illum;
-
-  float dayNight = mix(ltDayFlash, ltNightFlash, nightFactor);
-  float illumScale = ltChannelIllumRatio * ltCloudIllum * 0.85;
-  vec2 p = vec2(uv.x * aspect, uv.y);
-
-  for (int i = 0; i < LT_MAX_STRIKES; i++) {
-    if (i >= ltNumStrikes) break;
-    vec2 origin = ltStrikePos[i].xy;
-    vec2 dest = ltStrikeDest[i].xy;
-    float ltType = ltStrikePos[i].z;
-    if (ltStrikeIsFlash(ltType, ltStrikeMeta[i].y)) continue;
-    if (ltPrecipOnly(ltStrikeMeta[i].y)) continue;
-    float prop = ltPropagate(ltEventAge, ltType);
-    float flashPhase = ltPhase(ltEventAge);
-    if (flashPhase < 0.03) continue;
-
-    vec4 route = ltStrikeRoute[i];
-    float str = flashPhase * ltStrikeDest[i].z * ltStrikeMeta[i].w * dayNight;
-    str /= max(sqrt(float(ltNumStrikes)), 1.0);
-
-    float pathGlow;
-    if (ltStrikeUsesBentPath(route)) {
-      vec2 mA = vec2(route.x * aspect, route.y);
-      vec2 oA = vec2(origin.x * aspect, origin.y);
-      vec2 dA = vec2(dest.x * aspect, dest.y);
-      pathGlow = max(ltPolyGlow(p, oA, mA, prop, cloudwater), ltPolyGlow(p, mA, dA, prop, cloudwater));
-    } else {
-      vec2 oA = vec2(origin.x * aspect, origin.y);
-      vec2 dA = vec2(dest.x * aspect, dest.y);
-      pathGlow = ltPolyGlow(p, oA, dA, prop, cloudwater);
-    }
-
-    float cloudPierce = max(0.9, ltCloudEmbedVis(cloudwater, ltStrikeMeta[i].z));
-    if (ltEnableCloudIllum == 1)
-      illum += LT_CG_COL * pathGlow * str * illumScale * 0.08 * cloudPierce;
-    if (ltEnableVolumetric == 1)
-      illum += LT_CG_COL * pathGlow * str * illumScale * 0.035 * cloudPierce;
-    if (ltEnableRainIllum == 1)
-      illum += LT_CG_COL * pathGlow * str * ltRainIllum * min(precip, 1.0)
-        * (ltCG(ltType) ? 0.04 : (ltSpider(ltType) || ltAnvil(ltType) || ltSheet(ltType) ? 0.028 : 0.02));
-  }
-  return min(illum * 0.0028, vec3(0.06));
+  vec3 unusedBolts;
+  vec3 illum;
+  ltAccumulateBoltsAndIllum(uv, aspect, cloudwater, precip, nightFactor, unusedBolts, illum);
+  return illum;
 }

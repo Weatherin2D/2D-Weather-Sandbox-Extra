@@ -41,6 +41,7 @@ uniform float globalDrying;
 uniform float globalHeating;
 uniform float soundingForcing;
 uniform float waterTemperature;
+uniform float iterNum;
 
 layout(location = 0) out vec4 base;
 layout(location = 1) out vec4 water;
@@ -203,6 +204,7 @@ void main()
     // prevent negative numbers
     wall[VEGETATION] = max(wall[VEGETATION], 0);
     water[SOIL_MOISTURE] = max(water[SOIL_MOISTURE], 0.0);
+    water[SUSTAINED_MOISTURE] = clamp(water[SUSTAINED_MOISTURE], 0.0, 100.0);
 
     if (wallX0Yp[DISTANCE] != 0) { // cell above is not wall, surface layer
 
@@ -217,6 +219,25 @@ void main()
         water[SNOW] -= melting;
         base[TEMPERATURE] += melting / snowMassToHeight * meltingHeat; // signal snow melting mass, cooling will be applied in pressure shader
         water[SOIL_MOISTURE] += melting;                               // melting snow adds water to soil
+        water[SUSTAINED_MOISTURE] = clamp(water[SUSTAINED_MOISTURE] + melting * sustainedMoistureGain, 0.0, 100.0);
+      }
+
+      if (water[SNOW] > 0.0 && tempC <= 0.0) { // snow sublimation below freezing
+        float vaporDeficit = max(maxWater(CtoK(tempC)) - waterX0Yp[TOTAL], 0.0);
+        float sublimation = min(vaporDeficit * snowSublimationRate, water[SNOW]);
+        water[SNOW] -= sublimation;
+        base[TEMPERATURE] += sublimation / snowMassToHeight * meltingHeat * 0.5;
+      }
+
+      if (wall[TYPE] == WALLTYPE_ICE) { // land ice cap / ice sheet sublimation
+        float vaporDeficit = max(maxWater(CtoK(tempC)) - waterX0Yp[TOTAL], 0.0);
+        float sublimation = min(vaporDeficit * snowSublimationRate * 0.5, water[SNOW]);
+        water[SNOW] -= sublimation;
+      }
+
+      if (wall[TYPE] == WALLTYPE_LAND && water[SNOW] > iceCapFormSnowCm && tempC < -8.0 && int(iterNum) % 200 == 0) { // compact deep snow to land ice
+        wall[TYPE] = WALLTYPE_ICE;
+        water[SALINITY] = 0.0;
       }
 
       if (water[SOIL_MOISTURE] > 0.0 && tempC > 0.0) { // water evaporating from ground
@@ -258,8 +279,8 @@ void main()
   if (inBrush) {
     if (userInputType == 1) {                                              // temperature
       base[3] += userInputValues[BRUSH_INTENSITY];
-      if (wall[TYPE] == 2 && wall[DISTANCE] == 0)                          // water wall
-        base[3] = clamp(base[TEMPERATURE], CtoK(0.0), CtoK(maxWaterTemp)); // limit water temperature range
+      if (isAnyWaterType(wall[TYPE]) && wall[DISTANCE] == 0)               // water / ice wall
+        base[3] = clamp(base[TEMPERATURE], CtoK(-30.0), CtoK(maxWaterTemp));
     } else if (userInputType == 2) {                                       // water
 
 
@@ -303,9 +324,28 @@ void main()
           setWall = true;
           break;
         case 12:
-          wall[TYPE] = WALLTYPE_WATER; // lake / sea
-                                       // wall[VEGETATION] = 0; // No vegetation
+          wall[TYPE] = WALLTYPE_FRESH_WATER; // fresh water lake
           setWall = true;
+          break;
+        case 24:
+          wall[TYPE] = WALLTYPE_WATER; // salt water / ocean
+          setWall = true;
+          break;
+        case 25:                                               // ice sheet
+          if (texture(wallTex, texCoordX0Yp)[DISTANCE] != 0) { // no wall directly above
+            wall[TYPE] = WALLTYPE_ICE;
+            water[SALINITY] = oceanSalinityPpt;
+            water[SNOW] = max(water[SNOW], 5.0 + userInputValues[BRUSH_INTENSITY] * 20.0);
+            setWall = true;
+          }
+          break;
+        case 26:                                               // ice cap / glacier
+          if (texture(wallTex, texCoordX0Yp)[DISTANCE] != 0) {
+            wall[TYPE] = WALLTYPE_ICE;
+            water[SALINITY] = 0.0;
+            water[SNOW] = max(water[SNOW], 50.0 + userInputValues[BRUSH_INTENSITY] * 200.0);
+            setWall = true;
+          }
           break;
         case 13:                                                                                                     // set fire
           if (wall[DISTANCE] == 0 && wall[TYPE] == WALLTYPE_LAND && texture(wallTex, texCoordX0Yp)[DISTANCE] != 0) { // if land wall and no wall above
@@ -339,12 +379,14 @@ void main()
           break;
 
         case 20:                                                                                                      // add soil moisture
-          if (wall[DISTANCE] == 0 && wall[TYPE] != WALLTYPE_WATER && texture(wallTex, texCoordX0Yp)[DISTANCE] != 0) { // if land wall and no wall above
-            water[SOIL_MOISTURE] += userInputValues[BRUSH_INTENSITY] * 10.0;
+          if (wall[DISTANCE] == 0 && !isAnyWaterType(wall[TYPE]) && texture(wallTex, texCoordX0Yp)[DISTANCE] != 0) { // if land wall and no wall above
+            float moistureBrush = userInputValues[BRUSH_INTENSITY] * 10.0;
+            water[SOIL_MOISTURE] += moistureBrush;
+            water[SUSTAINED_MOISTURE] = clamp(water[SUSTAINED_MOISTURE] + moistureBrush * sustainedMoistureGain, 0.0, 100.0);
           }
           break;
         case 21:                                               // add snow
-          if (wall[DISTANCE] == 0 && (wall[TYPE] == WALLTYPE_LAND || wall[TYPE] == WALLTYPE_URBAN || wall[TYPE] == WALLTYPE_INDUSTRIAL) &&
+          if (wall[DISTANCE] == 0 && (wall[TYPE] == WALLTYPE_LAND || wall[TYPE] == WALLTYPE_URBAN || wall[TYPE] == WALLTYPE_INDUSTRIAL || wall[TYPE] == WALLTYPE_ICE) &&
               texture(wallTex, texCoordX0Yp)[DISTANCE] != 0) { // if land wall and no wall above
             water[SNOW] += userInputValues[BRUSH_INTENSITY] * 0.5;
           }
@@ -364,9 +406,20 @@ void main()
 
           if (wall[TYPE] == WALLTYPE_LAND) {
             water[SOIL_MOISTURE] = 25.0;
+            water[SUSTAINED_MOISTURE] = 25.0;
             // wall[VEGETATION] = 100;
-          } else if (wall[TYPE] == WALLTYPE_WATER) { // water surface
+          } else if (wall[TYPE] == WALLTYPE_FRESH_WATER) {
             base[TEMPERATURE] = waterTemperature;
+            water[SALINITY] = 0.0;
+            water[SNOW] = 0.0;
+          } else if (wall[TYPE] == WALLTYPE_WATER) { // salt water surface
+            base[TEMPERATURE] = waterTemperature;
+            water[SALINITY] = oceanSalinityPpt;
+            water[SNOW] = 0.0;
+          } else if (wall[TYPE] == WALLTYPE_ICE) {
+            base[TEMPERATURE] = CtoK(-5.0);
+            if (water[SNOW] < 1.0)
+              water[SNOW] = 10.0;
           }
         }
       } else {
@@ -388,9 +441,14 @@ void main()
             if (wall[TYPE] == WALLTYPE_SUBURBAN) // remove suburban
               wall[TYPE] = WALLTYPE_LAND;
           } else if (userInputType == 20) {        // remove moisture
-            water[SOIL_MOISTURE] += userInputValues[BRUSH_INTENSITY] * 10.0;
+            float moistureBrush = userInputValues[BRUSH_INTENSITY] * 10.0;
+            water[SOIL_MOISTURE] += moistureBrush;
+            water[SUSTAINED_MOISTURE] = clamp(water[SUSTAINED_MOISTURE] + moistureBrush * sustainedMoistureGain, 0.0, 100.0);
           } else if (userInputType == 21) {
-            water[SNOW] += userInputValues[BRUSH_INTENSITY] * 0.5; // remove snow
+            water[SNOW] += userInputValues[BRUSH_INTENSITY] * 0.5; // remove snow / ice thickness
+          } else if (userInputType == 25 || userInputType == 26) {
+            if (wall[TYPE] == WALLTYPE_ICE)
+              wall[TYPE] = liquidWaterTypeFromSalinity(water[SALINITY]);
           } else if (userInputType == 22) {
             wall[VEGETATION] = max(wall[VEGETATION] - 1, 0);       // remove vegetation
           } else if (texCoord.y > texelSize.y) {
@@ -411,11 +469,14 @@ void main()
 
   if (wall[DISTANCE] == 0) { // is wall
 
-    if (wall[TYPE] == WALLTYPE_WATER) {
-      water[TOTAL] = 1002.;
-    } else { // any type of land wall
-      water[TOTAL] = 1001.;
-    }
+    if (wall[TYPE] == WALLTYPE_WATER)
+      water[TOTAL] = WATER_MARKER_SALT;
+    else if (wall[TYPE] == WALLTYPE_FRESH_WATER)
+      water[TOTAL] = WATER_MARKER_FRESH;
+    else if (wall[TYPE] == WALLTYPE_ICE)
+      water[TOTAL] = WATER_MARKER_ICE;
+    else // any type of land wall
+      water[TOTAL] = WATER_MARKER_LAND;
 
   } else { // no wall
            //   water[CLOUD] = max(water[TOTAL] - maxWater(realTemp), 0.0); // recalculate cloud water

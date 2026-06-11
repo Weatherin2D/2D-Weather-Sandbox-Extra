@@ -31,6 +31,7 @@ uniform float dryLapse;
 uniform float iterNum;          // used as seed for random function
 uniform float numDroplets;      // total number of droplets
 uniform float inactiveDroplets; // used to maintain constant spawnrate
+uniform float enableLegacyParticleLightning; // 0 when procedural Lightning V2 handles strikes
 
 uniform float evapHeat;
 uniform float meltingHeat;
@@ -118,8 +119,6 @@ void main()
           feedback[HEAT] += newMass[ICE] * meltingHeat;                  // add heat of freezing
           newDensity = snowDensity;
 
-          vec4 lightningData = texture(lightningDataTex, vec2(0.5)); // data from last lightning bolt
-
           const float lightningCloudDensityThreshold = 2.5;          // 3.0
           const float lightningChanceMultiplier = 0.0033;            // 0.0011
 
@@ -129,15 +128,18 @@ void main()
 
           const float minIterationsSinceLastLightningBolt = 30.; // 50.
 
-          if (lightningData[START_ITERNUM] < iterNum - minIterationsSinceLastLightningBolt &&
-              random2d(vec2(base[TEMPERATURE] * 0.2324, water[TOTAL] * 7.7)) < lightningSpawnChance) { // Spawn lightning
-            lightningSpawned = true;
-            isActive = false;
-            gl_PointSize = 1.0;
-            feedback.xy = texCoord;
-            feedback[START_ITERNUM] = iterNum;
-            feedback[INTENSITY] = clamp(cloudPlusPrecipDensity / 10.0 + (random2d(texCoord) - 0.5), 0.01, 4.0);
-            gl_Position = vec4(vec2(-1. + texelSize.x * 3., -1. + texelSize.y), 0.0, 1.0); // render to bottem left corner (1, 0)
+          if (enableLegacyParticleLightning > 0.5 && lightningSpawnChance > 0.0
+              && random2d(vec2(base[TEMPERATURE] * 0.2324, water[TOTAL] * 7.7)) < lightningSpawnChance) {
+            vec4 lightningData = texture(lightningDataTex, vec2(0.5));
+            if (lightningData[START_ITERNUM] < iterNum - minIterationsSinceLastLightningBolt) { // Spawn lightning
+              lightningSpawned = true;
+              isActive = false;
+              gl_PointSize = 1.0;
+              feedback.xy = texCoord;
+              feedback[START_ITERNUM] = iterNum;
+              feedback[INTENSITY] = clamp(cloudPlusPrecipDensity / 10.0 + (random2d(texCoord) - 0.5), 0.01, 4.0);
+              gl_Position = vec4(vec2(-1. + texelSize.x * 3., -1. + texelSize.y), 0.0, 1.0); // render to bottem left corner (1, 0)
+            }
           }
         } else {
           newMass[WATER] = initalMass; // rain

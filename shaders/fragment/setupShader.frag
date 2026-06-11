@@ -65,15 +65,22 @@ void main()
   if (texCoord.y < texelSize.y || texCoord.y < height) {                                                      // set to wall
     wall[DISTANCE] = 0;                                                                                       // set to wall
     if (height < texelSize.y) {
-      wall[TYPE] = WALLTYPE_WATER;                                                                            // set walltype to water
-      base[TEMPERATURE] = CtoK(25.0);                                                                         // set water temperature to 25 C
+      wall[TYPE] = WALLTYPE_WATER;                                                                            // salt water / ocean
+      base[TEMPERATURE] = CtoK(4.0);                                                                          // cold ocean seed
+      water[SALINITY] = oceanSalinityPpt;
+    } else if (height_m > 4500.0) {
+      wall[TYPE] = WALLTYPE_ICE;                                                                              // permanent ice caps at high elevation
+      water[SALINITY] = 0.0;
+      water[SNOW] = map_rangeC(height_m, 4500.0, 6000.0, 100.0, 800.0);
+      base[TEMPERATURE] = CtoK(-15.0);
     } else {
       wall[TYPE] = WALLTYPE_LAND;                                                                             // set walltype to land
       water[SOIL_MOISTURE] = 25.0;                                                                            // soil moisture in mm
+      water[SUSTAINED_MOISTURE] = 25.0;                                                                       // long-term climate moisture in mm
 
       wall[VEGETATION] = int(110.0 - fragCoord.y * 2. + noise(fragCoord.x * 0.01 + rand(seed) * 10.) * 150.); // set vegitation
 
-      water[SNOW] = max(map_rangeC(height_m, 2000.0, 5000.0, 0.0, 100.0), 0.);                                // set snow
+      water[SNOW] = max(map_rangeC(height_m, 2000.0, 4500.0, 0.0, 100.0), 0.);                               // alpine snow
     }
   } else {                                                                                                    // air, not wall
     wall[DISTANCE] = 255;                                                                                     // reset distance to wall

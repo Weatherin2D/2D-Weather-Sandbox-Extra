@@ -106,8 +106,10 @@ void main()
           IR_up = IR_emitted(realTemp);                          // Ir emmited upwards from surface. emissivity of surface = 1.0 for simplicity
           net_heating += (IR_down - IR_up) * lightHeatingConst;
           break;
+        case WALLTYPE_FRESH_WATER:
         case WALLTYPE_WATER:
-          float waterTemperature = texture(baseTex, texCoordX0Ym)[TEMPERATURE]; // sample water temperature below
+        case WALLTYPE_ICE:
+          float waterTemperature = texture(baseTex, texCoordX0Ym)[TEMPERATURE]; // sample water / ice temperature below
           IR_up = IR_emitted(waterTemperature);                                 // emissivity = 1.0
           net_heating += (IR_down - IR_up) * lightHeatingConst;
           break;
@@ -162,8 +164,8 @@ void main()
       light = vec4(sunlight, net_heating, IR_down, IR_up);
       // light = vec4(1, 0, 0, 0);
     } else {                                    // is wall
-      if (wall[TYPE] == WALLTYPE_WATER)         // water
-        light = vec4(sunlight * 0.90, 0, 0, 0); // light absorbed by water
+      if (isAnyWaterType(wall[TYPE]))           // water / ice
+        light = vec4(sunlight * 0.90, 0, 0, 0); // light absorbed by water / ice
       else {                                    // land
 
         const vec3 groundCol = vec3(0.60, 0.5, 0.4);

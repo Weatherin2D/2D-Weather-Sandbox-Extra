@@ -62,8 +62,10 @@ void main()
     float airAbove = texture(chargeTex, vec2(texCoord.x, min(texCoord.y + texelSize.y, 1.0))).r;
     float oppose = abs(airAbove - surfaceCharge);
 
-    if (wall[TYPE] == WALLTYPE_WATER)
+    if (isLiquidWaterType(wall[TYPE]))
       conductivity = 1.0;
+    else if (wall[TYPE] == WALLTYPE_ICE)
+      conductivity = 0.15;
     else {
       float moist = clamp(water[SOIL_MOISTURE] / 20.0, 0.0, 1.0);
       if (moist > 0.65) conductivity = 0.72 + moist * 0.22;

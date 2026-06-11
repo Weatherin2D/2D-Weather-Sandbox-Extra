@@ -52,7 +52,9 @@ void main()
     case WALLTYPE_LAND:
       fragmentColor = vec4(vec3(0.10), 1.);
       break;
+    case WALLTYPE_FRESH_WATER:
     case WALLTYPE_WATER:
+    case WALLTYPE_ICE:
       int palletteIndex = int(map_range(KtoC(base[3]), -26. - 2., 30., 0., 29.));
       palletteIndex = clamp(palletteIndex, 0, 29);
       fragmentColor = vec4(tempColorPalette[palletteIndex], 1.0);

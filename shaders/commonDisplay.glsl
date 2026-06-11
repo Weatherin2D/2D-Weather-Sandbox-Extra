@@ -293,9 +293,9 @@ float smoothSunlightSample(sampler2D lightTex, vec2 tc, vec2 texelSize, float qu
     if (abs(j) > radius) continue;
     for (int i = -3; i <= 3; i++) {
       if (abs(i) > radius) continue;
-      vec2 o = vec2(float(i), float(j)) * texelSize * 1.05;
-      float d = length(vec2(float(i), float(j)));
-      float w = exp(-d * d * 0.32);
+      vec2 ij = vec2(float(i), float(j));
+      vec2 o = ij * texelSize * 1.05;
+      float w = exp(-dot(ij, ij) * 0.32);
       sum += texture(lightTex, tc + o)[0] * w;
       wsum += w;
     }

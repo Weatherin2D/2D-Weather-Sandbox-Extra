@@ -92,7 +92,8 @@ vec4 surfaceTexture(int index, vec2 pos)
 
 vec3 getWallColor(float depth)
 {
-  vec3 vegetationCol = mix(greenGrassCol, dryGrassCol, max(1.0 - water[SOIL_MOISTURE] * (1. / fullGreenSoilMoisture), 0.)); // green to brown
+  float vegMoisture = water[SUSTAINED_MOISTURE]; // vegetation greenness follows sustained climate moisture
+  vec3 vegetationCol = mix(greenGrassCol, dryGrassCol, max(1.0 - vegMoisture * (1. / fullGreenSoilMoisture), 0.)); // green to brown
 
   vec3 bareSoilCol = mix(bareDrySoilCol, bareWetSoilCol, map_rangeC(water[SOIL_MOISTURE], 0.0, 20.0, 0.0, 1.0));
 
@@ -108,6 +109,15 @@ vec3 getWallColor(float depth)
   color = mix(color, vec3(1.0), clamp(min(water[SNOW], fullWhiteSnowHeight) / fullWhiteSnowHeight - max(depth * 0.3, 0.), 0.0, 1.0)); // mix in white for snow cover
 
   return color;
+}
+
+vec3 getIceColor(float iceThickness)
+{
+  vec3 iceCol = mix(vec3(0.82, 0.88, 0.95), vec3(0.95, 0.98, 1.0), clamp(iceThickness / fullWhiteSnowHeight, 0.0, 1.0));
+  iceCol *= texture(noiseTex, vec2(texCoord.x * resolution.x, texCoord.y * resolution.y) * 0.15).rgb;
+  if (iceThickness < thinIceBreakupCm)
+    iceCol = mix(iceCol, vec3(0.65, 0.75, 0.9), 0.35); // thin, breakable ice looks darker
+  return iceCol;
 }
 
 const vec2 lightningTexRes = vec2(2500, 5000);
@@ -239,33 +249,43 @@ vec4 computeCloudSmokeColor(float cloudwater, float precip, float smokeAmt, floa
   return vec4(outColor, outOpacity);
 }
 
-void applyAirLightning(vec2 uv, float cloudwater, float precip, float cloudDensity)
+void applyAirLightning(vec2 uv, float cloudwater, float precip, float cloudDensity, float nightFactor)
 {
+  float ltCloudPierce = 1.0 + clamp(cloudDensity * 0.22, 0.0, 5.5);
+
+#ifndef LT_V2_PROCEDURAL
   vec4 lightningData = texture(lightningDataTex, vec2(0.5));
   vec2 lightningPos = lightningData.xy;
   float lightningStartIterNum = lightningData[START_ITERNUM];
+  float boltAge = iterNum - lightningStartIterNum;
+  const float LEGACY_BOLT_MAX_AGE = 28.0;
   float lightningTime = calcLightningTime(lightningStartIterNum);
   float currentLightningIntensity = lightningIntensityOverTime(lightningTime, lightningPos, lightningData[INTENSITY]);
-
-  float nightFactor = clamp(map_range(abs(sunAngle), 60. * deg2rad, 90. * deg2rad, 0., 1.), 0., 1.);
-  float ltCloudPierce = 1.0 + clamp(cloudDensity * 0.22, 0.0, 5.5);
-
-  if (lightningData[INTENSITY] > 1.0) {
+  bool legacyBoltActive = lightningData[INTENSITY] > 1.0
+    && boltAge >= 0.0 && boltAge < LEGACY_BOLT_MAX_AGE;
+  if (legacyBoltActive) {
     emittedLight += displayLightning(lightningPos, lightningTime, currentLightningIntensity) * ltCloudPierce;
   }
+#endif
 
-  vec3 ltBolts = ltRenderStrikeBolts(uv, aspectRatios[0], cloudwater);
-  emittedLight += ltBolts * ltCloudPierce;
-  vec3 ltIllum = ltComputeStrikeIllumination(uv, aspectRatios[0], cloudwater, precip, nightFactor);
-  onLight += ltIllum;
+  if (ltNumStrikes > 0 && ltEventAge >= 0.0) {
+    vec3 ltBolts;
+    vec3 ltIllum;
+    ltAccumulateBoltsAndIllum(uv, aspectRatios[0], cloudwater, precip, nightFactor, ltBolts, ltIllum);
+    emittedLight += ltBolts * ltCloudPierce;
+    onLight += ltIllum;
+  }
 
-  const float lightningOnLightBrightness = 0.004;
-
-  vec2 dist = vec2(lightningPos.x - uv.x, max((abs(lightningPos.y / 2. - uv.y) - 0.1), 0.));
-  dist.x *= aspectRatios[0];
-  float lightningOnLight = lightningOnLightBrightness / (pow(length(dist), 2.) + 0.03);
-  lightningOnLight *= currentLightningIntensity;
-  onLight += vec3(lightningOnLight);
+#ifndef LT_V2_PROCEDURAL
+  if (legacyBoltActive) {
+    const float lightningOnLightBrightness = 0.004;
+    vec2 dist = vec2(lightningPos.x - uv.x, max((abs(lightningPos.y / 2. - uv.y) - 0.1), 0.));
+    dist.x *= aspectRatios[0];
+    float lightningOnLight = lightningOnLightBrightness / (pow(length(dist), 2.) + 0.03);
+    lightningOnLight *= currentLightningIntensity;
+    onLight += vec3(lightningOnLight);
+  }
+#endif
 }
 
 
@@ -290,6 +310,7 @@ void main()
   // fragmentColor = vec4(vec3(light),1); return; // View light texture for debugging
 
   float cloudwater = water[CLOUD];
+  float nightFactor = clamp(map_range(abs(sunAngle), 60. * deg2rad, 90. * deg2rad, 0., 1.), 0., 1.);
 
   if (texCoord.y < 0.) {                                     // < texelSize.y below simulation area
 
@@ -345,6 +366,15 @@ void main()
       color = getWallColor(depth);
 
       break;
+    case WALLTYPE_ICE:
+      {
+        float iceThickness = water[SNOW];
+        color = getIceColor(iceThickness);
+        if (wall[VERT_DISTANCE] == 0 && iceThickness > fullWhiteSnowHeight)
+          color = mix(color, vec3(0.98), clamp((iceThickness - fullWhiteSnowHeight) / 200.0, 0.0, 0.5)); // thick ice caps
+      }
+      break;
+    case WALLTYPE_FRESH_WATER:
     case WALLTYPE_WATER:
 
       // Precomputed values (tweak to taste)
@@ -383,9 +413,12 @@ void main()
         vec4 airColor = computeCloudSmokeColor(airCloud, airPrecip, airWater[SMOKE], normalizedSunlightAt(airUV));
         opacity = airColor.a;
         color = airColor.rgb;
-        applyAirLightning(airUV, airCloud, airPrecip, max(airCloud * 13.6, 0.0));
+        applyAirLightning(airUV, airCloud, airPrecip, max(airCloud * 13.6, 0.0), nightFactor);
       } else {
-        color = vec3(0, 0.5, 1.0); // water
+        if (wall[TYPE] == WALLTYPE_FRESH_WATER)
+          color = vec3(0.15, 0.65, 0.95); // fresh water — lighter cyan
+        else
+          color = vec3(0.0, 0.42, 0.82); // salt water — deeper blue
       }
 
       // draw 45° slopes under water
@@ -393,7 +426,7 @@ void main()
       float localX = fract(fragCoord.x);
       float localY = fract(fragCoord.y);
 
-      if (wallXmY0[DISTANCE] == 0 && wallXmY0[TYPE] != WALLTYPE_WATER && (fragCoord.y < 1. || wallX0Ym[TYPE] != WALLTYPE_WATER)) { // wall to the left and below
+      if (wallXmY0[DISTANCE] == 0 && !isAnyWaterType(wallXmY0[TYPE]) && (fragCoord.y < 1. || !isAnyWaterType(wallX0Ym[TYPE]))) { // wall to the left and below
         if (localX + localY < 1.0) {
           opacity = 1.0;
           water = texture(waterTex, texCoord);
@@ -401,7 +434,7 @@ void main()
           shadowLight = minShadowLight;
         }
       }
-      if (wallXpY0[DISTANCE] == 0 && wallXpY0[TYPE] != WALLTYPE_WATER && (fragCoord.y < 1. || wallX0Ym[TYPE] != WALLTYPE_WATER)) { // wall to the right and below
+      if (wallXpY0[DISTANCE] == 0 && !isAnyWaterType(wallXpY0[TYPE]) && (fragCoord.y < 1. || !isAnyWaterType(wallX0Ym[TYPE]))) { // wall to the right and below
         if (localY - localX < 0.0) {
           opacity = 1.0;
           water = texture(waterTex, texCoord);
@@ -417,7 +450,7 @@ void main()
     vec4 airColor = computeCloudSmokeColor(cloudwater, water[PRECIPITATION], water[SMOKE], lightIntensity);
     opacity = airColor.a;
     color = airColor.rgb;
-    applyAirLightning(texCoord, cloudwater, water[PRECIPITATION], max(cloudwater * 13.6, 0.0));
+    applyAirLightning(texCoord, cloudwater, water[PRECIPITATION], max(cloudwater * 13.6, 0.0), nightFactor);
 
 
     vec2 rainbowCenter = vec2(0.0, -1.5 + abs(sunAngle) * 0.60);
@@ -534,7 +567,7 @@ void main()
             texCol = vec4(vec3(1.), 1.);                                                                                                                          // show white snow layer above ground
           else {                                                                                                                                                  // display vegetation
             vec4 treeColor = surfaceTexture(FOREST, vec2(treeTexCoordX, treeTexCoordY));
-            vec4 vegetationCol = mix(treeColor, vec4(dryGrassCol, 1.), max(0.5 - surfaceWater[SOIL_MOISTURE] * (0.5 / fullGreenSoilMoisture), 0.) * treeColor.a); // green to brown
+            vec4 vegetationCol = mix(treeColor, vec4(dryGrassCol, 1.), max(0.5 - surfaceWater[SUSTAINED_MOISTURE] * (0.5 / fullGreenSoilMoisture), 0.) * treeColor.a); // green to brown
             texCol = mix(vegetationCol, surfaceTexture(SNOW_FOREST, vec2(treeTexCoordX, treeTexCoordY)), min(snow / fullWhiteSnowHeight, 1.0));
           }
         } else if (wallX0Ym[TYPE] == WALLTYPE_FIRE) {
@@ -555,7 +588,7 @@ void main()
         ivec4 wallXmY0 = texture(wallTex, texCoordXmY0);
         ivec4 wallXpY0 = texture(wallTex, texCoordXpY0);
 
-        if (wallXmY0[DISTANCE] == 0 && wall[TYPE] != WALLTYPE_WATER) { // wall to the left and below
+        if (wallXmY0[DISTANCE] == 0 && !isAnyWaterType(wall[TYPE])) { // wall to the left and below
           if (localX + localY < 1.0) {
             opacity = 1.0;
             water = texture(waterTex, texCoordX0Ym);
@@ -563,7 +596,7 @@ void main()
             shadowLight = minShadowLight; // fire should not light ground
           }
         }
-        if (wallXpY0[DISTANCE] == 0 && wall[TYPE] != WALLTYPE_WATER) { // wall to the right and below
+        if (wallXpY0[DISTANCE] == 0 && !isAnyWaterType(wall[TYPE])) { // wall to the right and below
           if (localY - localX < 0.0) {
             opacity = 1.0;
             water = texture(waterTex, texCoordX0Ym);
@@ -588,16 +621,15 @@ void main()
 
 
   float scatering = clamp(map_range(abs(sunAngle), 75. * deg2rad, 90. * deg2rad, 0., 1.), 0., 1.); // how red the sunlight is
-  float nightFactor = clamp(map_range(abs(sunAngle), 60. * deg2rad, 90. * deg2rad, 0., 1.), 0., 1.);
   float precipF = clamp(water[PRECIPITATION], 0.0, 1.0);
 
   vec3 icccEmit = vec3(0.0);
   vec3 icccCloud = vec3(0.0);
   vec3 icccSurf = vec3(0.0);
   vec3 precipBoltShafts = vec3(0.0);
-  if (texCoord.y >= 0.0 && texCoord.y <= 1.0) {
-    ltGetICCCFlash(texCoord, aspectRatios[0], cloudwater, precipF, nightFactor, icccEmit, icccCloud, icccSurf);
-    ltGetPrecipBoltShafts(texCoord, aspectRatios[0], precipF, nightFactor, precipBoltShafts);
+  if (texCoord.y >= 0.0 && texCoord.y <= 1.0 && ltNumStrikes > 0 && ltEventAge >= 0.0) {
+    ltAccumulateFlashes(texCoord, aspectRatios[0], cloudwater, precipF, nightFactor,
+      icccEmit, icccCloud, icccSurf, precipBoltShafts);
     emittedLight += icccEmit;
   }
 

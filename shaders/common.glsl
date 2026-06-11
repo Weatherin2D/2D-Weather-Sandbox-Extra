@@ -18,12 +18,26 @@ precision highp isampler2D;
 
 #define fullGreenSoilMoisture 50.0 // level of soil moisture where vegetation reaches the greenest color
 
+#define soilFieldCapacity 85.0       // mm; soil pore space before runoff
+#define maxInfiltrationRate 1.2      // mm per iteration; caps burst infiltration from downpours
+#define sustainedMoistureGain 0.12   // fraction of infiltrated rain that builds long-term climate moisture
+#define sustainedMoistureDecay 0.00015 // mm per iteration; slow dry-out of climate moisture memory
+#define minVegetationMoisture 12.0   // mm sustained moisture required for vegetation growth
+
 #define fullWhiteSnowHeight 10.0   // snow height at witch full whiteness is displayed and max albedo is achieved
 #define snowMassToHeight 0.05
 
 #define snowMeltRate 0.000015
+#define snowSublimationRate 0.000008 // surface snow/ice sublimation when below 0 C
+#define iceMeltRate 0.000008         // ice sheet melt rate (slower than snow)
+#define iceGrowthRate 0.015          // cm per cold iteration for thickening ice sheets
+#define minIceFormThickness 3.0      // cm initial ice when water freezes
+#define thinIceBreakupCm 12.0        // thin ice breaks up in wind/warmth
+#define iceCapFormSnowCm 80.0        // snow depth before compaction to land ice
+#define maxIceThickness 2000.0       // cm max ice sheet / ice cap thickness
+#define oceanSalinityPpt 35.0        // default ocean salinity (parts per thousand)
 
-
+#define ALBEDO_ICE 0.75
 #define ALBEDO_SNOW 0.85        // above 10 cm of snow cover without vegetation
 #define ALBEDO_SNOW_FOREST 0.30 // at max vegetation and above 10 cm of snow
 #define ALBEDO_FOREST 0.10
@@ -49,21 +63,30 @@ precision highp isampler2D;
 #define TOTAL 0         // Vapor + cloud water             >= 0
 #define CLOUD 1         // cloud water                     >= 0
 #define PRECIPITATION 2 // precipitation in air            >= 0
-#define SOIL_MOISTURE 2 // moisture in surface             >= 0
+#define SOIL_MOISTURE 2 // active surface moisture in mm   >= 0
 #define SMOKE 3         // smoke/dust in air               >= 0 for smoke/dust
 #define SNOW 3          // snow at surface in cm           0 to 40000
+#define SUSTAINED_MOISTURE 1 // long-term climate moisture at land surface only (reuses CLOUD channel)
+#define SALINITY 1           // salinity ppt on water & ice surface only (reuses CLOUD channel)
+
+#define WATER_MARKER_LAND 1001.0
+#define WATER_MARKER_SALT 1002.0
+#define WATER_MARKER_FRESH 1003.0
+#define WATER_MARKER_ICE 1004.0
 
 // wall texture: RGBA8I
 #define TYPE 0 //             walltype:
 
 #define WALLTYPE_INERT 0
 #define WALLTYPE_LAND 1
-#define WALLTYPE_WATER 2 // lake / sea
+#define WALLTYPE_WATER 2      // salt water / ocean
 #define WALLTYPE_FIRE 3
 #define WALLTYPE_URBAN 4
 #define WALLTYPE_RUNWAY 5
 #define WALLTYPE_INDUSTRIAL 6
 #define WALLTYPE_SUBURBAN 7
+#define WALLTYPE_FRESH_WATER 8 // lakes / rivers
+#define WALLTYPE_ICE 9         // frozen water, ice sheets, ice caps
 
 #define DISTANCE 1      // manhattan distance to nearest wall                   0 to 127
 #define VERT_DISTANCE 2 // height above/below ground. Surface = 0               -127 to 127
@@ -269,6 +292,30 @@ float realToPotentialT(float real) { return real + texCoord.y * dryLapse; }
 float CtoK(float c) { return c + 273.15; }
 
 float KtoC(float k) { return k - 273.15; }
+
+bool isLiquidWaterType(int wallType) { return wallType == WALLTYPE_WATER || wallType == WALLTYPE_FRESH_WATER; }
+
+bool isAnyWaterType(int wallType) { return isLiquidWaterType(wallType) || wallType == WALLTYPE_ICE; }
+
+float salinityForWallType(int wallType, float salinityChannel)
+{
+  if (wallType == WALLTYPE_FRESH_WATER)
+    return 0.0;
+  if (wallType == WALLTYPE_WATER)
+    return max(salinityChannel, oceanSalinityPpt);
+  if (wallType == WALLTYPE_ICE)
+    return salinityChannel;
+  return 0.0;
+}
+
+float waterFreezeTempC(float salinityPpt) { return -0.054 * salinityPpt; }
+
+int liquidWaterTypeFromSalinity(float salinityPpt)
+{
+  if (salinityPpt < 5.0)
+    return WALLTYPE_FRESH_WATER;
+  return WALLTYPE_WATER;
+}
 
 float dT_saturated(float dTdry,
                    float dTl) // dTl = temperature difference because of latent heat

@@ -38,7 +38,7 @@ layout(location = 0) out vec2 charge;
 #define CHARGE_DECAY        0.996
 #define CHARGE_DIFFUSION    0.012
 #define CHARGE_SCALE_BASE   0.0025
-#define MAX_LT_DISCHARGE    4
+#define MAX_LT_DISCHARGE    8
 
 uniform float chargeGenerationRate;
 uniform float chargeMinCloudDensity;
