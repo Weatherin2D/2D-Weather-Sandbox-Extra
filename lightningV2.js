@@ -61,7 +61,6 @@
     dry: 0.8,
     strobe: 4,
   };
-  const REALISTIC_RATIOS_TOTAL = 58 + 22 + 14 + 5 + 1.2 + 9 + 7 + 0.25 + 0.4 + 0.8 + 4;
 
   const DEFAULT_SETTINGS = {
     lightningV2Enabled: true,
@@ -77,24 +76,24 @@
     anvilCrawlerFrequency: 0.9,
     upwardLightningFrequency: 0.08,
     boltFromBlueFrequency: 0.12,
-    dryLightningFrequency: 0.08,
+    dryLightningFrequency: 0.25,
     sheetLightningFrequency: 2.5,
 
-    lightningBrightness: 0.48,
-    lightningContrast: 0.9,
-    channelThickness: 1.05,
-    branchDensity: 1.25,
-    branchLength: 1.15,
-    flashDuration: 1.0,
+    lightningBrightness: 0.58,
+    lightningContrast: 0.95,
+    channelThickness: 1.08,
+    branchDensity: 1.35,
+    branchLength: 1.2,
+    flashDuration: 0.92,
     channelGlowDuration: 1.0,
-    bloomStrength: 0.7,
-    glowStrength: 0.45,
-    atmosphericIlluminationStrength: 0.45,
-    cloudIlluminationStrength: 0.28,
-    rainShaftIlluminationStrength: 0.5,
-    terrainIlluminationStrength: 0.45,
-    nighttimeFlashStrength: 0.6,
-    daytimeFlashStrength: 0.25,
+    bloomStrength: 1.08,
+    glowStrength: 0.62,
+    atmosphericIlluminationStrength: 0.58,
+    cloudIlluminationStrength: 0.52,
+    rainShaftIlluminationStrength: 0.55,
+    terrainIlluminationStrength: 0.48,
+    nighttimeFlashStrength: 0.78,
+    daytimeFlashStrength: 0.28,
     ltEnableBloom: true,
     ltEnableAtmosphericLighting: true,
     ltEnableCloudIllumination: true,
@@ -197,14 +196,15 @@
     },
     'Enhanced Realistic': {
       globalLightningMultiplier: 1.0,
-      atmosphericIlluminationStrength: 0.5,
-      cloudIlluminationStrength: 0.45,
-      lightningBrightness: 0.62,
-      glowStrength: 0.48,
-      nighttimeFlashStrength: 0.6,
-      branchDensity: 1.1,
-      cloudLightningBranchDensity: 1.3,
-      cloudLightningBranchLength: 1.25,
+      atmosphericIlluminationStrength: 0.62,
+      cloudIlluminationStrength: 0.58,
+      lightningBrightness: 0.68,
+      glowStrength: 0.72,
+      bloomStrength: 1.15,
+      nighttimeFlashStrength: 0.85,
+      branchDensity: 1.2,
+      cloudLightningBranchDensity: 1.35,
+      cloudLightningBranchLength: 1.3,
       intracloudChannelVisibility: 1.0,
       cloudToCloudChannelVisibility: 1.05,
       spiderChannelVisibility: 1.15,
@@ -328,22 +328,13 @@
     strobe: 8,
   };
 
-  // Peak ~62 fl/min at storm=1 — aligned with observed severe/supercell flash rates.
-  const REALISTIC_BASE_FLASH_RATE = 62;
-
-  /** Ramp flash rate with storm intensity — generous mid/high tier without over-spawning weak cells. */
-  function stormLightningBoost(stormFactor) {
-    const t = clamp(stormFactor, 0, 1);
-    return t * t * 0.22 + t * 0.58 + t * t * t * 0.20;
-  }
-
   function getEffectiveFrequency(controls, typeKey, stormFactor, profile) {
     const personality = getTypeFrequencyMult(profile, typeKey);
-    const stormBoost = stormLightningBoost(stormFactor);
     if (controls.useRealisticLightningRatios) {
       const ratio = REALISTIC_RATIOS[typeKey] || 1;
-      const base = (ratio / REALISTIC_RATIOS_TOTAL) * REALISTIC_BASE_FLASH_RATE * controls.globalLightningMultiplier;
-      return base * stormBoost * personality;
+      const total = Object.values(REALISTIC_RATIOS).reduce((a, b) => a + b, 0);
+      const base = (ratio / total) * 48 * controls.globalLightningMultiplier;
+      return base * (0.6 + stormFactor * 0.85) * personality;
     }
     const map = {
       intracloud: controls.intracloudFrequency,
@@ -359,6 +350,7 @@
       strobe: controls.strobeLightningFrequency ?? 0.8,
     };
     const uiScale = FREQ_UI_SCALE[typeKey] || 1;
+    const stormBoost = 0.75 + stormFactor * 0.5;
     return (map[typeKey] || 0) * uiScale * controls.globalLightningMultiplier * personality * stormBoost;
   }
 
@@ -373,26 +365,23 @@
   }
 
   function updateBurstState(state, iterNum, controls, stormActivity) {
-    const storm = clamp(stormActivity, 0, 1);
     if (!controls.enableElectricalBurstCycles) {
       state.phase = 'burst';
-      state.burstIntensity = 0.85 + storm * 0.55;
+      state.burstIntensity = 1.0;
       return state;
     }
     if (state.phase === 'quiet') {
       if (iterNum >= state.quietUntil) {
-        const burstBase = 3 + Math.floor(shaderRand(iterNum * 1.7 + state.regionSeed) * 9
+        const burstLen = 2 + Math.floor(shaderRand(iterNum * 1.7 + state.regionSeed) * 5
           * controls.electricalBurstIntensity);
-        const burstLen = Math.max(2, Math.floor(burstBase * (0.55 + storm * 1.05)));
         state.phase = 'burst';
         state.burstRemaining = burstLen;
-        state.burstIntensity = 0.85 + storm * 0.75 + controls.electricalBurstIntensity * 0.12;
+        state.burstIntensity = 0.8 + stormActivity * 0.6;
       }
     } else {
       if (state.burstRemaining <= 0) {
-        const quietBase = 10 + Math.floor(shaderRand(iterNum * 2.3 + state.regionSeed) * 55
-          / (0.25 + controls.electricalBurstFrequency * (0.65 + storm * 0.55)));
-        const quietLen = Math.max(4, Math.floor(quietBase * (1.25 - storm * 0.82)));
+        const quietLen = 15 + Math.floor(shaderRand(iterNum * 2.3 + state.regionSeed) * 80
+          / (0.3 + controls.electricalBurstFrequency));
         state.phase = 'quiet';
         state.quietUntil = iterNum + quietLen;
       } else {
@@ -402,25 +391,11 @@
     return state;
   }
 
-  /** Burst cycles are visual only — spawn rate is not throttled during lulls. */
-  function burstQuietActivityFloor(/* stormActivity */) {
-    return 1.0;
-  }
-
   function readCacheField(cache, simX, simY, channel) {
     if (!cache || !cache.data) return 0;
     const px = clamp(Math.floor(simX / cache.scale), 0, cache.cacheW - 1);
     const py = clamp(Math.floor(simY / cache.scale), 0, cache.cacheH - 1);
     return cache.data[(py * cache.cacheW + px) * 4 + channel];
-  }
-
-  function readCacheCell(cache, simX, simY) {
-    if (!cache || !cache.data) return null;
-    const px = clamp(Math.floor(simX / cache.scale), 0, cache.cacheW - 1);
-    const py = clamp(Math.floor(simY / cache.scale), 0, cache.cacheH - 1);
-    const i = (py * cache.cacheW + px) * 4;
-    const d = cache.data;
-    return { charge: d[i], cloud: d[i + 1], potential: d[i + 2], conductivity: d[i + 3] };
   }
 
   function readCharge(cache, x, y) { return readCacheField(cache, x, y, 0); }
@@ -434,9 +409,8 @@
 
   function analyzeStormElectricalProfile(cache, simResX, simResY) {
     if (!cache || !cache.data) {
-      return { type: 'weak', stormActivity: 0.05, anvilFactor: 0.1, spread: 0.1,
-        icMult: 0.35, ccMult: 0.25, spiderMult: 0.08, anvilMult: 0.06, cgMult: 0.12,
-        sheetMult: 0.3, strobeMult: 0.25 };
+      return { type: 'multicell', stormActivity: 0.4, anvilFactor: 0.3, spread: 0.4,
+        icMult: 1.2, ccMult: 1.2, spiderMult: 1.0, anvilMult: 0.8, cgMult: 0.75 };
     }
     let upperCloud = 0, lowerCloud = 0, potentialSum = 0, gradSum = 0, cells = 0;
     const step = Math.max(1, Math.floor(cache.cacheW / 10));
@@ -447,38 +421,31 @@
         const cloud = cache.data[i + 1];
         const pot = cache.data[i + 2];
         const grad = cache.data[i + 3];
-        const cloudGate = cloud / (cloud + 0.10);
         if (simY > simResY * 0.45) upperCloud += cloud;
         else lowerCloud += cloud;
-        potentialSum += pot * cloudGate;
-        gradSum += grad * cloudGate;
+        potentialSum += pot;
+        gradSum += grad;
         cells++;
       }
     }
     cells = Math.max(cells, 1);
-    const gradNorm = gradSum / cells;
-    let stormActivity = clamp(potentialSum / cells * 2.35 + gradNorm * 0.42, 0.0, 1.0);
-    if (stormActivity > 0.30)
-      stormActivity = clamp(stormActivity * (1.0 + (stormActivity - 0.30) * 0.45), 0, 1);
+    const stormActivity = clamp(potentialSum / cells * 1.8, 0.05, 1.0);
     const anvilFactor = clamp(upperCloud / (lowerCloud + upperCloud + 0.01), 0, 1);
-    const spread = clamp(gradNorm * 2.2, 0, 1);
+    const spread = clamp(gradSum / cells * 2.2, 0, 1);
 
     if (stormActivity < 0.22)
-      return { type: 'weak', stormActivity, anvilFactor, spread, icMult: 1.3, ccMult: 0.9, spiderMult: 0.15, anvilMult: 0.12, cgMult: 0.35, sheetMult: 0.85, strobeMult: 0.7 };
-    if (stormActivity > 0.52 && anvilFactor > 0.42)
-      return { type: 'supercell', stormActivity, anvilFactor, spread, icMult: 2.35, ccMult: 1.85, spiderMult: 3.1, anvilMult: 2.65, cgMult: 0.85, sheetMult: 1.75, strobeMult: 1.5 };
-    if (stormActivity > 0.36 && spread > 0.32 && anvilFactor > 0.30)
-      return { type: 'mcs', stormActivity, anvilFactor, spread, icMult: 2.65, ccMult: 2.25, spiderMult: 2.45, anvilMult: 2.1, cgMult: 0.58, sheetMult: 2.0, strobeMult: 1.65 };
-    if (stormActivity > 0.28)
-      return { type: 'strong', stormActivity, anvilFactor, spread, icMult: 2.0, ccMult: 1.65, spiderMult: 1.25, anvilMult: 1.05, cgMult: 0.72, sheetMult: 1.45, strobeMult: 1.25 };
-    return { type: 'multicell', stormActivity, anvilFactor, spread, icMult: 1.6, ccMult: 1.4, spiderMult: 0.9, anvilMult: 0.75, cgMult: 0.8, sheetMult: 1.1, strobeMult: 0.95 };
+      return { type: 'weak', stormActivity, anvilFactor, spread, icMult: 1.3, ccMult: 0.9, spiderMult: 0.15, anvilMult: 0.12, cgMult: 0.35 };
+    if (stormActivity > 0.58 && anvilFactor > 0.48)
+      return { type: 'supercell', stormActivity, anvilFactor, spread, icMult: 2.0, ccMult: 1.6, spiderMult: 2.8, anvilMult: 2.4, cgMult: 0.65 };
+    if (stormActivity > 0.42 && spread > 0.38 && anvilFactor > 0.35)
+      return { type: 'mcs', stormActivity, anvilFactor, spread, icMult: 2.4, ccMult: 2.0, spiderMult: 2.2, anvilMult: 1.9, cgMult: 0.45 };
+    return { type: 'multicell', stormActivity, anvilFactor, spread, icMult: 1.6, ccMult: 1.4, spiderMult: 0.9, anvilMult: 0.75, cgMult: 0.8 };
   }
 
   function getTypeFrequencyMult(profile, typeKey) {
     if (!profile) return 1;
     const map = {
       intracloud: profile.icMult, cloudToCloud: profile.ccMult,
-      sheet: profile.sheetMult, strobe: profile.strobeMult,
       spider: profile.spiderMult, anvilCrawler: profile.anvilMult, cg: profile.cgMult,
     };
     return map[typeKey] || 1;
@@ -488,19 +455,8 @@
     return clamp(1.0 - 1.0 / (1.0 + cloud * 13.0), 0, 1);
   }
 
-  const _spawnThresholdsCache = new Map();
   function getSpawnThresholds(controls, channelId) {
-    const scale = controls.lightningSpawnStrictness ?? 1.0;
-    const cloudDensity = controls.chargeMinCloudDensity ?? 0.32;
-    const cloudThBase = controls.cloudLightningThreshold ?? 0.3;
-    const cacheKey = channelId + '|' + scale + '|' + cloudDensity + '|' + cloudThBase + '|'
-      + (controls.cloudGroundLightningThreshold ?? 0.3) + '|'
-      + (controls.strobeLightningThreshold ?? 0.3) + '|'
-      + (controls.cloudFlashThreshold ?? 0.25);
-    const cached = _spawnThresholdsCache.get(cacheKey);
-    if (cached) return cached;
-
-    let cloudTh = cloudThBase;
+    let cloudTh = controls.cloudLightningThreshold ?? 0.3;
     if (channelId === 'cg')
       cloudTh = controls.cloudGroundLightningThreshold ?? 0.3;
     else if (channelId === 'strobe')
@@ -508,17 +464,14 @@
     else if (channelId === 'sheet' || channelId === 'flash')
       cloudTh = controls.cloudFlashThreshold ?? 0.25;
     else if (channelId === 'dry')
-      cloudTh = Math.max(cloudThBase, 0.42);
-    const result = {
-      minCloudGate: (0.40 + cloudTh * 0.58) * scale,
-      minChargeMag: (0.36 + cloudTh * 0.55) * scale,
-      minPotential: (0.34 + cloudTh * 0.42) * scale,
-      minRawCloud: cloudDensity * (1.05 + cloudTh * 0.55) * scale,
+      cloudTh = Math.max(controls.cloudLightningThreshold ?? 0.3, 0.35);
+    const scale = controls.lightningSpawnStrictness ?? 1.0;
+    return {
+      minCloudGate: (0.34 + cloudTh * 0.56) * scale,
+      minChargeMag: (0.32 + cloudTh * 0.52) * scale,
+      minPotential: (0.30 + cloudTh * 0.40) * scale,
+      minRawCloud: (controls.chargeMinCloudDensity ?? 0.32) * (0.88 + cloudTh * 0.48) * scale,
     };
-    if (_spawnThresholdsCache.size > 48)
-      _spawnThresholdsCache.clear();
-    _spawnThresholdsCache.set(cacheKey, result);
-    return result;
   }
 
   function isSimInCloudLayer(simX, simY, simResX, simResY, allowGround) {
@@ -616,11 +569,9 @@
 
       for (let v = 0; v < 5; v++) {
         const vy = clamp(probeY + (v - 2) * simResY * 0.05, simResY * 0.05, simResY * 0.92);
-        const cell = readCacheCell(cache, ox, vy);
-        if (!cell) continue;
-        const cloud = cell.cloud;
-        const charge = cell.charge;
-        const potential = cell.potential;
+        const cloud = readCloud(cache, ox, vy);
+        const charge = readCharge(cache, ox, vy);
+        const potential = readPotential(cache, ox, vy);
         const cg = cloudGate(cloud);
         const candidate = {
           x: ox, y: vy, charge, cloud, potential,
@@ -628,7 +579,7 @@
         };
         if (!isOriginEligibleForStrike(cache, candidate, controls, channelId, null, simResX, simResY))
           continue;
-        let score = potential * 0.55 + Math.abs(charge) * cg * 0.35 + cloud * cg * 0.1;
+        let score = computeLightningPotentialAt(cache, ox, vy);
         score += Math.abs(charge) * 0.25 + cg * 0.18 + potential * 0.12;
         if (anvilBias) score *= 0.55 + cloud * 1.1 + (vy > simResY * 0.42 ? 0.35 : 0.0);
         if (cloud < thresholds.minRawCloud) score *= 0.35;
@@ -683,13 +634,11 @@
 
   function scoreCloudCell(cache, x, y, opts) {
     if (!cache || !cache.data) return -1;
-    const cell = opts.cell || readCacheCell(cache, x, y);
-    if (!cell) return -1;
-    const cloud = cell.cloud;
+    const cloud = readCloud(cache, x, y);
     if (cloud < (opts.minCloud || 0.04)) return -1;
-    const pot = cell.potential;
-    const chg = cell.charge;
-    const cond = cell.conductivity;
+    const pot = readPotential(cache, x, y);
+    const chg = readCharge(cache, x, y);
+    const cond = readConductivity(cache, x, y);
     let score = cloud * 1.5 + pot * 0.95 + Math.abs(chg) * 0.4 + cond * 0.2;
     if (opts.anvilBias && y > (opts.simResY || 1) * 0.40) score *= 1.0 + cloud * 0.5;
     if (opts.preferOpposite && opts.originCharge !== undefined) {
@@ -923,10 +872,8 @@
         const theta = baseAngle + (a - (probes >> 1)) * spread;
         const nx = clamp(cx + Math.cos(theta) * stepX, 0, simResX - 1);
         const ny = clamp(cy + Math.sin(theta) * stepY, simResY * 0.08, simResY * 0.92);
-        const cell = readCacheCell(cache, nx, ny);
-        if (!cell) continue;
         const score = scoreCloudCell(cache, nx, ny, {
-          minCloud: 0.04, simResX, simResY, originCharge, cell,
+          minCloud: 0.04, simResX, simResY, originCharge,
           towardX: targetX, towardY: targetY, towardWeight: 0.65,
           anvilBias: horizontal,
         });
@@ -1019,9 +966,10 @@
       };
     }
     const angle = Math.atan2(dy || -0.12, dx || 0.1);
+    const vertScale = spanOpts.vertFrac ?? 0.35;
     return {
       destX: clamp(ox + Math.cos(angle) * minLen, 0, simResX - 1),
-      destY: clamp(oy + Math.sin(angle) * minLen * 0.35, simResY * 0.06, simResY * 0.92),
+      destY: clamp(oy + Math.sin(angle) * minLen * vertScale, simResY * 0.06, simResY * 0.92),
     };
   }
 
@@ -1171,8 +1119,6 @@
   }
 
   function isFlashOnlyType(ltType, strobeBurst) {
-    if (ltType === LT.INTRACLOUD || ltType === LT.CLOUD_TO_CLOUD)
-      return true;
     if (strobeBurst && ltType === LT.SHEET)
       return true;
     return false;
@@ -1302,7 +1248,13 @@
       const dest = pickGroundTarget(cache, pick, eventId, slot, simResX, simResY, controls);
       destX = dest.x;
       destY = dest.y;
-      routePoints = [{ x: ox, y: oy }, { x: destX, y: destY }];
+      const path = findChargedPath(cache, ox, oy, destX, destY, eventId, slot, simResX, simResY, {
+        steps: 22 + Math.floor(shaderRand(seed + 44) * 8),
+        originCharge,
+      });
+      routePoints = path.points;
+      destX = path.destX;
+      destY = path.destY;
     } else if (ltType === LT.SPIDER || ltType === LT.ANVIL_CRAWLER) {
       horizontal = true;
       const isSpider = ltType === LT.SPIDER;
@@ -1350,29 +1302,37 @@
         viaMidpoint = true;
       }
     } else if (ltType === LT.CLOUD_TO_CLOUD) {
-      branchCount = 4;
-      const destCell = findOpposingChargeCell(cache, pick, eventId, slot, simResX, simResY, 0.08);
+      branchCount = 5;
+      const destCell = findOpposingChargeCell(cache, pick, eventId, slot, simResX, simResY, 0.10);
       destX = destCell.x;
       destY = destCell.y;
-      const span = ensureMinimumSpan(ox, oy, destX, destY, simResX, simResY, 0.12, false);
+      const span = ensureMinimumSpan(ox, oy, destX, destY, simResX, simResY, 0.14, false, {
+        vertFrac: 0.18 + shaderRand(seed + 63) * 0.35,
+        slopeSign: destY >= oy ? 1 : -1,
+        lenScale: boltProfile.lenScale,
+      });
       destX = span.destX;
       destY = span.destY;
       const path = findChargedPath(cache, ox, oy, destX, destY, eventId, slot, simResX, simResY, {
-        steps: 14, originCharge,
+        steps: 20, originCharge,
       });
       routePoints = path.points;
       destX = path.destX;
       destY = path.destY;
     } else if (ltType === LT.INTRACLOUD) {
-      branchCount = 3;
-      const destCell = findOpposingChargeCell(cache, pick, eventId, slot, simResX, simResY, 0.05);
+      branchCount = 4;
+      const destCell = findOpposingChargeCell(cache, pick, eventId, slot, simResX, simResY, 0.07);
       destX = destCell.x;
       destY = destCell.y;
-      const span = ensureMinimumSpan(ox, oy, destX, destY, simResX, simResY, 0.06, false);
+      const span = ensureMinimumSpan(ox, oy, destX, destY, simResX, simResY, 0.08, false, {
+        vertFrac: 0.22 + shaderRand(seed + 67) * 0.42,
+        slopeSign: destY >= oy ? 1 : -1,
+        lenScale: boltProfile.lenScale,
+      });
       destX = span.destX;
       destY = span.destY;
       const path = findChargedPath(cache, ox, oy, destX, destY, eventId, slot, simResX, simResY, {
-        steps: 12, originCharge,
+        steps: 18, originCharge,
       });
       routePoints = path.points;
       destX = path.destX;
@@ -1622,18 +1582,12 @@
     return ch.filter(c => c.freq() > 0);
   }
 
-  // Legacy interval model (matches original sim): avg spacing ≈ max(10, 40 / freq) sim iterations.
-  const LEGACY_LT_INTERVAL_NUM = 40;
-  const LEGACY_LT_MIN_INTERVAL = 10;
-
   function strikeChance(freq, burstIntensity, clustering) {
-    const effectiveFreq = Math.max(0, freq) * Math.max(0.05, burstIntensity || 1);
-    if (effectiveFreq <= 0)
-      return 0;
-    const ltInterval = Math.max(LEGACY_LT_MIN_INTERVAL, LEGACY_LT_INTERVAL_NUM / (effectiveFreq + 0.01));
-    let chance = 1 / ltInterval;
-    if (clustering > 0.5)
-      chance *= 1.0 + (clustering - 0.5) * 0.35;
+    const norm = clamp(freq / 100, 0, 1);
+    let chance = norm * 0.14 + norm * norm * 0.11 + 0.001;
+    chance = Math.min(0.58, chance);
+    chance *= Math.max(0.08, burstIntensity);
+    if (clustering > 0.5) chance *= 1.0 + (clustering - 0.5) * 0.45;
     return chance;
   }
 
@@ -1858,8 +1812,6 @@
     getEffectiveFrequency,
     createBurstState,
     updateBurstState,
-    burstQuietActivityFloor,
-    stormLightningBoost,
     readCharge,
     readCloud,
     readPotential,

@@ -1,3 +1,33 @@
+function boltLuminance(lineWidth, tier) {
+  const w = Math.max(lineWidth, 0.4);
+  if (tier === 'glow') return Math.min(255, Math.pow(w, 1.35) * 7);
+  if (tier === 'core') return Math.min(255, Math.pow(w, 1.15) * 18);
+  return Math.min(255, Math.pow(w, 1.55) * 13);
+}
+
+function strokeBoltLayer(ctx, lineWidth, tier, glowBlur) {
+  const lum = boltLuminance(lineWidth, tier);
+  ctx.save();
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  if (glowBlur > 0) {
+    ctx.shadowBlur = glowBlur;
+    ctx.shadowColor = `rgb(${lum}, ${lum}, ${Math.min(255, lum + 6)})`;
+  }
+  ctx.strokeStyle = `rgb(${lum}, ${lum}, ${Math.min(255, lum + 8)})`;
+  ctx.lineWidth = lineWidth;
+  ctx.stroke();
+  ctx.restore();
+}
+
+function flushBoltPath(ctx, lineWidth, opts) {
+  const withCore = !opts || opts.core !== false;
+  strokeBoltLayer(ctx, lineWidth * 3.4, 'glow', lineWidth * 2.2);
+  strokeBoltLayer(ctx, lineWidth, 'body', lineWidth * 0.75);
+  if (withCore)
+    strokeBoltLayer(ctx, Math.max(lineWidth * 0.22, 1.0), 'core', 0);
+}
+
 onmessage = (event) => {
   const msg = event.data;
   // console.log(msg);
@@ -42,65 +72,47 @@ function generateLightningBolt(width, height)
 
   ctx.clearRect(0, 0, width, height);
 
-
-  function genLightningColor(lineWidth)
-  {
-    const colR = 12;
-    const colG = 12;
-    const colB = 12;
-    brightness = Math.pow(lineWidth, 2.0);
-    return `rgb(${colR * brightness}, ${colG * brightness}, ${colB * brightness})`;
-  }
-
-
   ctx.beginPath();
 
   let startX = width / 2.0;
   let startY = 0;
   let angle = Math.PI / 6.;
-  let lineWidth = 9.0;
+  let lineWidth = 10.0;
   const targetAngle = 0.0;
 
   ctx.moveTo(startX, startY);
-
   ctx.lineWidth = lineWidth;
 
   while (startY < height) {
 
-    const nextX = startX + Math.sin(angle);
-    const nextY = startY + Math.cos(angle);
+    const step = 0.85 + Math.random() * 0.35;
+    const nextX = startX + Math.sin(angle) * step;
+    const nextY = startY + Math.cos(angle) * step;
 
-    angle += (Math.random() - 0.5) * 1.4;  // 0.7
-
-    angle -= (angle - targetAngle) * 0.08; // keep it going in a general direction
+    angle += (Math.random() - 0.5) * 1.65;
+    angle -= (angle - targetAngle) * 0.07;
 
     ctx.lineTo(nextX, nextY);
 
     startX = nextX;
     startY = nextY;
 
-
-    if (Math.random() < 0.015 * (1. - nextY / height)) { // branch
-      ctx.strokeStyle = genLightningColor(lineWidth);
-      ctx.stroke();
-      drawBranch(nextX, nextY, targetAngle + (Math.random() - 0.5) * 2.5, lineWidth * 0.5 * Math.random());
+    if (Math.random() < 0.022 * (1. - nextY / height)) {
+      flushBoltPath(ctx, lineWidth);
+      drawBranch(nextX, nextY, targetAngle + (Math.random() - 0.5) * 2.8, lineWidth * 0.55 * (0.45 + Math.random() * 0.55));
       ctx.beginPath();
-      ctx.moveTo(nextX, nextY); // move back to last position after drawing branch
+      ctx.moveTo(nextX, nextY);
       ctx.lineWidth = lineWidth;
     }
-    
-    // Ensure lightning reaches the bottom
+
     if (startY >= height - 1) {
       ctx.lineTo(startX, height);
       break;
     }
   }
-  ctx.strokeStyle = genLightningColor(lineWidth);
-  ctx.stroke();
-
+  flushBoltPath(ctx, lineWidth);
 
   return ctx.getImageData(0, 0, width, height);
-
 
   function drawBranch(startX, startY, targetAngle, line_width)
   {
@@ -112,45 +124,38 @@ function generateLightningBolt(width, height)
 
     while (startY < height) {
 
-      const nextX = startX + Math.sin(angle);
-      const nextY = startY + Math.cos(angle);
+      const nextX = startX + Math.sin(angle) * 0.9;
+      const nextY = startY + Math.cos(angle) * 0.9;
 
-      angle += (Math.random() - 0.5) * 0.7;
-
-      angle -= (angle - targetAngle) * 0.08; // keep it going in a general direction
+      angle += (Math.random() - 0.5) * 0.95;
+      angle -= (angle - targetAngle) * 0.08;
 
       ctx.lineTo(nextX, nextY);
 
       startX = nextX;
       startY = nextY;
 
-      if (Math.random() < 0.018) { // reduce width
+      if (Math.random() < 0.022) {
+        flushBoltPath(ctx, line_width, { core: line_width > 1.5 });
+        line_width -= 0.22;
 
-        ctx.strokeStyle = genLightningColor(line_width);
-        ctx.stroke();
-        line_width -= 0.2;
-
-        if (line_width < 0.1)
+        if (line_width < 0.12)
           return;
 
-        if (Math.random() < 0.1) { // branch 0.005
-
-          drawBranch(nextX, nextY, targetAngle + (Math.random() - 0.5) * 1.5, line_width);
-        }
+        if (Math.random() < 0.14)
+          drawBranch(nextX, nextY, targetAngle + (Math.random() - 0.5) * 1.8, line_width);
 
         ctx.beginPath();
-        ctx.moveTo(nextX, nextY); // move back to last position after drawing branch
+        ctx.moveTo(nextX, nextY);
         ctx.lineWidth = line_width;
       }
-      
-      // Ensure branch reaches the bottom
+
       if (startY >= height - 1) {
         ctx.lineTo(startX, height);
         break;
       }
     }
-    ctx.strokeStyle = genLightningColor(line_width);
-    ctx.stroke();
+    flushBoltPath(ctx, line_width, { core: line_width > 1.2 });
   }
 }
 
@@ -161,56 +166,52 @@ function generateIntracloudBolt(width, height)
   const ctx = canvas.getContext('2d');
   ctx.clearRect(0, 0, width, height);
 
-  function getColor(lineWidth) {
-    const b = Math.pow(lineWidth, 2.0);
-    return `rgb(${12 * b}, ${13 * b}, ${16 * b})`;
+  function flushPath(lineWidth, withCore) {
+    flushBoltPath(ctx, lineWidth, { core: withCore !== false });
   }
 
   const startX = width * 0.5;
-  const startY = height * 0.32;
-  const endY = height * 0.68;
+  const startY = height * 0.28;
+  const endY = height * 0.72;
   let x = startX;
   let y = startY;
   let angle = (Math.random() - 0.5) * 0.6;
-  let lineWidth = 7.0;
+  let lineWidth = 8.0;
 
   ctx.beginPath();
   ctx.moveTo(x, y);
   ctx.lineWidth = lineWidth;
 
   while (y < endY) {
-    const nextX = x + Math.sin(angle) * 1.4;
-    const nextY = y + Math.cos(angle) * 1.2;
-    angle += (Math.random() - 0.5) * 1.2;
-    angle *= 0.88;
+    const nextX = x + Math.sin(angle) * 1.5;
+    const nextY = y + Math.cos(angle) * 1.25;
+    angle += (Math.random() - 0.5) * 1.35;
+    angle *= 0.86;
     ctx.lineTo(nextX, nextY);
     x = nextX;
     y = nextY;
 
-    if (Math.random() < 0.025) {
-      ctx.strokeStyle = getColor(lineWidth);
-      ctx.stroke();
+    if (Math.random() < 0.032) {
+      flushPath(lineWidth);
       let bx = x;
       let by = y;
-      const bAng = angle + (Math.random() - 0.5) * 1.6;
+      const bAng = angle + (Math.random() - 0.5) * 1.8;
       ctx.beginPath();
       ctx.moveTo(bx, by);
-      ctx.lineWidth = lineWidth * 0.55;
-      for (let i = 0; i < 18; i++) {
-        bx += Math.sin(bAng + (Math.random() - 0.5) * 0.8) * 1.1;
-        by += Math.cos(bAng + (Math.random() - 0.5) * 0.8) * 0.9;
+      const branchW = lineWidth * 0.58;
+      for (let i = 0; i < 22; i++) {
+        bx += Math.sin(bAng + (Math.random() - 0.5) * 0.9) * 1.15;
+        by += Math.cos(bAng + (Math.random() - 0.5) * 0.9) * 0.95;
         ctx.lineTo(bx, by);
       }
-      ctx.strokeStyle = getColor(lineWidth * 0.55);
-      ctx.stroke();
+      flushPath(branchW, false);
       ctx.beginPath();
       ctx.moveTo(x, y);
       ctx.lineWidth = lineWidth;
     }
   }
 
-  ctx.strokeStyle = getColor(lineWidth);
-  ctx.stroke();
+  flushPath(lineWidth);
   return ctx.getImageData(0, 0, width, height);
 }
 
@@ -222,12 +223,10 @@ function generateCloudToCloudBolt(width, height)
 
   ctx.clearRect(0, 0, width, height);
 
-  function getColor(lineWidth) {
-    const brightness = Math.pow(lineWidth, 2.0);
-    return `rgb(${12 * brightness}, ${12 * brightness}, ${16 * brightness})`; // Slightly bluer
+  function flushPath(lineWidth, withCore) {
+    flushBoltPath(ctx, lineWidth, { core: withCore !== false });
   }
 
-  // CC lightning is mostly horizontal with some vertical spread
   const centerY = height * 0.5;
   let startX = width * 0.1;
   const endX = width * 0.9;
@@ -237,56 +236,49 @@ function generateCloudToCloudBolt(width, height)
 
   let currentX = startX;
   let currentY = centerY;
-  let lineWidth = 8.0;
+  let lineWidth = 8.5;
   ctx.lineWidth = lineWidth;
 
-  // Main horizontal channel with zigzag
   while (currentX < endX) {
     const stepX = 2 + Math.random() * 3;
-    const zigzagY = (Math.random() - 0.5) * 20; // Moderate vertical spread
+    const zigzagY = (Math.random() - 0.5) * 22;
 
     currentX += stepX;
-    currentY += zigzagY * 0.3; // Dampened vertical movement
-
-    // Keep near center line
-    currentY = centerY + (currentY - centerY) * 0.7;
+    currentY += zigzagY * 0.32;
+    currentY = centerY + (currentY - centerY) * 0.68;
 
     ctx.lineTo(currentX, currentY);
 
-    // Occasional vertical branches
-    if (Math.random() < 0.02) {
-      ctx.strokeStyle = getColor(lineWidth);
-      ctx.stroke();
-      drawCCBranch(ctx, currentX, currentY, lineWidth * 0.6, height, getColor);
+    if (Math.random() < 0.025) {
+      flushPath(lineWidth);
+      drawCCBranch(ctx, currentX, currentY, lineWidth * 0.62, height, flushPath);
       ctx.beginPath();
       ctx.moveTo(currentX, currentY);
       ctx.lineWidth = lineWidth;
     }
   }
 
-  ctx.strokeStyle = getColor(lineWidth);
-  ctx.stroke();
+  flushPath(lineWidth);
 
   return ctx.getImageData(0, 0, width, height);
 
-  function drawCCBranch(ctx, startX, startY, lineWidth, height, getColor) {
+  function drawCCBranch(ctx, startX, startY, lineWidth, height, flushPath) {
     ctx.beginPath();
     ctx.moveTo(startX, startY);
     ctx.lineWidth = lineWidth;
 
     let x = startX;
     let y = startY;
-    const direction = Math.random() > 0.5 ? 1 : -1; // Up or down
+    const direction = Math.random() > 0.5 ? 1 : -1;
 
-    while (Math.abs(y - startY) < height * 0.15 && x > 0 && x < width) {
+    while (Math.abs(y - startY) < height * 0.16 && x > 0 && x < width) {
       y += direction * (1 + Math.random());
-      x += (Math.random() - 0.5) * 2;
+      x += (Math.random() - 0.5) * 2.2;
       ctx.lineTo(x, y);
 
-      if (Math.random() < 0.03) {
-        ctx.strokeStyle = getColor(lineWidth);
-        ctx.stroke();
-        lineWidth -= 0.5;
+      if (Math.random() < 0.035) {
+        flushPath(lineWidth, false);
+        lineWidth -= 0.45;
         if (lineWidth < 0.5) return;
         ctx.beginPath();
         ctx.moveTo(x, y);
@@ -294,8 +286,7 @@ function generateCloudToCloudBolt(width, height)
       }
     }
 
-    ctx.strokeStyle = getColor(lineWidth);
-    ctx.stroke();
+    flushPath(lineWidth, false);
   }
 }
 
@@ -307,12 +298,11 @@ function generateSpiderLightning(width, height)
 
   ctx.clearRect(0, 0, width, height);
 
-  function getColor(lineWidth) {
-    const brightness = Math.pow(lineWidth, 2.0);
-    return `rgb(${14 * brightness}, ${12 * brightness}, ${13 * brightness})`; // Slight reddish tint
+  function flushPath(lineWidth, withCore) {
+    flushBoltPath(ctx, lineWidth, { core: withCore !== false });
   }
 
-  const numTendrils = 7;
+  const numTendrils = 8;
   const centerX = width * 0.5;
   const centerY = height * 0.5;
 
@@ -348,18 +338,16 @@ function generateSpiderLightning(width, height)
       ctx.lineTo(x, y);
 
       // Gradual fade
-      if (i % 15 === 0) {
-        ctx.strokeStyle = getColor(lineWidth);
-        ctx.stroke();
-        lineWidth *= 0.9;
+      if (i % 12 === 0) {
+        flushPath(lineWidth, false);
+        lineWidth *= 0.88;
         ctx.beginPath();
         ctx.moveTo(x, y);
         ctx.lineWidth = lineWidth;
       }
     }
 
-    ctx.strokeStyle = getColor(lineWidth);
-    ctx.stroke();
+    flushPath(lineWidth, false);
   }
 
   return ctx.getImageData(0, 0, width, height);
@@ -372,15 +360,10 @@ function generatePositiveCGBolt(width, height)
   const ctx = canvas.getContext('2d');
   ctx.clearRect(0, 0, width, height);
 
-  function getColor(lineWidth) {
-    const b = Math.pow(lineWidth, 1.8);
-    return `rgb(${14 * b}, ${13 * b}, ${15 * b})`;
-  }
-
   let startX = width / 2.0;
   let startY = 0;
   let angle = Math.PI / 5.;
-  let lineWidth = 14.0;
+  let lineWidth = 15.0;
   const targetAngle = 0.0;
 
   ctx.beginPath();
@@ -388,18 +371,17 @@ function generatePositiveCGBolt(width, height)
   ctx.lineWidth = lineWidth;
 
   while (startY < height) {
-    const nextX = startX + Math.sin(angle) * 1.2;
-    const nextY = startY + Math.cos(angle) * 1.2;
-    angle += (Math.random() - 0.5) * 1.6;
+    const nextX = startX + Math.sin(angle) * 1.25;
+    const nextY = startY + Math.cos(angle) * 1.25;
+    angle += (Math.random() - 0.5) * 1.75;
     angle -= (angle - targetAngle) * 0.06;
     ctx.lineTo(nextX, nextY);
     startX = nextX;
     startY = nextY;
 
-    if (Math.random() < 0.02 * (1. - nextY / height)) {
-      ctx.strokeStyle = getColor(lineWidth);
-      ctx.stroke();
-      drawBranch(nextX, nextY, targetAngle + (Math.random() - 0.5) * 2.0, lineWidth * 0.55);
+    if (Math.random() < 0.024 * (1. - nextY / height)) {
+      flushBoltPath(ctx, lineWidth);
+      drawBranch(nextX, nextY, targetAngle + (Math.random() - 0.5) * 2.2, lineWidth * 0.58);
       ctx.beginPath();
       ctx.moveTo(nextX, nextY);
       ctx.lineWidth = lineWidth;
@@ -409,8 +391,7 @@ function generatePositiveCGBolt(width, height)
       break;
     }
   }
-  ctx.strokeStyle = getColor(lineWidth);
-  ctx.stroke();
+  flushBoltPath(ctx, lineWidth);
   return ctx.getImageData(0, 0, width, height);
 
   function drawBranch(startX, startY, targetAngle, line_width) {
@@ -421,24 +402,22 @@ function generatePositiveCGBolt(width, height)
     while (startY < height) {
       const nextX = startX + Math.sin(angle);
       const nextY = startY + Math.cos(angle);
-      angle += (Math.random() - 0.5) * 0.8;
+      angle += (Math.random() - 0.5) * 0.85;
       angle -= (angle - targetAngle) * 0.08;
       ctx.lineTo(nextX, nextY);
       startX = nextX;
       startY = nextY;
-      if (Math.random() < 0.02) {
-        ctx.strokeStyle = getColor(line_width);
-        ctx.stroke();
-        line_width -= 0.25;
-        if (line_width < 0.15) return;
+      if (Math.random() < 0.024) {
+        flushBoltPath(ctx, line_width, { core: line_width > 1.8 });
+        line_width -= 0.28;
+        if (line_width < 0.18) return;
         ctx.beginPath();
         ctx.moveTo(nextX, nextY);
         ctx.lineWidth = line_width;
       }
       if (startY >= height - 1) break;
     }
-    ctx.strokeStyle = getColor(line_width);
-    ctx.stroke();
+    flushBoltPath(ctx, line_width, { core: line_width > 1.5 });
   }
 }
 
@@ -449,9 +428,8 @@ function generateAnvilCrawler(width, height)
   const ctx = canvas.getContext('2d');
   ctx.clearRect(0, 0, width, height);
 
-  function getColor(lineWidth) {
-    const b = Math.pow(lineWidth, 2.0);
-    return `rgb(${13 * b}, ${12 * b}, ${16 * b})`;
+  function flushPath(lineWidth, withCore) {
+    flushBoltPath(ctx, lineWidth, { core: withCore !== false });
   }
 
   const centerY = height * 0.42;
@@ -475,29 +453,25 @@ function generateAnvilCrawler(width, height)
       currentY = centerY + yOff + (currentY - centerY - yOff) * 0.6;
       ctx.lineTo(currentX, currentY);
 
-      if (Math.random() < 0.04) {
-        ctx.strokeStyle = getColor(lineWidth);
-        ctx.stroke();
+      if (Math.random() < 0.045) {
+        flushPath(lineWidth, false);
         let bx = currentX;
         let by = currentY;
         const dir = Math.random() > 0.5 ? 1 : -1;
         ctx.beginPath();
         ctx.moveTo(bx, by);
-        for (let j = 0; j < 20; j++) {
+        for (let j = 0; j < 22; j++) {
           by += dir * (1 + Math.random());
-          bx += (Math.random() - 0.5) * 3;
+          bx += (Math.random() - 0.5) * 3.2;
           ctx.lineTo(bx, by);
         }
-        ctx.strokeStyle = getColor(lineWidth * 0.5);
-        ctx.lineWidth = lineWidth * 0.5;
-        ctx.stroke();
+        flushPath(lineWidth * 0.52, false);
         ctx.beginPath();
         ctx.moveTo(currentX, currentY);
         ctx.lineWidth = lineWidth;
       }
     }
-    ctx.strokeStyle = getColor(lineWidth);
-    ctx.stroke();
+    flushPath(lineWidth, false);
   }
 
   return ctx.getImageData(0, 0, width, height);
