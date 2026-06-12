@@ -11409,32 +11409,39 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
 
       let reachedAir = false;
       c.beginPath();
-      for (let y = 0; y < sim_res_y; y++) {
+      for (let y = surfaceLevel; y < sim_res_y; y++) {
+        if (wallTextureValues[4 * y + 1] === 0) continue;
         const potentialTemp = baseTextureValues[4 * y + 3];
         const temp = KtoC(potentialToRealT(potentialTemp, y));
         const scrYpos = scrYFromSimY(y);
-        if (wallTextureValues[4 * y + 1] != 0) {
-          if (!reachedAir) {
-            reachedAir = true;
-            if (simYpos < surfaceLevel) simYpos = surfaceLevel;
-          }
-          if (reachedAir && y == simYpos) {
-            c.strokeStyle = '#FFF';
-            c.lineWidth = 1.0;
-            c.strokeRect(T_to_Xpos(temp, scrYpos), scrYpos, 10, 1);
-          }
+        if (!reachedAir) {
+          reachedAir = true;
+          if (simYpos < surfaceLevel) simYpos = surfaceLevel;
+          c.moveTo(T_to_Xpos(temp, scrYpos), scrYpos);
+        } else {
           c.lineTo(T_to_Xpos(temp, scrYpos), scrYpos);
-        } else if (wallTextureValues[4 * y + 2] == 0) {
-          if (wallTextureValues[4 * y + 0] != 2) {
-            const soilMoisture_mm = waterTextureValues[4 * y + 2];
-            if (soilMoisture_mm > 0.) {
-              c.font = '11px Arial';
-              c.fillStyle = 'white';
-              c.fillText('💧' + printSoilMoisture(soilMoisture_mm), skewTLeft + 4, scrYpos + 14);
-            }
-          }
+        }
+        if (y == simYpos) {
+          c.strokeStyle = '#FFF';
+          c.lineWidth = 1.0;
+          c.strokeRect(T_to_Xpos(temp, scrYpos), scrYpos, 10, 1);
         }
       }
+      for (let y = 0; y < surfaceLevel; y++) {
+        if (wallTextureValues[4 * y + 2] !== 0) continue;
+        if (wallTextureValues[4 * y + 0] === 2) continue;
+        const soilMoisture_mm = waterTextureValues[4 * y + 2];
+        if (soilMoisture_mm > 0.) {
+          const scrYpos = scrYFromSimY(y);
+          c.font = '11px Arial';
+          c.fillStyle = 'white';
+          c.fillText('💧' + printSoilMoisture(soilMoisture_mm), skewTLeft + 4, scrYpos + 14);
+        }
+      }
+      c.lineWidth = 2.5;
+      c.strokeStyle = '#FF3333';
+      c.stroke();
+
       if (sfcWaterTempC !== null) {
         const sfcScrY = scrYFromSimY(surfaceLevel);
         const sfcX = T_to_Xpos(sfcWaterTempC, sfcScrY);
@@ -11451,9 +11458,6 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         c.fillText(sfcIcon + (sfcWaterLabel || 'Water Temp') + ' ' + printTemp(sfcWaterTempC),
           skewTLeft + 4, sfcScrY + 14);
       }
-      c.lineWidth = 2.5;
-      c.strokeStyle = '#FF3333';
-      c.stroke();
 
       c.beginPath();
       for (let y = surfaceLevel; y < sim_res_y; y++) {
