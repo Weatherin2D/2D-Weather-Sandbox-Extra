@@ -559,11 +559,13 @@ void main()
           float waterTempC = KtoC(base[TEMPERATURE]);
           float salinity = salinityForWallType(wall[TYPE], water[SALINITY]);
           float freezeC = waterFreezeTempC(salinity);
+          float airTempC = KtoC(potentialToRealT(texture(baseTex, texCoordX0Yp)[TEMPERATURE], texCoordX0Yp.y));
 
-          if (waterTempC < freezeC) {
-            float freezeProgress = (freezeC - waterTempC) * waterFreezeRate;
+          if (waterTempC < freezeC || airTempC < freezeC) {
+            float coldness = max(freezeC - waterTempC, 0.0) + max(freezeC - airTempC, 0.0) * 0.75;
+            float freezeProgress = max(coldness, 0.1) * waterFreezeRate;
             water[SNOW] = min(water[SNOW] + freezeProgress, minIceFormThickness);
-            if (water[SNOW] >= minIceFormThickness * 0.5) {
+            if (water[SNOW] >= minIceFormThickness * 0.2 || waterTempC < freezeC - 0.5) {
               wall[TYPE] = WALLTYPE_ICE;
               water[SALINITY] = salinity;
               water[SNOW] = max(water[SNOW], minIceFormThickness);
@@ -613,13 +615,15 @@ void main()
           }
 
           float iceTempC = KtoC(base[TEMPERATURE]);
+          float airTempC = KtoC(potentialToRealT(texture(baseTex, texCoordX0Yp)[TEMPERATURE], texCoordX0Yp.y));
           float windSpeed = abs(texture(baseTex, texCoordX0Yp)[VX]);
 
           if (iceTempC < freezeC - 2.0 && int(iterNum) % 50 == 0)
             iceThickness = min(iceThickness + iceGrowthRate, maxIceThickness);
 
-          if (iceThickness > 0.0 && iceTempC > freezeC) {
-            float melting = min((iceTempC - freezeC) * iceMeltRate, iceThickness);
+          if (iceThickness > 0.0 && airTempC > freezeC) {
+            float warmth = max(airTempC - freezeC, iceTempC - freezeC);
+            float melting = min(max(warmth, 0.1) * iceMeltRate, iceThickness);
             iceThickness -= melting;
           }
 
