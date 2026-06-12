@@ -622,26 +622,27 @@ void main()
             iceThickness = min(iceThickness + iceGrowthRate, maxIceThickness);
 
           if (iceThickness > 0.0 && airTempC > freezeC) {
-            float warmth = max(airTempC - freezeC, iceTempC - freezeC);
-            float melting = min(max(warmth, 0.1) * iceMeltRate, iceThickness);
+            float warmth = max(airTempC - freezeC, 0.0);
+            float melting = min(warmth * iceMeltRate, iceThickness);
             iceThickness -= melting;
           }
 
           if (iceThickness > 0.1)
             base[TEMPERATURE] = min(base[TEMPERATURE], CtoK(freezeC));
 
-          if (iceTempC <= 0.0) {
+          if (iceTempC <= freezeC) {
             float vaporDeficit = max(maxWater(CtoK(iceTempC)) - waterX0Yp[TOTAL], 0.0);
             float sublimation = min(vaporDeficit * snowSublimationRate, iceThickness);
             iceThickness -= sublimation;
           }
 
-          if (iceThickness < thinIceBreakupCm && (windSpeed > 0.12 || iceTempC > freezeC - 1.5))
+          // thin ice only breaks up when the air above is genuinely above freezing
+          if (iceThickness < thinIceBreakupCm && airTempC > freezeC + 0.5 && windSpeed > 0.12)
             iceThickness = 0.0;
 
           water[SNOW] = max(iceThickness, 0.0);
 
-          if (water[SNOW] <= 0.1) {
+          if (water[SNOW] <= 0.1 && airTempC > freezeC) {
             wall[TYPE] = liquidWaterTypeFromSalinity(salinity);
             if (wall[TYPE] == WALLTYPE_WATER)
               water[SALINITY] = max(salinity, oceanSalinityPpt);
@@ -649,6 +650,8 @@ void main()
               water[SALINITY] = 0.0;
             water[SNOW] = 0.0;
             base[TEMPERATURE] = max(base[TEMPERATURE], CtoK(freezeC + 0.5));
+          } else if (water[SNOW] <= 0.1) {
+            water[SNOW] = minIceFormThickness;
           }
 
           wall[VEGETATION] = 0;
