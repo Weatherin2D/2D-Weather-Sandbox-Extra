@@ -283,22 +283,23 @@ float smoothCloudWater(sampler2D waterTex, vec2 tc, vec2 resolution)
 }
 
 // Soft sunlight sample (reduces blocky shadow boundaries from the light grid)
-// quality: 1.0 = 7x7 kernel, lower values use a smaller kernel for better performance
+// quality: 1.0 = wide kernel; reach scales smoothly so shadow softness never hard-steps
 float smoothSunlightSample(sampler2D lightTex, vec2 tc, vec2 texelSize, float quality)
 {
-  int radius = quality >= 0.72 ? 3 : (quality >= 0.45 ? 2 : 1);
+  float reach = mix(1.15, 3.15, clamp((quality - 0.45) / 0.27, 0.0, 1.0));
   float sum = 0.0;
   float wsum = 0.0;
   for (int j = -3; j <= 3; j++) {
-    if (abs(j) > radius) continue;
     for (int i = -3; i <= 3; i++) {
-      if (abs(i) > radius) continue;
       vec2 ij = vec2(float(i), float(j));
+      float dist = length(ij);
+      float edge = clamp(reach + 0.55 - dist, 0.0, 1.0);
+      if (edge <= 0.0) continue;
       vec2 o = ij * texelSize * 1.05;
-      float w = exp(-dot(ij, ij) * 0.32);
+      float w = exp(-dot(ij, ij) * 0.32) * edge;
       sum += texture(lightTex, tc + o)[0] * w;
       wsum += w;
     }
   }
-  return sum / wsum;
+  return sum / max(wsum, 1e-5);
 }

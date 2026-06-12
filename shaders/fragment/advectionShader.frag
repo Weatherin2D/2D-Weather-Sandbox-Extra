@@ -386,13 +386,13 @@ void main()
           }
           break;
         case 21:                                               // add snow
-          if (wall[DISTANCE] == 0 && (wall[TYPE] == WALLTYPE_LAND || wall[TYPE] == WALLTYPE_URBAN || wall[TYPE] == WALLTYPE_INDUSTRIAL || wall[TYPE] == WALLTYPE_ICE) &&
+          if (wall[DISTANCE] == 0 && (wall[TYPE] == WALLTYPE_LAND || wall[TYPE] == WALLTYPE_URBAN || wall[TYPE] == WALLTYPE_SUBURBAN || wall[TYPE] == WALLTYPE_INDUSTRIAL || wall[TYPE] == WALLTYPE_ICE) &&
               texture(wallTex, texCoordX0Yp)[DISTANCE] != 0) { // if land wall and no wall above
             water[SNOW] += userInputValues[BRUSH_INTENSITY] * 0.5;
           }
           break;
         case 22:                                               // add vegetation
-          if (wall[DISTANCE] == 0 && (wall[TYPE] == WALLTYPE_LAND || wall[TYPE] == WALLTYPE_FIRE || wall[TYPE] == WALLTYPE_URBAN || wall[TYPE] == WALLTYPE_INDUSTRIAL) &&
+          if (wall[DISTANCE] == 0 && (wall[TYPE] == WALLTYPE_LAND || wall[TYPE] == WALLTYPE_FIRE || wall[TYPE] == WALLTYPE_URBAN || wall[TYPE] == WALLTYPE_SUBURBAN || wall[TYPE] == WALLTYPE_INDUSTRIAL) &&
               texture(wallTex, texCoordX0Yp)[DISTANCE] != 0) { // if land wall and no wall above
             wall[VEGETATION] += 1;                             // add vegetation
           }

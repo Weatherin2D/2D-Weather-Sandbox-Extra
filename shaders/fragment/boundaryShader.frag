@@ -270,6 +270,8 @@ void main()
         float surfaceDrag = 0.0015; // water or runway
         if (wall[TYPE] == WALLTYPE_URBAN)
           surfaceDrag = 0.040;
+        else if (wall[TYPE] == WALLTYPE_SUBURBAN)
+          surfaceDrag = 0.012;
         else if (wall[TYPE] == WALLTYPE_LAND || wall[TYPE] == WALLTYPE_FIRE)
           surfaceDrag = map_rangeC(float(wall[VEGETATION]), 50., 127., 0.0015, 0.020);
 
@@ -338,8 +340,13 @@ void main()
           }
         }
         // nobreak!
+      case WALLTYPE_SUBURBAN:
+        if (wall[TYPE] == WALLTYPE_SUBURBAN)
+          water[SMOKE] += 0.0000004;
+        // nobreak!
       case WALLTYPE_URBAN:
-        water[SMOKE] += 0.000002; // Urban produces smog
+        if (wall[TYPE] == WALLTYPE_URBAN)
+          water[SMOKE] += 0.000002; // Urban produces smog
         // nobreak!
       case WALLTYPE_LAND:
         if (wall[VERT_DISTANCE] <= wallVerticalInfluence) {
@@ -395,9 +402,14 @@ void main()
 
       switch (wall[TYPE]) {
       case WALLTYPE_INDUSTRIAL:
-        wall[VEGETATION] = min(wall[VEGETATION], 15); // limit vegetation in industrial areas
+        if (wall[TYPE] == WALLTYPE_INDUSTRIAL)
+          wall[VEGETATION] = min(wall[VEGETATION], 15); // limit vegetation in industrial areas
+      case WALLTYPE_SUBURBAN:
+        if (wall[TYPE] == WALLTYPE_SUBURBAN)
+          wall[VEGETATION] = min(wall[VEGETATION], 100);
       case WALLTYPE_URBAN:
-        wall[VEGETATION] = min(wall[VEGETATION], 75); // limit vegetation in urban areas
+        if (wall[TYPE] == WALLTYPE_URBAN)
+          wall[VEGETATION] = min(wall[VEGETATION], 75); // limit vegetation in urban areas
       case WALLTYPE_FIRE:
         if (wall[TYPE] == WALLTYPE_FIRE) {            // extra check to make sure it's not urban
           float fireIntensity = calcFireIntensity(wall[VEGETATION], water[SOIL_MOISTURE], waterX0Yp[PRECIPITATION]);
@@ -548,10 +560,14 @@ void main()
           float salinity = salinityForWallType(wall[TYPE], water[SALINITY]);
           float freezeC = waterFreezeTempC(salinity);
 
-          if (waterTempC <= freezeC) {
-            wall[TYPE] = WALLTYPE_ICE;
-            water[SALINITY] = salinity;
-            water[SNOW] = max(water[SNOW], minIceFormThickness);
+          if (waterTempC < freezeC) {
+            float freezeProgress = (freezeC - waterTempC) * waterFreezeRate;
+            water[SNOW] = min(water[SNOW] + freezeProgress, minIceFormThickness);
+            if (water[SNOW] >= minIceFormThickness * 0.5) {
+              wall[TYPE] = WALLTYPE_ICE;
+              water[SALINITY] = salinity;
+              water[SNOW] = max(water[SNOW], minIceFormThickness);
+            }
           }
 
           wall[VEGETATION] = 20;
@@ -602,11 +618,13 @@ void main()
           if (iceTempC < freezeC - 2.0 && int(iterNum) % 50 == 0)
             iceThickness = min(iceThickness + iceGrowthRate, maxIceThickness);
 
-          if (iceTempC > freezeC) {
+          if (iceThickness > 0.0 && iceTempC > freezeC) {
             float melting = min((iceTempC - freezeC) * iceMeltRate, iceThickness);
             iceThickness -= melting;
-            base[TEMPERATURE] += melting / snowMassToHeight * meltingHeat * 0.25;
           }
+
+          if (iceThickness > 0.1)
+            base[TEMPERATURE] = min(base[TEMPERATURE], CtoK(freezeC));
 
           if (iceTempC <= 0.0) {
             float vaporDeficit = max(maxWater(CtoK(iceTempC)) - waterX0Yp[TOTAL], 0.0);

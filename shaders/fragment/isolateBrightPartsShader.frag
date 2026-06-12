@@ -20,7 +20,7 @@ void main()
 
   // outputCol = max(outputCol - vec3(0.9), 0.0); // only keep bright parts
 
-  outputCol *= 0.02;
+  outputCol *= 0.032;
 
   fragmentColor = vec3(outputCol);
 }

@@ -120,6 +120,134 @@ vec3 getIceColor(float iceThickness)
   return iceCol;
 }
 
+#define maxSuburbanBuildingHeight 35. // visual height in meters (2-story gabled homes)
+#define suburbanLotWidth 14.0
+
+float suburbanHash(float n) { return fract(sin(n * 127.1) * 43758.5453); }
+
+vec3 getSuburbanGroundColor(float worldX)
+{
+  float lotX = mod(worldX, suburbanLotWidth);
+  float lotIdx = floor(worldX / suburbanLotWidth);
+  float h0 = suburbanHash(lotIdx);
+  float h1 = suburbanHash(lotIdx + 17.3);
+
+  float houseWidth = suburbanLotWidth * mix(0.58, 0.74, h0);
+  float houseOffset = (suburbanLotWidth - houseWidth) * mix(0.12, 0.30, h1);
+  float garageW = houseWidth * 0.36;
+
+  vec3 lawnCol = pow(vec3(0.20, 0.56, 0.26), vec3(GAMMA));
+  vec3 drivewayCol = pow(vec3(0.68, 0.68, 0.70), vec3(GAMMA));
+  vec3 sidewalkCol = pow(vec3(0.76, 0.76, 0.78), vec3(GAMMA));
+  vec3 streetCol = pow(vec3(0.26, 0.26, 0.28), vec3(GAMMA));
+
+  if (lotX < 0.8)
+    return streetCol;
+  if (lotX < 1.6)
+    return sidewalkCol;
+  if (lotX > houseOffset && lotX < houseOffset + garageW + 0.6)
+    return drivewayCol;
+
+  return lawnCol;
+}
+
+vec4 suburbanHouseAt(float worldX, float heightAboveGround)
+{
+  float lotX = mod(worldX, suburbanLotWidth);
+  float lotIdx = floor(worldX / suburbanLotWidth);
+
+  float h0 = suburbanHash(lotIdx);
+  float h1 = suburbanHash(lotIdx + 17.3);
+  float h2 = suburbanHash(lotIdx + 41.7);
+
+  float houseWidth = suburbanLotWidth * mix(0.58, 0.74, h0);
+  float houseOffset = (suburbanLotWidth - houseWidth) * mix(0.12, 0.30, h1);
+  float localX = lotX - houseOffset;
+
+  vec3 siding;
+  int sidingIdx = int(h0 * 4.0);
+  if (sidingIdx == 0)
+    siding = vec3(0.91, 0.88, 0.84);
+  else if (sidingIdx == 1)
+    siding = vec3(0.78, 0.80, 0.83);
+  else if (sidingIdx == 2)
+    siding = vec3(0.86, 0.86, 0.88);
+  else
+    siding = vec3(0.54, 0.61, 0.69);
+
+  vec3 roofCol = vec3(0.20, 0.20, 0.22);
+  vec3 trimCol = vec3(0.94, 0.94, 0.95);
+  vec3 garageCol = vec3(0.86, 0.86, 0.88);
+  vec3 glassCol = vec3(0.52, 0.64, 0.78);
+  vec3 doorCol = vec3(0.42, 0.30, 0.20);
+
+  float suburbanTexHeightNorm = maxSuburbanBuildingHeight / cellHeight;
+  float floorH = suburbanTexHeightNorm * 0.36;
+  float roofPeakH = suburbanTexHeightNorm * 0.22;
+  float totalWallH = floorH * 2.0;
+  float totalRoofH = totalWallH + roofPeakH;
+  float garageW = houseWidth * 0.36;
+  float garageH = floorH * 0.88;
+
+  if (heightAboveGround > totalRoofH || localX < 0.0 || localX > houseWidth)
+    return vec4(0.0);
+
+  float ridgeX = houseWidth * 0.5;
+
+  if (heightAboveGround > totalWallH) {
+    float roofLocalY = heightAboveGround - totalWallH;
+    float maxRoofHalfWidth = (1.0 - roofLocalY / roofPeakH) * houseWidth * 0.5;
+    if (abs(localX - ridgeX) > maxRoofHalfWidth)
+      return vec4(0.0);
+    float shade = localX < ridgeX ? 0.82 : 0.94;
+    return vec4(roofCol * shade, 1.0);
+  }
+
+  if (heightAboveGround < garageH && localX < garageW) {
+    float panelX = fract(localX / garageW * 4.0);
+    float panelY = fract(heightAboveGround / garageH * 3.0);
+    float panelEdge = step(0.88, panelX) + step(0.88, panelY);
+    return vec4(garageCol * mix(1.0, 0.72, clamp(panelEdge, 0.0, 1.0)), 1.0);
+  }
+
+  if (abs(heightAboveGround - floorH) < suburbanTexHeightNorm * 0.025)
+    return vec4(trimCol, 1.0);
+
+  float winW = houseWidth * 0.13;
+  float winH = floorH * 0.34;
+  float win1X = garageW + houseWidth * 0.07;
+  float win2X = win1X + winW + houseWidth * 0.05;
+  float win3X = houseWidth * 0.70;
+  float winY1 = floorH * 0.52;
+  float winY2 = floorH + floorH * 0.52;
+
+  bool isWindow = false;
+  if (heightAboveGround > winY1 - winH * 0.5 && heightAboveGround < winY1 + winH * 0.5) {
+    if ((localX > win1X && localX < win1X + winW) || (localX > win2X && localX < win2X + winW))
+      isWindow = true;
+  }
+  if (heightAboveGround > winY2 - winH * 0.5 && heightAboveGround < winY2 + winH * 0.5) {
+    if ((localX > win1X && localX < win1X + winW) || (localX > win2X && localX < win2X + winW) || (localX > win3X && localX < win3X + winW))
+      isWindow = true;
+  }
+
+  if (isWindow) {
+    float lit = mix(0.35, 1.0, step(0.55, h2));
+    return vec4(mix(glassCol, trimCol, 0.28) * lit, 1.0);
+  }
+
+  float doorX = houseWidth * 0.50;
+  float doorW = houseWidth * 0.10;
+  if (heightAboveGround < floorH * 0.78 && localX > doorX && localX < doorX + doorW)
+    return vec4(doorCol, 1.0);
+
+  if (h1 > 0.72 && localX > ridgeX - 0.25 && localX < ridgeX + 0.25 && heightAboveGround > totalWallH - suburbanTexHeightNorm * 0.08) {
+    return vec4(vec3(0.45, 0.42, 0.40), 1.0);
+  }
+
+  return vec4(siding, 1.0);
+}
+
 const vec2 lightningTexRes = vec2(2500, 5000);
 const float lightningTexAspect = lightningTexRes.x / lightningTexRes.y;
 
@@ -185,9 +313,12 @@ vec3 displayLightning(vec2 pos, float lightningTime, float currentLightningInten
 
   pixVal *= currentLightningIntensity;
 
-  const vec3 lightningCol = vec3(0.70, 0.57, 1.0); // 0.584, 0.576, 1.0
+  const vec3 lightningCol = vec3(0.94, 0.82, 1.0); // lavender glow, white core via intensity
 
   vec3 outputColor = max(pixVal * lightningCol, vec3(0));
+  float softHalo = max(texture(lightningTex, lightningTexCoord).r - brightnessThreshold * 0.72, 0.0)
+    * currentLightningIntensity * 0.045;
+  outputColor += softHalo * vec3(0.88, 0.74, 1.0);
 
   return outputColor;
 }
@@ -358,12 +489,19 @@ void main()
     case WALLTYPE_INDUSTRIAL:
     case WALLTYPE_FIRE:
     case WALLTYPE_LAND:
+    case WALLTYPE_SUBURBAN:
 
       // horizontally interpolate depth value
       float interpDepth = mix(mix(float(-wallXmY0[VERT_DISTANCE]), float(-wall[VERT_DISTANCE]), clamp(fract(fragCoord.x) + 0.5, 0.5, 1.)), float(-wallXpY0[VERT_DISTANCE]), clamp(fract(fragCoord.x) - 0.5, 0., 0.5));
       float depth = interpDepth - fract(fragCoord.y); // - 1.0 ?
 
-      color = getWallColor(depth);
+      if (wall[TYPE] == WALLTYPE_SUBURBAN && wall[VERT_DISTANCE] == 0) {
+        color = getSuburbanGroundColor(fragCoord.x);
+        color *= texture(noiseTex, vec2(texCoord.x * resolution.x, texCoord.y * resolution.y) * 0.2).rgb;
+        color = mix(color, vec3(1.0), clamp(min(water[SNOW], fullWhiteSnowHeight) / fullWhiteSnowHeight - max(depth * 0.3, 0.), 0.0, 1.0));
+      } else {
+        color = getWallColor(depth);
+      }
 
       break;
     case WALLTYPE_ICE:
@@ -537,6 +675,25 @@ void main()
           color = texCol.rgb;
           opacity = texCol.a;
         }
+      } else if (wallX0Ym[TYPE] == WALLTYPE_SUBURBAN) {
+
+        float heightAboveGround = localY + float(wall[VERT_DISTANCE] - 1);
+        float suburbanTexHeightNorm = maxSuburbanBuildingHeight / cellHeight;
+
+        if (heightAboveGround < suburbanTexHeightNorm) {
+          vec4 texCol = suburbanHouseAt(fragCoord.x, heightAboveGround);
+          if (texCol.a > 0.5) {
+            if (nightTime) {
+              shadowLight = 1.0;
+              float windowGlow = step(0.45, length(texCol.rgb)) * suburbanHash(floor(fragCoord.x / suburbanLotWidth) + 91.3);
+              texCol.rgb = mix(texCol.rgb * 0.35, texCol.rgb * vec3(1.0, 0.82, 0.55), windowGlow);
+            } else {
+              texCol.rgb *= vec3(1.0, 0.98, 0.94);
+            }
+            color = texCol.rgb;
+            opacity = texCol.a;
+          }
+        }
       }
 
 
@@ -560,15 +717,18 @@ void main()
         treeTexCoordY = 1. - treeTexCoordY;                 // texture is upside down
 
         vec4 texCol;
-        if (wallX0Ym[TYPE] == WALLTYPE_LAND || wallX0Ym[TYPE] == WALLTYPE_URBAN) { // land below
+        if (wallX0Ym[TYPE] == WALLTYPE_LAND || wallX0Ym[TYPE] == WALLTYPE_URBAN || wallX0Ym[TYPE] == WALLTYPE_SUBURBAN) { // land below
           vec4 surfaceWater = texture(waterTex, texCoordX0Ym);                     // snow on land below
           float snow = surfaceWater[SNOW];
           if (snow * 0.01 / cellHeight > heightAboveGround)
             texCol = vec4(vec3(1.), 1.);                                                                                                                          // show white snow layer above ground
           else {                                                                                                                                                  // display vegetation
-            vec4 treeColor = surfaceTexture(FOREST, vec2(treeTexCoordX, treeTexCoordY));
+            float treeScale = wallX0Ym[TYPE] == WALLTYPE_SUBURBAN ? 0.55 : 1.0;
+            vec4 treeColor = surfaceTexture(FOREST, vec2(treeTexCoordX, treeTexCoordY * treeScale + (1.0 - treeScale) * 0.5));
             vec4 vegetationCol = mix(treeColor, vec4(dryGrassCol, 1.), max(0.5 - surfaceWater[SUSTAINED_MOISTURE] * (0.5 / fullGreenSoilMoisture), 0.) * treeColor.a); // green to brown
-            texCol = mix(vegetationCol, surfaceTexture(SNOW_FOREST, vec2(treeTexCoordX, treeTexCoordY)), min(snow / fullWhiteSnowHeight, 1.0));
+            if (wallX0Ym[TYPE] == WALLTYPE_SUBURBAN)
+              vegetationCol.a *= step(0.82, suburbanHash(floor(fragCoord.x / suburbanLotWidth) + 53.1));
+            texCol = mix(vegetationCol, surfaceTexture(SNOW_FOREST, vec2(treeTexCoordX, treeTexCoordY * treeScale)), min(snow / fullWhiteSnowHeight, 1.0));
           }
         } else if (wallX0Ym[TYPE] == WALLTYPE_FIRE) {
           texCol = surfaceTexture(FIRE_FOREST, vec2(treeTexCoordX, treeTexCoordY));
@@ -657,12 +817,12 @@ void main()
   else if (texCoord.y < 0.0)
     finalLight += icccSurf + precipBoltShafts;
 
-  opacity += min(length(emittedLight) * 0.1, 0.2);
+  opacity += min(length(emittedLight) * 0.10, 0.24);
   opacity = clamp(opacity, 0.0, 1.0);
   vec3 litBase = max(color * finalLight, 0.);
-  vec3 safeEmitted = emittedLight / (vec3(1.0) + emittedLight * 0.2);
-  float boltAmt = clamp(length(safeEmitted) * 2.8, 0.0, 1.0);
-  vec3 finalColor = mix(litBase + safeEmitted, max(litBase, safeEmitted * 1.4), boltAmt * 0.82);
+  vec3 safeEmitted = emittedLight / (vec3(1.0) + emittedLight * 0.08);
+  float boltAmt = clamp(length(emittedLight) * 1.35, 0.0, 1.0);
+  vec3 finalColor = mix(litBase + safeEmitted, litBase + emittedLight * 0.22 + safeEmitted * 1.65, boltAmt * 0.88);
   fragmentColor = vec4(finalColor, opacity);
 
   drawCursor(cursor, view); // over everything else

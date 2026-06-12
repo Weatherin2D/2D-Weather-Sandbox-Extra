@@ -16,6 +16,7 @@ uniform vec2 texelSize;
 uniform float exposure;
 uniform float saturation;
 uniform float contrast;
+uniform float bloomStrength;
 
 uniform sampler2D hdrTex;
 uniform sampler2D bloomTex;
@@ -30,7 +31,7 @@ void main()
 
   vec3 bloom = texture(bloomTex, texCoord).rgb;
 
-  outputCol += bloom * 0.990; // apply bloom
+  outputCol += bloom * bloomStrength;
 
   outputCol *= exposure;
 

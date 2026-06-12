@@ -30,6 +30,7 @@ precision highp isampler2D;
 #define snowMeltRate 0.000015
 #define snowSublimationRate 0.000008 // surface snow/ice sublimation when below 0 C
 #define iceMeltRate 0.000008         // ice sheet melt rate (slower than snow)
+#define waterFreezeRate 0.003        // open water freeze rate; scales with degrees below freezing
 #define iceGrowthRate 0.015          // cm per cold iteration for thickening ice sheets
 #define minIceFormThickness 3.0      // cm initial ice when water freezes
 #define thinIceBreakupCm 12.0        // thin ice breaks up in wind/warmth
