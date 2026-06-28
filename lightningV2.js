@@ -286,7 +286,7 @@
     Ultra: { maxActiveBolts: 12, maxBranchCount: 64, gpuEffectQuality: 1.2, maxIlluminationRadius: 1.3 },
   };
 
-  const MAX_SHADER_STRIKES = 8;
+  const MAX_SHADER_STRIKES = 6;
 
   function shaderRand(n) {
     return Math.sin(n) * 43758.5453123 - Math.floor(Math.sin(n) * 43758.5453123);

@@ -2,9 +2,9 @@
 // Included by realisticDisplayShader.frag — waterTex / CLOUD from common.glsl
 
 #define LT_V2_PROCEDURAL 1
-#define LT_MAX_STRIKES 8
-#define LT_PROC_SEGS 48
-#define LT_SPIDER_SEGS 40
+#define LT_MAX_STRIKES 6
+#define LT_PROC_SEGS 40
+#define LT_SPIDER_SEGS 32
 #define LT_SUB_SEGS 16
 #define LT_MAIN_CORE_R 0.00045
 #define LT_BRANCH_CORE_R 0.000375

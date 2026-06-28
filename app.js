@@ -4865,12 +4865,7 @@ class LoadingBar
       this.bar.style.width = this.percent + '%';
       this.bar.innerHTML = this.percent + '%';
       this.underBar.innerHTML = this.description;
-      let timeout;
-      if (this.percent == 100)
-        timeout = 5;
-      else
-        timeout = 5; // 50 for nicer feel
-      setTimeout(() => { resolve(); }, timeout);
+      requestAnimationFrame(() => { resolve(); });
     });
   }
 
@@ -13753,7 +13748,6 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   // const precipCurtainShader = await loadShader('precipCurtainShader.frag');
   const universalDisplayShader = await loadShader('universalDisplayShader.frag');
   const skyBackgroundDisplayShader = await loadShader('skyBackgroundDisplayShader.frag');
-  const realisticDisplayShader = await loadShader('realisticDisplayShader.frag');
   const IRtempDisplayShader = await loadShader('IRtempDisplayShader.frag');
 
   const postProcessingShader = await loadShader('postProcessingShader.frag');
@@ -13806,26 +13800,25 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
 
   await loadingBar.set(84, 'Linking realistic display shader');
   let realisticDisplayProgram;
+  let realisticDisplayShader = null;
   try {
+    realisticDisplayShader = await loadShader('realisticDisplayShader.frag');
     realisticDisplayProgram = await linkProgramAsync(realDispVertexShader, realisticDisplayShader, null, 'realistic display');
+    lightningV2InRealisticShader = true;
   } catch (e) {
-    if (gl.isContextLost && gl.isContextLost()) {
-      await loadingBar.showError('WebGL context lost while linking shaders.\nRefresh the page — if this keeps happening, your GPU may not handle the full lightning shader.');
-      throw e;
-    }
-    console.warn('Realistic display link failed with Lightning V2:', e.message, '— retrying without procedural lightning');
-    gl.deleteShader(realisticDisplayShader);
-    await linkProgramYield();
     if (gl.isContextLost && gl.isContextLost()) {
       await loadingBar.showError('WebGL context lost while linking shaders.\nRefresh the page (Ctrl+F5) and try again.');
       throw e;
     }
-    await loadingBar.set(84, 'Linking realistic display (fallback)...');
-    const realisticDisplayShaderNoLt = await loadShader('realisticDisplayShader.frag', { skipLightningV2: true });
+    console.warn('Realistic display link failed with Lightning V2:', e.message, '— retrying lightweight shader');
+    if (realisticDisplayShader)
+      gl.deleteShader(realisticDisplayShader);
+    await linkProgramYield();
+    realisticDisplayShader = await loadShader('realisticDisplayShader.frag', { skipLightningV2: true });
     try {
-      realisticDisplayProgram = await linkProgramAsync(realDispVertexShader, realisticDisplayShaderNoLt, null, 'realistic display (no lightning V2)');
+      realisticDisplayProgram = await linkProgramAsync(realDispVertexShader, realisticDisplayShader, null, 'realistic display (lite)');
       lightningV2InRealisticShader = false;
-      console.warn('Loaded without Lightning V2 in realistic display — legacy lightning still works.');
+      console.warn('Loaded without Lightning V2 in realistic display — texture lightning still works.');
     } catch (e2) {
       await loadingBar.showError('ERROR linking realistic display shader:\n' + e2.message);
       throw e2;
@@ -14604,18 +14597,20 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
   }
 
-  for (let i = 0; i < numLightningTextures; i++) {
-    const lightningGeneratorWorker = new Worker('./lightningGenerator.js');
-    const texIndex = i;
-    lightningGeneratorWorker.onmessage = (imgElement) => {
-      generateLightningTexture(texIndex, imgElement.data);
-    };
-    lightningGeneratorWorker.postMessage({
-      width: 2500, height: 5000,
-      type: lightningTextureTypes[texIndex] || 'CG',
-    });
+  function startLightningTextureWorkers()
+  {
+    for (let i = 0; i < numLightningTextures; i++) {
+      const lightningGeneratorWorker = new Worker('./lightningGenerator.js');
+      const texIndex = i;
+      lightningGeneratorWorker.onmessage = (imgElement) => {
+        generateLightningTexture(texIndex, imgElement.data);
+      };
+      lightningGeneratorWorker.postMessage({
+        width: 2500, height: 5000,
+        type: lightningTextureTypes[texIndex] || 'CG',
+      });
+    }
   }
-
 
   // ========================= Sky Editor System =========================
   const SKY_STORAGE_KEY = 'weatherSandboxSky_v1';
@@ -17045,6 +17040,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
 
   await loadingBar.set(95, 'Loading sounds'); // loading complete
   await loadingBar.remove();
+  startLightningTextureWorkers();
   if (typeof stopMenuBackgroundSlideshow === 'function') {
     stopMenuBackgroundSlideshow();
   }
@@ -21445,10 +21441,6 @@ drawNukeOverlay();
 
     if (opts && opts.skipLightningV2) {
       shaderSource = shaderSource.replace(/#include "lightningV2.glsl"\r?\n?/, '');
-      shaderSource = shaderSource.replace(
-        /  if \(ltNumStrikes > 0 && ltEventAge >= 0\.0\) \{\r?\n    vec3 ltBolts;\r?\n    vec3 ltIllum;\r?\n    ltAccumulateBoltsAndIllum\(uv, aspectRatios\[0\], cloudwater, precip, nightFactor, ltBolts, ltIllum\);\r?\n    emittedLight \+= ltBolts \* ltCloudPierce;\r?\n    onLight \+= ltIllum;\r?\n  \}\r?\n/,
-        '  // Lightning V2 disabled (GPU shader link fallback)\n'
-      );
     } else if (shaderSource.includes('#include "lightningV2.glsl"')) {
       shaderSource = shaderSource.replace('#include "lightningV2.glsl"', lightningV2Source);
     }
@@ -21467,7 +21459,7 @@ drawNukeOverlay();
       throw new Error(filename + ' COMPILATION ' + infoLog);
     }
 
-    await loadingBar.add(3, 'Loading shader: ' + nameIn);
+    await loadingBar.add(0, 'Loading shader: ' + nameIn);
     return shader;
   }
 
