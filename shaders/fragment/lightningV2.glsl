@@ -102,15 +102,13 @@ float ltSegGlow(float d, float coreR) {
 }
 
 vec3 ltGetLightningColor(vec2 pos, float seed) {
-  float r = random2d(pos * 19.17 + vec2(seed * 0.013, seed * 0.007));
-  if (r < 0.35) return vec3(0.85, 0.92, 1.0);
-  r -= 0.35;
-  if (r < 0.25) return vec3(0.75, 0.65, 1.0);
-  r -= 0.25;
-  if (r < 0.15) return vec3(1.0, 0.98, 1.0);
-  r -= 0.15;
-  if (r < 0.12) return vec3(1.0, 0.88, 0.55);
-  return vec3(1.0, 0.72, 0.82);
+  float r = random2d(vec2(seed * 0.001, seed * 0.00137));
+  if (r < 0.40) return vec3(0.60, 0.75, 1.00);
+  if (r < 0.65) return vec3(0.65, 0.45, 1.00);
+  if (r < 0.80) return vec3(1.00, 0.90, 0.65);
+  if (r < 0.92) return vec3(0.30, 0.50, 1.00);
+  if (r < 0.97) return vec3(1.00, 0.93, 0.72);
+  return             vec3(1.00, 0.78, 0.72);
 }
 
 float ltSampleCloud(vec2 normPos) {
