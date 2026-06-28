@@ -26,7 +26,7 @@ void main()
 
   gl_Position = vec4(outpos, 0.0, 1.0);
 
-  float size = 4.0; // 4.0
+  float size = 4.0;
 
   // if(mass[1] > 0. && density == 1.0) // hail
   //   size = 0.6;

@@ -356,8 +356,8 @@ vec4 computeCloudSmokeColor(float cloudwater, float precip, float smokeAmt, floa
   float scatter = clamp(map_range(abs(sunAngle), 75.0 * deg2rad, 90.0 * deg2rad, 0.0, 1.0), 0.0, 1.0);
   float nightFactor = clamp(map_range(abs(sunAngle), 60.0 * deg2rad, 90.0 * deg2rad, 0.0, 1.0), 0.0, 1.0);
 
-  // Clear-sky: rich Rayleigh gradient — deep navy top, cyan-blue near horizon
-  if (cloudwater < 0.03 && smokeAmt < 0.06) {
+  // Clear sky only when there is no meaningful cloud, smoke, or precip field
+  if (cloudwater < 0.03 && smokeAmt < 0.06 && precip < 0.02) {
     vec3 skyTop    = pow(vec3(0.02, 0.06, 0.22), vec3(GAMMA)); // deep navy
     vec3 skyMid    = pow(vec3(0.10, 0.38, 0.72), vec3(GAMMA)); // vivid mid-blue
     vec3 skyHorizon= pow(vec3(0.45, 0.72, 0.95), vec3(GAMMA)); // light cyan at horizon
@@ -372,47 +372,26 @@ vec4 computeCloudSmokeColor(float cloudwater, float precip, float smokeAmt, floa
     return vec4(sky * (1.0 - nightFactor * 0.65), op);
   }
 
-  float cloudDensity  = max(cloudwater * 13.6, 0.0);
-  float totalDensity  = cloudDensity + precip * 0.8;
+  // Enhanced V2 volumetric cloud + precip shafts (precip folded into density, not painted on top)
+  vec3 cloudCol = vec3(1.0 / (cloudwater * 0.005 + 1.0));
+  float cloudDensity = max(cloudwater * 13.6, 0.0);
+  float totalDensity = cloudDensity + precip * 0.8;
+  float cloudOpacity = clamp(1.0 - (1.0 / (1.0 + totalDensity)), 0.0, 1.0);
 
-  // Enhanced V2 volumetric opacity — precip darkens shafts inside storm cores
-  float cloudOpacity  = clamp(1.0 - (1.0 / (1.0 + totalDensity)), 0.0, 1.0);
-
-  // V2 density albedo blended with directional lighting
-  float litness = clamp(localLightIntensity * 1.6, 0.0, 1.0);
-  vec3  v2CloudBase   = vec3(1.0 / (cloudwater * 0.005 + 1.0));
-  vec3  cloudLitCol   = vec3(0.97, 0.98, 1.00);
-  vec3  cloudDarkCol  = mix(v2CloudBase * 0.35, vec3(0.18, 0.22, 0.30), smoothstep(0.35, 0.95, cloudOpacity));
-  vec3  cloudMidCol   = mix(v2CloudBase * 0.72, vec3(0.52, 0.58, 0.68), smoothstep(0.25, 0.85, cloudOpacity));
-
-  vec3 cloudCol = mix(cloudDarkCol, cloudMidCol, smoothstep(0.0, 0.35, litness));
-  cloudCol      = mix(cloudCol,     cloudLitCol, smoothstep(0.28, 0.72, litness));
-
-  // Extra darkening for very thick, dense cloud cores
-  float thickMask = smoothstep(0.55, 0.95, cloudOpacity);
-  float coreDark  = (1.0 - smoothstep(0.05, 0.45, localLightIntensity)) * thickMask;
-  cloudCol = mix(cloudCol, cloudCol * vec3(0.55, 0.60, 0.70), coreDark * 0.80);
-
-  // Ice/cirrus wisps — semi-transparent bluish-white streaks
-  float coldIndex = clamp((0.0 - KtoC(realTemp)) / 12.0, 0.0, 1.0);
-  coldIndex = pow(coldIndex, 1.4);
-  float thinCloudMask = 1.0 - smoothstep(0.15, 0.70, cloudOpacity);
-  float lowPrecipMask = 1.0 - smoothstep(0.04, 0.16, precip);
-  float coldWispy = coldIndex * thinCloudMask * lowPrecipMask;
-  float wispyNoise = texture(noiseTex, sampleUV * resolution * 0.12 + vec2(0.0, iterNum * 0.0008)).r;
-  float wispyMask = clamp(coldWispy * smoothstep(0.28, 0.68, wispyNoise + cloudOpacity * 0.3), 0.0, 1.0);
-  cloudCol = mix(cloudCol, vec3(0.90, 0.94, 1.00), wispyMask * 0.80);
-  cloudOpacity *= mix(1.0, 0.50, wispyMask * 0.65);
-
-  // Sun tint on lit faces; cool-blue night tint on shadowed faces
-  vec3 sunTint  = sunColor(scatter);
-  vec3 nightTint= vec3(0.28, 0.40, 0.65);
-  cloudCol = mix(cloudCol, sunTint * 1.05, litness * clamp(cloudOpacity * 1.8, 0.0, 1.0) * 0.30);
-  cloudCol = mix(cloudCol, nightTint, nightFactor * (1.0 - litness) * 0.85);
-
-  // Warm sunset glow on cloud edges
-  float sunGlow = exp(-pow((sampleUV.y - 0.45) * 2.5, 2.0)) * litness * scatter;
-  cloudCol = mix(cloudCol, mix(cloudCol, vec3(1.0, 0.80, 0.45), 0.85), sunGlow * cloudOpacity * 0.55);
+  float cloudScattering = clamp(map_range(abs(sunAngle), 75. * deg2rad, 90. * deg2rad, 0., 1.), 0., 1.);
+  float y = sampleUV.y;
+  vec3 colPurple = vec3(0.65, 0.38, 0.82);
+  vec3 colPink   = vec3(1.00, 0.50, 0.60);
+  vec3 colOrange = vec3(1.00, 0.52, 0.22);
+  vec3 colYellow = vec3(1.00, 0.88, 0.48);
+  vec3 altColor  = mix(colPurple,
+                     mix(colPink,
+                       mix(colOrange, colYellow, smoothstep(0.45, 0.70, y)),
+                     smoothstep(0.20, 0.45, y)),
+                   smoothstep(0.05, 0.20, y));
+  onLight += altColor * cloudScattering * cloudOpacity * localLightIntensity * y * 6.0;
+  float altFactor = clamp((y - 0.50) / 0.50, 0.0, 1.0);
+  onLight += vec3(cloudScattering * cloudOpacity * altFactor * altFactor * localLightIntensity * 8.0);
 
   // Smoke / fire
   const vec3 smokeThinCol  = vec3(0.8, 0.51, 0.26);
@@ -635,41 +614,6 @@ void main()
     opacity = airColor.a;
     color = airColor.rgb;
     applyAirLightning(texCoord, cloudwater, water[PRECIPITATION], max(cloudwater * 13.6, 0.0), nightFactor);
-
-    // Enhanced V2 altitude sunset tint on lit cloud faces
-    float cloudScattering = clamp(map_range(abs(sunAngle), 75. * deg2rad, 90. * deg2rad, 0., 1.), 0., 1.);
-    float cloudOpacityForLight = clamp(1.0 - (1.0 / (1. + max(cloudwater * 13.6, 0.0) + water[PRECIPITATION] * 0.8)), 0.0, 1.0);
-    float y = texCoord.y;
-    vec3 colPurple = vec3(0.65, 0.38, 0.82);
-    vec3 colPink   = vec3(1.00, 0.50, 0.60);
-    vec3 colOrange = vec3(1.00, 0.52, 0.22);
-    vec3 colYellow = vec3(1.00, 0.88, 0.48);
-    vec3 altColor  = mix(colPurple,
-                       mix(colPink,
-                         mix(colOrange, colYellow, smoothstep(0.45, 0.70, y)),
-                       smoothstep(0.20, 0.45, y)),
-                     smoothstep(0.05, 0.20, y));
-    onLight += altColor * cloudScattering * cloudOpacityForLight * lightIntensity * y * 6.0;
-    float altFactor = clamp((texCoord.y - 0.50) / 0.50, 0.0, 1.0);
-    onLight += vec3(cloudScattering * cloudOpacityForLight * altFactor * altFactor * lightIntensity * 8.0);
-
-    // Rain / snow curtain sheets (Enhanced V2-style precip shafts)
-    float precipAmt = water[PRECIPITATION];
-    if (precipAmt > 0.008) {
-      float noiseX  = texCoord.x * resolution.x * 0.55;
-      float noiseY  = texCoord.y * resolution.y * 0.30 - iterNum * 0.22;
-      float streak  = texture(noiseTex, vec2(noiseX, noiseY) * 0.012).r;
-      float streak2 = texture(noiseTex, vec2(noiseX * 1.7 + 0.3, noiseY * 0.9 + 0.15) * 0.018).r;
-      float curtain = pow(max((streak + streak2 * 0.65) - 0.48, 0.0) * 2.8, 1.6);
-      float tempC = KtoC(realTemp);
-      vec3 rainCol  = mix(vec3(0.42, 0.52, 0.68), vec3(0.88, 0.92, 0.98), smoothstep(0.0, -3.0, tempC));
-      float curtainOpacity = curtain * clamp(precipAmt * 24.0, 0.0, 0.88) * (1.0 - cloudwater * 1.35);
-      curtainOpacity = clamp(curtainOpacity, 0.0, 0.72);
-      rainCol *= mix(0.28, 1.0, lightIntensity);
-      color   = mix(color, rainCol, curtainOpacity);
-      opacity = clamp(opacity + curtainOpacity * 0.65, 0.0, 1.0);
-    }
-
 
     vec2 rainbowCenter = vec2(0.0, -1.5 + abs(sunAngle) * 0.60);
 
