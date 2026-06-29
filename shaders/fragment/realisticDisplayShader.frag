@@ -435,9 +435,11 @@ void applyAirLightning(vec2 uv, float cloudwater, float precip, float cloudDensi
 #ifdef LT_V2_PROCEDURAL
   if (ltNumStrikes > 0 && ltEventAge >= 0.0) {
     vec3 ltBolts;
+    vec3 ltBoltsBehind;
     vec3 ltIllum;
-    ltAccumulateBoltsAndIllum(uv, aspectRatios[0], cloudwater, precip, nightFactor, ltBolts, ltIllum);
+    ltAccumulateBoltsAndIllum(uv, aspectRatios[0], cloudwater, precip, nightFactor, ltBolts, ltBoltsBehind, ltIllum);
     emittedLight += ltBolts * ltCloudPierce;
+    emittedLight += ltBoltsBehind;
     onLight += ltIllum;
   }
 #endif
@@ -845,7 +847,9 @@ void main()
 
   opacity += length(emittedLight);
   opacity = clamp(opacity, 0.0, 1.0);
-  fragmentColor = vec4(max(color * finalLight, 0.) + emittedLight, opacity);
+  vec3 litBase = max(color * finalLight, 0.);
+  vec3 softEmit = emittedLight / (vec3(0.02) + emittedLight * 0.38 + emittedLight * emittedLight * 0.06);
+  fragmentColor = vec4(litBase + softEmit, opacity);
 
   drawCursor(cursor, view); // over everything else
 }

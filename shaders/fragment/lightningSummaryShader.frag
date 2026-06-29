@@ -47,10 +47,10 @@ void main()
   float cloudGate = clamp(1.0 - 1.0 / (1.0 + cloud * 13.0), 0.0, 1.0);
   float stormOrg = cloudGate * (0.35 + updraft * 0.9 + length(grad) * 1.4);
 
-  float potential = abs(charge) * cloudGate * (0.55 + updraft * 0.45)
-                  + length(grad) * cloudGate * 0.65
-                  + iceContent * 0.35 + hailProxy * 0.25
-                  + stormOrg * 0.30 + precip * cloudGate * 0.15;
+  float potential = abs(charge) * cloudGate * (0.62 + updraft * 0.48)
+                  + length(grad) * cloudGate * 0.72
+                  + iceContent * 0.38 + hailProxy * 0.28
+                  + stormOrg * 0.34 + precip * cloudGate * 0.18;
   potential = clamp(potential, 0.0, 2.0);
 
   float conductivity = 0.08;

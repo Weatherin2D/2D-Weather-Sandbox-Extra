@@ -35,8 +35,8 @@ layout(location = 0) out vec2 charge;
 // Requires active convection and dense cloud — precipitation enhances charging
 // but thick cloud alone (bases, anvils, cores) can also separate charge.
 
-#define CHARGE_DECAY        0.996
-#define CHARGE_DIFFUSION    0.012
+#define CHARGE_DECAY        0.9965
+#define CHARGE_DIFFUSION    0.017
 #define CHARGE_SCALE_BASE   0.0025
 #define MAX_LT_DISCHARGE    4
 
@@ -237,8 +237,10 @@ void main()
   float netCharge = positiveGen + warmPositiveGen - negativeGen - precipTransport;
   float tripoleSign = sign(realTemp - CtoK(-15.0));
   float updraftOrg = updraft * denseCloud * chargeScale * 0.10 * tripoleSign;
-  float layerShear = (chargeUp - chargeDown) * updraft * denseCloud * 0.06;
-  netCharge += updraftOrg + layerShear;
+  float layerShear = (chargeUp - chargeDown) * updraft * denseCloud * 0.09;
+  float dipoleDrive = graupelZone * iceCrystalZone * denseCloud * chargeScale * 0.22;
+  dipoleDrive *= sign(updraft - 0.12 + (realTemp - CtoK(-16.0)) * 0.0008);
+  netCharge += updraftOrg + layerShear + dipoleDrive;
 
   // ── Diffusion (air cells only) ───────────────────────────────────────────
 
@@ -280,7 +282,7 @@ void main()
     } else {
       distNorm = length(delta) / rad;
     }
-    float falloff = exp(-distNorm * distNorm * 3.2);
+    float falloff = exp(-distNorm * distNorm * 2.4);
     float discharge = amount * falloff;
     if (discharge > 0.0001) {
       float mag = max(0.0, abs(airCharge) - discharge);

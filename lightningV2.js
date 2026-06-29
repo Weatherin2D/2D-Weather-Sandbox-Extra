@@ -65,7 +65,7 @@
   const DEFAULT_SETTINGS = {
     lightningV2Enabled: true,
     lightningPreset: 'Enhanced Realistic',
-    useRealisticLightningRatios: false,
+    useRealisticLightningRatios: true,
 
     globalLightningMultiplier: 1.0,
     intracloudFrequency: 18.0,
@@ -196,12 +196,12 @@
     },
     'Enhanced Realistic': {
       globalLightningMultiplier: 1.0,
-      atmosphericIlluminationStrength: 0.62,
-      cloudIlluminationStrength: 0.58,
-      lightningBrightness: 0.68,
-      glowStrength: 0.72,
-      bloomStrength: 1.15,
-      nighttimeFlashStrength: 0.85,
+      atmosphericIlluminationStrength: 0.55,
+      cloudIlluminationStrength: 0.50,
+      lightningBrightness: 0.62,
+      glowStrength: 0.58,
+      bloomStrength: 1.0,
+      nighttimeFlashStrength: 0.78,
       branchDensity: 1.2,
       cloudLightningBranchDensity: 1.35,
       cloudLightningBranchLength: 1.3,
@@ -286,7 +286,7 @@
     Ultra: { maxActiveBolts: 12, maxBranchCount: 64, gpuEffectQuality: 1.2, maxIlluminationRadius: 1.3 },
   };
 
-  const MAX_SHADER_STRIKES = 6;
+  const MAX_SHADER_STRIKES = 8;
 
   function shaderRand(n) {
     return Math.sin(n) * 43758.5453123 - Math.floor(Math.sin(n) * 43758.5453123);
@@ -333,8 +333,8 @@
     if (controls.useRealisticLightningRatios) {
       const ratio = REALISTIC_RATIOS[typeKey] || 1;
       const total = Object.values(REALISTIC_RATIOS).reduce((a, b) => a + b, 0);
-      const base = (ratio / total) * 48 * controls.globalLightningMultiplier;
-      return base * (0.6 + stormFactor * 0.85) * personality;
+      const base = (ratio / total) * 22 * controls.globalLightningMultiplier;
+      return base * (0.55 + stormFactor * 0.75) * personality;
     }
     const map = {
       intracloud: controls.intracloudFrequency,
@@ -376,7 +376,7 @@
           * controls.electricalBurstIntensity);
         state.phase = 'burst';
         state.burstRemaining = burstLen;
-        state.burstIntensity = 0.8 + stormActivity * 0.6;
+        state.burstIntensity = 0.52 + stormActivity * 0.48;
       }
     } else {
       if (state.burstRemaining <= 0) {
@@ -467,10 +467,10 @@
       cloudTh = Math.max(controls.cloudLightningThreshold ?? 0.3, 0.35);
     const scale = controls.lightningSpawnStrictness ?? 1.0;
     return {
-      minCloudGate: (0.34 + cloudTh * 0.56) * scale,
-      minChargeMag: (0.32 + cloudTh * 0.52) * scale,
-      minPotential: (0.30 + cloudTh * 0.40) * scale,
-      minRawCloud: (controls.chargeMinCloudDensity ?? 0.32) * (0.88 + cloudTh * 0.48) * scale,
+      minCloudGate: (0.30 + cloudTh * 0.50) * scale,
+      minChargeMag: (0.26 + cloudTh * 0.44) * scale,
+      minPotential: (0.38 + cloudTh * 0.58) * scale,
+      minRawCloud: (controls.chargeMinCloudDensity ?? 0.32) * (0.85 + cloudTh * 0.45) * scale,
     };
   }
 
@@ -529,7 +529,10 @@
       return false;
     if (chargeMag < t.minChargeMag)
       return false;
-    if (chargeMag * cg < t.minChargeMag * t.minCloudGate * 0.90)
+    if (chargeMag * cg < t.minChargeMag * t.minCloudGate * 0.88)
+      return false;
+    const potential = pick.potential ?? readPotential(cache, ox, oy);
+    if (potential < t.minPotential * 0.82)
       return false;
 
     if (ltType != null)
@@ -549,7 +552,7 @@
     const cloud = readCloud(cache, simX, simY);
     const potential = readPotential(cache, simX, simY);
     const cg = cloudGate(cloud);
-    return potential * 0.55 + Math.abs(charge) * cg * 0.35 + cloud * cg * 0.1;
+    return potential * 0.62 + Math.abs(charge) * cg * 0.42 + cloud * cg * 0.12;
   }
 
   function pickOriginFromPotential(cache, eventId, slot, numSlots, simResX, simResY, channelId, controls) {
@@ -580,7 +583,7 @@
         if (!isOriginEligibleForStrike(cache, candidate, controls, channelId, null, simResX, simResY))
           continue;
         let score = computeLightningPotentialAt(cache, ox, vy);
-        score += Math.abs(charge) * 0.25 + cg * 0.18 + potential * 0.12;
+        score += Math.abs(charge) * 0.22 + cg * 0.16 + potential * 0.28;
         if (anvilBias) score *= 0.55 + cloud * 1.1 + (vy > simResY * 0.42 ? 0.35 : 0.0);
         if (cloud < thresholds.minRawCloud) score *= 0.35;
         const noise = 0.55 + shaderRand(eventId * 5.03 + cs + v * 17) * 0.9;
@@ -679,22 +682,25 @@
     return { lenScale, heightScale, branchScale };
   }
 
+  /** Roll per-strike illumination mode: precip-shaft-only vs broad area flash. */
   function rollPrecipOnlyStrike(seed, ltType, controls) {
     const base = controls.precipOnlyLightningChance ?? 0.38;
     let p = base;
     if (ltType === LT.INTRACLOUD || ltType === LT.CLOUD_TO_CLOUD || ltType === LT.SHEET)
-      p = Math.min(0.62, base + 0.12);
+      p = Math.min(0.65, base + 0.14);
     else if (ltType === LT.SPIDER || ltType === LT.ANVIL_CRAWLER)
-      p = Math.min(0.55, base + 0.08);
+      p = Math.min(0.58, base + 0.10);
     else if (ltType === LT.CG || ltType === LT.CG_POSITIVE)
-      p = base * 0.45;
+      p = Math.min(0.52, base + 0.06);
+    else if (ltType === LT.STROBE)
+      p = Math.min(0.55, base + 0.08);
     return shaderRand(seed + 727) < p;
   }
 
   function encodeStrikeMetaY(strike) {
     if (strike.precipOnly) {
       if (strike.flashOnly)
-        return strike.flashInFront ? 1.05 : 0.05;
+        return 0.05;
       return 1.15;
     }
     if (strike.flashOnly)
@@ -1584,11 +1590,77 @@
 
   function strikeChance(freq, burstIntensity, clustering) {
     const norm = clamp(freq / 100, 0, 1);
-    let chance = norm * 0.14 + norm * norm * 0.11 + 0.001;
-    chance = Math.min(0.58, chance);
-    chance *= Math.max(0.08, burstIntensity);
-    if (clustering > 0.5) chance *= 1.0 + (clustering - 0.5) * 0.45;
+    let chance = norm * 0.052 + norm * norm * 0.032 + 0.00035;
+    chance = Math.min(0.90, chance);
+    chance *= clamp(burstIntensity, 0.24, 1.1);
+    if (clustering > 0.5) chance *= 1.0 + (clustering - 0.5) * 0.25;
     return chance;
+  }
+
+  /** Storm-wide charge readiness — gates spawn rate on organized electrification. */
+  function computeStormChargeReadiness(cache, simResX, simResY) {
+    if (!cache || !cache.data) return 0.2;
+    let peakPotential = 0;
+    let peakCharge = 0;
+    let eligible = 0;
+    let cells = 0;
+    const step = Math.max(1, Math.floor(cache.cacheW / 12));
+    for (let py = 0; py < cache.cacheH; py += step) {
+      for (let px = 0; px < cache.cacheW; px += step) {
+        const i = (py * cache.cacheW + px) * 4;
+        const charge = Math.abs(cache.data[i]);
+        const cloud = cache.data[i + 1];
+        const potential = cache.data[i + 2];
+        const cg = cloudGate(cloud);
+        cells++;
+        if (cloud > 0.07 && cg > 0.18) {
+          eligible++;
+          peakPotential = Math.max(peakPotential, potential);
+          peakCharge = Math.max(peakCharge, charge * cg);
+        }
+      }
+    }
+    const coverage = eligible / Math.max(cells, 1);
+    const mag = peakPotential * 0.64 + peakCharge * 0.36;
+    return clamp(mag * 0.58 + coverage * 0.42, 0, 1);
+  }
+
+  /** One global spawn roll + weighted channel pick (realistic flash budget). */
+  function rollLightningSpawn(channels, getStrikeChance, stormActivity, chargeReadiness, iterNum, validateChannel, globalMult) {
+    if (!channels || channels.length === 0) return null;
+    const readiness = clamp(chargeReadiness, 0, 1);
+    if (readiness < 0.18) return null;
+
+    const mult = clamp(globalMult ?? 1, 0, 100);
+
+    let aggChance = 0;
+    const weights = [];
+    for (const ch of channels) {
+      const w = getStrikeChance(ch);
+      weights.push(w);
+      aggChance += w;
+    }
+    if (aggChance <= 0) return null;
+
+    const stormGate = clamp(stormActivity * 0.85 + 0.12, 0.1, 1.0);
+    const spawnCap = Math.min(0.95, 0.12 * mult);
+    const globalChance = Math.min(spawnCap, aggChance * 0.26) * readiness * stormGate;
+    if (shaderRand(iterNum * 1.37 + 911.0) >= globalChance) return null;
+
+    const sum = weights.reduce((a, b) => a + b, 0);
+    for (let attempt = 0; attempt < 5; attempt++) {
+      let r = shaderRand(iterNum * 7.31 + 613.0 + attempt * 83.0) * sum;
+      let pick = channels[channels.length - 1];
+      for (let i = 0; i < channels.length; i++) {
+        r -= weights[i];
+        if (r <= 0) {
+          pick = channels[i];
+          break;
+        }
+      }
+      if (validateChannel(iterNum, pick)) return pick;
+    }
+    return null;
   }
 
   function createEventRecord(strike, eventId, iterNum) {
@@ -1652,7 +1724,7 @@
     const addFreqSlider = (obj, prop, min, max, step, label) => {
       freqFolder.add(obj, prop, min, max, step).name(label).onChange(onFreqChanged);
     };
-    freqFolder.add(controls, 'globalLightningMultiplier', 0, 3, 0.05).name('Global Multiplier')
+    freqFolder.add(controls, 'globalLightningMultiplier', 0, 100, 0.5).name('Global Multiplier')
       .onChange(() => { controls.lightningPreset = 'Custom'; callbacks.onSettingsChanged(); });
     freqFolder.add(controls, 'useRealisticLightningRatios').name('Realistic Ratios')
       .onChange(() => { controls.lightningPreset = 'Custom'; callbacks.onSettingsChanged(); });
@@ -1711,7 +1783,7 @@
       .onChange(onCloudChChanged);
     cloudChFolder.add(controls, 'channelIllumRatio', 0.1, 1.5, 0.05).name('Channel/Illum Balance')
       .onChange(onCloudChChanged);
-    cloudChFolder.add(controls, 'precipOnlyLightningChance', 0, 1, 0.02).name('Precip-Only Chance')
+    cloudChFolder.add(controls, 'precipOnlyLightningChance', 0, 1, 0.02).name('Rain-Shaft-Only Chance')
       .onChange(onCloudChChanged);
 
     const behaviorFolder = folder.addFolder('Behavior');
@@ -1858,6 +1930,8 @@
     boltTextureIndexForType,
     getChannels,
     strikeChance,
+    computeStormChargeReadiness,
+    rollLightningSpawn,
     createEventRecord,
     buildLightningV2GUI,
     shaderRand,

@@ -17993,6 +17993,23 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     if (startIter === proceduralLightningState.lastCompletedEventId)
       return { eventAge: -1, eventId: 0, channel: null };
 
+    if (typeof LightningV2 !== 'undefined') {
+      const stormActivity = getCachedStormActivity();
+      const readiness = LightningV2.computeStormChargeReadiness(
+        lightningFieldCache, sim_res_x, sim_res_y);
+      const channel = LightningV2.rollLightningSpawn(
+        channels,
+        ch => getCachedChannelStrikeChance(ch),
+        stormActivity,
+        readiness,
+        startIter,
+        (eventId, ch) => isStrikeStartChargeValidForChannel(eventId, ch),
+        guiControls.globalLightningMultiplier);
+      if (channel)
+        return { eventAge: 0, eventId: startIter, channel };
+      return { eventAge: -1, eventId: 0, channel: null };
+    }
+
     const hits = [];
     for (const ch of channels) {
       const strikeChance = getCachedChannelStrikeChance(ch);
@@ -18609,12 +18626,14 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     const isDry = typeof LightningV2 !== 'undefined' && LightningV2.isDryChannel(channel.id);
     const dryMode = isDry && typeof LightningV2 !== 'undefined'
       ? LightningV2.dryBurstMode(eventId) : null;
+    const mult = clamp(guiControls.globalLightningMultiplier ?? 1, 0, 100);
+    const strikeCap = Math.min(maxBolts, 4 + Math.floor(mult * 0.06));
     let numStrikes = isStrobe && typeof LightningV2 !== 'undefined'
       ? LightningV2.strobeBurstStrikeCount(eventId, channel, maxBolts, guiControls)
       : isDry && typeof LightningV2 !== 'undefined'
         ? LightningV2.dryBurstStrikeCount(eventId, channel, maxBolts, guiControls, dryMode)
         : 1 + Math.floor(shaderRand(eventId * 29 + 401 + channel.salt)
-          * Math.min(Math.max(freq * 0.04 + 0.5, 1), 4));
+          * Math.min(Math.max(freq * 0.04 + 0.5, 1), strikeCap));
     if (!isStrobe && !isDry && lightningBurstState.phase === 'burst')
       numStrikes = Math.min(maxBolts, numStrikes + Math.floor(lightningBurstState.burstIntensity * 2));
     numStrikes = Math.min(numStrikes, maxBolts);
