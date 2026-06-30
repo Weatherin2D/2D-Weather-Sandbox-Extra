@@ -402,7 +402,7 @@ const radToDeg = 57.2957795;
 const kmToMil = 0.62137;
 const mToFt = 3.28084;
 
-const saveFileVersionID = 263574037; // Uint32 id to check if save file is compatible (incremented to include NUM_DROPLETS in save format)
+const saveFileVersionID = 263574038; // Uint32 id — includes airmass generator positions + settings
 
 const guiControls_default = {
   vorticity : 0.005,
@@ -438,8 +438,8 @@ const guiControls_default = {
   SmoothCam : true,
   camSpeed : 0.01,
   exposure : 1.0,
-  saturation : 1.18,
-  contrast : 1.12,
+  saturation : 1.0,
+  contrast : 1.0,
   greenHueStartThreshold : 0.8,
   greenHueEndThreshold : 1.8,
   greenHueStrength : 0.8,
@@ -718,6 +718,7 @@ var NUM_DROPLETS;
 const NUM_DROPLETS_DEVIDER = 25; // 25
 
 let hdrFBO;
+var hdrRenderScaleState = 1.0;
 
 let bloomFBOs = [];
 
@@ -2371,11 +2372,24 @@ class FBO // wraps texture, frambuffer and info in one
   }
 }
 
-function createHdrFBO() { hdrFBO = new FBO(canvas.width, canvas.height, gl.RGBA16F, gl.RGBA, gl.HALF_FLOAT, gl.LINEAR); }
+function getHdrRenderDimensions()
+{
+  return {
+    w: Math.max(2, Math.round(canvas.width * hdrRenderScaleState)),
+    h: Math.max(2, Math.round(canvas.height * hdrRenderScaleState))
+  };
+}
+
+function createHdrFBO()
+{
+  const dim = getHdrRenderDimensions();
+  hdrFBO = new FBO(dim.w, dim.h, gl.RGBA16F, gl.RGBA, gl.HALF_FLOAT, gl.LINEAR);
+}
 
 function createBloomFBOs()
 {
-  let res = new Vec2D(canvas.width, canvas.height);
+  const dim = getHdrRenderDimensions();
+  let res = new Vec2D(dim.w, dim.h);
 
   bloomFBOs.length = 0;           // empty array
   for (let i = 0; i < 100; i++) { // max bloom iterations
@@ -3480,444 +3494,8 @@ function cycleRadarProducts(direction)
 let weatherStations = []; // array holding all weather stations
 let radars = []; // array holding all radars
 let markers = []; // array holding all markers
-let nukes = []; // array holding all nukes
 let airmassGenerators = []; // array holding all airmass generators
-
-class AirmassGenerator
-{
-  #width = 70;
-  #height = 70;
-  #mainDiv;
-  #canvas;
-  #c;
-  #x; // sim-grid x position
-  #y; // sim-grid y position
-  #menuDiv;
-
-  // Effect parameters
-  #radius = 80;           // cells
-  #tempStrength = 0.0;    // K/iter
-  #moistStrength = 0.0;   // water/iter
-  #windStrength = 0.0;    // m/s equivalent
-  #windAngle = 0.0;       // degrees, 0=right
-
-  // Movement
-  #moving = false;
-  #moveSpeed = 0.5;       // cells/iter
-  #moveAngle = 0.0;       // degrees
-
-  // Overlay canvas for the radius circle
-  #overlayCanvas = null;
-  #overlayCtx = null;
-
-  constructor(xIn, yIn)
-  {
-    this.#x = Math.floor(xIn);
-    this.#y = Math.floor(yIn);
-
-    this.#mainDiv = document.createElement('div');
-    this.#canvas = document.createElement('canvas');
-    this.#mainDiv.appendChild(this.#canvas);
-    document.body.appendChild(this.#mainDiv);
-    this.#canvas.height = this.#height;
-    this.#canvas.width = this.#width;
-    this.#mainDiv.style.position = 'absolute';
-    this.#mainDiv.style.width = '0px';
-    this.#mainDiv.style.height = '0px';
-    this.#c = this.#canvas.getContext('2d');
-    this.#canvas.style.position = 'absolute';
-    this.#canvas.style.zIndex = 1;
-
-    // Overlay canvas for radius circle
-    this.#overlayCanvas = document.createElement('canvas');
-    this.#overlayCanvas.style.cssText = 'position:fixed;top:0;left:0;pointer-events:none;z-index:2;';
-    document.body.appendChild(this.#overlayCanvas);
-    this.#overlayCtx = this.#overlayCanvas.getContext('2d');
-
-    let thisObj = this;
-    this.#canvas.addEventListener('mousedown', function(event) {
-      if (event.button === 0) {
-        if (guiControls.tool === 'TOOL_AIRMASS') {
-          thisObj.destroy();
-          event.stopPropagation();
-        } else {
-          thisObj.toggleMenu();
-        }
-      }
-    });
-    this.#canvas.addEventListener('contextmenu', e => e.preventDefault());
-
-    this.createMenu();
-    this.updateCanvas();
-  }
-
-  createMenu()
-  {
-    this.#menuDiv = document.createElement('div');
-    this.#menuDiv.style.cssText = `
-      position:absolute; display:none; z-index:1000;
-      background:#13131f; border:1px solid #252540; border-radius:12px;
-      padding:0; color:white; font-family:Arial,sans-serif; font-size:13px;
-      min-width:270px; box-shadow:0 8px 32px rgba(0,0,0,0.75); overflow:hidden;
-    `;
-
-    let thisObj = this;
-
-    // Header
-    const hdr = document.createElement('div');
-    hdr.style.cssText = 'display:flex;justify-content:space-between;align-items:center;padding:11px 14px;background:linear-gradient(135deg,#191930,#0e0e22);border-bottom:1px solid #252540;cursor:move;user-select:none;gap:8px;';
-    let dragOffX = 0, dragOffY = 0, dragging = false;
-    hdr.addEventListener('mousedown', e => {
-      if (e.target === closeBtn) return;
-      dragging = true;
-      dragOffX = e.clientX - thisObj.#menuDiv.getBoundingClientRect().left;
-      dragOffY = e.clientY - thisObj.#menuDiv.getBoundingClientRect().top;
-      e.preventDefault();
-    });
-    document.addEventListener('mousemove', e => {
-      if (!dragging) return;
-      thisObj.#menuDiv.style.left = (e.clientX - dragOffX) + 'px';
-      thisObj.#menuDiv.style.top  = (e.clientY - dragOffY) + 'px';
-    });
-    document.addEventListener('mouseup', () => { dragging = false; });
-
-    const hdrTitle = document.createElement('span');
-    hdrTitle.textContent = '🌬️ Airmass Generator';
-    hdrTitle.style.cssText = 'font-weight:700;font-size:13px;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
-
-    const closeBtn = document.createElement('button');
-    closeBtn.innerHTML = '&#x2715;';
-    closeBtn.style.cssText = 'background:rgba(255,255,255,0.07);border:none;color:#777;font-size:12px;cursor:pointer;padding:3px 8px;border-radius:5px;line-height:1;flex-shrink:0;';
-    closeBtn.addEventListener('mouseover', () => { closeBtn.style.background = 'rgba(220,60,60,0.35)'; closeBtn.style.color = '#fff'; });
-    closeBtn.addEventListener('mouseout',  () => { closeBtn.style.background = 'rgba(255,255,255,0.07)'; closeBtn.style.color = '#777'; });
-    closeBtn.addEventListener('click', () => { thisObj.#menuDiv.style.display = 'none'; });
-    hdr.appendChild(hdrTitle);
-    hdr.appendChild(closeBtn);
-    this.#menuDiv.appendChild(hdr);
-
-    const body = document.createElement('div');
-    body.style.cssText = 'padding:14px 15px 16px;';
-
-    const mkLabel = text => {
-      const l = document.createElement('div');
-      l.textContent = text;
-      l.style.cssText = 'color:#4a5060;font-size:10px;text-transform:uppercase;letter-spacing:1.2px;font-weight:600;margin-bottom:6px;margin-top:14px;';
-      return l;
-    };
-
-    const mkDivider = () => {
-      const d = document.createElement('div');
-      d.style.cssText = 'border-top:1px solid #1c1c30;margin:10px -15px;';
-      return d;
-    };
-
-    const mkSlider = (label, initVal, unit, min, max, step, getter, setter) => {
-      const hd = document.createElement('div');
-      hd.style.cssText = 'display:flex;justify-content:space-between;align-items:center;margin-bottom:5px;margin-top:13px;';
-      const lb = document.createElement('span');
-      lb.textContent = label;
-      lb.style.cssText = 'color:#4a5060;font-size:10px;text-transform:uppercase;letter-spacing:1.2px;font-weight:600;';
-      const badge = document.createElement('span');
-      badge.textContent = initVal + unit;
-      badge.style.cssText = 'color:#4a90e2;font-size:11px;font-weight:700;background:rgba(74,144,226,0.13);padding:1px 8px;border-radius:10px;';
-      hd.appendChild(lb);
-      hd.appendChild(badge);
-      const sl = document.createElement('input');
-      sl.type = 'range'; sl.min = min; sl.max = max; sl.step = step; sl.value = initVal;
-      sl.style.cssText = 'width:100%;accent-color:#4a90e2;cursor:pointer;margin-top:2px;';
-      sl.addEventListener('input', function() {
-        const v = parseFloat(this.value);
-        setter(v);
-        badge.textContent = v.toFixed(step < 1 ? 3 : 0) + unit;
-        thisObj.updateCanvas();
-      });
-      return { hd, sl };
-    };
-
-    // Radius
-    body.appendChild(mkLabel('Radius (cells)'));
-    const rSlider = mkSlider('Radius', this.#radius, ' cells', 10, 300, 1, () => this.#radius, v => { this.#radius = v; });
-    body.appendChild(rSlider.hd); body.appendChild(rSlider.sl);
-
-    body.appendChild(mkDivider());
-    body.appendChild(mkLabel('Effects'));
-
-    // Temperature
-    const tSlider = mkSlider('Temperature', this.#tempStrength.toFixed(3), ' K/iter', -0.05, 0.05, 0.001, () => this.#tempStrength, v => { this.#tempStrength = v; });
-    body.appendChild(tSlider.hd); body.appendChild(tSlider.sl);
-
-    // Dew Point / Moisture
-    const mSlider = mkSlider('Moisture', this.#moistStrength.toFixed(4), '/iter', -0.05, 0.05, 0.0001, () => this.#moistStrength, v => { this.#moistStrength = v; });
-    body.appendChild(mSlider.hd); body.appendChild(mSlider.sl);
-
-    // Wind strength
-    const wSlider = mkSlider('Wind Strength', this.#windStrength.toFixed(3), '', -0.05, 0.05, 0.001, () => this.#windStrength, v => { this.#windStrength = v; });
-    body.appendChild(wSlider.hd); body.appendChild(wSlider.sl);
-
-    // Wind angle
-    const waSlider = mkSlider('Wind Angle', this.#windAngle.toFixed(0), '°', 0, 360, 1, () => this.#windAngle, v => { this.#windAngle = v; });
-    body.appendChild(waSlider.hd); body.appendChild(waSlider.sl);
-
-    body.appendChild(mkDivider());
-    body.appendChild(mkLabel('Movement'));
-
-    // Moving toggle
-    const movRow = document.createElement('div');
-    movRow.style.cssText = 'display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;';
-    const movLbl = document.createElement('span');
-    movLbl.textContent = 'Move continuously';
-    movLbl.style.cssText = 'color:#aaa;font-size:12px;';
-    const toggleLabel = document.createElement('label');
-    toggleLabel.style.cssText = 'position:relative;display:inline-block;width:44px;height:24px;cursor:pointer;flex-shrink:0;';
-    const movChk = document.createElement('input');
-    movChk.type = 'checkbox'; movChk.checked = this.#moving;
-    movChk.style.cssText = 'opacity:0;width:0;height:0;position:absolute;';
-    const track = document.createElement('span');
-    track.style.cssText = `position:absolute;top:0;left:0;right:0;bottom:0;background:${this.#moving?'#3a7ad4':'#252540'};border-radius:24px;transition:background 0.2s;`;
-    const knob = document.createElement('span');
-    knob.style.cssText = `position:absolute;height:18px;width:18px;left:${this.#moving?'23px':'3px'};bottom:3px;background:#fff;border-radius:50%;transition:left 0.2s;box-shadow:0 1px 4px rgba(0,0,0,0.5);`;
-    track.appendChild(knob);
-    toggleLabel.appendChild(movChk);
-    toggleLabel.appendChild(track);
-    movChk.addEventListener('change', function() {
-      thisObj.#moving = this.checked;
-      track.style.background = this.checked ? '#3a7ad4' : '#252540';
-      knob.style.left = this.checked ? '23px' : '3px';
-    });
-    movRow.appendChild(movLbl); movRow.appendChild(toggleLabel);
-    body.appendChild(movRow);
-
-    // Move speed
-    const msSlider = mkSlider('Move Speed', this.#moveSpeed.toFixed(1), ' c/iter', 0.1, 10, 0.1, () => this.#moveSpeed, v => { this.#moveSpeed = v; });
-    body.appendChild(msSlider.hd); body.appendChild(msSlider.sl);
-
-    // Move angle
-    const maSlider = mkSlider('Move Angle', this.#moveAngle.toFixed(0), '°', 0, 360, 1, () => this.#moveAngle, v => { this.#moveAngle = v; });
-    body.appendChild(maSlider.hd); body.appendChild(maSlider.sl);
-
-    body.appendChild(mkDivider());
-
-    // Delete button
-    const delBtn = document.createElement('button');
-    delBtn.textContent = 'Remove Airmass Generator';
-    delBtn.style.cssText = 'width:100%;padding:9px;cursor:pointer;background:linear-gradient(135deg,#3a1515,#5a1010);color:#ffb0b0;border:1px solid #8a2020;border-radius:7px;font-size:13px;font-weight:700;transition:filter 0.15s;';
-    delBtn.addEventListener('mouseover', () => { delBtn.style.filter='brightness(1.2)'; });
-    delBtn.addEventListener('mouseout',  () => { delBtn.style.filter='brightness(1)'; });
-    delBtn.addEventListener('click', () => { thisObj.destroy(); });
-    body.appendChild(delBtn);
-
-    this.#menuDiv.appendChild(body);
-    document.body.appendChild(this.#menuDiv);
-  }
-
-  toggleMenu()
-  {
-    if (this.#menuDiv.style.display === 'none') {
-      this.#menuDiv.style.left = simToScreenX(this.#x) + 'px';
-      this.#menuDiv.style.top  = (simToScreenY(this.#y) - 220) + 'px';
-      this.#menuDiv.style.display = 'block';
-    } else {
-      this.#menuDiv.style.display = 'none';
-    }
-  }
-
-  applyEffects()
-  {
-    if (this.#moving) {
-      const rad = this.#moveAngle * Math.PI / 180;
-      this.#x += Math.cos(rad) * this.#moveSpeed;
-      this.#y -= Math.sin(rad) * this.#moveSpeed; // y flipped in sim
-      // Wrap horizontally
-      if (guiControls.wrapHorizontally) {
-        this.#x = ((this.#x % sim_res_x) + sim_res_x) % sim_res_x;
-      } else {
-        this.#x = Math.max(0, Math.min(sim_res_x - 1, this.#x));
-      }
-      this.#y = Math.max(0, Math.min(sim_res_y - 1, this.#y));
-    }
-
-    const hasEffect = this.#tempStrength !== 0 || this.#moistStrength !== 0 || this.#windStrength !== 0;
-    if (!hasEffect) return;
-
-    const cx = Math.round(this.#x);
-    const cy = Math.round(this.#y);
-    const r  = Math.round(this.#radius);
-    const windRad = this.#windAngle * Math.PI / 180;
-    const windX = Math.cos(windRad) * this.#windStrength;
-    const windY = -Math.sin(windRad) * this.#windStrength;
-
-    const x0 = Math.max(0, cx - r);
-    const x1 = Math.min(sim_res_x - 1, cx + r);
-    const y0 = Math.max(0, cy - r);
-    const y1 = Math.min(sim_res_y - 1, cy + r);
-    const count = (x1 - x0 + 1) * (y1 - y0 + 1);
-    if (count <= 0) return;
-
-    // Read only the bounding-box rows we need
-    const rowCount = y1 - y0 + 1;
-    const colCount = x1 - x0 + 1;
-
-    const baseData  = new Float32Array(sim_res_x * rowCount * 4);
-    const waterData = new Float32Array(sim_res_x * rowCount * 4);
-    const wallData  = new Int8Array(sim_res_x * rowCount * 4);
-
-    // After the pressure pass the current state lives in frameBuff_0
-    // (baseTexture_0 / waterTexture_0 / wallTexture_0)
-    const fb = frameBuff_0;
-    gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
-    gl.readBuffer(gl.COLOR_ATTACHMENT0);
-    gl.readPixels(0, y0, sim_res_x, rowCount, gl.RGBA, gl.FLOAT, baseData);
-    gl.readBuffer(gl.COLOR_ATTACHMENT1);
-    gl.readPixels(0, y0, sim_res_x, rowCount, gl.RGBA, gl.FLOAT, waterData);
-    gl.readBuffer(gl.COLOR_ATTACHMENT2);
-    gl.readPixels(0, y0, sim_res_x, rowCount, gl.RGBA_INTEGER, gl.BYTE, wallData);
-
-    // Restore framebuffer to null so subsequent GL code is unaffected
-    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-
-    let modified = false;
-    for (let y = y0; y <= y1; y++) {
-      for (let x = x0; x <= x1; x++) {
-        const dx = x - cx, dy = y - cy;
-        const dist = Math.sqrt(dx * dx + dy * dy);
-        if (dist > r) continue;
-        const rowIdx = y - y0;
-        const idx = (rowIdx * sim_res_x + x) * 4;
-        if (wallData[idx + 1] === 0) continue; // skip solid cells
-        if (waterData[idx] > 900.0) continue;   // skip surface marker cells (land/water/ice)
-        const falloff = 1.0 - dist / r;
-        if (this.#tempStrength !== 0)
-          baseData[idx + 3] += this.#tempStrength * falloff;
-        if (this.#moistStrength !== 0) {
-          const W     = waterData[idx];       // TOTAL vapor+cloud
-          const T     = baseData[idx + 3];    // potential temperature (K)
-          const rowIdx = Math.floor((idx / 4) / sim_res_x);
-          const absY   = y0 + rowIdx;         // actual sim row
-          const realT  = T - (absY / sim_res_y) * dryLapse;
-          if (this.#moistStrength > 0) {      // drying: same clamp as globalDrying
-            const minW  = Math.pow(Math.max(realT - 20.0, 193.15) / 250.0, 17.0);
-            waterData[idx] = Math.max(W - this.#moistStrength * falloff, minW);
-          } else {                            // moistening: just add, same as globalDrying negative
-            waterData[idx] = Math.max(W - this.#moistStrength * falloff, 0.0);
-          }
-        }
-        if (this.#windStrength !== 0) {
-          baseData[idx + 0] += windX * falloff;
-          baseData[idx + 1] += windY * falloff;
-        }
-        modified = true;
-      }
-    }
-
-    if (!modified) return;
-
-    // Write back only to the _0 textures (the live ones after the pressure pass).
-    // The _1 textures are scratch and will be overwritten next iteration.
-    for (const tex of [baseTexture_0]) {
-      gl.bindTexture(gl.TEXTURE_2D, tex);
-      gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, y0, sim_res_x, rowCount, gl.RGBA, gl.FLOAT, baseData);
-    }
-    for (const tex of [waterTexture_0]) {
-      gl.bindTexture(gl.TEXTURE_2D, tex);
-      gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, y0, sim_res_x, rowCount, gl.RGBA, gl.FLOAT, waterData);
-    }
-    gl.bindTexture(gl.TEXTURE_2D, null);
-  }
-
-  updateCanvas()
-  {
-    const screenX = simToScreenX(this.#x);
-    const screenY = simToScreenY(this.#y);
-    this.#mainDiv.style.left = (screenX - this.#width / 2) + 'px';
-    this.#mainDiv.style.top  = (screenY - this.#height) + 'px';
-
-    const c = this.#c;
-    c.clearRect(0, 0, this.#width, this.#height);
-
-    // Icon: cloud with wind lines
-    c.save();
-    c.translate(this.#width / 2, this.#height / 2 - 4);
-    c.fillStyle = '#66aaff';
-    c.beginPath();
-    c.arc(0, 0, 10, 0, Math.PI * 2);
-    c.fill();
-    c.strokeStyle = '#ffffff';
-    c.lineWidth = 2;
-    for (let i = -1; i <= 1; i++) {
-      c.beginPath();
-      c.moveTo(-12, i * 5);
-      c.lineTo(12, i * 5);
-      c.stroke();
-    }
-    c.restore();
-
-    // Label
-    c.font = 'bold 10px Arial';
-    c.fillStyle = '#ffffff';
-    c.textAlign = 'center';
-    c.fillText('Airmass', this.#width / 2, this.#height - 10);
-
-    // Pointer
-    c.beginPath();
-    c.moveTo(this.#width / 2, this.#height - 6);
-    c.lineTo(this.#width / 2, this.#height);
-    c.strokeStyle = 'white';
-    c.lineWidth = 2;
-    c.stroke();
-
-    // Draw radius circle on overlay canvas
-    this._updateRadiusOverlay();
-  }
-
-  _updateRadiusOverlay()
-  {
-    if (!this.#overlayCanvas) return;
-    const oc = this.#overlayCanvas;
-    const mainCanvas = document.getElementById('mainCanvas');
-    if (!mainCanvas) return;
-    if (oc.width !== mainCanvas.clientWidth || oc.height !== mainCanvas.clientHeight) {
-      oc.width  = mainCanvas.clientWidth;
-      oc.height = mainCanvas.clientHeight;
-    }
-    // Radius in screen pixels: radius in sim cells * zoom
-    const screenCx = simToScreenX(this.#x);
-    const screenCy = simToScreenY(this.#y);
-    // Scale: each sim cell = canvas.width / sim_res_x * zoom pixels
-    const pixPerCell = (mainCanvas.clientWidth / sim_res_x) * (cam ? cam.curZoom : 1);
-    const rPx = this.#radius * pixPerCell;
-
-    const ctx = this.#overlayCtx;
-    ctx.clearRect(0, 0, oc.width, oc.height);
-    ctx.beginPath();
-    ctx.arc(screenCx, screenCy, Math.max(1, rPx), 0, Math.PI * 2);
-    ctx.strokeStyle = 'rgba(100, 180, 255, 0.6)';
-    ctx.lineWidth = 1.5;
-    ctx.setLineDash([6, 4]);
-    ctx.stroke();
-    ctx.setLineDash([]);
-  }
-
-  setHidden(hidden)
-  {
-    this.#mainDiv.style.display = hidden ? 'none' : 'block';
-    if (this.#overlayCanvas) this.#overlayCanvas.style.display = hidden ? 'none' : 'block';
-  }
-
-  destroy()
-  {
-    this.#menuDiv.remove();
-    this.#mainDiv.remove();
-    if (this.#overlayCanvas) {
-      this.#overlayCtx.clearRect(0, 0, this.#overlayCanvas.width, this.#overlayCanvas.height);
-      this.#overlayCanvas.remove();
-    }
-    const idx = airmassGenerators.indexOf(this);
-    if (idx >= 0) airmassGenerators.splice(idx, 1);
-  }
-
-  getXpos() { return this.#x; }
-  getYpos() { return this.#y; }
-}
+let nukes = []; // array holding all nukes
 
 class Marker
 {
@@ -4118,6 +3696,697 @@ class Marker
   setColor(color) { this.#color = color; }
 }
 
+const MAX_AIRMASS = 16;
+// Same per-iteration scales as the global heating/drying sliders in Fluid Parameters.
+const AIRMASS_HEATING_SLIDER_SCALE = 0.00001;
+const AIRMASS_DRYING_SLIDER_SCALE = 0.000001;
+
+function airmassInfluenceWeight(dist, radius)
+{
+  const inner = radius * 0.82;
+  if (dist <= inner)
+    return 1.0;
+  if (dist >= radius)
+    return 0.0;
+  return 1.0 - (dist - inner) / (radius - inner);
+}
+
+function applyAirmassGeneratorsCpu()
+{
+  if (!airmassGenerators.length || typeof gl === 'undefined')
+    return;
+
+  const startAlt = guiControls.globalEffectsStartAlt / guiControls.simHeight;
+  const endAlt = guiControls.globalEffectsEndAlt / guiControls.simHeight;
+  const aspect = sim_res_y / sim_res_x;
+  const wrapX = guiControls.wrapHorizontally;
+
+  gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_1);
+
+  for (let g = 0; g < airmassGenerators.length; g++) {
+    const gen = airmassGenerators[g];
+    const cx = gen.getXpos();
+    const cy = gen.getYpos();
+    const radius = gen.getRadius();
+    const heating = gen.getHeating();
+    const drying = gen.getDrying();
+    const windAffect = gen.getWindAffect();
+    const windVec = AirmassGenerator.directionVector(gen.getWindDirection());
+
+    if (heating === 0 && drying === 0 && windAffect === 0)
+      continue;
+
+    const x0 = Math.max(0, Math.floor(cx - radius));
+    const x1 = Math.min(sim_res_x - 1, Math.ceil(cx + radius));
+    const y0 = Math.max(0, Math.floor(cy - radius));
+    const y1 = Math.min(sim_res_y - 1, Math.ceil(cy + radius));
+    const w = x1 - x0 + 1;
+    const h = y1 - y0 + 1;
+    if (w <= 0 || h <= 0)
+      continue;
+
+    const baseData = new Float32Array(w * h * 4);
+    const waterData = new Float32Array(w * h * 4);
+    const wallData = new Int8Array(w * h * 4);
+
+    gl.readBuffer(gl.COLOR_ATTACHMENT0);
+    gl.readPixels(x0, y0, w, h, gl.RGBA, gl.FLOAT, baseData);
+    gl.readBuffer(gl.COLOR_ATTACHMENT1);
+    gl.readPixels(x0, y0, w, h, gl.RGBA, gl.FLOAT, waterData);
+    gl.readBuffer(gl.COLOR_ATTACHMENT2);
+    gl.readPixels(x0, y0, w, h, gl.RGBA_INTEGER, gl.BYTE, wallData);
+
+    let changed = false;
+
+    for (let ly = 0; ly < h; ly++) {
+      const y = y0 + ly;
+      const texY = (y + 0.5) / sim_res_y;
+      const inAltBand = texY > startAlt && texY < endAlt;
+
+      for (let lx = 0; lx < w; lx++) {
+        const x = x0 + lx;
+        const idx = (ly * w + lx) * 4;
+
+        if (wallData[idx + 1] === 0)
+          continue;
+
+        let dx = x - cx;
+        if (wrapX) {
+          dx = Math.abs(dx);
+          dx = Math.min(dx, sim_res_x - dx);
+        } else {
+          dx = Math.abs(dx);
+        }
+        const dy = y - cy;
+        const dist = Math.sqrt((dx * aspect) * (dx * aspect) + dy * dy);
+        const weight = airmassInfluenceWeight(dist, radius);
+        if (weight <= 0.0001)
+          continue;
+
+        if (inAltBand) {
+          if (heating !== 0) {
+            baseData[idx + 3] += heating * weight;
+            changed = true;
+          }
+
+          if (drying !== 0) {
+            const realTemp = potentialToRealT(baseData[idx + 3], y);
+            const dryAmt = drying * weight;
+            if (dryAmt > 0) {
+              const floorW = maxWater(Math.max(realTemp - 20.0, CtoK(-80)));
+              const remove = Math.min(dryAmt, Math.max(0, waterData[idx] - floorW));
+              if (remove > 0) {
+                waterData[idx] -= remove;
+                changed = true;
+              }
+            } else {
+              const realTempAfter = potentialToRealT(baseData[idx + 3], y);
+              const headroom = Math.max(0, maxWater(realTempAfter) - waterData[idx]);
+              const add = Math.min(-dryAmt, headroom);
+              if (add > 0) {
+                waterData[idx] += add;
+                changed = true;
+              }
+            }
+          }
+        }
+
+        if (windAffect > 0) {
+          const vx = baseData[idx];
+          const vy = baseData[idx + 1];
+          const curSpeed = Math.sqrt(vx * vx + vy * vy);
+          const desiredX = windVec.dx * Math.max(curSpeed, 0.25);
+          const desiredY = windVec.dy * Math.max(curSpeed, 0.25);
+          const blend = windAffect * weight * 0.003;
+          baseData[idx] += (desiredX - vx) * blend;
+          baseData[idx + 1] += (desiredY - vy) * blend;
+          changed = true;
+        }
+      }
+    }
+
+    if (!changed)
+      continue;
+
+    [baseTexture_0, baseTexture_1].forEach(tex => {
+      gl.bindTexture(gl.TEXTURE_2D, tex);
+      gl.texSubImage2D(gl.TEXTURE_2D, 0, x0, y0, w, h, gl.RGBA, gl.FLOAT, baseData);
+    });
+    [waterTexture_0, waterTexture_1].forEach(tex => {
+      gl.bindTexture(gl.TEXTURE_2D, tex);
+      gl.texSubImage2D(gl.TEXTURE_2D, 0, x0, y0, w, h, gl.RGBA, gl.FLOAT, waterData);
+    });
+  }
+
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+}
+
+class AirmassGenerator
+{
+  // 0=Up, 90=Right, 180=Down, 270=Left
+  static directionVector(degrees)
+  {
+    const rad = degrees * Math.PI / 180.0;
+    return { dx: Math.sin(rad), dy: -Math.cos(rad) };
+  }
+
+  static directionLabel(degrees)
+  {
+    const d = ((Math.round(degrees) % 360) + 360) % 360;
+    if (d === 0) return 'Up';
+    if (d === 90) return 'Right';
+    if (d === 180) return 'Down';
+    if (d === 270) return 'Left';
+    return d + '°';
+  }
+
+  static heatingSliderToValue(sliderVal)
+  {
+    return parseInt(sliderVal, 10) * AIRMASS_HEATING_SLIDER_SCALE;
+  }
+
+  static dryingSliderToValue(sliderVal)
+  {
+    return parseInt(sliderVal, 10) * AIRMASS_DRYING_SLIDER_SCALE;
+  }
+
+  #width = 72;
+  #height = 72;
+  #mainDiv;
+  #canvas;
+  #c;
+  #x;
+  #y;
+  #name = 'Airmass';
+  #radius = 200;
+  #heatingLevel = 0;
+  #dryingLevel = 0;
+  #windAffect = 0.0;
+  #windDirection = 0.0;
+  #moveEnabled = false;
+  #moveSpeed = 1.0;
+  #moveDirection = 0.0;
+  #menuDiv;
+  #hdrTextEl = null;
+  #radiusSlider = null;
+  #radiusValBadge = null;
+  #heatingSlider = null;
+  #heatingValBadge = null;
+  #dryingSlider = null;
+  #dryingValBadge = null;
+  #windAffectSlider = null;
+  #windAffectValBadge = null;
+  #windDirSlider = null;
+  #windDirValBadge = null;
+  #moveToggle = null;
+  #moveToggleTrack = null;
+  #moveToggleKnob = null;
+  #moveSpeedSlider = null;
+  #moveSpeedValBadge = null;
+  #moveDirSlider = null;
+  #moveDirValBadge = null;
+  #moveControlsWrap = null;
+
+  constructor(xIn, yIn)
+  {
+    this.#x = Math.floor(xIn);
+    this.#y = Math.floor(yIn);
+    this.#mainDiv = document.createElement('div');
+    this.#canvas = document.createElement('canvas');
+    this.#mainDiv.appendChild(this.#canvas);
+    document.body.appendChild(this.#mainDiv);
+    this.#canvas.height = this.#height;
+    this.#canvas.width = this.#width;
+
+    this.#mainDiv.style.position = 'absolute';
+    this.#mainDiv.style.width = '0px';
+    this.#mainDiv.style.height = '0px';
+
+    this.#c = this.#canvas.getContext('2d');
+    this.#canvas.style.position = 'absolute';
+    this.#canvas.style.zIndex = 1;
+
+    const thisObj = this;
+    this.#canvas.addEventListener('mousedown', function(event) {
+      if (event.button == 0) {
+        if (guiControls.tool == 'TOOL_AIRMASS') {
+          thisObj.destroy();
+          event.stopPropagation();
+        } else {
+          thisObj.toggleMenu();
+        }
+      }
+    });
+    this.#canvas.addEventListener('contextmenu', function(event) { event.preventDefault(); });
+    this.createMenu();
+  }
+
+  createMenu()
+  {
+    this.#menuDiv = document.createElement('div');
+    this.#menuDiv.style.cssText = `
+      position: absolute;
+      display: none;
+      z-index: 1000;
+      background: #13131f;
+      border: 1px solid #252540;
+      border-radius: 12px;
+      padding: 0;
+      color: white;
+      font-family: Arial, sans-serif;
+      font-size: 13px;
+      min-width: 280px;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.75);
+      overflow: hidden;
+    `;
+
+    const thisObj = this;
+    const hdr = document.createElement('div');
+    hdr.style.cssText = 'display:flex;justify-content:space-between;align-items:center;padding:11px 14px;background:linear-gradient(135deg,#191930,#0e0e22);border-bottom:1px solid #252540;cursor:move;user-select:none;gap:8px;';
+
+    let dragOffX = 0, dragOffY = 0, dragging = false;
+    const closeBtn = document.createElement('button');
+    hdr.addEventListener('mousedown', (e) => {
+      if (e.target === closeBtn) return;
+      dragging = true;
+      dragOffX = e.clientX - thisObj.#menuDiv.getBoundingClientRect().left;
+      dragOffY = e.clientY - thisObj.#menuDiv.getBoundingClientRect().top;
+      e.preventDefault();
+    });
+    document.addEventListener('mousemove', (e) => {
+      if (!dragging) return;
+      thisObj.#menuDiv.style.left = (e.clientX - dragOffX) + 'px';
+      thisObj.#menuDiv.style.top = (e.clientY - dragOffY) + 'px';
+    });
+    document.addEventListener('mouseup', () => { dragging = false; });
+
+    const hdrTitle = document.createElement('span');
+    hdrTitle.style.cssText = 'font-weight:700;font-size:13px;display:flex;align-items:center;gap:6px;flex:1;min-width:0;';
+    hdrTitle.innerHTML = '<span style="flex-shrink:0">🌡️</span>';
+    const hdrText = document.createElement('span');
+    hdrText.textContent = this.#name + ' Generator';
+    hdrText.style.cssText = 'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
+    hdrTitle.appendChild(hdrText);
+    this.#hdrTextEl = hdrText;
+
+    closeBtn.innerHTML = '&#x2715;';
+    closeBtn.style.cssText = 'background:rgba(255,255,255,0.07);border:none;color:#777;font-size:12px;cursor:pointer;padding:3px 8px;border-radius:5px;line-height:1;flex-shrink:0;';
+    closeBtn.addEventListener('mouseover', () => { closeBtn.style.background='rgba(220,60,60,0.35)'; closeBtn.style.color='#fff'; });
+    closeBtn.addEventListener('mouseout', () => { closeBtn.style.background='rgba(255,255,255,0.07)'; closeBtn.style.color='#777'; });
+    closeBtn.addEventListener('click', () => { thisObj.#menuDiv.style.display = 'none'; });
+    hdr.appendChild(hdrTitle);
+    hdr.appendChild(closeBtn);
+    this.#menuDiv.appendChild(hdr);
+
+    const body = document.createElement('div');
+    body.style.cssText = 'padding:14px 15px 16px;';
+
+    const mkSectionLabel = (text) => {
+      const l = document.createElement('div');
+      l.textContent = text;
+      l.style.cssText = 'color:#4a5060;font-size:10px;text-transform:uppercase;letter-spacing:1.2px;font-weight:600;margin-bottom:6px;margin-top:14px;';
+      return l;
+    };
+
+    const mkSliderGroup = (text, initVal, unit, min, max, step, formatFn, onChange) => {
+      const hd = document.createElement('div');
+      hd.style.cssText = 'display:flex;justify-content:space-between;align-items:center;margin-bottom:5px;margin-top:13px;';
+      const lb = document.createElement('span');
+      lb.textContent = text;
+      lb.style.cssText = 'color:#4a5060;font-size:10px;text-transform:uppercase;letter-spacing:1.2px;font-weight:600;';
+      const badge = document.createElement('span');
+      badge.textContent = formatFn(initVal) + unit;
+      badge.style.cssText = 'color:#4a90e2;font-size:11px;font-weight:700;background:rgba(74,144,226,0.13);padding:1px 8px;border-radius:10px;';
+      hd.appendChild(lb);
+      hd.appendChild(badge);
+      const sl = document.createElement('input');
+      sl.type = 'range';
+      sl.min = min; sl.max = max; sl.step = step;
+      sl.value = initVal;
+      sl.style.cssText = 'width:100%;accent-color:#4a90e2;cursor:pointer;margin-top:2px;';
+      sl.addEventListener('input', function() {
+        onChange(this.value);
+        badge.textContent = formatFn(this.value) + unit;
+      });
+      sl.addEventListener('change', function() {
+        onChange(this.value);
+        badge.textContent = formatFn(this.value) + unit;
+      });
+      return { hd, sl, badge };
+    };
+
+    const mkDivider = () => {
+      const d = document.createElement('div');
+      d.style.cssText = 'border-top:1px solid #1c1c30;margin:10px -15px;';
+      return d;
+    };
+
+    const mkDirectionButtons = (setDegrees, slider, badge) => {
+      const row = document.createElement('div');
+      row.style.cssText = 'display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-top:8px;margin-bottom:4px;';
+      const dirs = [
+        { label: 'Up', deg: 0 },
+        { label: 'Right', deg: 90 },
+        { label: 'Down', deg: 180 },
+        { label: 'Left', deg: 270 },
+      ];
+      dirs.forEach(({ label, deg }) => {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.textContent = label;
+        btn.style.cssText = 'padding:5px 4px;cursor:pointer;background:#0b0b17;color:#b8c0d0;border:1px solid #252540;border-radius:6px;font-size:11px;font-weight:600;transition:background 0.15s,border-color 0.15s;';
+        btn.addEventListener('mouseover', () => { btn.style.background='#151528'; btn.style.borderColor='#4a90e2'; });
+        btn.addEventListener('mouseout', () => { btn.style.background='#0b0b17'; btn.style.borderColor='#252540'; });
+        btn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          setDegrees(deg);
+          if (slider) slider.value = deg;
+          if (badge) badge.textContent = AirmassGenerator.directionLabel(deg);
+        });
+        row.appendChild(btn);
+      });
+      return row;
+    };
+
+    body.appendChild(mkSectionLabel('Influence Area'));
+    const radiusGroup = mkSliderGroup('Radius', this.#radius, ' px', 25, 30000, 10,
+      (v) => parseInt(v, 10),
+      (v) => { thisObj.#radius = parseInt(v, 10); return thisObj.#radius; });
+    this.#radiusSlider = radiusGroup.sl;
+    this.#radiusValBadge = radiusGroup.badge;
+    body.appendChild(radiusGroup.hd);
+    body.appendChild(this.#radiusSlider);
+    body.appendChild(mkDivider());
+
+    body.appendChild(mkSectionLabel('Airmass Effects (same scale as global heating/drying)'));
+    const heatGroup = mkSliderGroup('Heating', this.#heatingLevel, '/iter', -5000, 5000, 1,
+      (v) => AirmassGenerator.heatingSliderToValue(v).toFixed(5),
+      (v) => { thisObj.#heatingLevel = parseInt(v, 10); });
+    this.#heatingSlider = heatGroup.sl;
+    this.#heatingValBadge = heatGroup.badge;
+    body.appendChild(heatGroup.hd);
+    body.appendChild(this.#heatingSlider);
+
+    const dryGroup = mkSliderGroup('Drying', this.#dryingLevel, '/iter', -5000, 5000, 1,
+      (v) => AirmassGenerator.dryingSliderToValue(v).toFixed(6),
+      (v) => { thisObj.#dryingLevel = parseInt(v, 10); });
+    this.#dryingSlider = dryGroup.sl;
+    this.#dryingValBadge = dryGroup.badge;
+    body.appendChild(dryGroup.hd);
+    body.appendChild(this.#dryingSlider);
+
+    const windGroup = mkSliderGroup('Wind Affect', this.#windAffect, '', 0, 100, 0.05,
+      (v) => parseFloat(v).toFixed(2),
+      (v) => { thisObj.#windAffect = parseFloat(v); });
+    this.#windAffectSlider = windGroup.sl;
+    this.#windAffectValBadge = windGroup.badge;
+    body.appendChild(windGroup.hd);
+    body.appendChild(this.#windAffectSlider);
+
+    const windDirGroup = mkSliderGroup('Wind Direction', this.#windDirection, '', 0, 360, 1,
+      (v) => AirmassGenerator.directionLabel(v),
+      (v) => { thisObj.#windDirection = parseInt(v, 10); });
+    this.#windDirSlider = windDirGroup.sl;
+    this.#windDirValBadge = windDirGroup.badge;
+    body.appendChild(windDirGroup.hd);
+    body.appendChild(this.#windDirSlider);
+    body.appendChild(mkDirectionButtons(
+      (deg) => { thisObj.#windDirection = deg; },
+      this.#windDirSlider,
+      this.#windDirValBadge));
+    body.appendChild(mkDivider());
+
+    body.appendChild(mkSectionLabel('Movement'));
+    const moveRow = document.createElement('div');
+    moveRow.style.cssText = 'display:flex;justify-content:space-between;align-items:center;margin-bottom:13px;';
+    const moveLbl = document.createElement('span');
+    moveLbl.textContent = 'Move Through Simulation';
+    moveLbl.style.cssText = 'color:#aaa;font-size:12px;';
+
+    const toggleLabel = document.createElement('label');
+    toggleLabel.style.cssText = 'position:relative;display:inline-block;width:44px;height:24px;cursor:pointer;flex-shrink:0;';
+    this.#moveToggle = document.createElement('input');
+    this.#moveToggle.type = 'checkbox';
+    this.#moveToggle.checked = this.#moveEnabled;
+    this.#moveToggle.style.cssText = 'opacity:0;width:0;height:0;position:absolute;';
+    this.#moveToggleTrack = document.createElement('span');
+    this.#moveToggleTrack.style.cssText = `position:absolute;top:0;left:0;right:0;bottom:0;background:${this.#moveEnabled ? '#3a7ad4' : '#252540'};border-radius:24px;transition:background 0.2s;`;
+    this.#moveToggleKnob = document.createElement('span');
+    this.#moveToggleKnob.style.cssText = `position:absolute;height:18px;width:18px;left:${this.#moveEnabled ? '23px' : '3px'};bottom:3px;background:#fff;border-radius:50%;transition:left 0.2s;box-shadow:0 1px 4px rgba(0,0,0,0.5);`;
+    this.#moveToggleTrack.appendChild(this.#moveToggleKnob);
+    toggleLabel.appendChild(this.#moveToggle);
+    toggleLabel.appendChild(this.#moveToggleTrack);
+    this.#moveToggle.addEventListener('change', function() {
+      thisObj.#moveEnabled = this.checked;
+      thisObj.#moveToggleTrack.style.background = this.checked ? '#3a7ad4' : '#252540';
+      thisObj.#moveToggleKnob.style.left = this.checked ? '23px' : '3px';
+      if (thisObj.#moveControlsWrap)
+        thisObj.#moveControlsWrap.style.display = this.checked ? 'block' : 'none';
+    });
+    moveRow.appendChild(moveLbl);
+    moveRow.appendChild(toggleLabel);
+    body.appendChild(moveRow);
+
+    this.#moveControlsWrap = document.createElement('div');
+    this.#moveControlsWrap.style.display = this.#moveEnabled ? 'block' : 'none';
+
+    const speedGroup = mkSliderGroup('Move Speed', this.#moveSpeed, ' px/it', 0, 200, 0.01,
+      (v) => parseFloat(v).toFixed(2),
+      (v) => { thisObj.#moveSpeed = parseFloat(v); });
+    this.#moveSpeedSlider = speedGroup.sl;
+    this.#moveSpeedValBadge = speedGroup.badge;
+    this.#moveControlsWrap.appendChild(speedGroup.hd);
+    this.#moveControlsWrap.appendChild(this.#moveSpeedSlider);
+
+    const moveDirGroup = mkSliderGroup('Move Direction', this.#moveDirection, '', 0, 360, 1,
+      (v) => AirmassGenerator.directionLabel(v),
+      (v) => { thisObj.#moveDirection = parseInt(v, 10); });
+    this.#moveDirSlider = moveDirGroup.sl;
+    this.#moveDirValBadge = moveDirGroup.badge;
+    this.#moveControlsWrap.appendChild(moveDirGroup.hd);
+    this.#moveControlsWrap.appendChild(this.#moveDirSlider);
+    this.#moveControlsWrap.appendChild(mkDirectionButtons(
+      (deg) => { thisObj.#moveDirection = deg; },
+      this.#moveDirSlider,
+      this.#moveDirValBadge));
+    body.appendChild(this.#moveControlsWrap);
+
+    this.#menuDiv.appendChild(body);
+    document.body.appendChild(this.#menuDiv);
+  }
+
+  static closeAllMenusExcept(exceptGen)
+  {
+    for (let i = 0; i < airmassGenerators.length; i++) {
+      if (airmassGenerators[i] !== exceptGen)
+        airmassGenerators[i].closeMenu();
+    }
+  }
+
+  closeMenu() { this.#menuDiv.style.display = 'none'; }
+
+  syncMenuToState()
+  {
+    if (this.#radiusSlider) {
+      this.#radiusSlider.value = this.#radius;
+      if (this.#radiusValBadge) this.#radiusValBadge.textContent = this.#radius + ' px';
+    }
+    if (this.#heatingSlider) {
+      this.#heatingSlider.value = this.#heatingLevel;
+      if (this.#heatingValBadge) this.#heatingValBadge.textContent = AirmassGenerator.heatingSliderToValue(this.#heatingLevel).toFixed(5);
+    }
+    if (this.#dryingSlider) {
+      this.#dryingSlider.value = this.#dryingLevel;
+      if (this.#dryingValBadge) this.#dryingValBadge.textContent = AirmassGenerator.dryingSliderToValue(this.#dryingLevel).toFixed(6);
+    }
+    if (this.#windAffectSlider) {
+      this.#windAffectSlider.value = this.#windAffect;
+      if (this.#windAffectValBadge) this.#windAffectValBadge.textContent = this.#windAffect.toFixed(2);
+    }
+    if (this.#windDirSlider) {
+      this.#windDirSlider.value = this.#windDirection;
+      if (this.#windDirValBadge) this.#windDirValBadge.textContent = AirmassGenerator.directionLabel(this.#windDirection);
+    }
+    if (this.#moveToggle) {
+      this.#moveToggle.checked = this.#moveEnabled;
+      if (this.#moveToggleTrack)
+        this.#moveToggleTrack.style.background = this.#moveEnabled ? '#3a7ad4' : '#252540';
+      if (this.#moveToggleKnob)
+        this.#moveToggleKnob.style.left = this.#moveEnabled ? '23px' : '3px';
+    }
+    if (this.#moveControlsWrap)
+      this.#moveControlsWrap.style.display = this.#moveEnabled ? 'block' : 'none';
+    if (this.#moveSpeedSlider) {
+      this.#moveSpeedSlider.value = this.#moveSpeed;
+      if (this.#moveSpeedValBadge) this.#moveSpeedValBadge.textContent = this.#moveSpeed.toFixed(2) + ' px/it';
+    }
+    if (this.#moveDirSlider) {
+      this.#moveDirSlider.value = this.#moveDirection;
+      if (this.#moveDirValBadge) this.#moveDirValBadge.textContent = AirmassGenerator.directionLabel(this.#moveDirection);
+    }
+  }
+
+  toggleMenu(forceOpen)
+  {
+    const opening = forceOpen || this.#menuDiv.style.display === 'none';
+    if (!opening) {
+      this.closeMenu();
+      return;
+    }
+    AirmassGenerator.closeAllMenusExcept(this);
+    this.syncMenuToState();
+    const screenX = simToScreenX(this.#x);
+    const screenY = simToScreenY(this.#y);
+    this.#menuDiv.style.left = screenX + 'px';
+    this.#menuDiv.style.top = (screenY - 220) + 'px';
+    this.#menuDiv.style.display = 'block';
+  }
+
+  step()
+  {
+    if (!this.#moveEnabled || this.#moveSpeed <= 0)
+      return;
+    const { dx, dy } = AirmassGenerator.directionVector(this.#moveDirection);
+    this.#x += dx * this.#moveSpeed;
+    this.#y += dy * this.#moveSpeed;
+    if (guiControls.wrapHorizontally) {
+      while (this.#x < 0) this.#x += sim_res_x;
+      while (this.#x >= sim_res_x) this.#x -= sim_res_x;
+    } else {
+      this.#x = clamp(this.#x, 0, sim_res_x - 1);
+    }
+    this.#y = clamp(this.#y, 0, sim_res_y - 1);
+  }
+
+  destroy()
+  {
+    this.#menuDiv.remove();
+    this.#mainDiv.remove();
+    const index = airmassGenerators.indexOf(this);
+    if (index > -1)
+      airmassGenerators.splice(index, 1);
+  }
+
+  setHidden(hidden) { this.#mainDiv.style.display = hidden ? 'none' : 'block'; }
+
+  updateCanvas()
+  {
+    const screenX = simToScreenX(this.#x) - this.#width / 2;
+    const screenY = simToScreenY(this.#y) - this.#height / 2;
+    this.#mainDiv.style.left = screenX + 'px';
+    this.#mainDiv.style.top = screenY + 'px';
+
+    const c = this.#c;
+    c.clearRect(0, 0, this.#width, this.#height);
+
+    const cx = this.#width / 2;
+    const cy = this.#height / 2;
+
+    c.strokeStyle = 'rgba(120, 200, 255, 0.9)';
+    c.fillStyle = 'rgba(80, 170, 255, 0.85)';
+    c.lineWidth = 2;
+    c.beginPath();
+    for (let i = 0; i <= 6; i++) {
+      const ang = (i / 6) * Math.PI * 2;
+      const r = 10 + (i % 2) * 4;
+      const px = cx + Math.cos(ang) * r;
+      const py = cy + Math.sin(ang) * r;
+      if (i === 0) c.moveTo(px, py);
+      else c.lineTo(px, py);
+    }
+    c.closePath();
+    c.fill();
+    c.stroke();
+
+    c.beginPath();
+    c.arc(cx, cy, 5, 0, Math.PI * 2);
+    c.fillStyle = '#ffffff';
+    c.fill();
+
+    c.font = 'bold 11px Arial';
+    c.fillStyle = '#FFFFFF';
+    c.textAlign = 'center';
+    c.fillText(this.#name, cx, this.#height - 4);
+  }
+
+  drawRadiusOverlay(ctx)
+  {
+    const sx = simToScreenX(this.#x);
+    const sy = simToScreenY(this.#y);
+    const edgeX = simToScreenX(this.#x + this.#radius);
+    const screenRadius = Math.abs(edgeX - sx);
+    if (screenRadius < 2)
+      return;
+
+    ctx.beginPath();
+    ctx.arc(sx, sy, screenRadius, 0, Math.PI * 2);
+    ctx.strokeStyle = 'rgba(120, 200, 255, 0.22)';
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([6, 8]);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    if (this.#windAffect > 0.01) {
+      const windVec = AirmassGenerator.directionVector(this.#windDirection);
+      const len = Math.min(screenRadius * 0.45, 80);
+      ctx.beginPath();
+      ctx.moveTo(sx, sy);
+      ctx.lineTo(sx + windVec.dx * len, sy + windVec.dy * len);
+      ctx.strokeStyle = 'rgba(255, 200, 80, 0.35)';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+    }
+
+    if (this.#moveEnabled && this.#moveSpeed > 0) {
+      const moveVec = AirmassGenerator.directionVector(this.#moveDirection);
+      const len = Math.min(screenRadius * 0.35, 60);
+      ctx.beginPath();
+      ctx.moveTo(sx, sy);
+      ctx.lineTo(sx + moveVec.dx * len, sy + moveVec.dy * len);
+      ctx.strokeStyle = 'rgba(180, 120, 255, 0.4)';
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([3, 5]);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+  }
+
+  getXpos() { return this.#x; }
+  getYpos() { return this.#y; }
+  getRadius() { return this.#radius; }
+  getHeating() { return this.#heatingLevel * AIRMASS_HEATING_SLIDER_SCALE; }
+  getDrying() { return this.#dryingLevel * AIRMASS_DRYING_SLIDER_SCALE; }
+  getWindAffect() { return this.#windAffect; }
+  getWindDirection() { return this.#windDirection; }
+
+  getSettings()
+  {
+    return {
+      radius: this.#radius,
+      heatingLevel: this.#heatingLevel,
+      dryingLevel: this.#dryingLevel,
+      windAffect: this.#windAffect,
+      windDirection: this.#windDirection,
+      moveEnabled: this.#moveEnabled,
+      moveSpeed: this.#moveSpeed,
+      moveDirection: this.#moveDirection,
+    };
+  }
+
+  setSettings(settings)
+  {
+    if (settings.radius !== undefined) this.#radius = settings.radius;
+    if (settings.heatingLevel !== undefined) this.#heatingLevel = settings.heatingLevel;
+    if (settings.dryingLevel !== undefined) this.#dryingLevel = settings.dryingLevel;
+    if (settings.windAffect !== undefined) this.#windAffect = settings.windAffect;
+    if (settings.windDirection !== undefined) this.#windDirection = settings.windDirection;
+    if (settings.moveEnabled !== undefined) this.#moveEnabled = settings.moveEnabled;
+    if (settings.moveSpeed !== undefined) this.#moveSpeed = settings.moveSpeed;
+    if (settings.moveDirection !== undefined) this.#moveDirection = settings.moveDirection;
+    this.syncMenuToState();
+  }
+}
+
 class Nuke
 {
   #x; // position in simulation
@@ -4287,6 +4556,7 @@ function extractJsonObject(text)
 }
 
 const MAX_SAVED_RADARS = 10000;
+const MAX_SAVED_AIRMASS = 10000;
 
 function isPlausibleGuiControlsLength(len, offset, totalBytes)
 {
@@ -4320,6 +4590,159 @@ function applyRadarSettingsFromSave(radarSettings)
     console.warn('Save file has settings for ' + n + ' radars but ' + radars.length + ' towers were loaded');
   else
     console.log('Loaded radar settings for ' + n + ' radar towers');
+}
+
+function airmassPositionsLookValid(positions, count)
+{
+  for (let i = 0; i < count; i++) {
+    const x = positions[i * 2];
+    const y = positions[i * 2 + 1];
+    if (x < 0 || y < 0 || x >= sim_res_x || y >= sim_res_y)
+      return false;
+  }
+  return true;
+}
+
+function applyAirmassSettingsFromSave(airmassSettings)
+{
+  if (!Array.isArray(airmassSettings) || airmassGenerators.length === 0)
+    return;
+
+  const n = Math.min(airmassSettings.length, airmassGenerators.length);
+  for (let i = 0; i < n; i++) {
+    if (airmassSettings[i] && typeof airmassSettings[i] === 'object')
+      airmassGenerators[i].setSettings(airmassSettings[i]);
+  }
+
+  if (n < airmassGenerators.length)
+    console.warn('Save file has settings for ' + n + ' airmass generators but ' + airmassGenerators.length + ' were loaded');
+  else
+    console.log('Loaded airmass settings for ' + n + ' generators');
+}
+
+async function loadAirmassGeneratorsFromSave(dataBlob, sliceStart, totalBytes)
+{
+  if (sliceStart + Int16Array.BYTES_PER_ELEMENT > totalBytes)
+    return sliceStart;
+
+  const numBuf = await dataBlob.slice(sliceStart, sliceStart + Int16Array.BYTES_PER_ELEMENT).arrayBuffer();
+  const numAirmass = new Int16Array(numBuf)[0];
+  let offset = sliceStart + Int16Array.BYTES_PER_ELEMENT;
+
+  if (numAirmass === 0) {
+    airmassGenerators = [];
+    return offset;
+  }
+
+  if (numAirmass <= 0 || numAirmass >= MAX_SAVED_AIRMASS) {
+    console.warn('Invalid airmass generator count in save file:', numAirmass);
+    return sliceStart;
+  }
+
+  const posBytes = numAirmass * 2 * Int16Array.BYTES_PER_ELEMENT;
+  if (offset + posBytes > totalBytes) {
+    console.warn('Truncated airmass generator positions in save file');
+    return sliceStart;
+  }
+
+  const airmassBuf = await dataBlob.slice(offset, offset + posBytes).arrayBuffer();
+  const safeLen = Math.floor(airmassBuf.byteLength / Int16Array.BYTES_PER_ELEMENT) * Int16Array.BYTES_PER_ELEMENT;
+  if (safeLen < posBytes) {
+    console.warn('Incomplete airmass generator position data in save file');
+    return sliceStart;
+  }
+
+  const airmassArray = new Int16Array(airmassBuf, 0, safeLen / Int16Array.BYTES_PER_ELEMENT);
+  const count = Math.floor(airmassArray.length / 2);
+  if (count !== numAirmass || !airmassPositionsLookValid(airmassArray, count)) {
+    console.warn('Airmass generator section invalid — skipping');
+    return sliceStart;
+  }
+
+  airmassGenerators = [];
+  for (let i = 0; i < count; i++)
+    airmassGenerators.push(new AirmassGenerator(airmassArray[i * 2], airmassArray[i * 2 + 1]));
+
+  console.log('Loaded ' + count + ' airmass generators');
+  return offset + posBytes;
+}
+
+async function readLengthPrefixedJsonBlob(blob, offsetInBlob)
+{
+  if (offsetInBlob + Uint32Array.BYTES_PER_ELEMENT > blob.size)
+    return { offset: offsetInBlob, data: null };
+
+  const lenBuf = await blob.slice(offsetInBlob, offsetInBlob + Uint32Array.BYTES_PER_ELEMENT).arrayBuffer();
+  const length = new Uint32Array(lenBuf)[0];
+  const start = offsetInBlob + Uint32Array.BYTES_PER_ELEMENT;
+  const end = start + length;
+
+  if (length <= 0 || length >= 500000 || end > blob.size)
+    return { offset: offsetInBlob, data: null };
+
+  try {
+    const text = await blob.slice(start, end).text();
+    return { offset: end, data: JSON.parse(text) };
+  } catch (e) {
+    return { offset: offsetInBlob, data: null };
+  }
+}
+
+async function loadAirmassSettingsFromSaveBlob(settingsArrayBlob, offsetInBlob)
+{
+  const result = await readLengthPrefixedJsonBlob(settingsArrayBlob, offsetInBlob);
+  if (result.data)
+    applyAirmassSettingsFromSave(result.data);
+}
+
+function finalizeLoadedAirmassGenerators()
+{
+  if (airmassGenerators.length === 0)
+    return;
+
+  if (guiControls && guiControls.displayAirmassGenerators !== undefined)
+    displayAirmassGenerators = guiControls.displayAirmassGenerators;
+
+  for (let i = 0; i < airmassGenerators.length; i++) {
+    airmassGenerators[i].updateCanvas();
+    airmassGenerators[i].setHidden(!displayAirmassGenerators);
+  }
+}
+
+function buildSavedAirmassGeneratorsForGuiControls()
+{
+  if (airmassGenerators.length === 0)
+    return null;
+
+  return airmassGenerators.map(gen => ({
+    x: gen.getXpos(),
+    y: gen.getYpos(),
+    ...gen.getSettings(),
+  }));
+}
+
+function restoreSavedAirmassGeneratorsFromGuiControls()
+{
+  const saved = guiControls && guiControls.__savedAirmassGenerators;
+  if (!Array.isArray(saved) || saved.length === 0)
+    return;
+
+  if (airmassGenerators.length === 0) {
+    for (let i = 0; i < saved.length; i++) {
+      const entry = saved[i];
+      if (entry && Number.isFinite(entry.x) && Number.isFinite(entry.y))
+        airmassGenerators.push(new AirmassGenerator(entry.x, entry.y));
+    }
+  }
+
+  applyAirmassSettingsFromSave(saved.map(entry => {
+    const settings = Object.assign({}, entry);
+    delete settings.x;
+    delete settings.y;
+    return settings;
+  }));
+
+  delete guiControls.__savedAirmassGenerators;
 }
 
 async function loadRadarTowersFromSave(dataBlob, sliceStart, totalBytes)
@@ -4512,7 +4935,7 @@ async function loadMasterFormatSettings(dataBlob, sliceStart, totalBytes)
     console.warn('No guiControls JSON found after weather stations in save file');
 }
 
-async function loadNewFormatSettings(dataBlob, sliceStart, totalBytes)
+async function loadNewFormatSettings(dataBlob, sliceStart, totalBytes, fileVersion)
 {
   if (sliceStart >= totalBytes)
     return;
@@ -4537,6 +4960,15 @@ async function loadNewFormatSettings(dataBlob, sliceStart, totalBytes)
 
       tempSliceStart = tempSliceEnd;
       await loadRadarSettingsFromSaveBlob(settingsArrayBlob, tempSliceStart);
+
+      if (fileVersion === saveFileVersionID) {
+        const radarLenBuf = await settingsArrayBlob.slice(tempSliceEnd, tempSliceEnd + Uint32Array.BYTES_PER_ELEMENT).arrayBuffer();
+        if (radarLenBuf.byteLength >= Uint32Array.BYTES_PER_ELEMENT) {
+          const radarLen = new Uint32Array(radarLenBuf)[0];
+          const afterRadar = tempSliceEnd + Uint32Array.BYTES_PER_ELEMENT + radarLen;
+          await loadAirmassSettingsFromSaveBlob(settingsArrayBlob, afterRadar);
+        }
+      }
       return;
     }
 
@@ -4572,12 +5004,13 @@ window.loadData = async function()
     guiControlsFromSaveFile = null;
     weatherStations = [];
     radars = [];
+    airmassGenerators = [];
 
     let versionBlob = file.slice(0, 4);                          // extract first 4 bytes containing version id
     let versionBuf = await versionBlob.arrayBuffer();
     let version = new Uint32Array(versionBuf)[0];                // convert to Uint32
 
-    if (version == saveFileVersionID || version == 263574036 || version == 1939327491) { // allow current, previous, and older version
+    if (version == saveFileVersionID || version == 263574037 || version == 263574036 || version == 1939327491) { // allow current, previous, and older version
       // check version id, only proceed if file has the right version id
       let fileArrBuf = await file.slice(4).arrayBuffer();
       let fileUint8Arr = new Uint8Array(fileArrBuf);
@@ -4646,8 +5079,8 @@ window.loadData = async function()
       let wallTexBuf = await wallTexBlob.arrayBuffer();
       let wallTexI8 = new Int8Array(wallTexBuf);
 
-      // Read precipitation: newest format stores droplet count; previous format uses calculated size
-      if (version == saveFileVersionID) {
+      // Read precipitation: format stores droplet count (263574037 and newer)
+      if (version == saveFileVersionID || version == 263574037) {
         sliceStart = sliceEnd;
         sliceEnd += 1 * Uint32Array.BYTES_PER_ELEMENT;
         let numDropletsBlob = dataBlob.slice(sliceStart, sliceEnd);
@@ -4690,7 +5123,7 @@ window.loadData = async function()
         precipArray = null;
       }
 
-      if (version == saveFileVersionID) {             // only load settings and weather stations from save file if it's the newest version with NUM_DROPLETS saved
+      if (version == saveFileVersionID || version == 263574037) {             // formats with saved droplet count
         console.log('Loading weather stations, radars, and settings for new version');
         
         // Helper: safely read a slice — returns null if not enough bytes remain
@@ -4736,9 +5169,12 @@ window.loadData = async function()
 
         sliceStart = await loadRadarTowersFromSave(dataBlob, sliceEnd, totalBytes);
 
+        if (version == saveFileVersionID)
+          sliceStart = await loadAirmassGeneratorsFromSave(dataBlob, sliceStart, totalBytes);
+
         sliceEnd = sliceStart;
         if (sliceStart < totalBytes)
-          await loadNewFormatSettings(dataBlob, sliceStart, totalBytes);
+          await loadNewFormatSettings(dataBlob, sliceStart, totalBytes, version);
         else
           console.log('Save file has no settings section — using defaults');
 
@@ -4865,7 +5301,12 @@ class LoadingBar
       this.bar.style.width = this.percent + '%';
       this.bar.innerHTML = this.percent + '%';
       this.underBar.innerHTML = this.description;
-      requestAnimationFrame(() => { resolve(); });
+      let timeout;
+      if (this.percent == 100)
+        timeout = 5;
+      else
+        timeout = 5; // 50 for nicer feel
+      setTimeout(() => { resolve(); }, timeout);
     });
   }
 
@@ -7086,6 +7527,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     guiControls.lapseUnit = guiControls_default.lapseUnit;
 
   restoreSavedRadarTowersFromGuiControls();
+  restoreSavedAirmassGeneratorsFromGuiControls();
 
   var uloc_charge_generationRate = null;
   var uloc_charge_minCloudDensity = null;
@@ -7396,15 +7838,15 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         'Charge' : 'TOOL_CHARGE',
         'Weather Station' : 'TOOL_STATION',
         'Radar Tower' : 'TOOL_RADAR',
+        'Airmass Generator' : 'TOOL_AIRMASS',
         'Marker' : 'TOOL_MARKER',
         'Nuke' : 'TOOL_NUKE',
-        'Airmass Generator' : 'TOOL_AIRMASS',
       })
       .name('Tool')
       .listen();
     UI_folder.add(guiControls, 'brushSize', 1, 200, 1).name('Brush Diameter').listen();
     UI_folder.add(guiControls, 'wholeWidth').name('Whole Width Brush').listen();
-    UI_folder.add(guiControls, 'brushIntensity', 0.005, 1.0, 0.001).name('Brush Intensity');
+    UI_folder.add(guiControls, 'brushIntensity', 0.005, 1, 0.001).name('Brush Intensity');
     UI_folder.add(guiControls, 'invertTool').name('Invert Tool (charge − / +)').listen();
     UI_folder.add(guiControls, 'allowCaves')
       .onChange(function() {
@@ -12365,6 +12807,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     soundingGraph.resizeCanvas();
 
     // Render output framebuffers need to match canvas resolution
+    hdrRenderScaleState = 1.0;
     createBloomFBOs(); // recreate bloom framebuffers
     createHdrFBO();    // recreate hdr framebuffer
 
@@ -12393,36 +12836,42 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   {
     if (!nukeOverlayCtx || !nukeOverlayCanvas) return;
     nukeOverlayCtx.clearRect(0, 0, nukeOverlayCanvas.width, nukeOverlayCanvas.height);
-    if (!nukes || nukes.length === 0) return;
 
-    for (let i = 0; i < nukes.length; i++) {
-      const nuke = nukes[i];
-      if (nuke.isExploded()) continue;
-      const sx = simToScreenX(nuke.getX());
-      const sy = simToScreenY(nuke.getY());
-      if (sx < -40 || sx > canvas.width + 40 || sy < -40 || sy > canvas.height + 40) continue;
+    if (nukes && nukes.length > 0) {
+      for (let i = 0; i < nukes.length; i++) {
+        const nuke = nukes[i];
+        if (nuke.isExploded()) continue;
+        const sx = simToScreenX(nuke.getX());
+        const sy = simToScreenY(nuke.getY());
+        if (sx < -40 || sx > canvas.width + 40 || sy < -40 || sy > canvas.height + 40) continue;
 
-      nukeOverlayCtx.save();
-      nukeOverlayCtx.translate(sx, sy);
-      nukeOverlayCtx.strokeStyle = 'rgba(255, 190, 0, 0.95)';
-      nukeOverlayCtx.fillStyle = 'rgba(255, 100, 10, 0.95)';
-      nukeOverlayCtx.lineWidth = 2;
-      nukeOverlayCtx.beginPath();
-      nukeOverlayCtx.moveTo(0, -10);
-      nukeOverlayCtx.lineTo(-8, 10);
-      nukeOverlayCtx.lineTo(8, 10);
-      nukeOverlayCtx.closePath();
-      nukeOverlayCtx.fill();
-      nukeOverlayCtx.stroke();
+        nukeOverlayCtx.save();
+        nukeOverlayCtx.translate(sx, sy);
+        nukeOverlayCtx.strokeStyle = 'rgba(255, 190, 0, 0.95)';
+        nukeOverlayCtx.fillStyle = 'rgba(255, 100, 10, 0.95)';
+        nukeOverlayCtx.lineWidth = 2;
+        nukeOverlayCtx.beginPath();
+        nukeOverlayCtx.moveTo(0, -10);
+        nukeOverlayCtx.lineTo(-8, 10);
+        nukeOverlayCtx.lineTo(8, 10);
+        nukeOverlayCtx.closePath();
+        nukeOverlayCtx.fill();
+        nukeOverlayCtx.stroke();
 
-      nukeOverlayCtx.beginPath();
-      nukeOverlayCtx.moveTo(-5, 10);
-      nukeOverlayCtx.lineTo(0, 18);
-      nukeOverlayCtx.lineTo(5, 10);
-      nukeOverlayCtx.strokeStyle = 'rgba(255, 255, 100, 0.85)';
-      nukeOverlayCtx.lineWidth = 3;
-      nukeOverlayCtx.stroke();
-      nukeOverlayCtx.restore();
+        nukeOverlayCtx.beginPath();
+        nukeOverlayCtx.moveTo(-5, 10);
+        nukeOverlayCtx.lineTo(0, 18);
+        nukeOverlayCtx.lineTo(5, 10);
+        nukeOverlayCtx.strokeStyle = 'rgba(255, 255, 100, 0.85)';
+        nukeOverlayCtx.lineWidth = 3;
+        nukeOverlayCtx.stroke();
+        nukeOverlayCtx.restore();
+      }
+    }
+
+    if (displayAirmassGenerators && airmassGenerators && airmassGenerators.length > 0) {
+      for (let i = 0; i < airmassGenerators.length; i++)
+        airmassGenerators[i].drawRadiusOverlay(nukeOverlayCtx);
     }
   }
 
@@ -12720,6 +13169,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       onDown() { airplane.toggleEngine(); } },
     { id: 'toolRadar', name: 'Tool: radar tower', category: 'Tools', defaultCode: null,
       onDown() { guiControls.tool = 'TOOL_RADAR'; } },
+    { id: 'toolAirmass', name: 'Tool: airmass generator', category: 'Tools', defaultCode: null,
+      onDown() { guiControls.tool = 'TOOL_AIRMASS'; } },
     { id: 'toolNuke', name: 'Tool: nuke', category: 'Tools', defaultCode: null,
       onDown() { guiControls.tool = 'TOOL_NUKE'; } },
     { id: 'displayPrecipVapor', name: 'Precipitation vapor feedback display', category: 'Display', defaultCode: null,
@@ -13282,17 +13733,18 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
           radars.push(newRadar); // add radar
           refreshRadarOverlaySourceDropdown();
         }
+      } else if (guiControls.tool == 'TOOL_AIRMASS') {
+        let simXpos = Math.floor(mouseXinSim * sim_res_x);
+        let simYpos = findSimYposAboveSurfaceAtMouseX();
+
+        if (simXpos >= 0 && simXpos < sim_res_x && simYpos !== undefined)
+          airmassGenerators.push(new AirmassGenerator(simXpos, simYpos));
       } else if (guiControls.tool == 'TOOL_MARKER') {
         let simXpos = Math.floor(mouseXinSim * sim_res_x);
         let simYpos = findSimYposAboveSurfaceAtMouseX();
 
         if (simXpos >= 0 && simXpos < sim_res_x)
           markers.push(new Marker(simXpos, simYpos)); // add marker
-      } else if (guiControls.tool == 'TOOL_AIRMASS') {
-        let simXpos = Math.floor(mouseXinSim * sim_res_x);
-        let simYpos = Math.floor(mouseYinSim * sim_res_y);
-        if (simXpos >= 0 && simXpos < sim_res_x)
-          airmassGenerators.push(new AirmassGenerator(simXpos, simYpos));
       } else if (guiControls.tool == 'TOOL_NUKE') {
         let simXpos = Math.floor(mouseXinSim * sim_res_x);
         let cursorYpos = Math.floor(mouseYinSim * sim_res_y);
@@ -13416,6 +13868,66 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     return getFramePressure() > 0.42;
   }
 
+  function getTargetHdrRenderScale()
+  {
+    if (guiControls.performanceAutoScaling === false)
+      return 1.0;
+    const pixels = canvas.width * canvas.height;
+    let scale = 1.0;
+    if (pixels > 1920 * 1080)
+      scale = 0.75;
+    if (pixels > 2560 * 1440)
+      scale = 0.625;
+    const pressure = getSmoothedFramePressure();
+    if (pressure > 0.30)
+      scale = Math.min(scale, 0.75);
+    if (pressure > 0.50)
+      scale = Math.min(scale, 0.5);
+    if (useLiteVisualsMode())
+      scale = Math.min(scale, 0.5);
+    return scale;
+  }
+
+  function updateHdrRenderScaleIfNeeded()
+  {
+    const target = getTargetHdrRenderScale();
+    if (target < hdrRenderScaleState - 0.01) {
+      hdrRenderScaleState = target;
+      createBloomFBOs();
+      createHdrFBO();
+    } else if (target > hdrRenderScaleState + 0.124 && getSmoothedFramePressure() < 0.22) {
+      hdrRenderScaleState = target;
+      createBloomFBOs();
+      createHdrFBO();
+    }
+  }
+
+  function needsAmbientLightBlur()
+  {
+    if (guiControls.paused)
+      return false;
+    const visualAge = getLightningVisualAge();
+    return visualAge >= 0 && proceduralLightningState.strikes.length > 0;
+  }
+
+  function shouldRunPrecipitationThisIteration(iterIndex)
+  {
+    if (!guiControls.enablePrecipitation)
+      return false;
+    if (!useLiteVisualsMode())
+      return true;
+    return iterIndex === 0 || (frameNum % 2 === 0);
+  }
+
+  function shouldDrawRadarOverlayThisFrame()
+  {
+    if (!guiControls.radarOverlay)
+      return false;
+    if (!useLiteVisualsMode())
+      return true;
+    return frameNum % 2 === 0;
+  }
+
   function getSmoothedFramePressure()
   {
     const p = getFramePressure();
@@ -13423,10 +13935,13 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     return smoothedAmbientPressure;
   }
 
-  // Sunlight shadow kernel — never tied to frame pressure (pressure made kernel radius jump each frame)
+  // Sunlight shadow kernel — scales with GPU quality and smoothed frame pressure
   function getSunlightVisualQuality()
   {
-    return clamp(guiControls.gpuEffectQuality || 1.0, 0.72, 1.2);
+    let quality = clamp(guiControls.gpuEffectQuality || 1.0, 0.72, 1.2);
+    if (guiControls.performanceAutoScaling !== false)
+      quality *= 1.0 - getSmoothedFramePressure() * 0.42;
+    return clamp(quality, 0.48, 1.2);
   }
 
   function getRealisticVisualQuality()
@@ -13464,14 +13979,19 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   {
     if (!guiControls.enableBloom)
       return 0;
-    // Cap bloom levels: beyond 7 levels the lower mips are tiny and imperceptible
-    // while each level costs a downsample + upsample draw call.
     const pressure = getFramePressure();
+    const pixels = canvas.width * canvas.height;
     let cap = 7;
-    if (pressure > 0.55)
-      cap = 5;
-    else if (pressure > 0.22)
+    if (pixels > 1920 * 1080)
       cap = 6;
+    if (pixels > 2560 * 1440)
+      cap = 5;
+    if (pressure > 0.55)
+      cap = Math.min(cap, 5);
+    else if (pressure > 0.22)
+      cap = Math.min(cap, 6);
+    if (useLiteVisualsMode())
+      cap = Math.min(cap, 4);
     return Math.min(bloomFBOs.length, cap);
   }
 
@@ -13547,6 +14067,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
           canvas_aspect = canvas.width / canvas.height;
           
           // Recreate framebuffers at new resolution
+          hdrRenderScaleState = 1.0;
           createBloomFBOs();
           createHdrFBO();
           
@@ -13571,6 +14092,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       canvas.width = width;
       canvas.height = height;
       canvas_aspect = canvas.width / canvas.height;
+      hdrRenderScaleState = 1.0;
       createBloomFBOs();
       createHdrFBO();
       if (typeof radarTexture !== 'undefined' && radarTexture) {
@@ -13716,7 +14238,6 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   const dispVertexShader = await loadShader('dispShader.vert');
   const realDispVertexShader = await loadShader('realDispShader.vert');
   const precipDisplayVertexShader = await loadShader('precipDisplayShader.vert');
-  // const precipCurtainVertexShader = await loadShader('precipCurtainShader.vert');
   const postProcessingVertexShader = await loadShader('postProcessingShader.vert');
 
   const pressureShader = await loadShader('pressureShader.frag');
@@ -13745,9 +14266,9 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   const airQualityDisplayShader = await loadShader('airQualityDisplayShader.frag');
   const humidityDisplayShader = await loadShader('humidityDisplayShader.frag');
   const precipDisplayShader = await loadShader('precipDisplayShader.frag');
-  // const precipCurtainShader = await loadShader('precipCurtainShader.frag');
   const universalDisplayShader = await loadShader('universalDisplayShader.frag');
   const skyBackgroundDisplayShader = await loadShader('skyBackgroundDisplayShader.frag');
+  const realisticDisplayShader = await loadShader('realisticDisplayShader.frag');
   const IRtempDisplayShader = await loadShader('IRtempDisplayShader.frag');
 
   const postProcessingShader = await loadShader('postProcessingShader.frag');
@@ -13783,8 +14304,6 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   const humidityDisplayProgram = createProgram(dispVertexShader, humidityDisplayShader);
   const precipDisplayProgram = createProgram(precipDisplayVertexShader, precipDisplayShader);
   gl.deleteShader(precipDisplayVertexShader);
-  // const precipCurtainProgram = createProgram(precipCurtainVertexShader, precipCurtainShader);
-  // gl.deleteShader(precipCurtainVertexShader);
   const universalDisplayProgram = createProgram(dispVertexShader, universalDisplayShader);
   const skyBackgroundDisplayProgram = createProgram(realDispVertexShader, skyBackgroundDisplayShader);
   const IRtempDisplayProgram = createProgram(dispVertexShader, IRtempDisplayShader);
@@ -13800,25 +14319,26 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
 
   await loadingBar.set(84, 'Linking realistic display shader');
   let realisticDisplayProgram;
-  let realisticDisplayShader = null;
   try {
-    realisticDisplayShader = await loadShader('realisticDisplayShader.frag');
     realisticDisplayProgram = await linkProgramAsync(realDispVertexShader, realisticDisplayShader, null, 'realistic display');
-    lightningV2InRealisticShader = true;
   } catch (e) {
+    if (gl.isContextLost && gl.isContextLost()) {
+      await loadingBar.showError('WebGL context lost while linking shaders.\nRefresh the page — if this keeps happening, your GPU may not handle the full lightning shader.');
+      throw e;
+    }
+    console.warn('Realistic display link failed with Lightning V2:', e.message, '— retrying without procedural lightning');
+    gl.deleteShader(realisticDisplayShader);
+    await linkProgramYield();
     if (gl.isContextLost && gl.isContextLost()) {
       await loadingBar.showError('WebGL context lost while linking shaders.\nRefresh the page (Ctrl+F5) and try again.');
       throw e;
     }
-    console.warn('Realistic display link failed with Lightning V2:', e.message, '— retrying lightweight shader');
-    if (realisticDisplayShader)
-      gl.deleteShader(realisticDisplayShader);
-    await linkProgramYield();
-    realisticDisplayShader = await loadShader('realisticDisplayShader.frag', { skipLightningV2: true });
+    await loadingBar.set(84, 'Linking realistic display (fallback)...');
+    const realisticDisplayShaderNoLt = await loadShader('realisticDisplayShader.frag', { skipLightningV2: true });
     try {
-      realisticDisplayProgram = await linkProgramAsync(realDispVertexShader, realisticDisplayShader, null, 'realistic display (lite)');
+      realisticDisplayProgram = await linkProgramAsync(realDispVertexShader, realisticDisplayShaderNoLt, null, 'realistic display (no lightning V2)');
       lightningV2InRealisticShader = false;
-      console.warn('Loaded without Lightning V2 in realistic display — texture lightning still works.');
+      console.warn('Loaded without Lightning V2 in realistic display — legacy lightning still works.');
     } catch (e2) {
       await loadingBar.showError('ERROR linking realistic display shader:\n' + e2.message);
       throw e2;
@@ -14367,6 +14887,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   // Initialize radar cache FBOs
   radars.forEach(radar => radar.initCacheFBO());
   finalizeLoadedRadars();
+  finalizeLoadedAirmassGenerators();
 
   // Set up Framebuffers
 
@@ -14597,20 +15118,18 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
   }
 
-  function startLightningTextureWorkers()
-  {
-    for (let i = 0; i < numLightningTextures; i++) {
-      const lightningGeneratorWorker = new Worker('./lightningGenerator.js');
-      const texIndex = i;
-      lightningGeneratorWorker.onmessage = (imgElement) => {
-        generateLightningTexture(texIndex, imgElement.data);
-      };
-      lightningGeneratorWorker.postMessage({
-        width: 2500, height: 5000,
-        type: lightningTextureTypes[texIndex] || 'CG',
-      });
-    }
+  for (let i = 0; i < numLightningTextures; i++) {
+    const lightningGeneratorWorker = new Worker('./lightningGenerator.js');
+    const texIndex = i;
+    lightningGeneratorWorker.onmessage = (imgElement) => {
+      generateLightningTexture(texIndex, imgElement.data);
+    };
+    lightningGeneratorWorker.postMessage({
+      width: 2500, height: 5000,
+      type: lightningTextureTypes[texIndex] || 'CG',
+    });
   }
+
 
   // ========================= Sky Editor System =========================
   const SKY_STORAGE_KEY = 'weatherSandboxSky_v1';
@@ -16927,14 +17446,6 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   gl.uniform1i(gl.getUniformLocation(precipDisplayProgram, 'waterTex'), 0);
   gl.uniform1i(gl.getUniformLocation(precipDisplayProgram, 'wallTex'), 2);
 
-  // gl.useProgram(precipCurtainProgram);
-  // gl.uniform2f(gl.getUniformLocation(precipCurtainProgram, 'resolution'), sim_res_x, sim_res_y);
-  // gl.uniform2f(gl.getUniformLocation(precipCurtainProgram, 'texelSize'), texelSizeX, texelSizeY);
-  // gl.uniform1i(gl.getUniformLocation(precipCurtainProgram, 'baseTex'), 1);
-  // gl.uniform1i(gl.getUniformLocation(precipCurtainProgram, 'waterTex'), 0);
-  // gl.uniform1i(gl.getUniformLocation(precipCurtainProgram, 'precipAccumTex'), 10);
-  // gl.uniform1f(gl.getUniformLocation(precipCurtainProgram, 'dryLapse'), dryLapse);
-
   gl.useProgram(skyBackgroundDisplayProgram);
   gl.uniform2f(gl.getUniformLocation(skyBackgroundDisplayProgram, 'resolution'), sim_res_x, sim_res_y);
   gl.uniform2f(gl.getUniformLocation(skyBackgroundDisplayProgram, 'texelSize'), texelSizeX, texelSizeY);
@@ -17040,7 +17551,6 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
 
   await loadingBar.set(95, 'Loading sounds'); // loading complete
   await loadingBar.remove();
-  startLightningTextureWorkers();
   if (typeof stopMenuBackgroundSlideshow === 'function') {
     stopMenuBackgroundSlideshow();
   }
@@ -17170,11 +17680,6 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   // precipDisplay per-frame
   const uloc_precipDisp_aspectRatios   = gl.getUniformLocation(precipDisplayProgram, 'aspectRatios');
   const uloc_precipDisp_view           = gl.getUniformLocation(precipDisplayProgram, 'view');
-
-  // precipCurtain per-frame
-  // const uloc_precipCurtain_aspectRatios = gl.getUniformLocation(precipCurtainProgram, 'aspectRatios');
-  // const uloc_precipCurtain_view         = gl.getUniformLocation(precipCurtainProgram, 'view');
-  // const uloc_precipCurtain_time         = gl.getUniformLocation(precipCurtainProgram, 'time');
 
   // radarDisplay per-frame
   const uloc_radar_aspectRatios        = gl.getUniformLocation(radarDisplayProgram, 'aspectRatios');
@@ -17527,7 +18032,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     let cursorType = 1.0;
     if (guiControls.wholeWidth) {
       cursorType = 2.0;
-    } else if (SETUP_MODE || (inputType <= 0 && !bPressed && (guiControls.tool == 'TOOL_NONE' || guiControls.tool == 'TOOL_STATION' || guiControls.tool == 'TOOL_RADAR' || guiControls.tool == 'TOOL_MARKER'))) {
+    } else if (SETUP_MODE || (inputType <= 0 && !bPressed && (guiControls.tool == 'TOOL_NONE' || guiControls.tool == 'TOOL_STATION' || guiControls.tool == 'TOOL_RADAR' || guiControls.tool == 'TOOL_AIRMASS' || guiControls.tool == 'TOOL_MARKER'))) {
       cursorType = 0;
     }
     if (inputType === 0)
@@ -17768,7 +18273,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     const cached = lightningFrameCpuCache.channelStrikeChances.get(channel.id);
     if (cached != null)
       return cached;
-    const burstMult = lightningBurstState.phase === 'burst' ? lightningBurstState.burstIntensity : 0.07;
+    const burstMult = lightningBurstState.phase === 'burst' ? lightningBurstState.burstIntensity : 0.30;
     const chance = typeof LightningV2 !== 'undefined'
       ? LightningV2.strikeChance(channel.freq(), burstMult, guiControls.lightningClusteringStrength)
       : lightningStrikeChance(channel.freq());
@@ -17840,10 +18345,10 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   {
     if (!isLightningCpuReady() || !isProceduralLightningEnabled())
       return;
-    // Throttle: rebuild at most every 3 frames. Lightning spawning is measured
-    // in simulation-seconds so 3-frame staleness is imperceptible, and this
-    // eliminates the synchronous readPixels stall from every frame.
-    if (lightningFieldCacheFrame >= frameNum - 2 && lightningFieldCache)
+    // Throttle: rebuild every 3–5 frames depending on load. Lightning spawning is measured
+    // in simulation-seconds so occasional staleness is imperceptible.
+    const cacheThrottle = useLiteVisualsMode() ? 5 : 3;
+    if (lightningFieldCacheFrame >= frameNum - (cacheThrottle - 1) && lightningFieldCache)
       return;
     if (!lightningSummaryBuffer || lightningCacheW < 1)
       return;
@@ -17993,6 +18498,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     if (startIter === proceduralLightningState.lastCompletedEventId)
       return { eventAge: -1, eventId: 0, channel: null };
 
+    const hits = [];
     if (typeof LightningV2 !== 'undefined') {
       const stormActivity = getCachedStormActivity();
       const readiness = LightningV2.computeStormChargeReadiness(
@@ -18009,8 +18515,6 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         return { eventAge: 0, eventId: startIter, channel };
       return { eventAge: -1, eventId: 0, channel: null };
     }
-
-    const hits = [];
     for (const ch of channels) {
       const strikeChance = getCachedChannelStrikeChance(ch);
       if (strikeChance <= 0)
@@ -18401,6 +18905,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     let viaMidpoint = false;
     let precipOnly = typeof LightningV2 !== 'undefined'
       ? LightningV2.rollPrecipOnlyStrike(seed, ltType, guiControls) : false;
+    if (precipOnly)
+      flashInFront = false;
     const profile = getStormElectricalProfile();
 
     if (typeof LightningV2 !== 'undefined' && lightningFieldCache
@@ -19801,6 +20307,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
             if (!guiControls.skipAdvection || (leftMousePressed && inputType > 0)) {
               gl.useProgram(advectionProgram);
               gl.uniform1f(uloc_adv_iterNum, iterNum);
+              gl.uniform1i(uloc_adv_wrapHorizontally, guiControls.wrapHorizontally);
               gl.activeTexture(gl.TEXTURE0);
               gl.bindTexture(gl.TEXTURE_2D, baseTexture_0);
               gl.activeTexture(gl.TEXTURE1);
@@ -19810,6 +20317,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
               gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_1);
               gl.drawBuffers([ gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1, gl.COLOR_ATTACHMENT2 ]);
               gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+
+              applyAirmassGeneratorsCpu();
 
               // calc and apply pressure (divergence correction)
               gl.useProgram(pressureProgram);
@@ -19873,7 +20382,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
             gl.bindFramebuffer(gl.FRAMEBUFFER, precipitationFeedbackFrameBuff);
             gl.clear(gl.COLOR_BUFFER_BIT);         // clear precipitation feedback
 
-            if (guiControls.enablePrecipitation) { // move precipitation, HUGE PERFORMANCE BOTTLENECK!
+            if (shouldRunPrecipitationThisIteration(i)) { // move precipitation, HUGE PERFORMANCE BOTTLENECK!
 
               gl.useProgram(precipitationProgram);
               gl.uniform1f(uloc_precip_iterNum, iterNum);
@@ -19928,10 +20437,6 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
                 weatherStations[i].measure();
               }
             }
-            // Apply airmass generators
-            for (let _ag = 0; _ag < airmassGenerators.length; _ag++)
-              airmassGenerators[_ag].applyEffects();
-
             if (!airplaneMode) {
               iterNum++;
             }
@@ -19962,6 +20467,9 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
             nukes.splice(i, 1);
           }
         }
+
+        for (let i = 0; i < airmassGenerators.length; i++)
+          airmassGenerators[i].step();
 
       } // end of simulation part
 
@@ -20036,12 +20544,15 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
 
     if (guiControls.displayMode == 'DISP_REAL') {
 
+      updateHdrRenderScaleIfNeeded();
+      getSmoothedFramePressure();
       realisticVisualQuality = getRealisticVisualQuality();
       sunlightVisualQuality = getSunlightVisualQuality();
-      getSmoothedFramePressure();
+      const hdrW = hdrFBO.width;
+      const hdrH = hdrFBO.height;
 
       { // Ambient light from emitted sources (lightning bloom) — skip while paused to preserve last frame
-        if (!guiControls.paused) {
+        if (!guiControls.paused && needsAmbientLightBlur()) {
         gl.bindVertexArray(postProcessingVao);
 
         gl.bindFramebuffer(gl.FRAMEBUFFER, ambientLightFBOs[0].frameBuffer);
@@ -20098,6 +20609,11 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
           gl.disable(gl.BLEND);
         }
         gl.bindVertexArray(fluidVao);
+        } else if (!guiControls.paused) {
+          gl.bindFramebuffer(gl.FRAMEBUFFER, ambientLightFBOs[0].frameBuffer);
+          gl.viewport(0, 0, ambientLightFBOs[0].width, ambientLightFBOs[0].height);
+          gl.clearColor(0.0, 0.0, 0.0, 1.0);
+          gl.clear(gl.COLOR_BUFFER_BIT);
         }
       }
 
@@ -20108,8 +20624,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
 
 
       gl.bindFramebuffer(gl.FRAMEBUFFER, hdrFBO.frameBuffer); // render to hdr framebuffer
-      // gl.viewport(0, 0, sim_res_x, sim_res_y);
-      gl.viewport(0, 0, canvas.width, canvas.height);
+      gl.viewport(0, 0, hdrW, hdrH);
       gl.clearColor(0.0, 0.0, 0.0, 1.0); // background color
       gl.clear(gl.COLOR_BUFFER_BIT);
 
@@ -20159,7 +20674,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       gl.uniform1f(uloc_real_Xmult, horizontalDisplayMult);
       gl.uniform1f(uloc_real_iterNum, iterNum);
       if (uloc_real_visualQuality !== null)
-        gl.uniform1f(uloc_real_visualQuality, sunlightVisualQuality);
+        gl.uniform1f(uloc_real_visualQuality, Math.min(sunlightVisualQuality, realisticVisualQuality));
 
       // Don't display vectors when zoomed out because you would just see noise
       if (cam.curZoom / sim_res_x > 0.003) {
@@ -20181,28 +20696,6 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       uploadProceduralLightningUniforms();
       gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4); // draw to hdr framebuffer
 
-      // Draw precipitation curtain effect - DISABLED FOR DEBUGGING
-      // if (guiControls.enablePrecipitation) {
-      //   gl.enable(gl.BLEND);
-      //   gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
-      //   
-      //   gl.useProgram(precipCurtainProgram);
-      //   gl.uniform2f(uloc_precipCurtain_aspectRatios, sim_aspect, canvas_aspect);
-      //   gl.uniform3f(uloc_precipCurtain_view, cam.curXpos, cam.curYpos, cam.curZoom);
-      //   gl.uniform1f(uloc_precipCurtain_time, iterNum * 0.1);
-      //   
-      //   gl.activeTexture(gl.TEXTURE0);
-      //   gl.bindTexture(gl.TEXTURE_2D, waterTexture_1);
-      //   gl.activeTexture(gl.TEXTURE1);
-      //   gl.bindTexture(gl.TEXTURE_2D, baseTexture_1);
-      //   gl.activeTexture(gl.TEXTURE10);
-      //   gl.bindTexture(gl.TEXTURE_2D, dropletSizeAccumFBO.texture);
-      //   
-      //   gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
-      //   
-      //   gl.disable(gl.BLEND);
-      // }
-
       gl.disable(gl.BLEND);
 
       // Post processing:
@@ -20213,7 +20706,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       const bloomLevels = getBloomLevelCount();
       if (bloomLevels <= 1) {
         gl.bindFramebuffer(gl.FRAMEBUFFER, bloomFBOs[0].frameBuffer);
-        gl.viewport(0, 0, canvas.width, canvas.height);
+        gl.viewport(0, 0, hdrW, hdrH);
         gl.clearColor(0.0, 0.0, 0.0, 1.0);
         gl.clear(gl.COLOR_BUFFER_BIT);
         gl.bindFramebuffer(gl.FRAMEBUFFER, null);
@@ -20223,7 +20716,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         gl.activeTexture(gl.TEXTURE0);
         gl.bindTexture(gl.TEXTURE_2D, hdrFBO.texture);
         gl.bindFramebuffer(gl.FRAMEBUFFER, bloomFBOs[0].frameBuffer); // brightPartsFrameBuffer
-        gl.viewport(0, 0, canvas.width, canvas.height);
+        gl.viewport(0, 0, hdrW, hdrH);
         gl.clearColor(0.0, 0.0, 0.0, 1.0);
         gl.clear(gl.COLOR_BUFFER_BIT);
 
@@ -20310,7 +20803,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
 
       gl.bindVertexArray(fluidVao);
 
-      if (guiControls.enablePrecipitation && guiControls.showDrops) {
+      if (guiControls.showDrops && !useLiteVisualsMode()) {
         gl.enable(gl.BLEND);
         gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
         // draw drops over clouds
@@ -20325,7 +20818,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       }
 
       // Radar overlay on realistic view
-      if (guiControls.radarOverlay) {
+      if (shouldDrawRadarOverlayThisFrame()) {
         const overlaySource = guiControls.radarOverlaySource || 'composite';
         const overlayWorld = overlaySource === 'world';
         const overlayComposite = overlaySource === 'composite';
@@ -21170,11 +21663,13 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       markers[i].updateCanvas();
   }
 
-  for (let i = 0; i < airmassGenerators.length; i++) {
-    const sx = simToScreenX(airmassGenerators[i].getXpos());
-    const sy = simToScreenY(airmassGenerators[i].getYpos());
-    if (displayAirmassGenerators && sx > -300 && sx < canvas.width + 300 && sy > -300 && sy < canvas.height + 300)
-      airmassGenerators[i].updateCanvas();
+  if (displayAirmassGenerators) {
+    for (i = 0; i < airmassGenerators.length; i++) {
+      const sx = simToScreenX(airmassGenerators[i].getXpos());
+      const sy = simToScreenY(airmassGenerators[i].getYpos());
+      if (sx > -400 && sx < canvas.width + 400 && sy > -400 && sy < canvas.height + 400)
+        airmassGenerators[i].updateCanvas();
+    }
   }
 
 drawNukeOverlay();
@@ -21188,7 +21683,7 @@ drawNukeOverlay();
       // Reduce aggressively if over budget, grow slowly when comfortable.
       const msOverBudget = smoothedFrameMs - TARGET_FRAME_MS;
       if (msOverBudget > 2) {
-        adjIterPerFrame(-1);
+        adjIterPerFrame(msOverBudget > 8 ? -2 : -1);
       } else if (msOverBudget < -5 && frameNum % 10 === 0) {
         adjIterPerFrame(1);
       }
@@ -21303,19 +21798,33 @@ drawNukeOverlay();
           radarsSettings.push(radars[i].getSettings());
         }
 
+        let airmassPositions = new Int16Array(airmassGenerators.length * 2);
+        let airmassSettings = [];
+        for (i = 0; i < airmassGenerators.length; i++) {
+          airmassPositions[i * 2] = airmassGenerators[i].getXpos();
+          airmassPositions[i * 2 + 1] = airmassGenerators[i].getYpos();
+          airmassSettings.push(airmassGenerators[i].getSettings());
+        }
+
 
         const guiControlsForSave = Object.assign({}, guiControls);
         const embeddedRadars = buildSavedRadarTowersForGuiControls();
         if (embeddedRadars)
           guiControlsForSave.__savedRadarTowers = embeddedRadars;
+        const embeddedAirmass = buildSavedAirmassGeneratorsForGuiControls();
+        if (embeddedAirmass)
+          guiControlsForSave.__savedAirmassGenerators = embeddedAirmass;
 
         let strGuiControls = JSON.stringify(guiControlsForSave);
         let strRadarSettings = JSON.stringify(radarsSettings);
+        let strAirmassSettings = JSON.stringify(airmassSettings);
 
         let saveDataArray = [
           Uint16Array.of(sim_res_x), Uint16Array.of(sim_res_y), baseTextureValues, waterTextureValues, wallTextureValues, Uint32Array.of(rainDrops.length / 5), precipBufferValues, Uint16Array.of(weatherStations.length),
-          weatherStationsPositions, Uint16Array.of(radars.length), radarsPositions, Uint32Array.of(strGuiControls.length), strGuiControls,
-          Uint32Array.of(strRadarSettings.length), strRadarSettings
+          weatherStationsPositions, Uint16Array.of(radars.length), radarsPositions, Uint16Array.of(airmassGenerators.length), airmassPositions,
+          Uint32Array.of(strGuiControls.length), strGuiControls,
+          Uint32Array.of(strRadarSettings.length), strRadarSettings,
+          Uint32Array.of(strAirmassSettings.length), strAirmassSettings
         ];
         let blob = new Blob(saveDataArray);        // combine everything into a single blob
         let arrBuff = await blob.arrayBuffer();    // turn into array for pako
@@ -21460,6 +21969,10 @@ drawNukeOverlay();
 
     if (opts && opts.skipLightningV2) {
       shaderSource = shaderSource.replace(/#include "lightningV2.glsl"\r?\n?/, '');
+      shaderSource = shaderSource.replace(
+        /  if \(ltNumStrikes > 0 && ltEventAge >= 0\.0\) \{\r?\n    vec3 ltBolts;\r?\n    vec3 ltIllum;\r?\n    ltAccumulateBoltsAndIllum\(uv, aspectRatios\[0\], cloudwater, precip, nightFactor, ltBolts, ltIllum\);\r?\n    emittedLight \+= ltBolts \* ltCloudPierce;\r?\n    onLight \+= ltIllum;\r?\n  \}\r?\n/,
+        '  // Lightning V2 disabled (GPU shader link fallback)\n'
+      );
     } else if (shaderSource.includes('#include "lightningV2.glsl"')) {
       shaderSource = shaderSource.replace('#include "lightningV2.glsl"', lightningV2Source);
     }
@@ -21478,7 +21991,7 @@ drawNukeOverlay();
       throw new Error(filename + ' COMPILATION ' + infoLog);
     }
 
-    await loadingBar.add(0, 'Loading shader: ' + nameIn);
+    await loadingBar.add(3, 'Loading shader: ' + nameIn);
     return shader;
   }
 
