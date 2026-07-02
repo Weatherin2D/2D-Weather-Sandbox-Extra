@@ -574,6 +574,7 @@ const guiControls_default = {
   analogRelevancy : 50,
   skewTSourceMode : 'generated',
   weatherBalloonAscentMps : 8.0,
+  weatherBalloonSampleIntervalM : 5.0,
   displayWeatherBalloons : true,
 };
 
@@ -2938,14 +2939,22 @@ class WeatherBalloon
   #y;
   #surfaceY;
   #samples = [];
-  #lastSampledY = -1;
+  #lastSampledY = 0;
+  #lastSampledAltM = 0;
+  #launchX;
   #complete = false;
   #destroyed = false;
   #launchTime = Date.now();
+  #dragging = false;
+  #dragOffSimX = 0;
+  #dragOffSimY = 0;
+  #windSampleBase = new Float32Array(4);
+  #windSampleWall = new Int32Array(4);
 
   constructor(xIn, surfaceYIn)
   {
-    this.#x = Math.floor(xIn);
+    this.#x = xIn;
+    this.#launchX = xIn;
     this.#surfaceY = Math.floor(surfaceYIn);
     this.#y = this.#surfaceY;
     this.#mainDiv = document.createElement('div');
@@ -2962,20 +2971,49 @@ class WeatherBalloon
     this.#c = this.#canvas.getContext('2d');
     this.#canvas.style.position = 'absolute';
     this.#canvas.style.zIndex = 1;
+    this.#canvas.style.cursor = 'grab';
 
     const thisObj = this;
     this.#canvas.addEventListener('mousedown', function(event) {
-      if (event.button == 0 && guiControls.tool == 'TOOL_BALLOON') {
+      if (event.button != 0) return;
+      if (guiControls.tool == 'TOOL_BALLOON') {
         thisObj.destroy();
         event.stopPropagation();
+        return;
       }
+      const rect = canvas.getBoundingClientRect();
+      const simX = screenToSimX(event.clientX - rect.left) * sim_res_x;
+      const simY = screenToSimY(event.clientY - rect.top) * sim_res_y;
+      thisObj.#dragging = true;
+      thisObj.#dragOffSimX = thisObj.#x - simX;
+      thisObj.#dragOffSimY = thisObj.#y - simY;
+      thisObj.#canvas.style.cursor = 'grabbing';
+      document.addEventListener('mousemove', thisObj.#onDragMove);
+      document.addEventListener('mouseup', thisObj.#onDragEnd);
+      event.stopPropagation();
+      event.preventDefault();
     });
     this.#canvas.addEventListener('contextmenu', function(event) { event.preventDefault(); });
 
-    if (this.#canSampleGl()) {
-      this.#sampleLevel(this.#surfaceY);
-      this.#lastSampledY = this.#surfaceY;
-    }
+    this.#lastSampledY = this.#surfaceY;
+    this.#ensureSurfaceSample();
+  }
+
+  #balloonSampleIntervalM()
+  {
+    const v = guiControls.weatherBalloonSampleIntervalM;
+    if (!Number.isFinite(v)) return guiControls_default.weatherBalloonSampleIntervalM;
+    return clamp(v, 2, 50);
+  }
+
+  #ensureSurfaceSample()
+  {
+    if (this.#samples.length > 0) return true;
+    if (!this.#canSampleGl()) return false;
+    if (!this.#sampleAtY(this.#surfaceY, 0)) return false;
+    this.#lastSampledAltM = 0;
+    this.#lastSampledY = this.#surfaceY;
+    return true;
   }
 
   #canSampleGl()
@@ -2984,29 +3022,71 @@ class WeatherBalloon
       && typeof frameBuff_1 !== 'undefined' && frameBuff_1;
   }
 
+  #clampPosition()
+  {
+    if (guiControls.wrapHorizontally)
+      this.#x = mod(this.#x, sim_res_x);
+    else
+      this.#x = clamp(this.#x, 0, sim_res_x - 1);
+    this.#y = clamp(this.#y, 0, sim_res_y - 1);
+  }
+
+  #onDragMove = (event) => {
+    if (!this.#dragging) return;
+    const rect = canvas.getBoundingClientRect();
+    this.#x = screenToSimX(event.clientX - rect.left) * sim_res_x + this.#dragOffSimX;
+    this.#y = screenToSimY(event.clientY - rect.top) * sim_res_y + this.#dragOffSimY;
+    this.#clampPosition();
+    event.preventDefault();
+  };
+
+  #onDragEnd = () => {
+    if (!this.#dragging) return;
+    this.#dragging = false;
+    this.#canvas.style.cursor = 'grab';
+    document.removeEventListener('mousemove', this.#onDragMove);
+    document.removeEventListener('mouseup', this.#onDragEnd);
+  };
+
+  #readWindAtPosition()
+  {
+    if (!this.#canSampleGl()) return { u: 0, v: 0 };
+    const ix = Math.floor(clamp(this.#x, 0, sim_res_x - 1));
+    const iy = Math.floor(clamp(this.#y, 0, sim_res_y - 1));
+    gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_1);
+    gl.readBuffer(gl.COLOR_ATTACHMENT0);
+    gl.readPixels(ix, iy, 1, 1, gl.RGBA, gl.FLOAT, this.#windSampleBase);
+    gl.readBuffer(gl.COLOR_ATTACHMENT2);
+    gl.readPixels(ix, iy, 1, 1, gl.RGBA_INTEGER, gl.INT, this.#windSampleWall);
+    if (this.#windSampleWall[1] === 0) return { u: 0, v: 0 };
+    return { u: this.#windSampleBase[0], v: this.#windSampleBase[1] };
+  }
+
   #readColumnRange(yStart, count, baseOut, waterOut, wallOut)
   {
     if (!this.#canSampleGl() || count <= 0) return false;
+    const colX = Math.floor(clamp(this.#x, 0, sim_res_x - 1));
     gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_1);
     gl.readBuffer(gl.COLOR_ATTACHMENT0);
-    gl.readPixels(this.#x, yStart, 1, count, gl.RGBA, gl.FLOAT, baseOut);
+    gl.readPixels(colX, yStart, 1, count, gl.RGBA, gl.FLOAT, baseOut);
     gl.readBuffer(gl.COLOR_ATTACHMENT1);
-    gl.readPixels(this.#x, yStart, 1, count, gl.RGBA, gl.FLOAT, waterOut);
+    gl.readPixels(colX, yStart, 1, count, gl.RGBA, gl.FLOAT, waterOut);
     gl.readBuffer(gl.COLOR_ATTACHMENT2);
-    gl.readPixels(this.#x, yStart, 1, count, gl.RGBA_INTEGER, gl.INT, wallOut);
+    gl.readPixels(colX, yStart, 1, count, gl.RGBA_INTEGER, gl.INT, wallOut);
     return true;
   }
 
-  #pushSampleFromPixels(y, base, water)
+  #pushSampleFromPixels(y, altM, base, water)
   {
-    const dz = guiControls.simHeight / sim_res_y;
-    const tempC = KtoC(potentialToRealT(base[3], y));
+    const iy = Math.floor(y);
+    const tempC = KtoC(potentialToRealT(base[3], iy));
     let dewC = KtoC(dewpoint(water[0]));
     if (guiControls.realDewPoint) dewC = Math.min(tempC, dewC);
 
     this.#samples.push({
       y,
-      altM: Math.round((y - this.#surfaceY) * dz),
+      x: this.#x,
+      altM: Math.round(altM * 10) / 10,
       t: Math.round(tempC * 100) / 100,
       d: Math.round(dewC * 100) / 100,
       u: Math.round(rawVelocityTo_ms(base[0]) * 100) / 100,
@@ -3015,53 +3095,87 @@ class WeatherBalloon
     });
   }
 
-  #sampleLevel(y)
+  #sampleAtY(targetY, altM)
   {
+    const iy = Math.floor(clamp(targetY, 0, sim_res_y - 1));
     const base = new Float32Array(4);
     const water = new Float32Array(4);
     const wall = new Int32Array(4);
-    if (!this.#readColumnRange(y, 1, base, water, wall) || wall[1] === 0) return false;
-    this.#pushSampleFromPixels(y, base, water);
+    if (!this.#readColumnRange(iy, 1, base, water, wall) || wall[1] === 0) return false;
+    this.#pushSampleFromPixels(targetY, altM, base, water);
     return true;
   }
 
-  #sampleLevelRange(yStart, yEnd)
+  #sampleAlongPath()
   {
-    const count = yEnd - yStart + 1;
-    if (count <= 0) return true;
-    const baseCol = new Float32Array(4 * count);
-    const waterCol = new Float32Array(4 * count);
-    const wallCol = new Int32Array(4 * count);
-    if (!this.#readColumnRange(yStart, count, baseCol, waterCol, wallCol)) return false;
+    if (!this.#ensureSurfaceSample()) return false;
+    const dz = guiControls.simHeight / sim_res_y;
+    const intervalM = this.#balloonSampleIntervalM();
+    const currentAltAgl = Math.max(0, (this.#y - this.#surfaceY) * dz);
+    let nextAlt = this.#lastSampledAltM + intervalM;
 
-    for (let i = 0; i < count; i++) {
-      const y = yStart + i;
-      if (wallCol[i * 4 + 1] === 0) return false;
-      this.#pushSampleFromPixels(y, baseCol.subarray(i * 4, i * 4 + 4), waterCol.subarray(i * 4, i * 4 + 4));
+    while (nextAlt <= currentAltAgl + 0.001) {
+      const targetY = this.#surfaceY + nextAlt / dz;
+      if (targetY >= sim_res_y - 1) break;
+      if (!this.#sampleAtY(targetY, nextAlt)) return false;
+      this.#lastSampledAltM = nextAlt;
+      nextAlt += intervalM;
     }
+
+    this.#lastSampledY = Math.min(Math.floor(this.#y), sim_res_y - 1);
     return true;
+  }
+
+  populateEnvFromSamples(envTempsC, envDewC, baseTextureValues, waterTextureValues)
+  {
+    const samples = this.#samples;
+    if (!samples.length) return;
+
+    for (const s of samples) {
+      const yi = Math.min(sim_res_y - 1, Math.max(0, Math.round(s.y)));
+      envTempsC[yi] = s.t;
+      envDewC[yi] = s.d;
+      baseTextureValues[4 * yi] = msToRawVelocity(s.u);
+      baseTextureValues[4 * yi + 1] = msToRawVelocity(s.v);
+      if (s.water != null) waterTextureValues[4 * yi] = s.water;
+    }
+
+    for (let i = 1; i < samples.length; i++) {
+      const y0 = Math.round(samples[i - 1].y);
+      const y1 = Math.round(samples[i].y);
+      if (y1 <= y0 + 1) continue;
+      for (let y = y0 + 1; y < y1; y++) {
+        const t = (y - y0) / (y1 - y0);
+        envTempsC[y] = samples[i - 1].t + (samples[i].t - samples[i - 1].t) * t;
+        envDewC[y] = samples[i - 1].d + (samples[i].d - samples[i - 1].d) * t;
+        const u = samples[i - 1].u + (samples[i].u - samples[i - 1].u) * t;
+        const v = samples[i - 1].v + (samples[i].v - samples[i - 1].v) * t;
+        baseTextureValues[4 * y] = msToRawVelocity(u);
+        baseTextureValues[4 * y + 1] = msToRawVelocity(v);
+      }
+    }
   }
 
   step(numSimIters = 1)
   {
-    if (this.#complete || this.#destroyed || !this.#canSampleGl()) return;
+    if (this.#complete || this.#destroyed || this.#dragging || !this.#canSampleGl()) return;
 
     const dz = guiControls.simHeight / sim_res_y;
     const ascentMps = guiControls.weatherBalloonAscentMps || 8.0;
     const risePerIter = (ascentMps * timePerIteration * 3600) / dz;
-    this.#y += risePerIter * Math.max(1, numSimIters);
+    const iters = Math.max(1, numSimIters);
+    const wind = this.#readWindAtPosition();
+    this.#x += wind.u * iters;
+    this.#y += risePerIter * iters + wind.v * iters;
+    this.#clampPosition();
+
+    if (!this.#sampleAlongPath()) {
+      this.#complete = true;
+      this.#onComplete();
+      return;
+    }
 
     const newTop = Math.min(Math.floor(this.#y), sim_res_y - 1);
-    const rangeStart = this.#lastSampledY + 1;
-    if (rangeStart <= newTop) {
-      if (!this.#sampleLevelRange(rangeStart, newTop)) {
-        this.#complete = true;
-        this.#onComplete();
-        return;
-      }
-    }
-    this.#lastSampledY = newTop;
-
     if (newTop >= sim_res_y - 1) {
       this.#complete = true;
       this.#onComplete();
@@ -3070,22 +3184,13 @@ class WeatherBalloon
 
   #onComplete()
   {
-    if (skewTTrackedBalloon === this && guiControls.skewTSourceMode === 'weatherBalloon') {
-      guiControls.graphFixedPosition = true;
-      guiControls.graphFixedX = this.#x;
-      guiControls.graphFixedY = Math.min(this.#lastSampledY, sim_res_y - 1);
-    }
+    if (skewTTrackedBalloon === this && guiControls.skewTSourceMode === 'weatherBalloon')
+      guiControls.graphFixedPosition = false;
   }
 
   applyToEnvArrays(envTempsC, envDewC, baseTextureValues, waterTextureValues)
   {
-    for (const s of this.#samples) {
-      envTempsC[s.y] = s.t;
-      envDewC[s.y] = s.d;
-      baseTextureValues[4 * s.y] = msToRawVelocity(s.u);
-      baseTextureValues[4 * s.y + 1] = msToRawVelocity(s.v);
-      if (s.water != null) waterTextureValues[4 * s.y] = s.water;
-    }
+    this.populateEnvFromSamples(envTempsC, envDewC, baseTextureValues, waterTextureValues);
   }
 
   getSamples() { return this.#samples; }
@@ -3111,6 +3216,8 @@ class WeatherBalloon
 
   getSurfaceY() { return this.#surfaceY; }
 
+  getLaunchX() { return this.#launchX; }
+
   setHidden(hidden)
   {
     this.#mainDiv.style.display = hidden ? 'none' : 'block';
@@ -3120,6 +3227,7 @@ class WeatherBalloon
   {
     if (this.#destroyed) return;
     this.#destroyed = true;
+    this.#onDragEnd();
     this.#canvas.parentElement.removeChild(this.#canvas);
     const index = weatherBalloons.indexOf(this);
     if (index >= 0) weatherBalloons.splice(index, 1);
@@ -7934,6 +8042,10 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       guiControls.chargeStormCoreThreshold = guiControls_default.chargeStormCoreThreshold;
     if (guiControls.tool === 'TOOL_VEGETATION')
       guiControls.tool = 'TOOL_VEG_GRASS';
+    if (!Number.isFinite(guiControls.weatherBalloonSampleIntervalM))
+      guiControls.weatherBalloonSampleIntervalM = guiControls_default.weatherBalloonSampleIntervalM;
+    else
+      guiControls.weatherBalloonSampleIntervalM = clamp(guiControls.weatherBalloonSampleIntervalM, 2, 50);
 
     if (typeof LightningV2 !== 'undefined') {
       Object.keys(LightningV2.DEFAULT_SETTINGS).forEach(key => {
@@ -8625,6 +8737,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       }
     });
     skewT_folder.add(guiControls, 'weatherBalloonAscentMps', 2, 20, 0.5).name('Balloon Ascent (m/s)');
+    skewT_folder.add(guiControls, 'weatherBalloonSampleIntervalM', 2, 50, 1).name('Balloon Sample (m)');
     skewT_folder.add(guiControls, 'hodograph2DNodes', 5, 100, 1).name('2D Hodograph Nodes');
     skewT_folder.add(guiControls, 'hodographProfileNodes', 5, 100, 1).name('Profile Hodograph Nodes');
     skewT_folder.add(guiControls, 'analogRelevancy', 0, 100, 1).name('Analog Relevancy').onChange(() => {
@@ -10447,7 +10560,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     },
     _sampleSoundingProfile : function(envTempsC, envDewC, baseTextureValues, surfaceLevel, simResY, dz) {
       const balloon = this._getActiveSkewTBalloon();
-      if (balloon && balloon.isComplete() && balloon.getSamples().length) {
+      if (balloon && balloon.getSamples().length) {
         return balloon.getSamples().map(s => ({
           a: s.altM,
           t: s.t,
@@ -11376,14 +11489,15 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       let balloonSoundingPending = false;
       if (skewTBalloon) {
         simXpos = skewTBalloon.getXpos();
-        simYpos = Math.min(Math.floor(skewTBalloon.getYpos()), sim_res_y - 1);
+        simYpos = Math.min(skewTBalloon.getYpos(), sim_res_y - 1);
         if (!skewTBalloon.isComplete()) {
-          profileDrawMaxY = Math.floor(skewTBalloon.getYpos());
+          profileDrawMaxY = skewTBalloon.getYpos();
           balloonSoundingPending = true;
         }
       }
+      const colXRead = Math.floor(Math.abs(mod(simXpos, sim_res_x)));
 
-      const columnKey = simXpos + '|' + (even ? 1 : 0);
+      const columnKey = colXRead + '|' + (even ? 1 : 0);
       const reuseColumn = this._columnCacheKey === columnKey
         && this._columnCacheFrame >= frameNum - 1
         && this._columnBaseValues
@@ -11402,28 +11516,32 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         if (!this._columnBaseValues || this._columnBaseValues.length !== 4 * sim_res_y)
           this._columnBaseValues = new Float32Array(4 * sim_res_y);
         baseTextureValues = this._columnBaseValues;
-        gl.readPixels(simXpos, 0, 1, sim_res_y, gl.RGBA, gl.FLOAT, baseTextureValues);
+        gl.readPixels(colXRead, 0, 1, sim_res_y, gl.RGBA, gl.FLOAT, baseTextureValues);
 
         gl.readBuffer(gl.COLOR_ATTACHMENT1);
         if (!this._columnWaterValues || this._columnWaterValues.length !== 4 * sim_res_y)
           this._columnWaterValues = new Float32Array(4 * sim_res_y);
         waterTextureValues = this._columnWaterValues;
-        gl.readPixels(simXpos, 0, 1, sim_res_y, gl.RGBA, gl.FLOAT, waterTextureValues);
+        gl.readPixels(colXRead, 0, 1, sim_res_y, gl.RGBA, gl.FLOAT, waterTextureValues);
 
         gl.readBuffer(gl.COLOR_ATTACHMENT2);
         if (!this._columnWallValues || this._columnWallValues.length !== 4 * sim_res_y)
           this._columnWallValues = new Int32Array(4 * sim_res_y);
         wallTextureValues = this._columnWallValues;
-        gl.readPixels(simXpos, 0, 1, sim_res_y, gl.RGBA_INTEGER, gl.INT, wallTextureValues);
+        gl.readPixels(colXRead, 0, 1, sim_res_y, gl.RGBA_INTEGER, gl.INT, wallTextureValues);
         this._columnCacheKey = columnKey;
         this._columnCacheFrame = frameNum;
       }
 
       let surfaceLevel = 0;
-      for (let y = 0; y < sim_res_y; y++) {
-        if (wallTextureValues[4 * y + 1] !== 0) {
-          surfaceLevel = y;
-          break;
+      if (skewTBalloon) {
+        surfaceLevel = skewTBalloon.getSurfaceY();
+      } else {
+        for (let y = 0; y < sim_res_y; y++) {
+          if (wallTextureValues[4 * y + 1] !== 0) {
+            surfaceLevel = y;
+            break;
+          }
         }
       }
 
@@ -11709,13 +11827,25 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         envTempsC[y] = KtoC(potentialToRealT(baseTextureValues[4 * y + 3], y));
         envDewC[y] = KtoC(dewpoint(waterTextureValues[4 * y]));
       }
+      const balloonSamples = skewTBalloon ? skewTBalloon.getSamples() : null;
       if (skewTBalloon) {
-        skewTBalloon.applyToEnvArrays(envTempsC, envDewC, baseTextureValues, waterTextureValues);
+        skewTBalloon.populateEnvFromSamples(envTempsC, envDewC, baseTextureValues, waterTextureValues);
       }
       const columnIsFluid = new Array(sim_res_y);
-      for (let y = 0; y < sim_res_y; y++) {
-        columnIsFluid[y] = wallTextureValues[4 * y + 1] !== 0;
-        if (balloonSoundingPending && y > profileDrawMaxY) columnIsFluid[y] = false;
+      if (balloonSamples && balloonSamples.length) {
+        columnIsFluid.fill(false);
+        for (const s of balloonSamples) {
+          if (s.y <= profileDrawMaxY + 0.001)
+            columnIsFluid[Math.min(sim_res_y - 1, Math.max(0, Math.round(s.y)))] = true;
+        }
+        for (let y = 0; y < sim_res_y; y++) {
+          if (balloonSoundingPending && y > profileDrawMaxY) columnIsFluid[y] = false;
+        }
+      } else {
+        for (let y = 0; y < sim_res_y; y++) {
+          columnIsFluid[y] = wallTextureValues[4 * y + 1] !== 0;
+          if (balloonSoundingPending && y > profileDrawMaxY) columnIsFluid[y] = false;
+        }
       }
 
       const sfcWallY = surfaceLevel > 0 ? surfaceLevel - 1 : 0;
@@ -12435,13 +12565,19 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         estHailIn, dcape, drySlotStrength: drySlot.strength, pwat_mm, moistEnv,
       });
       const colXSnap = Math.floor(Math.abs(mod(simXpos, sim_res_x)));
+      const launchXSnap = skewTBalloon ? Math.floor(Math.abs(mod(skewTBalloon.getLaunchX(), sim_res_x))) : colXSnap;
+      const balloonPathLabel = skewTBalloon
+        ? (launchXSnap === colXSnap
+          ? 'Balloon path · Col ' + colXSnap
+          : 'Balloon path · ' + launchXSnap + ' → ' + colXSnap)
+        : null;
       if (!balloonSoundingPending) {
       this.storeAnalogSnapshot({
         suggestedName: this.buildAnalogSuggestedName(
           stormTypes, allHazards, risk,
           { sbCape, muCape, stp, estHailIn }, stormTypes.convMode),
-        columnLabel: skewTBalloon && skewTBalloon.isComplete()
-          ? 'Balloon ' + colXSnap
+        columnLabel: balloonPathLabel
+          ? balloonPathLabel
           : 'Column ' + colXSnap,
         simTimeLabel: formatSoundingSimTimeLabel(),
         obsTimeLabel: formatSoundingObsTimeLabel() || '',
@@ -12592,17 +12728,29 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
           }
         }
         const metaX = skewTPlotRight + 4;
-        const barbStep = Math.max(3, Math.round(80 / dz));
+        const barbStep = Math.max(1, Math.round(80 / clamp(
+          Number.isFinite(guiControls.weatherBalloonSampleIntervalM)
+            ? guiControls.weatherBalloonSampleIntervalM
+            : guiControls_default.weatherBalloonSampleIntervalM, 2, 50)));
         if (guiControls.soundingShowWindBarbs) {
           c.strokeStyle = 'rgba(255, 255, 255, 0.85)';
           c.fillStyle = 'rgba(255, 255, 255, 0.85)';
           c.lineWidth = 1.2;
-          for (let y = surfaceLevel; y < sim_res_y; y += barbStep) {
-            if (wallTextureValues[4 * y + 1] === 0) continue;
-            const scrY = scrYFromSimY(y);
-            const u = rawVelocityTo_ms(baseTextureValues[4 * y]);
-            const v = rawVelocityTo_ms(baseTextureValues[4 * y + 1]);
-            drawSkewWindBarb(c, skewTPlotRight + 2, scrY, u, v);
+          if (balloonSamples && balloonSamples.length) {
+            for (let i = 0; i < balloonSamples.length; i += barbStep) {
+              const s = balloonSamples[i];
+              if (s.y > profileDrawMaxY + 0.001) break;
+              const scrY = scrYFromSimY(s.y);
+              drawSkewWindBarb(c, skewTPlotRight + 2, scrY, s.u, s.v);
+            }
+          } else {
+            for (let y = surfaceLevel; y < sim_res_y; y += barbStep) {
+              if (wallTextureValues[4 * y + 1] === 0) continue;
+              const scrY = scrYFromSimY(y);
+              const u = rawVelocityTo_ms(baseTextureValues[4 * y]);
+              const v = rawVelocityTo_ms(baseTextureValues[4 * y + 1]);
+              drawSkewWindBarb(c, skewTPlotRight + 2, scrY, u, v);
+            }
           }
         }
         if (guiControls.soundingShowThetaE) {
@@ -12628,22 +12776,41 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
 
       let reachedAir = false;
       c.beginPath();
-      for (let y = surfaceLevel; y < sim_res_y; y++) {
-        if (y > profileDrawMaxY) break;
-        if (wallTextureValues[4 * y + 1] === 0) continue;
-        const temp = envTempsC[y];
-        const scrYpos = scrYFromSimY(y);
-        if (!reachedAir) {
-          reachedAir = true;
-          if (simYpos < surfaceLevel) simYpos = surfaceLevel;
-          c.moveTo(T_to_Xpos(temp, scrYpos), scrYpos);
-        } else {
-          c.lineTo(T_to_Xpos(temp, scrYpos), scrYpos);
+      if (balloonSamples && balloonSamples.length) {
+        for (const s of balloonSamples) {
+          if (s.y > profileDrawMaxY + 0.001) break;
+          const scrYpos = scrYFromSimY(s.y);
+          if (!reachedAir) {
+            reachedAir = true;
+            if (simYpos < surfaceLevel) simYpos = surfaceLevel;
+            c.moveTo(T_to_Xpos(s.t, scrYpos), scrYpos);
+          } else {
+            c.lineTo(T_to_Xpos(s.t, scrYpos), scrYpos);
+          }
+          if (Math.abs(s.y - simYpos) < 0.75) {
+            c.strokeStyle = '#FFF';
+            c.lineWidth = 1.0;
+            c.strokeRect(T_to_Xpos(s.t, scrYpos), scrYpos, 10, 1);
+          }
         }
-        if (y == simYpos) {
-          c.strokeStyle = '#FFF';
-          c.lineWidth = 1.0;
-          c.strokeRect(T_to_Xpos(temp, scrYpos), scrYpos, 10, 1);
+      } else {
+        for (let y = surfaceLevel; y < sim_res_y; y++) {
+          if (y > profileDrawMaxY) break;
+          if (wallTextureValues[4 * y + 1] === 0) continue;
+          const temp = envTempsC[y];
+          const scrYpos = scrYFromSimY(y);
+          if (!reachedAir) {
+            reachedAir = true;
+            if (simYpos < surfaceLevel) simYpos = surfaceLevel;
+            c.moveTo(T_to_Xpos(temp, scrYpos), scrYpos);
+          } else {
+            c.lineTo(T_to_Xpos(temp, scrYpos), scrYpos);
+          }
+          if (y == simYpos) {
+            c.strokeStyle = '#FFF';
+            c.lineWidth = 1.0;
+            c.strokeRect(T_to_Xpos(temp, scrYpos), scrYpos, 10, 1);
+          }
         }
       }
       for (let y = 0; y < surfaceLevel; y++) {
@@ -12662,11 +12829,10 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       c.stroke();
 
       if (balloonSoundingPending && skewTBalloon && profileDrawMaxY >= surfaceLevel) {
-        const tipY = profileDrawMaxY;
-        if (wallTextureValues[4 * tipY + 1] !== 0) {
-          const tipScrY = scrYFromSimY(tipY);
-          const tipTemp = envTempsC[tipY];
-          const tipX = T_to_Xpos(tipTemp, tipScrY);
+        const top = skewTBalloon.getTopSample();
+        if (top) {
+          const tipScrY = scrYFromSimY(top.y);
+          const tipX = T_to_Xpos(top.t, tipScrY);
           c.beginPath();
           c.arc(tipX, tipScrY, 6, 0, Math.PI * 2);
           c.fillStyle = '#FFE08A';
@@ -12698,23 +12864,40 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       }
 
       c.beginPath();
-      for (let y = surfaceLevel; y < sim_res_y; y++) {
-        if (y > profileDrawMaxY) break;
-        if (wallTextureValues[4 * y + 1] === 0) continue;
-        const dewPoint = envDewC[y];
-        const scrYpos = scrYFromSimY(y);
-        if (y === simYpos) {
-          const velocity = rawVelocityTo_ms(Math.sqrt(
-            Math.pow(baseTextureValues[4 * y], 2) + Math.pow(baseTextureValues[4 * y + 1], 2)
-          ));
-          c.fillText('' + printAltitude(map_range(y - 1, 0, sim_res_y, 0, guiControls.simHeight)), skewTLeft + 4, scrYpos + 5);
-          c.fillText('' + printVelocity(velocity), windBarbX - 45, scrYpos + 20);
-          c.strokeStyle = '#FFF';
-          c.lineWidth = 1.0;
-          c.strokeRect(T_to_Xpos(dewPoint, scrYpos) - 10, scrYpos, 10, 1);
-          c.fillText('' + printTemp(dewPoint), T_to_Xpos(dewPoint, scrYpos) - 70, scrYpos + 5);
+      if (balloonSamples && balloonSamples.length) {
+        for (const s of balloonSamples) {
+          if (s.y > profileDrawMaxY + 0.001) break;
+          const scrYpos = scrYFromSimY(s.y);
+          if (Math.abs(s.y - simYpos) < 0.75) {
+            const velocity = Math.hypot(s.u, s.v);
+            c.fillText('' + printAltitude(s.altM), skewTLeft + 4, scrYpos + 5);
+            c.fillText('' + printVelocity(velocity), windBarbX - 45, scrYpos + 20);
+            c.strokeStyle = '#FFF';
+            c.lineWidth = 1.0;
+            c.strokeRect(T_to_Xpos(s.d, scrYpos) - 10, scrYpos, 10, 1);
+            c.fillText('' + printTemp(s.d), T_to_Xpos(s.d, scrYpos) - 70, scrYpos + 5);
+          }
+          c.lineTo(T_to_Xpos(s.d, scrYpos), scrYpos);
         }
-        c.lineTo(T_to_Xpos(dewPoint, scrYpos), scrYpos);
+      } else {
+        for (let y = surfaceLevel; y < sim_res_y; y++) {
+          if (y > profileDrawMaxY) break;
+          if (wallTextureValues[4 * y + 1] === 0) continue;
+          const dewPoint = envDewC[y];
+          const scrYpos = scrYFromSimY(y);
+          if (y === simYpos) {
+            const velocity = rawVelocityTo_ms(Math.sqrt(
+              Math.pow(baseTextureValues[4 * y], 2) + Math.pow(baseTextureValues[4 * y + 1], 2)
+            ));
+            c.fillText('' + printAltitude(map_range(y - 1, 0, sim_res_y, 0, guiControls.simHeight)), skewTLeft + 4, scrYpos + 5);
+            c.fillText('' + printVelocity(velocity), windBarbX - 45, scrYpos + 20);
+            c.strokeStyle = '#FFF';
+            c.lineWidth = 1.0;
+            c.strokeRect(T_to_Xpos(dewPoint, scrYpos) - 10, scrYpos, 10, 1);
+            c.fillText('' + printTemp(dewPoint), T_to_Xpos(dewPoint, scrYpos) - 70, scrYpos + 5);
+          }
+          c.lineTo(T_to_Xpos(dewPoint, scrYpos), scrYpos);
+        }
       }
       c.lineWidth = 2.5;
       c.strokeStyle = '#66CCFF';
@@ -12977,17 +13160,29 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
 
       // Wind column: barbs + vertical profile trace (hodograph-like, same colors)
       const profilePoints = [];
-      for (let y = surfaceLevel; y < sim_res_y; y++) {
-        if (y > profileDrawMaxY) break;
-        if (wallTextureValues[4 * y + 1] === 0) continue;
-        const scrYpos = scrYFromSimY(y);
-        const u = rawVelocityTo_ms(baseTextureValues[4 * y]);
-        const v = rawVelocityTo_ms(baseTextureValues[4 * y + 1]);
-        profilePoints.push({
-          scrY: scrYpos,
-          altM: (y - surfaceLevel) * dz,
-          u, v,
-        });
+      if (balloonSamples && balloonSamples.length) {
+        for (const s of balloonSamples) {
+          if (s.y > profileDrawMaxY + 0.001) break;
+          profilePoints.push({
+            scrY: scrYFromSimY(s.y),
+            altM: s.altM,
+            u: s.u,
+            v: s.v,
+          });
+        }
+      } else {
+        for (let y = surfaceLevel; y < sim_res_y; y++) {
+          if (y > profileDrawMaxY) break;
+          if (wallTextureValues[4 * y + 1] === 0) continue;
+          const scrYpos = scrYFromSimY(y);
+          const u = rawVelocityTo_ms(baseTextureValues[4 * y]);
+          const v = rawVelocityTo_ms(baseTextureValues[4 * y + 1]);
+          profilePoints.push({
+            scrY: scrYpos,
+            altM: (y - surfaceLevel) * dz,
+            u, v,
+          });
+        }
       }
 
       const displayProfilePoints = subsampleWindNodesByAlt(profilePoints, hodoProfileNodeCount);
@@ -13140,7 +13335,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
           ];
         }
         this.updateSoundingDashboard({
-          stationLabel: 'Balloon · Column ' + colX,
+          stationLabel: balloonPathLabel || ('Balloon · Column ' + colXSnap),
           validLabel: 'Sounding in progress · ' + skewTBalloon.getAscentPercent() + '%',
           metricsTimeLine: 'Live radiosonde ascent — full readouts after top',
           metricsRows: pendingRows,
@@ -13152,8 +13347,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
           layout: dashLayout,
         });
       } else {
-        const stationLabel = skewTBalloon && skewTBalloon.isComplete()
-          ? 'Balloon Sounding · Column ' + colX
+        const stationLabel = balloonPathLabel
+          ? balloonPathLabel
           : 'Column ' + colX + ' · ' + printDistance(map_range(colX, 0, sim_res_y, 0, guiControls.simHeight));
         this.updateSoundingDashboard({
           stationLabel,
