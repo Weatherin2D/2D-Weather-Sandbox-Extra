@@ -70,7 +70,7 @@ float calcEvaporation(float T, float W, float V, float M)                       
   return max((maxWater(T) - W) * landEvaporation * (V / 127. + 0.1) * min(M + 1.0, 50.0) * 0.05, 0.); // landEvaporation should be adjusted to remove * 0.05 factor
 }
 
-float calcFireIntensity(int veg, float moist, float precip) { return max(float(veg) * 0.00025 - moist * 0.00020 - precip * 0.02, 0.); }
+float calcFireIntensity(int veg, float moist, float precip) { return max(vegetationInfluence(veg) * 0.00032 - moist * 0.00020 - precip * 0.02, 0.); }
 
 void main()
 {
@@ -219,7 +219,9 @@ void main()
           float albedoSoil = map_rangeC(soilMoisture, 0., 20., ALBEDO_DRYSOIL, ALBEDO_WETSOIL);
           albedoSoil = map_rangeC(snowCover, 0.0, fullWhiteSnowHeight, albedoSoil, ALBEDO_SNOW);                         // add snow albedo
           float fullVegetationAlbedo = map_range(snowCover, 0., fullWhiteSnowHeight, ALBEDO_FOREST, ALBEDO_SNOW_FOREST); // the albedo of full tree height with snow taken into account
-          albedoTotal = map_range(float(wallX0Ym[VEGETATION]), 0., 127., albedoSoil, fullVegetationAlbedo);
+          float vegCover = max(grassBiomass(wallX0Ym[VEGETATION]) / float(GRASS_VEG_MAX) * 0.42,
+            forestBiomass(wallX0Ym[VEGETATION]) / float(FOREST_VEG_MAX - GRASS_VEG_MAX));
+          albedoTotal = mix(albedoSoil, fullVegetationAlbedo, clamp(vegCover, 0.0, 1.0));
         } else if (wall[TYPE] == WALLTYPE_URBAN) {
           albedoTotal = ALBEDO_URBAN;
         } else if (wall[TYPE] == WALLTYPE_SUBURBAN) {
@@ -272,8 +274,11 @@ void main()
           surfaceDrag = 0.040;
         else if (wall[TYPE] == WALLTYPE_SUBURBAN)
           surfaceDrag = 0.012;
-        else if (wall[TYPE] == WALLTYPE_LAND || wall[TYPE] == WALLTYPE_FIRE)
-          surfaceDrag = map_rangeC(float(wall[VEGETATION]), 50., 127., 0.0015, 0.020);
+        else if (wall[TYPE] == WALLTYPE_LAND || wall[TYPE] == WALLTYPE_FIRE) {
+          float gBio = grassBiomass(wall[VEGETATION]);
+          float fBio = forestBiomass(wall[VEGETATION]);
+          surfaceDrag = map_rangeC(fBio, 0., float(FOREST_VEG_MAX - GRASS_VEG_MAX), 0.0015 + gBio * 0.00004, 0.020);
+        }
 
         // base[VX] *= 1. - surfaceDrag;                        // surface drag
         base[VX] -= abs(base[VX]) * base[VX] * surfaceDrag * 50.; // quadratic surface drag
@@ -351,7 +356,7 @@ void main()
       case WALLTYPE_LAND:
         if (wall[VERT_DISTANCE] <= wallVerticalInfluence) {
 
-          float evaporation = calcEvaporation(realTemp, water[TOTAL], float(wall[VEGETATION]), waterInSurface[SOIL_MOISTURE]) / influenceDevider;
+          float evaporation = calcEvaporation(realTemp, water[TOTAL], vegetationInfluence(wall[VEGETATION]), waterInSurface[SOIL_MOISTURE]) / influenceDevider;
 
           water[TOTAL] += evaporation;
           base[TEMPERATURE] -= evaporation * evapHeat * 0.5;                                // evaporative cooling (half the real value, to prevent boring non convective conditions)
@@ -449,7 +454,7 @@ void main()
 
         float realTempAboveSurface = potentialToRealT(baseAboveSurface[TEMPERATURE], texCoordX0Yp.y);
 
-        float evaporation = calcEvaporation(realTempAboveSurface, waterAboveSurface[TOTAL], float(wall[VEGETATION]), water[SOIL_MOISTURE]) * 0.10;
+        float evaporation = calcEvaporation(realTempAboveSurface, waterAboveSurface[TOTAL], vegetationInfluence(wall[VEGETATION]), water[SOIL_MOISTURE]) * 0.10;
 
         water[SOIL_MOISTURE] -= evaporation;
 
@@ -496,13 +501,40 @@ void main()
           if (climateMoisture >= minVegetationMoisture)
             vegetationGrowthRate = int((climateMoisture - minVegetationMoisture) * sqrt(lightAboveSurface[SUNLIGHT]) * 0.008);
 
-          if (vegetationGrowthRate > 0 && int(iterNum) % ((100 / vegetationGrowthRate) * 100) == 0) {      // growth interval
-            if (int(map_rangeC(realTempAboveSurface, CtoK(0.0), CtoK(25.0), 0., 127.)) > wall[VEGETATION]) // limit vegetation growth at lower temperatures
-              wall[VEGETATION] += 1;
+          if (vegetationGrowthRate > 0 && int(iterNum) % ((100 / vegetationGrowthRate) * 100) == 0) {
+            int tempLimit = int(map_rangeC(realTempAboveSurface, CtoK(0.0), CtoK(25.0), 0., float(FOREST_VEG_MAX)));
+            if (wall[VEGETATION] <= GRASS_VEG_MAX) {
+              if (tempLimit > wall[VEGETATION])
+                wall[VEGETATION] = min(wall[VEGETATION] + 1, GRASS_VEG_MAX);
+            } else if (tempLimit > wall[VEGETATION]) {
+              wall[VEGETATION] = min(wall[VEGETATION] + 1, FOREST_VEG_MAX);
+            }
           }
 
-          if (climateMoisture < 6.0 && wall[VEGETATION] > 10 && int(iterNum) % 500 == 0) // slow dieback during prolonged drought
-            wall[VEGETATION] -= 1;
+          // Gradual drought dieback — in-game days to weeks, scaled by sustained + soil moisture
+          if (wall[VEGETATION] > 0) {
+            float soilMoist = water[SOIL_MOISTURE];
+            float sustainedStress = max(1.0 - climateMoisture / minVegetationMoisture, 0.0);
+            float soilBuffer = smoothstep(10.0, fullGreenSoilMoisture, soilMoist);
+            float droughtStress = clamp(sustainedStress * (1.0 - soilBuffer * 0.55), 0.0, 1.0);
+
+            if (droughtStress > 0.05) {
+              float biomass = isForestVegetation(wall[VEGETATION])
+                ? forestBiomass(wall[VEGETATION])
+                : grassBiomass(wall[VEGETATION]);
+              float treeSlowdown = isForestVegetation(wall[VEGETATION])
+                ? 1.0 + smoothstep(0.0, float(FOREST_VEG_MAX - GRASS_VEG_MAX), biomass) * (vegTreeDiebackSlowdown - 1.0)
+                : 0.62;
+              float daysPerLoss = mix(vegDiebackDaysPerPointMild, vegDiebackDaysPerPointSevere, pow(droughtStress, 0.82));
+              float cellJitter = 0.88 + random2d(texCoord * resolution + biomass * 0.013) * 0.24;
+              float dieInterval = max(daysPerLoss * treeSlowdown * cellJitter * iterPerSimDay, vegDiebackMinIter);
+              int diePeriod = int(dieInterval);
+              int diePhase = int(random2d(texCoord * vec2(41.7, 173.3)) * float(diePeriod));
+
+              if (diePeriod > 0 && (int(iterNum) + diePhase) % diePeriod == 0)
+                wall[VEGETATION] = max(wall[VEGETATION] - 1, 0);
+            }
+          }
 
           int subInterval = int(iterNum) / 100;
 

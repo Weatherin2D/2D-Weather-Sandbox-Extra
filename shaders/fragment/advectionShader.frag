@@ -391,10 +391,23 @@ void main()
             water[SNOW] += userInputValues[BRUSH_INTENSITY] * 0.5;
           }
           break;
-        case 22:                                               // add vegetation
+        case 22:                                               // grass / shrub (legacy vegetation tool id)
+        case 27:                                               // grass / shrub
           if (wall[DISTANCE] == 0 && (wall[TYPE] == WALLTYPE_LAND || wall[TYPE] == WALLTYPE_FIRE || wall[TYPE] == WALLTYPE_URBAN || wall[TYPE] == WALLTYPE_SUBURBAN || wall[TYPE] == WALLTYPE_INDUSTRIAL) &&
-              texture(wallTex, texCoordX0Yp)[DISTANCE] != 0) { // if land wall and no wall above
-            wall[VEGETATION] += 1;                             // add vegetation
+              texture(wallTex, texCoordX0Yp)[DISTANCE] != 0) {
+            if (wall[VEGETATION] > GRASS_VEG_MAX)
+              wall[VEGETATION] = max(wall[VEGETATION] - 1, FOREST_VEG_MIN);
+            else
+              wall[VEGETATION] = min(wall[VEGETATION] + 1, GRASS_VEG_MAX);
+          }
+          break;
+        case 28:                                               // forest
+          if (wall[DISTANCE] == 0 && (wall[TYPE] == WALLTYPE_LAND || wall[TYPE] == WALLTYPE_FIRE || wall[TYPE] == WALLTYPE_URBAN || wall[TYPE] == WALLTYPE_SUBURBAN) &&
+              texture(wallTex, texCoordX0Yp)[DISTANCE] != 0) {
+            if (wall[VEGETATION] <= GRASS_VEG_MAX)
+              wall[VEGETATION] = FOREST_VEG_MIN;
+            else
+              wall[VEGETATION] = min(wall[VEGETATION] + 1, FOREST_VEG_MAX);
           }
           break;
         }
@@ -449,8 +462,13 @@ void main()
           } else if (userInputType == 25 || userInputType == 26) {
             if (wall[TYPE] == WALLTYPE_ICE)
               wall[TYPE] = liquidWaterTypeFromSalinity(water[SALINITY]);
-          } else if (userInputType == 22) {
-            wall[VEGETATION] = max(wall[VEGETATION] - 1, 0);       // remove vegetation
+          } else if (userInputType == 22 || userInputType == 27) {
+            wall[VEGETATION] = max(wall[VEGETATION] - 1, 0);
+          } else if (userInputType == 28) {
+            if (wall[VEGETATION] > GRASS_VEG_MAX)
+              wall[VEGETATION] = max(wall[VEGETATION] - 1, 0);
+            else
+              wall[VEGETATION] = 0;
           } else if (texCoord.y > texelSize.y) {
             wall[DISTANCE] = 255;                                  // remove wall
             base[VX] = 0.0;                                        // reset all properties to prevent NaN bug

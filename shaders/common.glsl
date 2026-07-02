@@ -24,6 +24,12 @@ precision highp isampler2D;
 #define sustainedMoistureDecay 0.00015 // mm per iteration; slow dry-out of climate moisture memory
 #define minVegetationMoisture 12.0   // mm sustained moisture required for vegetation growth
 
+#define iterPerSimDay 300000.0              // in-game iterations per day (timePerIteration = 0.00008 h)
+#define vegDiebackDaysPerPointMild 5.0      // days between biomass loss when stress is barely above zero
+#define vegDiebackDaysPerPointSevere 0.32   // days between loss under severe drought (~2 wk grass, ~6–10 wk forest)
+#define vegDiebackMinIter 12000.0           // minimum spacing between dieback steps
+#define vegTreeDiebackSlowdown 3.8          // large trees die slower than grass
+
 #define fullWhiteSnowHeight 10.0   // snow height at witch full whiteness is displayed and max albedo is achieved
 #define snowMassToHeight 0.05
 
@@ -91,7 +97,20 @@ precision highp isampler2D;
 
 #define DISTANCE 1      // manhattan distance to nearest wall                   0 to 127
 #define VERT_DISTANCE 2 // height above/below ground. Surface = 0               -127 to 127
-#define VEGETATION 3    // vegetation 0 to 127     grass from 0 to 50, trees from 51 to 127
+#define VEGETATION 3    // vegetation 0–127: grass/shrub 0–50, forest 51–127 (mutually exclusive bands)
+
+#define GRASS_VEG_MAX 50
+#define FOREST_VEG_MIN 51
+#define FOREST_VEG_MAX 127
+
+float grassBiomass(int veg) { return float(min(veg, GRASS_VEG_MAX)); }
+
+float forestBiomass(int veg) { return float(max(veg - GRASS_VEG_MAX, 0)); }
+
+bool isForestVegetation(int veg) { return veg > GRASS_VEG_MAX; }
+
+// Combined surface influence — forest transpires and shelters more than grass
+float vegetationInfluence(int veg) { return grassBiomass(veg) * 0.38 + forestBiomass(veg) + 0.08; }
 
 
 //  light texture: RGBA32F

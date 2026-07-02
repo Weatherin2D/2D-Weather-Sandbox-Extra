@@ -97,7 +97,7 @@ vec3 getWallColor(float depth)
 
   vec3 bareSoilCol = mix(bareDrySoilCol, bareWetSoilCol, map_rangeC(water[SOIL_MOISTURE], 0.0, 20.0, 0.0, 1.0));
 
-  vec3 surfCol = mix(bareSoilCol, vegetationCol, min(float(wall[VEGETATION]) / 50., 1.));
+  vec3 surfCol = mix(bareSoilCol, vegetationCol, grassBiomass(wall[VEGETATION]) / float(GRASS_VEG_MAX));
 
   const vec3 rockCol = vec3(0.70);                                 // gray rock
 
@@ -380,8 +380,13 @@ vec4 computeCloudSmokeColor(float cloudwater, float precip, float smokeAmt, floa
   return vec4(outColor, outOpacity);
 }
 
-void applyAirLightning(vec2 uv, float cloudwater, float precip, float cloudDensity, float nightFactor)
+void applyAirLightning(vec2 uv, float cloudwater, float precip, float cloudDensity, float nightFactor,
+    out vec3 flashEmit, out vec3 flashCloud, out vec3 flashSurf, out vec3 precipShafts)
 {
+  flashEmit = vec3(0.0);
+  flashCloud = vec3(0.0);
+  flashSurf = vec3(0.0);
+  precipShafts = vec3(0.0);
   float ltCloudPierce = 1.0 + clamp(cloudDensity * 0.22, 0.0, 5.5);
 
 #ifndef LT_V2_PROCEDURAL
@@ -407,6 +412,9 @@ void applyAirLightning(vec2 uv, float cloudwater, float precip, float cloudDensi
     emittedLight += ltBolts * ltCloudPierce;
     emittedLight += ltBoltsBehind;
     onLight += ltIllum;
+    ltAccumulateFlashes(uv, aspectRatios[0], cloudwater, precip, nightFactor,
+      flashEmit, flashCloud, flashSurf, precipShafts);
+    emittedLight += flashEmit;
   }
 
 #ifndef LT_V2_PROCEDURAL
@@ -444,6 +452,10 @@ void main()
 
   float cloudwater = water[CLOUD];
   float nightFactor = clamp(map_range(abs(sunAngle), 60. * deg2rad, 90. * deg2rad, 0., 1.), 0., 1.);
+  vec3 icccEmit = vec3(0.0);
+  vec3 icccCloud = vec3(0.0);
+  vec3 icccSurf = vec3(0.0);
+  vec3 precipBoltShafts = vec3(0.0);
 
   if (texCoord.y < 0.) {                                     // < texelSize.y below simulation area
 
@@ -555,7 +567,8 @@ void main()
         vec4 airColor = computeCloudSmokeColor(airCloud, airPrecip, airWater[SMOKE], normalizedSunlightAt(airUV));
         opacity = airColor.a;
         color = airColor.rgb;
-        applyAirLightning(airUV, airCloud, airPrecip, max(airCloud * 13.6, 0.0), nightFactor);
+        applyAirLightning(airUV, airCloud, airPrecip, max(airCloud * 13.6, 0.0), nightFactor,
+          icccEmit, icccCloud, icccSurf, precipBoltShafts);
       } else {
         if (wall[TYPE] == WALLTYPE_FRESH_WATER)
           color = vec3(0.15, 0.65, 0.95); // fresh water — lighter cyan
@@ -592,7 +605,8 @@ void main()
     vec4 airColor = computeCloudSmokeColor(cloudwater, water[PRECIPITATION], water[SMOKE], lightIntensity);
     opacity = airColor.a;
     color = airColor.rgb;
-    applyAirLightning(texCoord, cloudwater, water[PRECIPITATION], max(cloudwater * 13.6, 0.0), nightFactor);
+    applyAirLightning(texCoord, cloudwater, water[PRECIPITATION], max(cloudwater * 13.6, 0.0), nightFactor,
+      icccEmit, icccCloud, icccSurf, precipBoltShafts);
 
 
     vec2 rainbowCenter = vec2(0.0, -1.5 + abs(sunAngle) * 0.60);
@@ -708,7 +722,7 @@ void main()
 
         float treeTexCoordY = localY / treeTexHeightNorm;                             // full height trees
 
-        treeTexCoordY += map_rangeC(float(wallX0Ym[VEGETATION]), 127., 50., 0., 1.0); // apply trees height depending on vegetation
+        treeTexCoordY += map_rangeC(float(wallX0Ym[VEGETATION]), float(FOREST_VEG_MAX), float(FOREST_VEG_MIN), 0., 1.0); // tree height from forest biomass
 
         float treeTexCoordX = fragCoord.x * texAspect / treeTexHeightNorm;            // static scaled trees
 
@@ -720,8 +734,9 @@ void main()
         treeTexCoordY *= 0.72;                              // Trees only go up to 72% of the texture height
         treeTexCoordY = 1. - treeTexCoordY;                 // texture is upside down
 
-        vec4 texCol;
-        if (wallX0Ym[TYPE] == WALLTYPE_LAND || wallX0Ym[TYPE] == WALLTYPE_URBAN || wallX0Ym[TYPE] == WALLTYPE_SUBURBAN) { // land below
+        vec4 texCol = vec4(0.0);
+        if (wallX0Ym[VEGETATION] > GRASS_VEG_MAX &&
+            (wallX0Ym[TYPE] == WALLTYPE_LAND || wallX0Ym[TYPE] == WALLTYPE_URBAN || wallX0Ym[TYPE] == WALLTYPE_SUBURBAN)) { // forest canopy only
           vec4 surfaceWater = texture(waterTex, texCoordX0Ym);                     // snow on land below
           float snow = surfaceWater[SNOW];
           if (snow * 0.01 / cellHeight > heightAboveGround)
@@ -734,7 +749,7 @@ void main()
               vegetationCol.a *= step(0.82, suburbanHash(floor(fragCoord.x / suburbanLotWidth) + 53.1));
             texCol = mix(vegetationCol, surfaceTexture(SNOW_FOREST, vec2(treeTexCoordX, treeTexCoordY * treeScale)), min(snow / fullWhiteSnowHeight, 1.0));
           }
-        } else if (wallX0Ym[TYPE] == WALLTYPE_FIRE) {
+        } else if (wallX0Ym[TYPE] == WALLTYPE_FIRE && wallX0Ym[VEGETATION] > GRASS_VEG_MAX) {
           texCol = surfaceTexture(FIRE_FOREST, vec2(treeTexCoordX, treeTexCoordY));
         }
         if (texCol.a > 0.5) { // if not transparent
@@ -786,16 +801,6 @@ void main()
 
   float scatering = clamp(map_range(abs(sunAngle), 75. * deg2rad, 90. * deg2rad, 0., 1.), 0., 1.); // how red the sunlight is
   float precipF = clamp(water[PRECIPITATION], 0.0, 1.0);
-
-  vec3 icccEmit = vec3(0.0);
-  vec3 icccCloud = vec3(0.0);
-  vec3 icccSurf = vec3(0.0);
-  vec3 precipBoltShafts = vec3(0.0);
-  if (texCoord.y >= 0.0 && texCoord.y <= 1.0 && ltNumStrikes > 0 && ltEventAge >= 0.0) {
-    ltAccumulateFlashes(texCoord, aspectRatios[0], cloudwater, precipF, nightFactor,
-      icccEmit, icccCloud, icccSurf, precipBoltShafts);
-    emittedLight += icccEmit;
-  }
 
   vec3 finalLight = sunColor(scatering) * lightIntensity;
 

@@ -49,8 +49,8 @@
   ];
 
   const REALISTIC_RATIOS = {
-    intracloud: 58,
-    cloudToCloud: 22,
+    intracloud: 88,
+    cloudToCloud: 18,
     sheet: 14,
     cg: 5,
     cgPositive: 1.2,
@@ -68,16 +68,17 @@
     useRealisticLightningRatios: true,
 
     globalLightningMultiplier: 1.0,
-    intracloudFrequency: 18.0,
-    cloudToCloudFrequency: 8.0,
-    cloudToGroundFrequency: 1.2,
-    positiveCgFrequency: 0.35,
-    spiderLightningFrequency: 1.2,
-    anvilCrawlerFrequency: 0.9,
-    upwardLightningFrequency: 0.08,
-    boltFromBlueFrequency: 0.12,
-    dryLightningFrequency: 0.25,
-    sheetLightningFrequency: 2.5,
+    intracloudFrequency: 100,
+    cloudToCloudFrequency: 100,
+    cloudToGroundFrequency: 100,
+    positiveCgFrequency: 100,
+    spiderLightningFrequency: 100,
+    anvilCrawlerFrequency: 100,
+    upwardLightningFrequency: 100,
+    boltFromBlueFrequency: 100,
+    dryLightningFrequency: 100,
+    sheetLightningFrequency: 100,
+    strobeLightningFrequency: 100,
 
     lightningBrightness: 0.58,
     lightningContrast: 0.95,
@@ -186,9 +187,6 @@
       cloudIlluminationStrength: 0.75,
       glowStrength: 0.65,
       useRealisticLightningRatios: true,
-      positiveCgFrequency: 0.2,
-      spiderLightningFrequency: 0.15,
-      anvilCrawlerFrequency: 0.12,
       branchDensity: 0.85,
       nighttimeFlashStrength: 0.9,
       daytimeFlashStrength: 0.35,
@@ -211,8 +209,6 @@
       anvilChannelVisibility: 1.1,
       channelIllumRatio: 0.5,
       useRealisticLightningRatios: true,
-      positiveCgFrequency: 0.35,
-      spiderLightningFrequency: 0.35,
       lightningPerformanceTier: 'High',
     },
     'Cinematic': {
@@ -224,16 +220,11 @@
       bloomStrength: 1.3,
       branchDensity: 1.25,
       branchLength: 1.2,
-      positiveCgFrequency: 0.6,
-      spiderLightningFrequency: 0.5,
       nighttimeFlashStrength: 1.3,
       lightningPerformanceTier: 'High',
     },
     'Supercell Showcase': {
       globalLightningMultiplier: 1.6,
-      positiveCgFrequency: 1.2,
-      spiderLightningFrequency: 1.0,
-      anvilCrawlerFrequency: 0.9,
       atmosphericIlluminationStrength: 1.6,
       cloudIlluminationStrength: 1.7,
       rainShaftIlluminationStrength: 1.6,
@@ -254,9 +245,6 @@
     },
     'Extreme Lightning': {
       globalLightningMultiplier: 2.5,
-      intracloudFrequency: 25,
-      sheetLightningFrequency: 8,
-      cloudToGroundFrequency: 5,
       atmosphericIlluminationStrength: 1.3,
       cloudIlluminationStrength: 1.4,
       electricalBurstIntensity: 1.8,
@@ -317,15 +305,15 @@
   const FREQ_UI_SCALE = {
     intracloud: 1,
     cloudToCloud: 1,
-    sheet: 5,
+    sheet: 1,
     cg: 1,
-    cgPositive: 20,
-    spider: 20,
-    anvilCrawler: 20,
-    upward: 50,
-    boltFromBlue: 50,
-    dry: 20,
-    strobe: 8,
+    cgPositive: 1,
+    spider: 1,
+    anvilCrawler: 1,
+    upward: 1,
+    boltFromBlue: 1,
+    dry: 1,
+    strobe: 1,
   };
 
   function getEffectiveFrequency(controls, typeKey, stormFactor, profile) {
@@ -347,7 +335,7 @@
       upward: controls.upwardLightningFrequency,
       boltFromBlue: controls.boltFromBlueFrequency,
       dry: controls.dryLightningFrequency,
-      strobe: controls.strobeLightningFrequency ?? 0.8,
+      strobe: controls.strobeLightningFrequency ?? 100,
     };
     const uiScale = FREQ_UI_SCALE[typeKey] || 1;
     const stormBoost = 0.75 + stormFactor * 0.5;
@@ -1486,7 +1474,7 @@
       case 'sheet': return LT.SHEET;
       case 'strobe': return selectTypeForStrobeBurst(eventId, slot, charge, controls);
       case 'cg':
-        if (charge >= 0.18 && isHigh && r < 0.12 * (controls.positiveCgFrequency + 0.1))
+        if (charge >= 0.18 && isHigh && r < 0.12 * (controls.positiveCgFrequency / 20 + 0.1))
           return LT.CG_POSITIVE;
         if (charge > -0.12)
           return null;
@@ -1636,7 +1624,9 @@
     let aggChance = 0;
     const weights = [];
     for (const ch of channels) {
-      const w = getStrikeChance(ch);
+      let w = getStrikeChance(ch);
+      if (ch.id === 'intracloud') w *= 2.8;
+      else if (ch.id === 'cc') w *= 1.35;
       weights.push(w);
       aggChance += w;
     }
@@ -1731,13 +1721,13 @@
     addFreqSlider(controls, 'intracloudFrequency', 0, 100, 0.5, 'Intracloud');
     addFreqSlider(controls, 'cloudToCloudFrequency', 0, 100, 0.5, 'Cloud-to-Cloud');
     addFreqSlider(controls, 'cloudToGroundFrequency', 0, 100, 0.5, 'Cloud-to-Ground');
-    addFreqSlider(controls, 'positiveCgFrequency', 0, 5, 0.05, 'Positive CG');
-    addFreqSlider(controls, 'spiderLightningFrequency', 0, 5, 0.05, 'Spider');
-    addFreqSlider(controls, 'anvilCrawlerFrequency', 0, 5, 0.05, 'Anvil Crawler');
-    addFreqSlider(controls, 'upwardLightningFrequency', 0, 2, 0.02, 'Upward');
-    addFreqSlider(controls, 'boltFromBlueFrequency', 0, 2, 0.02, 'Bolt From Blue');
-    addFreqSlider(controls, 'dryLightningFrequency', 0, 5, 0.05, 'Dry Lightning');
-    addFreqSlider(controls, 'sheetLightningFrequency', 0, 20, 0.1, 'Sheet');
+    addFreqSlider(controls, 'positiveCgFrequency', 0, 100, 0.5, 'Positive CG');
+    addFreqSlider(controls, 'spiderLightningFrequency', 0, 100, 0.5, 'Spider');
+    addFreqSlider(controls, 'anvilCrawlerFrequency', 0, 100, 0.5, 'Anvil Crawler');
+    addFreqSlider(controls, 'upwardLightningFrequency', 0, 100, 0.5, 'Upward');
+    addFreqSlider(controls, 'boltFromBlueFrequency', 0, 100, 0.5, 'Bolt From Blue');
+    addFreqSlider(controls, 'dryLightningFrequency', 0, 100, 0.5, 'Dry Lightning');
+    addFreqSlider(controls, 'sheetLightningFrequency', 0, 100, 0.5, 'Sheet');
 
     const visualFolder = folder.addFolder('Visual');
     visualFolder.add(controls, 'lightningBrightness', 0.1, 3, 0.05).name('Brightness');

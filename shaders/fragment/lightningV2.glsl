@@ -33,6 +33,10 @@ uniform float ltCloudObscuration;
 uniform float ltChannelIllumRatio;
 uniform float ltStrobeFlicker;
 
+uniform float ltLODLevel;
+uniform int ltSkipBoltPass;
+uniform int ltHasPrecipShaftStrikes;
+
 const vec3 LT_CORE_COL = vec3(1.0, 0.98, 1.0);
 const vec3 LT_GLOW_COL = vec3(0.88, 0.74, 1.0);
 const vec3 LT_CLOUD_WARM = vec3(1.0, 0.90, 0.68);
@@ -431,8 +435,9 @@ vec3 ltRenderProceduralStrike(vec2 uv, float aspect, vec2 origin, vec2 dest,
     vec2 dA = ltAspectPos(dest, aspect);
     float span = max(length(dA - oA), max(origin.y, 0.04) * 0.12);
     float mixSeed = ltStrikeSeedMix(origin, dest, seed);
-    int paths = 1 + int(ltHash(mixSeed + 51.0) * 2.0);
-    int segs = 28 + int(ltHash(mixSeed + 52.0) * 14.0);
+    float lod = clamp(ltLODLevel, 0.35, 1.0);
+    int paths = 1 + int(ltHash(mixSeed + 51.0) * mix(1.0, 2.0, lod));
+    int segs = int(mix(18.0, 42.0, lod)) + int(ltHash(mixSeed + 52.0) * 14.0 * lod);
     float spread = (0.26 + ltHash(mixSeed + 53.0) * 0.30) * max(span, 0.08);
     glow = ltEvalCloudDischargeBolt(p, origin, dest, aspect, seed, prog, boltBright, paths, segs, spread, true);
   } else if (ltCC(ltType)) {
@@ -440,8 +445,9 @@ vec3 ltRenderProceduralStrike(vec2 uv, float aspect, vec2 origin, vec2 dest,
     vec2 dA = ltAspectPos(dest, aspect);
     float span = max(length(dA - oA), max(origin.y, 0.04) * 0.12);
     float mixSeed = ltStrikeSeedMix(origin, dest, seed);
-    int paths = 2 + int(ltHash(mixSeed + 61.0) * 2.0);
-    int segs = 30 + int(ltHash(mixSeed + 62.0) * 16.0);
+    float lod = clamp(ltLODLevel, 0.35, 1.0);
+    int paths = 1 + int(ltHash(mixSeed + 61.0) * mix(2.0, 3.0, lod));
+    int segs = int(mix(20.0, 46.0, lod)) + int(ltHash(mixSeed + 62.0) * 16.0 * lod);
     float spread = (0.30 + ltHash(mixSeed + 63.0) * 0.38) * max(span, 0.08);
     glow = ltEvalCloudDischargeBolt(p, origin, dest, aspect, seed, prog, boltBright, paths, segs, spread, true);
   } else if (ltSpider(ltType)) {
@@ -574,14 +580,34 @@ float ltCloudBoltCullReach(vec2 origin, vec2 dest) {
   return max(length(vec2(horizSpan, vertSpan)) * 0.72, cloudH * 0.38) + 0.14;
 }
 
+float ltFlashInfluenceRadius(float flashSize, bool isSheet) {
+  float r = 0.062 + flashSize * 0.19;
+  if (isSheet)
+    r *= 1.35;
+  return r * (1.15 + (1.0 - clamp(ltLODLevel, 0.0, 1.0)) * 0.25);
+}
+
+bool ltPixelNearFlash(vec2 uv, float aspect, vec2 center, float radius) {
+  vec2 delta = vec2((uv.x - center.x) * aspect, uv.y - center.y);
+  return dot(delta, delta) <= radius * radius * 2.8;
+}
+
 bool ltPixelNearPrecipShaft(vec2 uv, float aspect, vec2 origin, vec2 dest, float flashSize) {
   vec2 center = mix(origin, dest, 0.5);
   float cloudBase = max(origin.y, dest.y);
-  float horizReach = (0.03 + flashSize * 0.16) * 2.8;
+  float lod = clamp(ltLODLevel, 0.35, 1.0);
+  float horizReach = (0.012 + flashSize * 0.062) * mix(1.25, 1.85, lod);
   float horiz = abs((uv.x - center.x) * aspect);
   if (horiz > horizReach)
     return false;
-  return uv.y >= cloudBase - 0.02 && uv.y <= cloudBase + 0.68;
+  float vertTop = cloudBase - 0.022;
+  float vertBot = cloudBase + mix(0.34, 0.58, lod) + flashSize * 0.10;
+  return uv.y >= vertTop && uv.y <= vertBot;
+}
+
+float ltShaftHorizFall(vec2 uv, float aspect, vec2 center, float xOff, float horizRad) {
+  float horiz = abs((uv.x - center.x - xOff) * aspect);
+  return exp(-(horiz * horiz) / (horizRad * horizRad * 1.35));
 }
 
 float ltPathGlowPoint(vec2 p, vec2 at, float r) {
@@ -601,6 +627,9 @@ void ltAccumulateBoltsAndIllum(vec2 uv, float aspect, float cloudwater, float pr
   boltsBehindCloud = vec3(0.0);
   illum = vec3(0.0);
   if (ltNumStrikes <= 0 || ltEventAge < 0.0)
+    return;
+
+  if (ltSkipBoltPass != 0)
     return;
 
   float flashPhase = ltPhase(ltEventAge);
@@ -688,36 +717,47 @@ void ltPrecipShaftLight(vec2 uv, float aspect, vec2 origin, vec2 dest, float fla
     out float shaftLight, out float cloudRimLight) {
   shaftLight = 0.0;
   cloudRimLight = 0.0;
-  if (precip < 0.012 || flashPhase < 0.01)
+  if (precip < 0.018 || flashPhase < 0.01)
     return;
 
   vec2 center = mix(origin, dest, 0.5);
   float cloudBase = max(origin.y, dest.y);
-  float shaftSpan = 0.18 + flashSize * 0.52 + ltHash(seed + 19.0) * 0.22;
-  float totalShaft = 0.0;
+  float lod = clamp(ltLODLevel, 0.35, 1.0);
 
-  for (int si = 0; si < 3; si++) {
-    float sf = float(si);
-    float shaftSeed = seed + sf * 47.3;
-    float xOff = (ltHash(shaftSeed) - 0.5) * (0.028 + flashSize * 0.10);
-    float horiz = abs((uv.x - center.x - xOff) * aspect);
-    float horizRad = 0.010 + flashSize * 0.048 + ltHash(shaftSeed + 1.0) * 0.022;
-    float horizFall = exp(-(horiz * horiz) / (horizRad * horizRad * 1.35));
-    float coreBeam = horizFall * 0.38;
+  float xOff0 = (ltHash(seed + 47.3) - 0.5) * (0.022 + flashSize * 0.08);
+  float horizRad0 = 0.010 + flashSize * 0.046 + ltHash(seed + 48.3) * 0.018;
+  float horizFall0 = ltShaftHorizFall(uv, aspect, center, xOff0, horizRad0);
+  if (horizFall0 < 0.0035)
+    return;
 
-    float belowBase = smoothstep(cloudBase - 0.014, cloudBase + 0.028, uv.y);
-    float shaftBot = cloudBase + shaftSpan * (0.55 + ltHash(shaftSeed + 3.0) * 0.45);
-    float vertMask = belowBase * (1.0 - smoothstep(cloudBase + 0.04, shaftBot, uv.y));
+  float belowBase = smoothstep(cloudBase - 0.014, cloudBase + 0.028, uv.y);
+  float shaftSpan = 0.18 + flashSize * 0.50 + ltHash(seed + 19.0) * 0.20;
+  float shaftBot = cloudBase + shaftSpan * (0.62 + ltHash(seed + 51.0) * 0.38);
+  float vertMask = belowBase * (1.0 - smoothstep(cloudBase + 0.04, shaftBot, uv.y));
 
-    float streak = 0.22 + 0.78 * random2d(vec2(uv.x * 195.0 + seed * 0.01 + sf * 11.0, floor(uv.y * 310.0)));
-    float patchMix = 0.42 + 0.58 * random2d(vec2(center.x * 110.0 + shaftSeed, uv.y * 42.0));
-    totalShaft += (horizFall * streak + coreBeam * 0.55) * vertMask * patchMix;
+  float streakFreq = 165.0 + ltHash(seed + 61.0) * 95.0;
+  float streak = 0.30 + 0.70 * (0.5 + 0.5 * sin(uv.y * streakFreq + seed * 0.11));
+  float patchMix = 0.48 + 0.52 * ltHash(center.x * 110.0 + uv.y * 42.0 + seed);
+
+  float totalShaft = horizFall0 * (streak * vertMask * patchMix + horizFall0 * 0.14);
+
+  int shaftSamples = lod < 0.55 ? 1 : (lod < 0.82 ? 2 : 3);
+  if (shaftSamples > 1) {
+    for (int si = 1; si < 3; si++) {
+      if (si >= shaftSamples) break;
+      float sf = float(si);
+      float shaftSeed = seed + sf * 47.3;
+      float xOff = (ltHash(shaftSeed) - 0.5) * (0.022 + flashSize * 0.08);
+      float horizRad = 0.010 + flashSize * 0.046 + ltHash(shaftSeed + 1.0) * 0.018;
+      float horizFall = ltShaftHorizFall(uv, aspect, center, xOff, horizRad);
+      totalShaft += horizFall * streak * vertMask * patchMix * 0.72;
+    }
+    totalShaft /= float(shaftSamples);
   }
-  totalShaft /= 3.0;
 
   float rimBand = smoothstep(cloudBase - 0.07, cloudBase - 0.01, uv.y)
     * (1.0 - smoothstep(cloudBase + 0.01, cloudBase + 0.09, uv.y));
-  float rimHoriz = exp(-pow((uv.x - center.x) * aspect / (0.042 + flashSize * 0.13), 2.0));
+  float rimHoriz = exp(-pow((uv.x - center.x) * aspect / (0.040 + flashSize * 0.12), 2.0));
   cloudRimLight = rimBand * rimHoriz * precip * 0.72;
 
   float envelope = flashPhase * intensity * ltRainIllum * precip;
@@ -779,7 +819,8 @@ void ltAccumulateFlashes(vec2 uv, float aspect, float cloudwater, float precip, 
   float cloudMask = smoothstep(0.06, 0.32, cloudwater);
   float precipMask = smoothstep(0.04, 0.22, precip);
   float scale = ltBrightness * ltContrast / max(sqrt(float(ltNumStrikes)), 1.0);
-  bool rainShaftsActive = ltEnableRainIllum != 0;
+  bool rainShaftsActive = ltEnableRainIllum != 0 && ltHasPrecipShaftStrikes != 0;
+  bool pixelPrecip = precip > 0.018;
 
   for (int i = 0; i < LT_MAX_STRIKES; i++) {
     if (i >= ltNumStrikes) break;
@@ -801,10 +842,16 @@ void ltAccumulateFlashes(vec2 uv, float aspect, float cloudwater, float precip, 
 
     // --- Precip-shaft-only mode (hidden or sheet flash — lit rain columns) ---
     if (precipOnly) {
-      if (!rainShaftsActive)
+      if (!rainShaftsActive || !pixelPrecip)
         continue;
-      if (!ltPixelNearPrecipShaft(uv, aspect, origin, dest, flashSize))
+      if (isFlash) {
+        vec2 center = mix(origin, dest, 0.5);
+        if (!ltPixelNearFlash(uv, aspect, center, ltFlashInfluenceRadius(flashSize, ltSheet(ltType)))
+            && !ltPixelNearPrecipShaft(uv, aspect, origin, dest, flashSize))
+          continue;
+      } else if (!ltPixelNearPrecipShaft(uv, aspect, origin, dest, flashSize)) {
         continue;
+      }
 
       float shaftStr = intensity * dayNight * scale;
       if (isFlash)
@@ -826,6 +873,8 @@ void ltAccumulateFlashes(vec2 uv, float aspect, float cloudwater, float precip, 
 
     if (isFlash) {
       vec2 center = mix(origin, dest, 0.5);
+      if (!ltPixelNearFlash(uv, aspect, center, ltFlashInfluenceRadius(flashSize, ltSheet(ltType))))
+        continue;
       float radius = 0.062 + flashSize * 0.19;
       vec3 diffuseCloud;
       vec3 diffuseSurf;
@@ -834,16 +883,14 @@ void ltAccumulateFlashes(vec2 uv, float aspect, float cloudwater, float precip, 
         diffuseCloud, diffuseSurf);
       flashCloudLight += diffuseCloud;
       flashSurfaceLight += diffuseSurf;
-    } else {
-      continue;
-    }
 
-    // Rain shafts also pick up spill light during area-flash strikes
-    if (rainShaftsActive && precipMask > 0.02) {
-      float spill = ltPrecipCurtain(uv, aspect, origin, dest, flashSize, flashPhase * 0.72,
-        intensity * dayNight * scale * 0.85, precip, seed);
-      flashSurfaceLight += flashCol * spill * 0.10;
-      precipBoltShafts += LT_SHEET_COL * spill * 0.08;
+      if (rainShaftsActive && precipMask > 0.02
+          && ltPixelNearPrecipShaft(uv, aspect, origin, dest, flashSize)) {
+        float spill = ltPrecipCurtain(uv, aspect, origin, dest, flashSize, flashPhase * 0.72,
+          intensity * dayNight * scale * 0.85, precip, seed);
+        flashSurfaceLight += flashCol * spill * 0.10;
+        precipBoltShafts += LT_SHEET_COL * spill * 0.08;
+      }
     }
   }
 }
