@@ -2950,6 +2950,11 @@ class WeatherBalloon
   #dragOffSimY = 0;
   #windSampleBase = new Float32Array(4);
   #windSampleWall = new Int32Array(4);
+  #pixelBase = new Float32Array(4);
+  #pixelWater = new Float32Array(4);
+  #pixelWall = new Int32Array(4);
+  static #MAX_SAMPLES_PER_STEP = 8;
+  static #MAX_STORED_SAMPLES = 1200;
 
   constructor(xIn, surfaceYIn)
   {
@@ -3098,12 +3103,23 @@ class WeatherBalloon
   #sampleAtY(targetY, altM)
   {
     const iy = Math.floor(clamp(targetY, 0, sim_res_y - 1));
-    const base = new Float32Array(4);
-    const water = new Float32Array(4);
-    const wall = new Int32Array(4);
-    if (!this.#readColumnRange(iy, 1, base, water, wall) || wall[1] === 0) return false;
-    this.#pushSampleFromPixels(targetY, altM, base, water);
+    if (!this.#readColumnRange(iy, 1, this.#pixelBase, this.#pixelWater, this.#pixelWall)
+      || this.#pixelWall[1] === 0)
+      return false;
+    this.#pushSampleFromPixels(targetY, altM, this.#pixelBase, this.#pixelWater);
+    this.#trimSampleStore();
     return true;
+  }
+
+  #trimSampleStore()
+  {
+    const max = WeatherBalloon.#MAX_STORED_SAMPLES;
+    if (this.#samples.length <= max) return;
+    const step = this.#samples.length / max;
+    const trimmed = [];
+    for (let i = 0; i < max; i++)
+      trimmed.push(this.#samples[Math.min(this.#samples.length - 1, Math.floor(i * step))]);
+    this.#samples = trimmed;
   }
 
   #sampleAlongPath()
@@ -3113,13 +3129,19 @@ class WeatherBalloon
     const intervalM = this.#balloonSampleIntervalM();
     const currentAltAgl = Math.max(0, (this.#y - this.#surfaceY) * dz);
     let nextAlt = this.#lastSampledAltM + intervalM;
+    const pendingAlt = Math.max(0, currentAltAgl - this.#lastSampledAltM);
+    const maxNew = Math.min(
+      WeatherBalloon.#MAX_SAMPLES_PER_STEP,
+      Math.max(1, Math.ceil(pendingAlt / intervalM)));
 
-    while (nextAlt <= currentAltAgl + 0.001) {
+    let added = 0;
+    while (nextAlt <= currentAltAgl + 0.001 && added < maxNew) {
       const targetY = this.#surfaceY + nextAlt / dz;
       if (targetY >= sim_res_y - 1) break;
       if (!this.#sampleAtY(targetY, nextAlt)) return false;
       this.#lastSampledAltM = nextAlt;
       nextAlt += intervalM;
+      added++;
     }
 
     this.#lastSampledY = Math.min(Math.floor(this.#y), sim_res_y - 1);
@@ -3138,21 +3160,6 @@ class WeatherBalloon
       baseTextureValues[4 * yi] = msToRawVelocity(s.u);
       baseTextureValues[4 * yi + 1] = msToRawVelocity(s.v);
       if (s.water != null) waterTextureValues[4 * yi] = s.water;
-    }
-
-    for (let i = 1; i < samples.length; i++) {
-      const y0 = Math.round(samples[i - 1].y);
-      const y1 = Math.round(samples[i].y);
-      if (y1 <= y0 + 1) continue;
-      for (let y = y0 + 1; y < y1; y++) {
-        const t = (y - y0) / (y1 - y0);
-        envTempsC[y] = samples[i - 1].t + (samples[i].t - samples[i - 1].t) * t;
-        envDewC[y] = samples[i - 1].d + (samples[i].d - samples[i - 1].d) * t;
-        const u = samples[i - 1].u + (samples[i].u - samples[i - 1].u) * t;
-        const v = samples[i - 1].v + (samples[i].v - samples[i - 1].v) * t;
-        baseTextureValues[4 * y] = msToRawVelocity(u);
-        baseTextureValues[4 * y + 1] = msToRawVelocity(v);
-      }
     }
   }
 
@@ -3194,6 +3201,17 @@ class WeatherBalloon
   }
 
   getSamples() { return this.#samples; }
+
+  getDrawSamples(maxPoints = 480)
+  {
+    const samples = this.#samples;
+    if (samples.length <= maxPoints) return samples;
+    const out = [];
+    const step = samples.length / maxPoints;
+    for (let i = 0; i < maxPoints; i++)
+      out.push(samples[Math.min(samples.length - 1, Math.floor(i * step))]);
+    return out;
+  }
 
   getAscentPercent()
   {
@@ -11496,9 +11514,14 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         }
       }
       const colXRead = Math.floor(Math.abs(mod(simXpos, sim_res_x)));
+      const balloonHasPathSamples = skewTBalloon && skewTBalloon.getSamples().length > 0;
+      const lightSkewT = balloonSoundingPending;
 
-      const columnKey = colXRead + '|' + (even ? 1 : 0);
-      const reuseColumn = this._columnCacheKey === columnKey
+      const columnKey = balloonHasPathSamples
+        ? ('balloon|' + skewTBalloon.getSamples().length + '|' + colXRead)
+        : (colXRead + '|' + (even ? 1 : 0));
+      const reuseColumn = !balloonHasPathSamples
+        && this._columnCacheKey === columnKey
         && this._columnCacheFrame >= frameNum - 1
         && this._columnBaseValues
         && this._columnWaterValues
@@ -11510,6 +11533,25 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         baseTextureValues = this._columnBaseValues;
         waterTextureValues = this._columnWaterValues;
         wallTextureValues = this._columnWallValues;
+      } else if (balloonHasPathSamples) {
+        if (!this._columnBaseValues || this._columnBaseValues.length !== 4 * sim_res_y)
+          this._columnBaseValues = new Float32Array(4 * sim_res_y);
+        if (!this._columnWaterValues || this._columnWaterValues.length !== 4 * sim_res_y)
+          this._columnWaterValues = new Float32Array(4 * sim_res_y);
+        if (!this._columnWallValues || this._columnWallValues.length !== 4 * sim_res_y)
+          this._columnWallValues = new Int32Array(4 * sim_res_y);
+        baseTextureValues = this._columnBaseValues;
+        waterTextureValues = this._columnWaterValues;
+        wallTextureValues = this._columnWallValues;
+        baseTextureValues.fill(0);
+        waterTextureValues.fill(0);
+        wallTextureValues.fill(0);
+        for (const s of skewTBalloon.getSamples()) {
+          const yi = Math.min(sim_res_y - 1, Math.max(0, Math.round(s.y)));
+          wallTextureValues[yi * 4 + 1] = 1;
+        }
+        this._columnCacheKey = columnKey;
+        this._columnCacheFrame = frameNum;
       } else {
         gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_1);
         gl.readBuffer(gl.COLOR_ATTACHMENT0);
@@ -11823,11 +11865,18 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       // Compute sounding stability metrics for skew-T readout
       const envTempsC = new Float32Array(sim_res_y);
       const envDewC = new Float32Array(sim_res_y);
-      for (let y = 0; y < sim_res_y; y++) {
-        envTempsC[y] = KtoC(potentialToRealT(baseTextureValues[4 * y + 3], y));
-        envDewC[y] = KtoC(dewpoint(waterTextureValues[4 * y]));
+      if (balloonHasPathSamples) {
+        envTempsC.fill(NaN);
+        envDewC.fill(NaN);
+      } else {
+        for (let y = 0; y < sim_res_y; y++) {
+          envTempsC[y] = KtoC(potentialToRealT(baseTextureValues[4 * y + 3], y));
+          envDewC[y] = KtoC(dewpoint(waterTextureValues[4 * y]));
+        }
       }
-      const balloonSamples = skewTBalloon ? skewTBalloon.getSamples() : null;
+      const balloonSamples = skewTBalloon
+        ? skewTBalloon.getDrawSamples(lightSkewT ? 320 : 640)
+        : null;
       if (skewTBalloon) {
         skewTBalloon.populateEnvFromSamples(envTempsC, envDewC, baseTextureValues, waterTextureValues);
       }
@@ -11863,20 +11912,36 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
 
       const sfcAltM = surfaceLevel * dz;
       const parcelProfile = computeParcelProfile(envTempsC[surfaceLevel], envDewC[surfaceLevel], surfaceLevel);
-      const soundingMetrics = computeCAPEForColumn(
-        envTempsC, envDewC, parcelProfile, surfaceLevel, columnIsFluid, sim_res_y, dz, sfcAltM);
+      const soundingMetrics = lightSkewT
+        ? { cape: 0, cinh: NaN, lclAlt: NaN, lfcAlt: NaN, elAlt: NaN }
+        : computeCAPEForColumn(
+          envTempsC, envDewC, parcelProfile, surfaceLevel, columnIsFluid, sim_res_y, dz, sfcAltM);
       const sbCape = soundingMetrics.cape;
-      const meanParcelProfile = meanLayerParcel(envTempsC, envDewC, surfaceLevel);
-      const meanLayerMetrics = computeCAPEForColumn(
-        envTempsC, envDewC, meanParcelProfile, surfaceLevel, columnIsFluid, sim_res_y, dz, sfcAltM);
-
-      // Most Unstable CAPE: max CAPE among parcels lifted from any level in the column
+      let meanParcelProfile = parcelProfile;
+      let meanLayerMetrics = soundingMetrics;
       let muCape = 0;
       let muCinh = soundingMetrics.cinh;
       let muLcl = soundingMetrics.lclAlt;
       let muLfc = soundingMetrics.lfcAlt;
       let muEl = soundingMetrics.elAlt;
       let muParcelLevel = surfaceLevel;
+      let elevatedCape = 0;
+      let cape3km = 0;
+      let liftedIndex = NaN;
+      let freezingAlt = NaN;
+
+      if (!lightSkewT) {
+      meanParcelProfile = meanLayerParcel(envTempsC, envDewC, surfaceLevel);
+      meanLayerMetrics = computeCAPEForColumn(
+        envTempsC, envDewC, meanParcelProfile, surfaceLevel, columnIsFluid, sim_res_y, dz, sfcAltM);
+
+      // Most Unstable CAPE: max CAPE among parcels lifted from any level in the column
+      muCape = 0;
+      muCinh = soundingMetrics.cinh;
+      muLcl = soundingMetrics.lclAlt;
+      muLfc = soundingMetrics.lfcAlt;
+      muEl = soundingMetrics.elAlt;
+      muParcelLevel = surfaceLevel;
       for (let y = surfaceLevel; y < sim_res_y - 1; y++) {
         if (wallTextureValues[4 * y + 1] === 0) continue;
         const pp = computeParcelProfile(envTempsC[y], envDewC[y], y);
@@ -11898,9 +11963,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         muEl = soundingMetrics.elAlt;
         muParcelLevel = surfaceLevel;
       }
-      const muParcelAgl = (muParcelLevel - surfaceLevel) * dz;
 
-      let elevatedCape = 0;
+      elevatedCape = 0;
       const elevOriginMin = surfaceLevel + Math.round(1500 / dz);
       for (let y = elevOriginMin; y < sim_res_y - 1; y++) {
         if (wallTextureValues[4 * y + 1] === 0) continue;
@@ -11909,20 +11973,17 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         if (m.cape > elevatedCape) elevatedCape = m.cape;
       }
 
-      // 3CAPE: max buoyancy integral in lowest 3 km AGL among parcels lifted from lowest 3 km
-      let cape3km = 0;
+      cape3km = 0;
       const max3kmLevel = surfaceLevel + Math.round(3000 / dz);
       for (let y = surfaceLevel; y < Math.min(max3kmLevel, sim_res_y); y++) {
         if (wallTextureValues[4 * y + 1] === 0) continue;
         const pp = computeParcelProfile(envTempsC[y], envDewC[y], y);
         const m = computeCAPEForColumn(envTempsC, envDewC, pp, y, columnIsFluid, sim_res_y, dz, sfcAltM);
-        if (m.cape3km > cape3km) {
-          cape3km = m.cape3km;
-        }
+        if (m.cape3km > cape3km) cape3km = m.cape3km;
       }
 
       // Lifted Index: difference between parcel temp and env temp at 500mb (~5.5km)
-      let liftedIndex = NaN;
+      liftedIndex = NaN;
       const y500mb = surfaceLevel + Math.round(5500 / dz);
       if (y500mb < sim_res_y && wallTextureValues[4 * y500mb + 1] !== 0) {
         const parcelTemp500 = parcelProfile[y500mb];
@@ -11933,7 +11994,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       }
 
       // Freezing level: lowest altitude where environmental temperature crosses 0°C
-      let freezingAlt = NaN;
+      freezingAlt = NaN;
       for (let y = surfaceLevel; y < sim_res_y - 1; y++) {
         if (wallTextureValues[4 * y + 1] === 0 || wallTextureValues[4 * (y + 1) + 1] === 0) continue;
         const t0 = envTempsC[y];
@@ -11947,6 +12008,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       if (isNaN(freezingAlt) && envTempsC[surfaceLevel] <= 0) {
         freezingAlt = surfaceLevel * dz;
       }
+      }
+      const muParcelAgl = (muParcelLevel - surfaceLevel) * dz;
 
       // Wind shear at 0-3km, 0-6km, 0-8km (bulk shear = vector difference magnitude)
       function windSpeedAtY(y) {
@@ -11972,8 +12035,12 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       // Hodograph profile + storm motion (parcel/storm speed 30 km/h along 0-6km mean wind)
       const STORM_MOTION_MS = 30 / 3.6;
       const hodoPoints = [];
-      if (skewTBalloon && skewTBalloon.getSamples().length) {
-        for (const s of skewTBalloon.getSamples()) {
+      if (balloonSamples && balloonSamples.length) {
+        for (const s of balloonSamples) {
+          hodoPoints.push({ altM: s.altM, u: s.u, v: s.v });
+        }
+      } else if (skewTBalloon && skewTBalloon.getSamples().length) {
+        for (const s of skewTBalloon.getDrawSamples()) {
           hodoPoints.push({ altM: s.altM, u: s.u, v: s.v });
         }
       } else {
@@ -12100,6 +12167,40 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       const hodoProfileNodeCount = Math.max(2, Math.round(guiControls.hodographProfileNodes || guiControls.hodographNodes || 30));
       const displayHodoPoints = subsampleWindNodesByAlt(hodoPoints, hodo2DNodeCount);
 
+      let panelRows = [];
+      let stormTypes = { types: [], convMode: '—', convModeColor: '#888888', dominantType: null };
+      let hazards = [];
+      let allHazards = [];
+      let timeLine = formatSoundingSimTimeLabel();
+      let tornadoPct = 0;
+      let dispSbCape = 0;
+      let dispMlCape = 0;
+      let dispMuCape = 0;
+      let srh1km = 0;
+      let srh3km = 0;
+      let pwat_mm = 0;
+      let lapse03 = NaN;
+      let lapse75 = NaN;
+      let shear1km = 0;
+      let wblAlt = NaN;
+      let bunkers = { left: {u: 0, v: 0}, right: {u: 0, v: 0} };
+      let corfidi = { up: {u: 0, v: 0}, down: {u: 0, v: 0} };
+      let ehi = 0;
+      let ship = 0;
+      let scp = 0;
+      let sbCinh = soundingMetrics.cinh;
+      let mlCapeVal = meanLayerMetrics.cape;
+      let mlCape = 0;
+      let drySlot = { strength: 0 };
+      let stp = 0;
+      let risk = {label: '—', color: '#888888'};
+      let fireRisk = {label: '—', color: '#888888'};
+      let dcape = 0;
+      let estHailIn = 0;
+      let lightningFlMin = 0;
+      let cs = this._capeDisplaySmooth || { sb: 0, mu: 0, ml: 0, c3: 0, colX: simXpos };
+
+      if (!lightSkewT) {
       // Storm-relative helicity (SRH) - 2D rotation potential for horizontal rolls
       function calculateSRH(altM) {
         const targetY = surfaceLevel + Math.round(altM / dz);
@@ -12137,11 +12238,9 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         }
         return Math.abs(srh); // Return magnitude
       }
-      const srh1km = calculateSRH(1000);
-      const srh3km = calculateSRH(3000);
-
-      // Precipitable Water (integrate water vapor from surface to top)
-      let pwat_mm = 0;
+      srh1km = calculateSRH(1000);
+      srh3km = calculateSRH(3000);
+      pwat_mm = 0;
       for (let y = surfaceLevel; y < sim_res_y; y++) {
         if (wallTextureValues[4 * y + 1] === 0) continue;
         pwat_mm += waterTextureValues[4 * y] * dz * 0.001; // g/m3 * m -> g/m2 -> mm
@@ -12154,20 +12253,17 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         if (yTop >= sim_res_y || yBot >= sim_res_y) return NaN;
         return (envTempsC[yBot] - envTempsC[yTop]) / ((altTop - altBot) / 1000);
       }
-      const lapse03 = lapseRateLayer(0, 3000);
-      const lapse36 = lapseRateLayer(3000, 6000);
-      const lapse75 = lapseRateLayer(2500, 5500);
-      const shear1km = windShearToAlt(1000);
-      const wblAlt = findWetBulbZeroAlt(envTempsC, envDewC, surfaceLevel, sim_res_y, dz, wallTextureValues);
-      const bunkers = computeBunkersStormMotion(hodoPoints);
-      const corfidi = computeCorfidiVectors(hodoPoints);
-      const ehi = computeEHI(sbCape, srh3km, shear3km);
-      const ship = computeSHIP(muCape, shear6km, lapse75, muCinh);
-      const scp = computeSCP(muCape, shear6km, srh3km);
-      const criticalAngle = computeCriticalAngle(hodoPoints, stormU, stormV);
-      const sbCinh = soundingMetrics.cinh;
-      const mlCapeVal = meanLayerMetrics.cape;
-      const mlCinhVal = meanLayerMetrics.cinh;
+      lapse03 = lapseRateLayer(0, 3000);
+      lapse75 = lapseRateLayer(2500, 5500);
+      shear1km = windShearToAlt(1000);
+      wblAlt = findWetBulbZeroAlt(envTempsC, envDewC, surfaceLevel, sim_res_y, dz, wallTextureValues);
+      bunkers = computeBunkersStormMotion(hodoPoints);
+      corfidi = computeCorfidiVectors(hodoPoints);
+      ehi = computeEHI(sbCape, srh3km, shear3km);
+      ship = computeSHIP(muCape, shear6km, lapse75, muCinh);
+      scp = computeSCP(muCape, shear6km, srh3km);
+      sbCinh = soundingMetrics.cinh;
+      mlCapeVal = meanLayerMetrics.cape;
 
       // Dry slot: mid-level RH minimum sandwiched between moister layers (from profile, not proxies)
       function analyzeDrySlot() {
@@ -12226,19 +12322,19 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
 
         return { strength, minRh, baseAgl, topAgl, depthKm, rhDeficit };
       }
-      const drySlot = analyzeDrySlot();
+      drySlot = analyzeDrySlot();
       const moistEnv = 1 - drySlot.strength * 0.55;
 
       // STP (Significant Tornado Parameter) - simplified
       // STP = (MLCAPE/1500) * (ESRH/150) * ((2000-MLLCL)/1000) * (MLCINH+200)/150
       // We approximate ESRH ~ 0-3km shear * 0.5 (no hodograph), LCL from ML parcel
       const mlLcl_m = meanLayerMetrics.lclAlt || 0;
-      const mlCape = meanLayerMetrics.cape;
+      mlCape = meanLayerMetrics.cape;
       const mlCinh = meanLayerMetrics.cinh;
       const esrh_approx = Math.max(0, shear3km * 50); // rough proxy, prevent negative
       const stpLcl = Math.max(0, (2000 - mlLcl_m) / 1000);
       const stpCinh = Math.min(1, (mlCinh + 200) / 150);
-      const stp = (mlCape / 1500) * (esrh_approx / 150) * stpLcl * stpCinh * moistEnv;
+      stp = (mlCape / 1500) * (esrh_approx / 150) * stpLcl * stpCinh * moistEnv;
 
       // VTP (Violent Tornado Parameter) - simplified
       // VTP = (MUCAPE/1500) * (0-6km shear/20m/s) * (0-3km lapse/6.5) * (PWAT/1.5in)
@@ -12248,7 +12344,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       const vtp = (muCape / 1500) * vtpShear * vtpLapse * vtpPwat * moistEnv;
 
       // Fire risk calculation based on temperature, humidity, wind, and soil moisture
-      let fireRisk = {label: 'Low', color: '#00FF00'};
+      fireRisk = {label: 'Low', color: '#00FF00'};
       const surfaceTemp = envTempsC[surfaceLevel];
       const surfaceRH = relativeHumd(CtoK(surfaceTemp), waterTextureValues[4 * surfaceLevel]);
       const surfaceWind = windSpeedAtY(surfaceLevel);
@@ -12285,7 +12381,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         if (cape >= 500 && shear6 >= 10) return {label: 'Slight', color: '#FFFF00'};
         return {label: 'Marginal', color: '#00FF88'};
       }
-      const risk = getRisk(muCape, shear6km, stp, drySlot.strength);
+      risk = getRisk(muCape, shear6km, stp, drySlot.strength);
 
       const altStrAgl = (m) => {
         if (!Number.isFinite(m)) return 'N/A';
@@ -12297,7 +12393,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       const altToHpa = (alt_m) => 1013.25 * Math.pow(1.0 - 2.25577e-5 * alt_m, 5.25588);
 
       // Pre-compute DCAPE for hazard scoring
-      let dcape = 0;
+      dcape = 0;
       {
         const y4km = surfaceLevel + Math.round(4000 / dz);
         const y8km = Math.min(surfaceLevel + Math.round(8000 / dz), sim_res_y - 1);
@@ -12348,7 +12444,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         lightningFlMin = lScore * pScore * mScore * uScore * sScore * slotScore * 38.0;
       }
 
-      const stormTypes = computeStormTypeComposites({
+      stormTypes = computeStormTypeComposites({
         sbCape, muCape, mlCape, cape3km,
         shear3km, shear6km, shear8km,
         srh3km, pwat_mm, dcape, stp,
@@ -12358,7 +12454,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       }, drySlot.strength);
 
       // Pre-compute hazards so we can size the box dynamically
-      const hazards = [];
+      hazards = [];
       {
         // Factor: 0 below min, ramps to 1 at full; keeps weak environments from scoring high
         function hf(v, min, moderate, full) {
@@ -12474,7 +12570,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
           colX: simXpos,
         };
       }
-      const cs = this._capeDisplaySmooth;
+      cs = this._capeDisplaySmooth;
       if (cs.colX !== simXpos) {
         cs.sb = sbCape;
         cs.mu = muCape;
@@ -12492,9 +12588,9 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         if (raw < 100 && smoothed > 350) return smoothed;
         return raw;
       }
-      const dispSbCape = displayCapeReadout(cs.sb, sbCape);
-      const dispMlCape = displayCapeReadout(cs.ml, mlCapeVal);
-      const dispMuCape = displayCapeReadout(cs.mu, muCape);
+      dispSbCape = displayCapeReadout(cs.sb, sbCape);
+      dispMlCape = displayCapeReadout(cs.ml, mlCapeVal);
+      dispMuCape = displayCapeReadout(cs.mu, muCape);
 
       const capeColor = (v) => v > 2500 ? '#FF4400' : v > 1000 ? '#FFAA00' : '#E8EEF2';
       const domShort = stormTypes.dominantType
@@ -12503,16 +12599,16 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       const topStormTypes = stormTypes.types.filter(st => st.score >= 8).slice(0, 2);
       const topHazards = hazards.slice(0, 3);
       const obsTimeLabel = formatSoundingObsTimeLabel();
-      const timeLine = formatSoundingSimTimeLabel() + (obsTimeLabel ? '  ·  ' + obsTimeLabel : '');
+      timeLine = formatSoundingSimTimeLabel() + (obsTimeLabel ? '  ·  ' + obsTimeLabel : '');
 
-      const tornadoPct = Math.min(48, Math.round(
+      tornadoPct = Math.min(48, Math.round(
         map_range_C(stp, 0.8, 5, 6, 40) *
         map_range_C(srh3km, 80, 280, 0.35, 1) *
         map_range_C(muCape, 800, 3200, 0.35, 1) *
         (1 - drySlot.strength * 0.4)
       ));
 
-      const panelRows = [
+      panelRows = [
         { section: 'PARCEL & INSTABILITY' },
         { label: 'SBCAPE', value: Math.round(dispSbCape) + ' J/kg', color: capeColor(dispSbCape) },
         { label: 'MLCAPE', value: Math.round(dispMlCape) + ' J/kg', color: capeColor(dispMlCape) },
@@ -12560,10 +12656,12 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       panelRows.push({ label: 'Risk', value: risk.label, color: risk.color });
       panelRows.push({ label: 'Fire', value: fireRisk.label, color: fireRisk.color });
 
-      const allHazards = this._buildAllHazardScores({
+      allHazards = this._buildAllHazardScores({
         stp, vtp, srh3km, shear3km, shear6km, muCape, lapse03, mixedPhaseKm,
         estHailIn, dcape, drySlotStrength: drySlot.strength, pwat_mm, moistEnv,
       });
+      }
+
       const colXSnap = Math.floor(Math.abs(mod(simXpos, sim_res_x)));
       const launchXSnap = skewTBalloon ? Math.floor(Math.abs(mod(skewTBalloon.getLaunchX(), sim_res_x))) : colXSnap;
       const balloonPathLabel = skewTBalloon
@@ -12903,7 +13001,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       c.strokeStyle = '#66CCFF';
       c.stroke();
 
-      if (guiControls.soundingShowParcels) {
+      if (guiControls.soundingShowParcels && !balloonSoundingPending) {
         c.beginPath();
         let sfcParcelStarted = false;
         for (let y = surfaceLevel; y < sim_res_y; y++) {
@@ -12920,7 +13018,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         if (sfcParcelStarted) c.stroke();
       }
 
-      if (guiControls.soundingShowParcels) {
+      if (guiControls.soundingShowParcels && !balloonSoundingPending) {
         c.beginPath();
         let mlStarted = false;
         for (let y = surfaceLevel; y < sim_res_y; y++) {
@@ -21180,14 +21278,17 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         let graphX;
         let graphY;
         const trackedBalloon = soundingGraph._getActiveSkewTBalloon();
-        if (guiControls.skewTSourceMode === 'weatherBalloon' && trackedBalloon) {
+        const balloonGraphActive = guiControls.skewTSourceMode === 'weatherBalloon'
+          && trackedBalloon && !trackedBalloon.isComplete();
+        if (balloonGraphActive) {
           graphX = trackedBalloon.getXpos();
           graphY = Math.min(Math.floor(trackedBalloon.getYpos()), sim_res_y - 1);
         } else {
           graphX = guiControls.graphFixedPosition ? guiControls.graphFixedX : Math.floor(Math.abs(mod(mouseXinSim * sim_res_x, sim_res_x)));
           graphY = guiControls.graphFixedPosition ? guiControls.graphFixedY : Math.floor(mouseYinSim * sim_res_y);
         }
-        soundingGraph.draw(graphX, graphY);
+        if (!balloonGraphActive || frameNum % 2 === 0)
+          soundingGraph.draw(graphX, graphY);
       }
 
     } // END OF NOT SETUP MODE
