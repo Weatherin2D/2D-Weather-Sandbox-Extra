@@ -1,7 +1,6 @@
 // Lightning V2.11 — GPU procedural SDF bolts + dual illumination modes
 // Included by realisticDisplayShader.frag — waterTex / CLOUD from common.glsl
 
-#define LT_V2_PROCEDURAL 1
 #define LT_MAX_STRIKES 8
 #define LT_PROC_SEGS 48
 #define LT_SPIDER_SEGS 40

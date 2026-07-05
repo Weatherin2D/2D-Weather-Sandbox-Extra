@@ -52,6 +52,8 @@ uniform float displayVectorField;
 uniform float iterNum;
 uniform float visualQuality;
 
+uniform int ltUseLegacyStyle;
+
 out vec4 fragmentColor;
 
 #include "common.glsl"
@@ -124,6 +126,8 @@ vec3 getIceColor(float iceThickness)
 #define suburbanLotWidth 14.0
 
 float suburbanHash(float n) { return fract(sin(n * 127.1) * 43758.5453); }
+
+float suburbanWorldX(float fragX) { return fragX * cellHeight; }
 
 vec3 getSuburbanGroundColor(float worldX)
 {
@@ -313,12 +317,16 @@ vec3 displayLightning(vec2 pos, float lightningTime, float currentLightningInten
 
   pixVal *= currentLightningIntensity;
 
-  const vec3 lightningCol = vec3(0.94, 0.82, 1.0); // lavender glow, white core via intensity
+  vec3 lightningCol = ltUseLegacyStyle != 0
+    ? vec3(0.70, 0.57, 1.0)
+    : vec3(0.94, 0.82, 1.0);
 
   vec3 outputColor = max(pixVal * lightningCol, vec3(0));
-  float softHalo = max(texture(lightningTex, lightningTexCoord).r - brightnessThreshold * 0.72, 0.0)
-    * currentLightningIntensity * 0.045;
-  outputColor += softHalo * vec3(0.88, 0.74, 1.0);
+  if (ltUseLegacyStyle == 0) {
+    float softHalo = max(texture(lightningTex, lightningTexCoord).r - brightnessThreshold * 0.72, 0.0)
+      * currentLightningIntensity * 0.045;
+    outputColor += softHalo * vec3(0.88, 0.74, 1.0);
+  }
 
   return outputColor;
 }
@@ -389,22 +397,26 @@ void applyAirLightning(vec2 uv, float cloudwater, float precip, float cloudDensi
   precipShafts = vec3(0.0);
   float ltCloudPierce = 1.0 + clamp(cloudDensity * 0.22, 0.0, 5.5);
 
-#ifndef LT_V2_PROCEDURAL
-  vec4 lightningData = texture(lightningDataTex, vec2(0.5));
-  vec2 lightningPos = lightningData.xy;
-  float lightningStartIterNum = lightningData[START_ITERNUM];
-  float boltAge = iterNum - lightningStartIterNum;
-  const float LEGACY_BOLT_MAX_AGE = 28.0;
-  float lightningTime = calcLightningTime(lightningStartIterNum);
-  float currentLightningIntensity = lightningIntensityOverTime(lightningTime, lightningPos, lightningData[INTENSITY]);
-  bool legacyBoltActive = lightningData[INTENSITY] > 1.0
-    && boltAge >= 0.0 && boltAge < LEGACY_BOLT_MAX_AGE;
-  if (legacyBoltActive) {
-    emittedLight += displayLightning(lightningPos, lightningTime, currentLightningIntensity) * ltCloudPierce;
-  }
-#endif
-
-  if (ltNumStrikes > 0 && ltEventAge >= 0.0) {
+  if (ltUseLegacyStyle != 0) {
+    vec4 lightningData = texture(lightningDataTex, vec2(0.5));
+    vec2 lightningPos = lightningData.xy;
+    float lightningStartIterNum = lightningData[START_ITERNUM];
+    float boltAge = iterNum - lightningStartIterNum;
+    const float LEGACY_BOLT_MAX_AGE = 28.0;
+    float lightningTime = calcLightningTime(lightningStartIterNum);
+    float currentLightningIntensity = lightningIntensityOverTime(lightningTime, lightningPos, lightningData[INTENSITY]);
+    bool legacyBoltActive = lightningData[INTENSITY] > 1.0
+      && boltAge >= 0.0 && boltAge < LEGACY_BOLT_MAX_AGE;
+    if (legacyBoltActive) {
+      emittedLight += displayLightning(lightningPos, lightningTime, currentLightningIntensity) * ltCloudPierce;
+      const float lightningOnLightBrightness = 0.004;
+      vec2 dist = vec2(lightningPos.x - uv.x, max((abs(lightningPos.y / 2. - uv.y) - 0.1), 0.));
+      dist.x *= aspectRatios[0];
+      float lightningOnLight = lightningOnLightBrightness / (pow(length(dist), 2.) + 0.03);
+      lightningOnLight *= currentLightningIntensity;
+      onLight += vec3(lightningOnLight);
+    }
+  } else if (ltNumStrikes > 0 && ltEventAge >= 0.0) {
     vec3 ltBolts;
     vec3 ltBoltsBehind;
     vec3 ltIllum;
@@ -416,17 +428,6 @@ void applyAirLightning(vec2 uv, float cloudwater, float precip, float cloudDensi
       flashEmit, flashCloud, flashSurf, precipShafts);
     emittedLight += flashEmit;
   }
-
-#ifndef LT_V2_PROCEDURAL
-  if (legacyBoltActive) {
-    const float lightningOnLightBrightness = 0.004;
-    vec2 dist = vec2(lightningPos.x - uv.x, max((abs(lightningPos.y / 2. - uv.y) - 0.1), 0.));
-    dist.x *= aspectRatios[0];
-    float lightningOnLight = lightningOnLightBrightness / (pow(length(dist), 2.) + 0.03);
-    lightningOnLight *= currentLightningIntensity;
-    onLight += vec3(lightningOnLight);
-  }
-#endif
 }
 
 
@@ -510,7 +511,7 @@ void main()
       float depth = interpDepth - fract(fragCoord.y); // - 1.0 ?
 
       if (wall[TYPE] == WALLTYPE_SUBURBAN && wall[VERT_DISTANCE] == 0) {
-        color = getSuburbanGroundColor(fragCoord.x);
+        color = getSuburbanGroundColor(suburbanWorldX(fragCoord.x));
         color *= texture(noiseTex, vec2(texCoord.x * resolution.x, texCoord.y * resolution.y) * 0.2).rgb;
         color = mix(color, vec3(1.0), clamp(min(water[SNOW], fullWhiteSnowHeight) / fullWhiteSnowHeight - max(depth * 0.3, 0.), 0.0, 1.0));
       } else {
@@ -699,11 +700,12 @@ void main()
         float suburbanTexHeightNorm = maxSuburbanBuildingHeight / cellHeight;
 
         if (heightAboveGround < suburbanTexHeightNorm) {
-          vec4 texCol = suburbanHouseAt(fragCoord.x, heightAboveGround);
+          vec4 texCol = suburbanHouseAt(suburbanWorldX(fragCoord.x), heightAboveGround);
           if (texCol.a > 0.5) {
             if (nightTime) {
               shadowLight = 1.0;
-              float windowGlow = step(0.45, length(texCol.rgb)) * suburbanHash(floor(fragCoord.x / suburbanLotWidth) + 91.3);
+              float windowGlow = step(0.45, length(texCol.rgb))
+                * suburbanHash(floor(suburbanWorldX(fragCoord.x) / suburbanLotWidth) + 91.3);
               texCol.rgb = mix(texCol.rgb * 0.35, texCol.rgb * vec3(1.0, 0.82, 0.55), windowGlow);
             } else {
               texCol.rgb *= vec3(1.0, 0.98, 0.94);
@@ -746,7 +748,7 @@ void main()
             vec4 treeColor = surfaceTexture(FOREST, vec2(treeTexCoordX, treeTexCoordY * treeScale + (1.0 - treeScale) * 0.5));
             vec4 vegetationCol = mix(treeColor, vec4(dryGrassCol, 1.), max(0.5 - surfaceWater[SUSTAINED_MOISTURE] * (0.5 / fullGreenSoilMoisture), 0.) * treeColor.a); // green to brown
             if (wallX0Ym[TYPE] == WALLTYPE_SUBURBAN)
-              vegetationCol.a *= step(0.82, suburbanHash(floor(fragCoord.x / suburbanLotWidth) + 53.1));
+              vegetationCol.a *= step(0.82, suburbanHash(floor(suburbanWorldX(fragCoord.x) / suburbanLotWidth) + 53.1));
             texCol = mix(vegetationCol, surfaceTexture(SNOW_FOREST, vec2(treeTexCoordX, treeTexCoordY * treeScale)), min(snow / fullWhiteSnowHeight, 1.0));
           }
         } else if (wallX0Ym[TYPE] == WALLTYPE_FIRE && wallX0Ym[VEGETATION] > GRASS_VEG_MAX) {

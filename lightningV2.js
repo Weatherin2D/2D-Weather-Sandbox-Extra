@@ -63,6 +63,7 @@
   };
 
   const DEFAULT_SETTINGS = {
+    lightningRenderStyle: 'Enhanced',
     lightningV2Enabled: true,
     lightningPreset: 'Enhanced Realistic',
     useRealisticLightningRatios: true,
@@ -113,6 +114,9 @@
     cloudObscurationStrength: 0.55,
     channelIllumRatio: 0.35,
     precipOnlyLightningChance: 0.38,
+    cgLightningFireEnabled: true,
+    cgLightningFireChance: 0.32,
+    cgPositiveFireChanceMult: 1.65,
 
     leaderSpeed: 1.0,
     returnStrokeProbability: 0.35,
@@ -1554,6 +1558,43 @@
       || ltType === LT.UPWARD || ltType === LT.BOLT_FROM_BLUE;
   }
 
+  function isCgStrikeType(ltType) {
+    return ltType === LT.CG || ltType === LT.CG_POSITIVE;
+  }
+
+  const MIN_LIGHTNING_FIRE_INTENSITY = 0.002;
+
+  function vegetationInfluenceJS(veg) {
+    const grass = Math.min(veg, 50);
+    const forest = Math.max(veg - 50, 0);
+    return grass * 0.38 + forest + 0.08;
+  }
+
+  function calcFireIntensityJS(veg, soilMoist, precip) {
+    return Math.max(
+      vegetationInfluenceJS(veg) * 0.00032 - soilMoist * 0.00020 - precip * 0.02,
+      0);
+  }
+
+  function canSurfaceSupportFire(wallType, veg, soilMoist, precip) {
+    if (wallType === 3)
+      return false;
+    if (wallType !== 1 && wallType !== 7)
+      return false;
+    return calcFireIntensityJS(veg, soilMoist, precip) >= MIN_LIGHTNING_FIRE_INTENSITY;
+  }
+
+  function rollCgLightningFireChance(ltType, fireIntensity, seed, controls) {
+    if (!controls.cgLightningFireEnabled)
+      return false;
+    const base = clamp(controls.cgLightningFireChance ?? 0.32, 0, 1);
+    const posMult = ltType === LT.CG_POSITIVE
+      ? clamp(controls.cgPositiveFireChanceMult ?? 1.65, 1, 3) : 1;
+    const condMult = clamp(fireIntensity / MIN_LIGHTNING_FIRE_INTENSITY, 0, 6);
+    const chance = Math.min(0.92, base * posMult * (0.35 + condMult * 0.22));
+    return shaderRand(seed + 947.3) < chance;
+  }
+
   /** V2.6 — all types render with the CG bolt texture asset. */
   function boltTextureIndexForType(ltType, seed) {
     if (ltType === LT.CG_POSITIVE) return Math.floor(shaderRand(seed + 5) * 2);
@@ -1697,6 +1738,13 @@
 
   function buildLightningV2GUI(datGui, controls, callbacks) {
     const folder = datGui.addFolder('Lightning');
+    folder.add(controls, 'lightningRenderStyle', { 'Enhanced (V2)': 'Enhanced', 'Legacy (Classic)': 'Legacy' })
+      .name('Lightning Style')
+      .onChange(() => {
+        if (callbacks.onLightningStyleChanged)
+          callbacks.onLightningStyleChanged();
+        callbacks.onSettingsChanged();
+      });
     const presetCtrl = folder.add(controls, 'lightningPreset', Object.keys(PRESETS))
       .name('Preset').onChange(name => {
         if (name !== 'Custom') {
@@ -1917,6 +1965,11 @@
     isDryLightningType,
     placementForDryStrike,
     isGroundStrike,
+    isCgStrikeType,
+    calcFireIntensityJS,
+    canSurfaceSupportFire,
+    rollCgLightningFireChance,
+    MIN_LIGHTNING_FIRE_INTENSITY,
     boltTextureIndexForType,
     getChannels,
     strikeChance,
