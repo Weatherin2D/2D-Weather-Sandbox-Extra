@@ -404,6 +404,10 @@ const mToFt = 3.28084;
 
 const saveFileVersionID = 263574038; // Uint32 id — includes airmass generator positions + settings
 
+var multiplayerPeerMode = false;
+var multiplayerHostMode = false;
+var multiplayerSimReady = false;
+
 const guiControls_default = {
   vorticity : 0.005,
   dragMultiplier : 0.001, // 0.01
@@ -5385,6 +5389,119 @@ async function loadNewFormatSettings(dataBlob, sliceStart, totalBytes, fileVersi
 }
 
 
+async function loadSnapshotFromDecompressed(decompressed, version, inPlaceApplyFn)
+{
+  const dataBlob = new Blob([ decompressed ]);
+  let sliceStart = 0;
+  let sliceEnd = 4;
+
+  let resBuf = await dataBlob.slice(sliceStart, sliceEnd).arrayBuffer();
+  let resArray = new Uint16Array(resBuf);
+  sim_res_x = resArray[0];
+  sim_res_y = resArray[1];
+
+  if (!sim_res_x || !sim_res_y || sim_res_x > 16000 || sim_res_y > 10000)
+    throw new Error('Invalid snapshot resolution');
+
+  NUM_DROPLETS = (sim_res_x * sim_res_y) / NUM_DROPLETS_DEVIDER;
+  if (guiControls && guiControls.reducedPrecipitation)
+    NUM_DROPLETS = Math.floor(NUM_DROPLETS * 0.5);
+  NUM_DROPLETS = Math.min(NUM_DROPLETS, 120000);
+
+  sliceStart = sliceEnd;
+  sliceEnd += sim_res_x * sim_res_y * 4 * 4;
+  let baseTexF32 = new Float32Array(await dataBlob.slice(sliceStart, sliceEnd).arrayBuffer());
+
+  sliceStart = sliceEnd;
+  sliceEnd += sim_res_x * sim_res_y * 4 * 4;
+  let waterTexF32 = new Float32Array(await dataBlob.slice(sliceStart, sliceEnd).arrayBuffer());
+
+  sliceStart = sliceEnd;
+  sliceEnd += sim_res_x * sim_res_y * 4 * 1;
+  let wallTexI8 = new Int8Array(await dataBlob.slice(sliceStart, sliceEnd).arrayBuffer());
+
+  let precipArray = null;
+  if (version == saveFileVersionID || version == 263574037) {
+    sliceStart = sliceEnd;
+    sliceEnd += Uint32Array.BYTES_PER_ELEMENT;
+    let savedNumDroplets = new Uint32Array(await dataBlob.slice(sliceStart, sliceEnd).arrayBuffer())[0];
+    NUM_DROPLETS = savedNumDroplets;
+
+    sliceStart = sliceEnd;
+    sliceEnd += NUM_DROPLETS * Float32Array.BYTES_PER_ELEMENT * 5;
+    precipArray = new Float32Array(await dataBlob.slice(sliceStart, sliceEnd).arrayBuffer());
+  }
+
+  guiControlsFromSaveFile = null;
+  weatherStations = [];
+  weatherBalloons = [];
+  skewTTrackedBalloon = null;
+  radars = [];
+  airmassGenerators = [];
+
+  if (version == saveFileVersionID || version == 263574037) {
+    const totalBytes = decompressed.byteLength;
+    sliceStart = sliceEnd;
+
+    sliceEnd = sliceStart + Int16Array.BYTES_PER_ELEMENT;
+    if (sliceStart < totalBytes) {
+      let numWeatherStations = new Int16Array(await dataBlob.slice(sliceStart, sliceEnd).arrayBuffer())[0];
+      sliceStart = sliceEnd;
+      if (numWeatherStations > 0 && numWeatherStations < 10000) {
+        sliceEnd = sliceStart + numWeatherStations * 2 * Int16Array.BYTES_PER_ELEMENT;
+        if (sliceEnd <= totalBytes) {
+          let weatherStationArray = new Int16Array(await dataBlob.slice(sliceStart, sliceEnd).arrayBuffer());
+          for (let i = 0; i < Math.floor(weatherStationArray.length / 2); i++)
+            weatherStations.push(new Weatherstation(weatherStationArray[i * 2], weatherStationArray[i * 2 + 1]));
+        }
+        sliceStart = sliceEnd;
+      }
+    }
+
+    try {
+      sliceStart = await loadRadarTowersFromSave(dataBlob, sliceStart, totalBytes);
+      if (version == saveFileVersionID)
+        sliceStart = await loadAirmassGeneratorsFromSave(dataBlob, sliceStart, totalBytes);
+      if (sliceStart < totalBytes)
+        await loadNewFormatSettings(dataBlob, sliceStart, totalBytes, version);
+    } catch (e) {
+      console.warn('Optional snapshot metadata not loaded:', e.message);
+    }
+  }
+
+  if (inPlaceApplyFn)
+    await inPlaceApplyFn(baseTexF32, waterTexF32, wallTexI8, precipArray);
+  else {
+    SETUP_MODE = false;
+    mainScript(baseTexF32, waterTexF32, wallTexI8, precipArray);
+  }
+}
+
+window.loadSnapshotFromNetwork = async function(arrayBuffer)
+{
+  try {
+    const version = new Uint32Array(arrayBuffer, 0, 1)[0];
+    const compressed = new Uint8Array(arrayBuffer, 4);
+    const decompressed = window.pako.inflate(compressed);
+
+    if (multiplayerSimReady && window.__applySnapshotInPlace) {
+      await loadSnapshotFromDecompressed(decompressed, version, window.__applySnapshotInPlace);
+      if (window.WeatherMultiplayerUI)
+        window.WeatherMultiplayerUI.setStatus('Snapshot synced');
+    } else {
+      await loadSnapshotFromDecompressed(decompressed, version, null);
+      multiplayerPeerMode = true;
+      if (window.WeatherMultiplayerUI)
+        window.WeatherMultiplayerUI.setStatus('Loaded host simulation');
+    }
+  } catch (e) {
+    console.error('Failed to load network snapshot', e);
+    if (window.WeatherMultiplayerUI)
+      window.WeatherMultiplayerUI.setStatus('Snapshot load failed: ' + e.message, true);
+  }
+};
+
+
 window.loadData = async function()
 {
   let file = document.getElementById('fileInput').files[0];
@@ -8830,6 +8947,18 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
     if (guiControls.realtimeMode)
       enableRealtimeMode();
+
+    enforceMultiplayerGuardrails();
+    if (multiplayerHostMode && window.WeatherMultiplayer && window.WeatherMultiplayer.isHost()) {
+      window.WeatherMultiplayer.broadcastSyncMeta({
+        simStarted: true,
+        iterNum,
+        sim_res_x,
+        sim_res_y,
+        sim_height: guiControls.simHeight,
+      });
+      window.WeatherMultiplayer.sendSnapshotTo(0);
+    }
   }
 
 function formatSoundingSimTimeLabel()
@@ -14799,6 +14928,12 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       leftMousePressed = true;
       if (SETUP_MODE) {
         startSimulation();
+      } else if (multiplayerPeerMode && window.WeatherMpProtocol && window.WeatherMpProtocol.isPlacementTool(guiControls.tool)) {
+        window.WeatherMultiplayer.emitPlace({
+          tool: guiControls.tool,
+          x: mouseXinSim,
+          y: mouseYinSim,
+        });
       } else if (guiControls.tool == 'TOOL_STATION') {
         let simXpos = Math.floor(mouseXinSim * sim_res_x);
         let simYpos = findSimYposAboveSurfaceAtMouseX();
@@ -14837,6 +14972,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         if (simXpos >= 0 && simXpos < sim_res_x)
           markers.push(new Marker(simXpos, simYpos)); // add marker
       } else if (guiControls.tool == 'TOOL_NUKE') {
+        if (multiplayerPeerMode) return;
         let simXpos = Math.floor(mouseXinSim * sim_res_x);
         let cursorYpos = Math.floor(mouseYinSim * sim_res_y);
         let surfaceYpos = findSimYposAboveSurfaceAtMouseX();
@@ -14863,6 +14999,9 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
 
   window.addEventListener('mouseup', function(event) {
     if (event.button == 0) {
+      if (multiplayerPeerMode && window.WeatherMultiplayer && window.WeatherMultiplayer.isPeer()) {
+        window.WeatherMultiplayer.emitBrush({ inputType: -1, active: false });
+      }
       leftMousePressed = false;
     } else if (event.button == 1) {
       // middle mouse button
@@ -18950,6 +19089,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   }
 
   setInterval(calcFps, 1000); // log fps
+  initMultiplayerIntegration();
   requestAnimationFrame(draw);
 
   function onUpdateTimeOfDaySlider()
@@ -21293,6 +21433,302 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     updateProceduralLightningState();
   }
 
+  const remoteActiveBrushes = new Map();
+  let lastHostSnapshotBroadcast = 0;
+  const HOST_SNAPSHOT_INTERVAL_MS = 5000;
+
+  window.enforceMultiplayerGuardrails = function()
+  {
+    if (!multiplayerHostMode && !multiplayerPeerMode) return;
+    guiControls.realtimeMode = false;
+    guiControls.auto_IterPerFrame = false;
+    if (guiControls.IterPerFrame > 20)
+      guiControls.IterPerFrame = 10;
+    if (multiplayerPeerMode && guiControls.tool === 'TOOL_NUKE')
+      guiControls.tool = 'TOOL_NONE';
+    if ((multiplayerHostMode || multiplayerPeerMode) && airplaneMode)
+      airplaneMode = false;
+  };
+
+  function toolNameToInputType(tool)
+  {
+    if (window.WeatherMpProtocol)
+      return window.WeatherMpProtocol.toolToInputType(tool);
+    return -1;
+  }
+
+  function computeBrushFromTool(tool, simX, simY, moveX, moveY, painting)
+  {
+    if (!painting) return { inputType: -1, active: false };
+    const inputType = toolNameToInputType(tool);
+    if (inputType < 0) return { inputType: -1, active: false };
+    let intensity = guiControls.brushIntensity;
+    if (ctrlPressed) intensity *= -1;
+    let posXinSim;
+    if (guiControls.wholeWidth)
+      posXinSim = -1.0;
+    else if (guiControls.wrapHorizontally)
+      posXinSim = mod(simX, 1.0);
+    else
+      posXinSim = clamp(simX, 0.0, 1.0);
+    return {
+      inputType,
+      x: posXinSim,
+      y: simY,
+      intensity,
+      brushSize: guiControls.brushSize,
+      moveX: moveX || 0,
+      moveY: moveY || 0,
+      wrap: !!guiControls.wrapHorizontally,
+      active: true,
+    };
+  }
+
+  function applyBrushInputToGpu(brush)
+  {
+    if (!brush || brush.inputType < 0) return;
+    gl.useProgram(advectionProgram);
+    gl.uniform1i(uloc_adv_userInputType, brush.inputType);
+    gl.uniform4f(uloc_adv_userInputValues, brush.x, brush.y, brush.intensity, brush.brushSize * 0.5);
+    gl.uniform2f(uloc_adv_userInputMove, brush.moveX || 0, brush.moveY || 0);
+    gl.uniform1i(uloc_adv_wrapHorizontally, brush.wrap ? 1 : 0);
+    if (brush.inputType === 23) {
+      gl.useProgram(chargeProgram);
+      gl.uniform4f(uloc_charge_userInputValues, brush.x, brush.y, brush.intensity, brush.brushSize * 0.5);
+      gl.uniform1i(uloc_charge_userInputType, brush.inputType);
+      gl.uniform1i(uloc_charge_invertTool, guiControls.invertTool ? 1 : 0);
+      gl.uniform1i(uloc_charge_wrapHorizontally, brush.wrap ? 1 : 0);
+      uploadChargeDischargeUniforms();
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, baseTexture_1);
+      gl.activeTexture(gl.TEXTURE1);
+      gl.bindTexture(gl.TEXTURE_2D, waterTexture_0);
+      gl.activeTexture(gl.TEXTURE2);
+      gl.bindTexture(gl.TEXTURE_2D, wallTexture_0);
+      gl.activeTexture(gl.TEXTURE3);
+      gl.bindTexture(gl.TEXTURE_2D, chargeTexture_0);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, chargeFrameBuff_1);
+      gl.drawBuffers([ gl.COLOR_ATTACHMENT0 ]);
+      gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    }
+    applyUserBrushPass();
+  }
+
+  function applyRemotePlacement(msg)
+  {
+    const simX = Math.floor(msg.x * sim_res_x);
+    const simY = Math.floor(msg.y * sim_res_y);
+    if (simX < 0 || simX >= sim_res_x) return;
+    switch (msg.tool) {
+      case 'TOOL_STATION':
+        weatherStations.push(new Weatherstation(simX, findSimYposAboveSurfaceAtX(simX)));
+        break;
+      case 'TOOL_BALLOON': {
+        const y = findSimYposAboveSurfaceAtX(simX);
+        if (y !== undefined) launchWeatherBalloon(simX, y);
+        break;
+      }
+      case 'TOOL_RADAR': {
+        const r = new Radar(simX, findSimYposAboveSurfaceAtX(simX));
+        if (typeof gl !== 'undefined') r.initCacheFBO();
+        radars.push(r);
+        refreshRadarOverlaySourceDropdown();
+        break;
+      }
+      case 'TOOL_AIRMASS': {
+        const y = findSimYposAboveSurfaceAtX(simX);
+        if (y !== undefined) airmassGenerators.push(new AirmassGenerator(simX, y));
+        break;
+      }
+      case 'TOOL_MARKER':
+        markers.push(new Marker(simX, findSimYposAboveSurfaceAtX(simX)));
+        break;
+      default:
+        break;
+    }
+  }
+
+  function findSimYposAboveSurfaceAtX(simXpos)
+  {
+    const savedMouseX = mouseXinSim;
+    mouseXinSim = simXpos / sim_res_x;
+    const y = findSimYposAboveSurfaceAtMouseX();
+    mouseXinSim = savedMouseX;
+    return y;
+  }
+
+  async function buildSnapshotBlob()
+  {
+    gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_0);
+    gl.readBuffer(gl.COLOR_ATTACHMENT0);
+    let baseTextureValues = new Float32Array(4 * sim_res_x * sim_res_y);
+    gl.readPixels(0, 0, sim_res_x, sim_res_y, gl.RGBA, gl.FLOAT, baseTextureValues);
+    gl.readBuffer(gl.COLOR_ATTACHMENT1);
+    let waterTextureValues = new Float32Array(4 * sim_res_x * sim_res_y);
+    gl.readPixels(0, 0, sim_res_x, sim_res_y, gl.RGBA, gl.FLOAT, waterTextureValues);
+    gl.readBuffer(gl.COLOR_ATTACHMENT2);
+    let wallTextureValues = new Int8Array(4 * sim_res_x * sim_res_y);
+    gl.readPixels(0, 0, sim_res_x, sim_res_y, gl.RGBA_INTEGER, gl.BYTE, wallTextureValues);
+
+    let precipBufferValues = new ArrayBuffer(rainDrops.length * Float32Array.BYTES_PER_ELEMENT);
+    gl.bindBuffer(gl.ARRAY_BUFFER, precipVertexBuffer_0);
+    gl.getBufferSubData(gl.ARRAY_BUFFER, 0, new Float32Array(precipBufferValues));
+    gl.bindBuffer(gl.ARRAY_BUFFER, null);
+
+    let weatherStationsPositions = new Int16Array(weatherStations.length * 2);
+    for (let i = 0; i < weatherStations.length; i++) {
+      weatherStationsPositions[i * 2] = weatherStations[i].getXpos();
+      weatherStationsPositions[i * 2 + 1] = weatherStations[i].getYpos();
+    }
+
+    let radarsPositions = new Int16Array(radars.length * 2);
+    let radarsSettings = [];
+    for (let i = 0; i < radars.length; i++) {
+      radarsPositions[i * 2] = radars[i].getXpos();
+      radarsPositions[i * 2 + 1] = radars[i].getYpos();
+      radarsSettings.push(radars[i].getSettings());
+    }
+
+    let airmassPositions = new Int16Array(airmassGenerators.length * 2);
+    let airmassSettings = [];
+    for (let i = 0; i < airmassGenerators.length; i++) {
+      airmassPositions[i * 2] = airmassGenerators[i].getXpos();
+      airmassPositions[i * 2 + 1] = airmassGenerators[i].getYpos();
+      airmassSettings.push(airmassGenerators[i].getSettings());
+    }
+
+    const guiControlsForSave = Object.assign({}, guiControls);
+    const embeddedRadars = buildSavedRadarTowersForGuiControls();
+    if (embeddedRadars)
+      guiControlsForSave.__savedRadarTowers = embeddedRadars;
+    const embeddedAirmass = buildSavedAirmassGeneratorsForGuiControls();
+    if (embeddedAirmass)
+      guiControlsForSave.__savedAirmassGenerators = embeddedAirmass;
+
+    let strGuiControls = JSON.stringify(guiControlsForSave);
+    let strRadarSettings = JSON.stringify(radarsSettings);
+    let strAirmassSettings = JSON.stringify(airmassSettings);
+
+    let saveDataArray = [
+      Uint16Array.of(sim_res_x), Uint16Array.of(sim_res_y), baseTextureValues, waterTextureValues, wallTextureValues,
+      Uint32Array.of(rainDrops.length / 5), precipBufferValues, Uint16Array.of(weatherStations.length),
+      weatherStationsPositions, Uint16Array.of(radars.length), radarsPositions, Uint16Array.of(airmassGenerators.length), airmassPositions,
+      Uint32Array.of(strGuiControls.length), strGuiControls,
+      Uint32Array.of(strRadarSettings.length), strRadarSettings,
+      Uint32Array.of(strAirmassSettings.length), strAirmassSettings,
+    ];
+    let blob = new Blob(saveDataArray);
+    let arrBuff = await blob.arrayBuffer();
+    let arr = new Uint8Array(arrBuff);
+    let compressed = window.pako.deflate(arr);
+    return new Blob([ Uint32Array.of(saveFileVersionID), compressed ], { type: 'application/x-binary' });
+  }
+
+  window.__applySnapshotInPlace = async function(baseTexF32, waterTexF32, wallTexI8, precipArray)
+  {
+    gl.bindTexture(gl.TEXTURE_2D, baseTexture_0);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, sim_res_x, sim_res_y, 0, gl.RGBA, gl.FLOAT, baseTexF32);
+    gl.bindTexture(gl.TEXTURE_2D, baseTexture_1);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, sim_res_x, sim_res_y, 0, gl.RGBA, gl.FLOAT, baseTexF32);
+    gl.bindTexture(gl.TEXTURE_2D, waterTexture_0);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, sim_res_x, sim_res_y, 0, gl.RGBA, gl.FLOAT, waterTexF32);
+    gl.bindTexture(gl.TEXTURE_2D, waterTexture_1);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, sim_res_x, sim_res_y, 0, gl.RGBA, gl.FLOAT, waterTexF32);
+    gl.bindTexture(gl.TEXTURE_2D, wallTexture_0);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8I, sim_res_x, sim_res_y, 0, gl.RGBA_INTEGER, gl.BYTE, wallTexI8);
+    gl.bindTexture(gl.TEXTURE_2D, wallTexture_1);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8I, sim_res_x, sim_res_y, 0, gl.RGBA_INTEGER, gl.BYTE, wallTexI8);
+    if (precipArray && precipVertexBuffer_0) {
+      gl.bindBuffer(gl.ARRAY_BUFFER, precipVertexBuffer_0);
+      gl.bufferData(gl.ARRAY_BUFFER, precipArray, gl.DYNAMIC_DRAW);
+      gl.bindBuffer(gl.ARRAY_BUFFER, precipVertexBuffer_1);
+      gl.bufferData(gl.ARRAY_BUFFER, precipArray, gl.DYNAMIC_DRAW);
+      gl.bindBuffer(gl.ARRAY_BUFFER, null);
+    }
+    enforceMultiplayerGuardrails();
+  };
+
+  window.onMultiplayerSyncMeta = function(meta)
+  {
+    if (meta.iterNum != null)
+      iterNum = meta.iterNum;
+  };
+
+  function initMultiplayerIntegration()
+  {
+    if (!window.WeatherMultiplayer) return;
+    window.WeatherMultiplayer.setHooks({
+      buildSnapshot: buildSnapshotBlob,
+      onSnapshotBinary(buf) {
+        window.loadSnapshotFromNetwork(buf);
+      },
+      onSyncMeta(meta) {
+        window.onMultiplayerSyncMeta(meta);
+      },
+      onRemoteBrush(playerId, msg) {
+        if (msg.active)
+          remoteActiveBrushes.set(playerId, msg);
+        else
+          remoteActiveBrushes.delete(playerId);
+      },
+      onRemotePlace(playerId, msg) {
+        applyRemotePlacement(msg);
+      },
+      onPlayersChanged(players) {
+        if (window.WeatherMultiplayerUI)
+          window.WeatherMultiplayerUI.renderPlayerList(players);
+      },
+      onDisconnected() {
+        multiplayerHostMode = false;
+        multiplayerPeerMode = false;
+        remoteActiveBrushes.clear();
+      },
+      onJoinError() {
+        multiplayerHostMode = false;
+        multiplayerPeerMode = false;
+      },
+      getPresence() {
+        return {
+          x: mouseXinSim,
+          y: mouseYinSim,
+          tool: guiControls.tool,
+          painting: leftMousePressed && toolNameToInputType(guiControls.tool) >= 0,
+          iterNum,
+        };
+      },
+      isSimRunning() {
+        return !SETUP_MODE;
+      },
+    });
+    multiplayerSimReady = true;
+  }
+
+  function drawRemotePlayerCursors()
+  {
+    if (!window.WeatherMultiplayer || !window.WeatherMultiplayer.isActive()) return;
+    const overlay = document.getElementById('mpCursorOverlay');
+    if (!overlay) return;
+    overlay.width = canvas.width;
+    overlay.height = canvas.height;
+    const ctx = overlay.getContext('2d');
+    if (!ctx) return;
+    ctx.clearRect(0, 0, overlay.width, overlay.height);
+    const players = window.WeatherMultiplayer.getRemotePlayers();
+    for (const p of players) {
+      const sx = simToScreenX(p.x * sim_res_x);
+      const sy = simToScreenY(p.y * sim_res_y);
+      if (sx < -50 || sx > overlay.width + 50 || sy < -50 || sy > overlay.height + 50) continue;
+      ctx.strokeStyle = p.color || '#fff';
+      ctx.fillStyle = p.color || '#fff';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(sx, sy, 8, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.font = '12px Arial';
+      ctx.fillText(p.name || 'Player', sx + 10, sy - 10);
+    }
+  }
+
   function applyUserBrushPass()
   {
     gl.viewport(0, 0, sim_res_x, sim_res_y);
@@ -21334,6 +21770,12 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     const frameDrawStart = performance.now();
     var inputType = -1;
     let camPanSpeed = guiControls.camSpeed;
+
+    if (multiplayerHostMode || multiplayerPeerMode)
+      enforceMultiplayerGuardrails();
+
+    if (window.WeatherMultiplayer && window.WeatherMultiplayer.isActive())
+      window.WeatherMultiplayer.tick();
 
     if (rightCtrlPressed) {
       camPanSpeed *= 0.2;
@@ -21473,10 +21915,24 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         gl.uniform1i(uloc_adv_userInputType, inputType);
 
 
+      if (multiplayerPeerMode && window.WeatherMultiplayer && window.WeatherMultiplayer.isPeer()) {
+        const brush = computeBrushFromTool(guiControls.tool, mouseXinSim, mouseYinSim,
+          mouseXinSim - prevMouseXinSim, mouseYinSim - prevMouseYinSim, leftMousePressed);
+        brush.active = leftMousePressed && brush.inputType >= 0;
+        window.WeatherMultiplayer.emitBrush(brush);
+        inputType = -1;
+      }
+
+      if (multiplayerHostMode && remoteActiveBrushes.size > 0) {
+        for (const brush of remoteActiveBrushes.values())
+          applyBrushInputToGpu(brush);
+      }
+
+
       // guiControls.IterPerFrame = 1.0 / timePerIteration * 3600 / 60.0;
 
 
-      if (!guiControls.paused) { // Simulation part
+      if (!guiControls.paused && !multiplayerPeerMode) { // Simulation part
 
         let balloonSimIters = 0;
 
@@ -23008,12 +23464,23 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   }
 
 drawNukeOverlay();
+    drawRemotePlayerCursors();
+
+    if (multiplayerHostMode && window.WeatherMultiplayer && window.WeatherMultiplayer.isHost() && !SETUP_MODE) {
+      const now = performance.now();
+      if (now - lastHostSnapshotBroadcast > HOST_SNAPSHOT_INTERVAL_MS) {
+        lastHostSnapshotBroadcast = now;
+        window.WeatherMultiplayer.sendSnapshotTo(0);
+      }
+    }
+
     updateFrameTimeStats(performance.now() - frameDrawStart);
 
     // Auto-adjust iterations per frame every frame using smoothedFrameMs instead of
     // waiting for the 1-second FPS counter. This reacts in ~5 frames rather than ~60.
     if (!guiControls.paused && guiControls.auto_IterPerFrame
-        && !airplaneMode && !guiControls.slowMotion && !guiControls.realtimeMode) {
+        && !airplaneMode && !guiControls.slowMotion && !guiControls.realtimeMode
+        && !multiplayerHostMode && !multiplayerPeerMode) {
       // Target: keep smoothedFrameMs close to TARGET_FRAME_MS (28 ms = ~35 fps headroom).
       // Reduce aggressively if over budget, grow slowly when comfortable.
       const msOverBudget = smoothedFrameMs - TARGET_FRAME_MS;
@@ -23024,7 +23491,7 @@ drawNukeOverlay();
       }
     }
 
-    if (!SETUP_MODE && !guiControls.paused)
+    if (!SETUP_MODE && !guiControls.paused && !multiplayerPeerMode)
       simRuntimeFrames++;
 
     frameNum++;

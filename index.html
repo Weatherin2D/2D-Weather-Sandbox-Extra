@@ -8,6 +8,10 @@
     <script type="text/javascript" src="libraries/pako.min.js"></script>
     <script type="text/javascript" src="libraries/chart.js"></script>
     <script type="text/javascript" src="libraries/chartjs-adapter-date-fns.js"></script>
+    <script type="text/javascript" src="network/protocol.js"></script>
+    <script type="text/javascript" src="network/transport.js"></script>
+    <script type="text/javascript" src="network/session.js"></script>
+    <script type="text/javascript" src="network/multiplayerUI.js"></script>
     <script type="text/javascript" src="lightningV2.js"></script>
     <script type="text/javascript" src="soundingAnalogPresets.js"></script>
     <script type="text/javascript" src="app.js"></script>
@@ -1414,6 +1418,32 @@
             <i>Move the mouse until you see a terrain you like, then just click to start.</i>
         </div>
 
+        <div id="multiplayerPanel" style="margin-top: 40px; padding: 20px; border: 1px solid rgba(74,144,226,0.5); border-radius: 12px; max-width: 520px; background: rgba(0,0,0,0.45);">
+            <h2 style="margin-top:0;">Multiplayer Co-op</h2>
+            <p style="opacity:0.85; font-size: 14px;">Host runs the simulation. Peers paint and place tools in real time. Start the relay with <code>npm run relay</code>.</p>
+            <div style="margin-bottom: 12px;">
+                <label for="mpPlayerName">Your name</label><br>
+                <input type="text" id="mpPlayerName" maxlength="24" value="Player" style="width: 200px; padding: 6px; margin-top: 4px;" />
+            </div>
+            <div style="margin-bottom: 12px;">
+                <label for="mpRoomCode">Room code (to join)</label><br>
+                <input type="text" id="mpRoomCode" maxlength="6" placeholder="ABCDEF" style="width: 120px; padding: 6px; margin-top: 4px; text-transform: uppercase;" />
+            </div>
+            <div style="margin-bottom: 12px;">
+                <button type="button" id="mpHostBtn" style="margin-right: 8px; padding: 8px 16px;">Host Game</button>
+                <button type="button" id="mpJoinBtn" style="margin-right: 8px; padding: 8px 16px;">Join Game</button>
+                <button type="button" id="mpLeaveBtn" style="padding: 8px 16px;">Leave</button>
+            </div>
+            <div style="margin-bottom: 8px;">Room: <strong id="mpRoomCodeDisplay">—</strong></div>
+            <div id="mpStatus" style="color: #a8dadc; font-size: 14px; margin-bottom: 8px;">Not connected</div>
+            <ul id="mpPlayerList" style="list-style: none; padding: 0; margin: 0;"></ul>
+        </div>
+
+        <div id="multiplayerHud" style="display:none; position: fixed; top: 52px; right: 12px; z-index: 5; background: rgba(0,0,0,0.65); padding: 10px 14px; border-radius: 8px; font-size: 13px; pointer-events: none;">
+            <div>Room: <span id="mpHudRoom">—</span></div>
+            <div id="mpHudRole">—</div>
+        </div>
+
 
         <p style="margin-top: 70px;">
             <label for="fileInput">Load Save File:</label>
@@ -1709,6 +1739,7 @@
     <canvas id="mainCanvas">
         Your browser does not support HTML5, you must be using a really old browser!
     </canvas>
+    <canvas id="mpCursorOverlay" style="position: fixed; left: 0; top: 0; z-index: 4; pointer-events: none;"></canvas>
     <script>
         const MENU_BG_SOURCE_COUNT = 10;
         const MENU_BG_SLIDE_MS = 12000;

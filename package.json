@@ -1,5 +1,10 @@
 {
   "dependencies": {
-    "@webgpu/glslang": "^0.0.15"
+    "@webgpu/glslang": "^0.0.15",
+    "ws": "^8.18.0"
+  },
+  "scripts": {
+    "relay": "node server/relay.js",
+    "relay:dev": "node server/relay.js 8787"
   }
 }
