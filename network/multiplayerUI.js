@@ -61,6 +61,7 @@
       const code = await mp().host(name);
       global.multiplayerHostMode = true;
       global.multiplayerPeerMode = false;
+      window.multiplayerJoinInfo = { roomCode: code, playerName: name };
       showRoomCode(code);
       setStatus('Hosting room ' + code);
       showPanel(true);
@@ -85,6 +86,7 @@
       await mp().join(code, name);
       global.multiplayerHostMode = false;
       global.multiplayerPeerMode = true;
+      window.multiplayerJoinInfo = { roomCode: code.toUpperCase().trim(), playerName: name };
       showRoomCode(code.toUpperCase());
       setStatus('Joined room ' + code.toUpperCase() + ' — waiting for snapshot…');
       showPanel(true);
@@ -100,6 +102,7 @@
     if (mp()) mp().leave();
     global.multiplayerHostMode = false;
     global.multiplayerPeerMode = false;
+    window.multiplayerJoinInfo = null;
     showRoomCode('—');
     setStatus('Disconnected');
     renderPlayerList([]);
@@ -125,12 +128,6 @@
         global.multiplayerHostMode = false;
         global.multiplayerPeerMode = false;
       },
-      onDisconnected() {
-        setStatus('Disconnected', true);
-        global.multiplayerHostMode = false;
-        global.multiplayerPeerMode = false;
-        renderPlayerList([]);
-      },
       onSnapshotBinary(buf) {
         if (global.loadSnapshotFromNetwork)
           global.loadSnapshotFromNetwork(buf);
@@ -138,6 +135,27 @@
       onSyncMeta(meta) {
         if (global.onMultiplayerSyncMeta)
           global.onMultiplayerSyncMeta(meta);
+      },
+      onDisconnected() {
+        if (global.multiplayerPeerMode && window.multiplayerJoinInfo && global.multiplayerSimReady) {
+          setStatus('Reconnecting…');
+          mp().reconnectAsPeer().then((ok) => {
+            if (ok) {
+              setStatus('Reconnected — syncing…');
+              mp().requestSnapshot();
+            } else {
+              setStatus('Disconnected', true);
+              global.multiplayerHostMode = false;
+              global.multiplayerPeerMode = false;
+              renderPlayerList([]);
+            }
+          });
+          return;
+        }
+        setStatus('Disconnected', true);
+        global.multiplayerHostMode = false;
+        global.multiplayerPeerMode = false;
+        renderPlayerList([]);
       },
     });
   }

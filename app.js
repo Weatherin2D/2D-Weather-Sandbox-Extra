@@ -5473,13 +5473,21 @@ async function loadSnapshotFromDecompressed(decompressed, version, inPlaceApplyF
     await inPlaceApplyFn(baseTexF32, waterTexF32, wallTexI8, precipArray);
   else {
     SETUP_MODE = false;
-    mainScript(baseTexF32, waterTexF32, wallTexI8, precipArray);
+    await mainScript(baseTexF32, waterTexF32, wallTexI8, precipArray);
   }
 }
 
 window.loadSnapshotFromNetwork = async function(arrayBuffer)
 {
+  const mp = window.WeatherMultiplayer;
+  const isFirstLoad = !multiplayerSimReady;
   try {
+    if (mp && mp.isPeer()) {
+      mp.notifyPeerLoading(true);
+      if (window.WeatherMultiplayerUI)
+        window.WeatherMultiplayerUI.setStatus('Downloading world — loading shaders…');
+    }
+
     const version = new Uint32Array(arrayBuffer, 0, 1)[0];
     const compressed = new Uint8Array(arrayBuffer, 4);
     const decompressed = window.pako.inflate(compressed);
@@ -5489,8 +5497,8 @@ window.loadSnapshotFromNetwork = async function(arrayBuffer)
       if (window.WeatherMultiplayerUI)
         window.WeatherMultiplayerUI.setStatus('Snapshot synced');
     } else {
-      await loadSnapshotFromDecompressed(decompressed, version, null);
       multiplayerPeerMode = true;
+      await loadSnapshotFromDecompressed(decompressed, version, null);
       if (window.WeatherMultiplayerUI)
         window.WeatherMultiplayerUI.setStatus('Loaded host simulation');
     }
@@ -5498,6 +5506,14 @@ window.loadSnapshotFromNetwork = async function(arrayBuffer)
     console.error('Failed to load network snapshot', e);
     if (window.WeatherMultiplayerUI)
       window.WeatherMultiplayerUI.setStatus('Snapshot load failed: ' + e.message, true);
+  } finally {
+    if (mp && mp.isPeer()) {
+      mp.notifyPeerLoading(false);
+      if (isFirstLoad && multiplayerPeerMode && (!mp.connected || mp.role === 'none')) {
+        const ok = await mp.reconnectAsPeer();
+        if (ok) mp.requestSnapshot();
+      }
+    }
   }
 };
 
@@ -8950,14 +8966,17 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
     enforceMultiplayerGuardrails();
     if (multiplayerHostMode && window.WeatherMultiplayer && window.WeatherMultiplayer.isHost()) {
-      window.WeatherMultiplayer.broadcastSyncMeta({
+      const mp = window.WeatherMultiplayer;
+      mp.broadcastSyncMeta({
         simStarted: true,
         iterNum,
         sim_res_x,
         sim_res_y,
         sim_height: guiControls.simHeight,
       });
-      window.WeatherMultiplayer.sendSnapshotTo(0);
+      const peers = (mp.players || []).filter((p) => !p.isHost);
+      for (const peer of peers)
+        setTimeout(() => mp.sendSnapshotTo(peer.id), 100);
     }
   }
 
@@ -21435,7 +21454,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
 
   const remoteActiveBrushes = new Map();
   let lastHostSnapshotBroadcast = 0;
-  const HOST_SNAPSHOT_INTERVAL_MS = 5000;
+  const HOST_SNAPSHOT_INTERVAL_MS = 12000;
 
   window.enforceMultiplayerGuardrails = function()
   {
@@ -21701,6 +21720,11 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       },
     });
     multiplayerSimReady = true;
+    if (multiplayerPeerMode && window.WeatherMultiplayer) {
+      window.WeatherMultiplayer.notifyPeerLoading(false);
+      if (window.WeatherMultiplayerUI)
+        window.WeatherMultiplayerUI.setStatus('Connected — synced with host');
+    }
   }
 
   function drawRemotePlayerCursors()
@@ -23468,9 +23492,12 @@ drawNukeOverlay();
 
     if (multiplayerHostMode && window.WeatherMultiplayer && window.WeatherMultiplayer.isHost() && !SETUP_MODE) {
       const now = performance.now();
-      if (now - lastHostSnapshotBroadcast > HOST_SNAPSHOT_INTERVAL_MS) {
+      const mp = window.WeatherMultiplayer;
+      if (now - lastHostSnapshotBroadcast > HOST_SNAPSHOT_INTERVAL_MS && !mp.hasPeersLoading() && !mp._snapshotSending) {
         lastHostSnapshotBroadcast = now;
-        window.WeatherMultiplayer.sendSnapshotTo(0);
+        const peers = (mp.players || []).filter((p) => !p.isHost && !p.loading);
+        for (const peer of peers)
+          mp.sendSnapshotTo(peer.id);
       }
     }
 

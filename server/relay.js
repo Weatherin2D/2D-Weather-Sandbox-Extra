@@ -11,14 +11,21 @@ const http = require('http');
 const { WebSocketServer } = require('ws');
 
 const PORT = parseInt(process.argv[2] || process.env.PORT || '8787', 10);
+const BINARY_SNAPSHOT = 0x01;
 
 /** @type {Map<string, { hostId: string, players: Map<string, object> }>} */
 const rooms = new Map();
 
 let nextPlayerId = 1;
 
-function playerList(room) {
-  return Array.from(room.players.values());
+function sanitizePlayers(room) {
+  return Array.from(room.players.values()).map((p) => ({
+    id: p.id,
+    name: p.name,
+    color: p.color,
+    isHost: p.isHost,
+    loading: !!p.loading,
+  }));
 }
 
 function sendJson(ws, obj) {
@@ -36,6 +43,12 @@ function broadcastRoom(roomCode, msg, exceptWs) {
   }
 }
 
+function sendToPlayer(room, playerId, data, isBinary) {
+  const p = room.players.get(String(playerId));
+  if (p && p.ws.readyState === p.ws.OPEN)
+    p.ws.send(data, isBinary ? { binary: true } : undefined);
+}
+
 function removePlayer(ws) {
   const roomCode = ws._roomCode;
   const playerId = ws._playerId;
@@ -44,7 +57,7 @@ function removePlayer(ws) {
   const room = rooms.get(roomCode);
   if (!room) return;
 
-  const wasHost = room.hostId === playerId;
+  const wasHost = String(room.hostId) === String(playerId);
   room.players.delete(String(playerId));
 
   if (room.players.size === 0) {
@@ -64,7 +77,7 @@ function removePlayer(ws) {
   broadcastRoom(roomCode, {
     type: 'player_left',
     playerId,
-    players: playerList(room),
+    players: sanitizePlayers(room),
   });
 }
 
@@ -73,11 +86,16 @@ const server = http.createServer((_req, res) => {
   res.end('2D Weather Sandbox multiplayer relay\n');
 });
 
-const wss = new WebSocketServer({ server });
+const wss = new WebSocketServer({
+  server,
+  maxPayload: 128 * 1024 * 1024,
+});
 
 wss.on('connection', (ws) => {
   ws._roomCode = null;
   ws._playerId = null;
+  ws.isAlive = true;
+  ws.on('pong', () => { ws.isAlive = true; });
 
   ws.on('message', (data, isBinary) => {
     if (isBinary) {
@@ -85,6 +103,16 @@ wss.on('connection', (ws) => {
       if (!roomCode) return;
       const room = rooms.get(roomCode);
       if (!room) return;
+
+      const bytes = Buffer.from(data);
+      if (bytes.length >= 5 && bytes[0] === BINARY_SNAPSHOT) {
+        const targetId = bytes.readUInt32LE(1);
+        if (targetId > 0) {
+          sendToPlayer(room, targetId, data, true);
+          return;
+        }
+      }
+
       for (const p of room.players.values()) {
         if (p.ws !== ws && p.ws.readyState === p.ws.OPEN)
           p.ws.send(data, { binary: true });
@@ -140,6 +168,7 @@ wss.on('connection', (ws) => {
         name: playerName,
         color: colors[colorIndex % colors.length],
         isHost: role === 'host',
+        loading: false,
         ws,
       };
 
@@ -150,20 +179,19 @@ wss.on('connection', (ws) => {
       if (role === 'host')
         room.hostId = String(playerId);
 
-      const joinedMsg = {
+      sendJson(ws, {
         type: 'joined',
         playerId,
         roomCode,
         isHost: role === 'host',
-        players: playerList(room),
-      };
-      sendJson(ws, joinedMsg);
+        players: sanitizePlayers(room),
+      });
 
       if (role === 'peer') {
         broadcastRoom(roomCode, {
           type: 'player_joined',
           playerId,
-          players: playerList(room),
+          players: sanitizePlayers(room),
         }, ws);
       }
       return;
@@ -176,6 +204,17 @@ wss.on('connection', (ws) => {
 
     msg.playerId = ws._playerId;
 
+    if (msg.type === 'peer_loading' || msg.type === 'peer_ready') {
+      const self = room.players.get(String(ws._playerId));
+      if (self) self.loading = msg.type === 'peer_loading';
+      broadcastRoom(roomCode, {
+        type: msg.type,
+        playerId: ws._playerId,
+        players: sanitizePlayers(room),
+      }, ws);
+      return;
+    }
+
     if (msg.type === 'snapshot_request') {
       const host = room.players.get(String(room.hostId));
       if (host && host.ws.readyState === host.ws.OPEN)
@@ -184,7 +223,11 @@ wss.on('connection', (ws) => {
     }
 
     if (msg.type === 'snapshot_meta') {
-      broadcastRoom(roomCode, msg, ws);
+      const targetId = msg.targetPlayerId || 0;
+      if (targetId > 0)
+        sendToPlayer(room, targetId, JSON.stringify(msg), false);
+      else
+        broadcastRoom(roomCode, msg, ws);
       return;
     }
 
@@ -193,6 +236,19 @@ wss.on('connection', (ws) => {
 
   ws.on('close', () => removePlayer(ws));
 });
+
+const heartbeat = setInterval(() => {
+  for (const ws of wss.clients) {
+    if (!ws.isAlive) {
+      ws.terminate();
+      continue;
+    }
+    ws.isAlive = false;
+    ws.ping();
+  }
+}, 30000);
+
+wss.on('close', () => clearInterval(heartbeat));
 
 server.listen(PORT, () => {
   console.log('Weather Sandbox relay listening on port ' + PORT);

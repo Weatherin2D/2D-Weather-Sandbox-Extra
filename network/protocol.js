@@ -18,6 +18,8 @@
     SNAPSHOT_REQUEST: 'snapshot_request',
     SNAPSHOT_META: 'snapshot_meta',
     HOST_LEFT: 'host_left',
+    PEER_LOADING: 'peer_loading',
+    PEER_READY: 'peer_ready',
     CHAT: 'chat',
   };
 

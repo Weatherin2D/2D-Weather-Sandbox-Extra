@@ -24,6 +24,9 @@
       this._lastBrushSend = 0;
       this._brushIntervalMs = 33;
       this._pendingSnapshotTarget = null;
+      this._snapshotSending = false;
+      this._peersLoading = new Set();
+      this._joinInfo = null;
       this._hooks = {
         buildSnapshot: null,
         onSnapshotBinary: null,
@@ -68,6 +71,7 @@
     async host(playerName, roomCode) {
       this.playerName = playerName || 'Host';
       this.roomCode = roomCode || generateRoomCode();
+      this._joinInfo = { roomCode: this.roomCode, playerName: this.playerName };
       await this.connect();
       this.transport.sendJson({
         type: MSG.JOIN,
@@ -82,6 +86,7 @@
       this.playerName = playerName || 'Player';
       this.roomCode = (roomCode || '').toUpperCase().trim();
       if (!this.roomCode) throw new Error('Room code required');
+      this._joinInfo = { roomCode: this.roomCode, playerName: this.playerName };
       await this.connect();
       this.transport.sendJson({
         type: MSG.JOIN,
@@ -89,6 +94,27 @@
         roomCode: this.roomCode,
         playerName: this.playerName,
       });
+    }
+
+    async reconnectAsPeer() {
+      if (!this._joinInfo) return false;
+      try {
+        if (this.transport.isConnected()) this.leave();
+        await this.join(this._joinInfo.roomCode, this._joinInfo.playerName);
+        return true;
+      } catch (e) {
+        console.warn('Peer reconnect failed', e);
+        return false;
+      }
+    }
+
+    notifyPeerLoading(loading) {
+      if (!this.isPeer() || !this.connected) return;
+      this.transport.sendJson({ type: loading ? MSG.PEER_LOADING : MSG.PEER_READY });
+    }
+
+    hasPeersLoading() {
+      return this._peersLoading.size > 0;
     }
 
     leave() {
@@ -124,23 +150,29 @@
     }
 
     async sendSnapshotTo(playerId) {
-      if (!this.isHost() || !this._hooks.buildSnapshot) return;
-      const blob = await this._hooks.buildSnapshot();
-      if (!blob) return;
-      const buf = await blob.arrayBuffer();
-      const header = new Uint8Array(5);
-      header[0] = BINARY_SNAPSHOT;
-      new DataView(header.buffer).setUint32(1, playerId ? playerId : 0, true);
-      const combined = new Uint8Array(header.length + buf.byteLength);
-      combined.set(header, 0);
-      combined.set(new Uint8Array(buf), header.length);
-      this.transport.sendBinary(combined.buffer);
-      this.transport.sendJson({
-        type: MSG.SNAPSHOT_META,
-        targetPlayerId: playerId || 0,
-        byteLength: buf.byteLength,
-        iterNum: metaIterNum(this._hooks),
-      });
+      if (!this.isHost() || !this._hooks.buildSnapshot || this._snapshotSending) return;
+      this._snapshotSending = true;
+      try {
+        const blob = await this._hooks.buildSnapshot();
+        if (!blob) return;
+        const buf = await blob.arrayBuffer();
+        const target = playerId || 0;
+        this.transport.sendJson({
+          type: MSG.SNAPSHOT_META,
+          targetPlayerId: target,
+          byteLength: buf.byteLength,
+          iterNum: metaIterNum(this._hooks),
+        });
+        const header = new Uint8Array(5);
+        header[0] = BINARY_SNAPSHOT;
+        new DataView(header.buffer).setUint32(1, target, true);
+        const combined = new Uint8Array(header.length + buf.byteLength);
+        combined.set(header, 0);
+        combined.set(new Uint8Array(buf), header.length);
+        this.transport.sendBinary(combined.buffer);
+      } finally {
+        this._snapshotSending = false;
+      }
     }
 
     requestSnapshot() {
@@ -218,7 +250,7 @@
           this._rebuildRemotePlayers();
           if (this._hooks.onPlayersChanged) this._hooks.onPlayersChanged(this.players);
           if (this.isHost() && msg.playerId !== this.playerId)
-            this.sendSnapshotTo(msg.playerId);
+            setTimeout(() => this.sendSnapshotTo(msg.playerId), 100);
           break;
         case MSG.PLAYER_LEFT:
           this.players = msg.players || [];
@@ -250,6 +282,18 @@
           break;
         case MSG.SNAPSHOT_META:
           this._pendingSnapshotTarget = msg;
+          break;
+        case MSG.PEER_LOADING:
+          if (this.isHost() && msg.playerId)
+            this._peersLoading.add(msg.playerId);
+          if (msg.players) this.players = msg.players;
+          break;
+        case MSG.PEER_READY:
+          if (this.isHost() && msg.playerId)
+            this._peersLoading.delete(msg.playerId);
+          if (msg.players) this.players = msg.players;
+          if (this.isHost() && msg.playerId)
+            setTimeout(() => this.sendSnapshotTo(msg.playerId), 250);
           break;
         default:
           break;
