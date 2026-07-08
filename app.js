@@ -21697,14 +21697,18 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         if (window.WeatherMultiplayerUI)
           window.WeatherMultiplayerUI.renderPlayerList(players);
       },
-      onDisconnected() {
-        multiplayerHostMode = false;
-        multiplayerPeerMode = false;
+      onDisconnected(wasInRoom) {
         remoteActiveBrushes.clear();
-      },
-      onJoinError() {
         multiplayerHostMode = false;
         multiplayerPeerMode = false;
+        if (window.WeatherMultiplayerUI && window.WeatherMultiplayerUI.handleDisconnected)
+          window.WeatherMultiplayerUI.handleDisconnected(wasInRoom);
+      },
+      onJoinError(msg) {
+        multiplayerHostMode = false;
+        multiplayerPeerMode = false;
+        if (window.WeatherMultiplayerUI)
+          window.WeatherMultiplayerUI.setStatus(msg, true);
       },
       getPresence() {
         return {

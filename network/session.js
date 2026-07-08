@@ -27,6 +27,7 @@
       this._snapshotSending = false;
       this._peersLoading = new Set();
       this._joinInfo = null;
+      this._suppressDisconnect = false;
       this._hooks = {
         buildSnapshot: null,
         onSnapshotBinary: null,
@@ -36,6 +37,7 @@
         onPlayersChanged: null,
         onDisconnected: null,
         onJoinError: null,
+        onJoined: null,
         getPresence: null,
         isSimRunning: null,
       };
@@ -44,8 +46,10 @@
       this.transport.onBinary((buf) => this._handleBinary(buf));
       this.transport.onClose(() => {
         this.connected = false;
+        const wasInRoom = this.role !== 'none';
         this.role = 'none';
-        if (this._hooks.onDisconnected) this._hooks.onDisconnected();
+        if (!this._suppressDisconnect && this._hooks.onDisconnected)
+          this._hooks.onDisconnected(wasInRoom);
       });
     }
 
@@ -53,19 +57,31 @@
       Object.assign(this._hooks, hooks);
     }
 
-    getDefaultRelayUrl() {
-      const host = global.location ? global.location.hostname : 'localhost';
+    getRelayUrl() {
+      if (global.__WEATHER_MP_RELAY_URL)
+        return global.__WEATHER_MP_RELAY_URL;
+      const input = global.document && global.document.getElementById('mpRelayUrl');
+      if (input && input.value.trim())
+        return input.value.trim();
+      const host = global.location ? global.location.hostname : '127.0.0.1';
       const proto = global.location && global.location.protocol === 'https:' ? 'wss' : 'ws';
       const port = global.__WEATHER_MP_RELAY_PORT || '8787';
-      if (host === 'localhost' || host === '127.0.0.1')
-        return proto + '://' + host + ':' + port;
-      return proto + '://' + host + ':' + port;
+      const relayHost = (host === 'localhost' || host === '127.0.0.1') ? '127.0.0.1' : host;
+      return proto + '://' + relayHost + ':' + port;
     }
 
     async connect(url) {
-      const relayUrl = url || this.getDefaultRelayUrl();
-      await this.transport.connect(relayUrl);
-      this.connected = true;
+      const relayUrl = url || this.getRelayUrl();
+      try {
+        await this.transport.connect(relayUrl);
+        this.connected = true;
+      } catch (err) {
+        this._suppressDisconnect = true;
+        this.transport.disconnect();
+        this._suppressDisconnect = false;
+        this.connected = false;
+        throw new Error('Cannot reach relay at ' + relayUrl + '. Run "npm run relay" in the project folder.');
+      }
     }
 
     async host(playerName, roomCode) {
@@ -99,7 +115,7 @@
     async reconnectAsPeer() {
       if (!this._joinInfo) return false;
       try {
-        if (this.transport.isConnected()) this.leave();
+        if (this.transport.isConnected()) this.leave(true);
         await this.join(this._joinInfo.roomCode, this._joinInfo.playerName);
         return true;
       } catch (e) {
@@ -117,7 +133,8 @@
       return this._peersLoading.size > 0;
     }
 
-    leave() {
+    leave(silent) {
+      this._suppressDisconnect = !!silent;
       this.transport.disconnect();
       this.role = 'none';
       this.playerId = null;
@@ -125,6 +142,7 @@
       this.remotePlayers.clear();
       this.connected = false;
       this.simStarted = false;
+      this._suppressDisconnect = false;
     }
 
     isActive() {
@@ -240,10 +258,11 @@
           this.players = msg.players || [];
           this._rebuildRemotePlayers();
           if (this._hooks.onPlayersChanged) this._hooks.onPlayersChanged(this.players);
+          if (this._hooks.onJoined) this._hooks.onJoined(msg);
           break;
         case MSG.JOIN_ERROR:
           if (this._hooks.onJoinError) this._hooks.onJoinError(msg.message || 'Join failed');
-          this.leave();
+          this.leave(true);
           break;
         case MSG.PLAYER_JOINED:
           this.players = msg.players || this.players;
@@ -259,7 +278,7 @@
           break;
         case MSG.HOST_LEFT:
           if (this._hooks.onJoinError) this._hooks.onJoinError('Host left the session');
-          this.leave();
+          this.leave(true);
           break;
         case MSG.INPUT_BRUSH:
           if (this.isHost() && this._hooks.onRemoteBrush)

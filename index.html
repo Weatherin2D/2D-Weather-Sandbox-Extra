@@ -1420,7 +1420,11 @@
 
         <div id="multiplayerPanel" style="margin-top: 40px; padding: 20px; border: 1px solid rgba(74,144,226,0.5); border-radius: 12px; max-width: 520px; background: rgba(0,0,0,0.45);">
             <h2 style="margin-top:0;">Multiplayer Co-op</h2>
-            <p style="opacity:0.85; font-size: 14px;">Host runs the simulation. Peers paint and place tools in real time. Start the relay with <code>npm run relay</code>.</p>
+            <p style="opacity:0.85; font-size: 14px;">Host runs the simulation. Peers paint and place tools in real time. <b>First run <code>npm run relay</code> in a terminal.</b></p>
+            <div style="margin-bottom: 12px;">
+                <label for="mpRelayUrl">Relay server URL</label><br>
+                <input type="text" id="mpRelayUrl" value="ws://127.0.0.1:8787" style="width: 280px; padding: 6px; margin-top: 4px;" />
+            </div>
             <div style="margin-bottom: 12px;">
                 <label for="mpPlayerName">Your name</label><br>
                 <input type="text" id="mpPlayerName" maxlength="24" value="Player" style="width: 200px; padding: 6px; margin-top: 4px;" />

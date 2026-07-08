@@ -57,18 +57,20 @@
     const nameInput = document.getElementById('mpPlayerName');
     const name = (nameInput && nameInput.value.trim()) || 'Host';
     try {
-      setStatus('Connecting…');
+      setStatus('Connecting to ' + mp().getRelayUrl() + '…');
       const code = await mp().host(name);
       global.multiplayerHostMode = true;
       global.multiplayerPeerMode = false;
       window.multiplayerJoinInfo = { roomCode: code, playerName: name };
       showRoomCode(code);
-      setStatus('Hosting room ' + code);
+      setStatus('Hosting room ' + code + ' — create a simulation to start');
       showPanel(true);
       updateHud();
       if (global.enforceMultiplayerGuardrails) global.enforceMultiplayerGuardrails();
     } catch (err) {
       setStatus(err.message || 'Failed to host', true);
+      global.multiplayerHostMode = false;
+      global.multiplayerPeerMode = false;
     }
   }
 
@@ -82,7 +84,7 @@
       return;
     }
     try {
-      setStatus('Joining…');
+      setStatus('Connecting to ' + mp().getRelayUrl() + '…');
       await mp().join(code, name);
       global.multiplayerHostMode = false;
       global.multiplayerPeerMode = true;
@@ -95,16 +97,41 @@
       if (global.enforceMultiplayerGuardrails) global.enforceMultiplayerGuardrails();
     } catch (err) {
       setStatus(err.message || 'Failed to join', true);
+      global.multiplayerHostMode = false;
+      global.multiplayerPeerMode = false;
     }
   }
 
   function leaveGame() {
-    if (mp()) mp().leave();
+    if (mp()) mp().leave(true);
     global.multiplayerHostMode = false;
     global.multiplayerPeerMode = false;
     window.multiplayerJoinInfo = null;
     showRoomCode('—');
     setStatus('Disconnected');
+    renderPlayerList([]);
+  }
+
+  function handleDisconnected(wasInRoom) {
+    if (global.multiplayerPeerMode && window.multiplayerJoinInfo && global.multiplayerSimReady) {
+      setStatus('Reconnecting…');
+      mp().reconnectAsPeer().then((ok) => {
+        if (ok) {
+          setStatus('Reconnected — syncing…');
+          mp().requestSnapshot();
+        } else {
+          setStatus('Disconnected — could not reconnect. Is the relay running?', true);
+          global.multiplayerHostMode = false;
+          global.multiplayerPeerMode = false;
+          renderPlayerList([]);
+        }
+      });
+      return;
+    }
+    if (wasInRoom)
+      setStatus('Disconnected from relay', true);
+    global.multiplayerHostMode = false;
+    global.multiplayerPeerMode = false;
     renderPlayerList([]);
   }
 
@@ -128,6 +155,13 @@
         global.multiplayerHostMode = false;
         global.multiplayerPeerMode = false;
       },
+      onJoined(msg) {
+        if (msg.isHost)
+          setStatus('Connected — hosting room ' + msg.roomCode);
+        else
+          setStatus('Connected to room ' + msg.roomCode + ' — waiting for snapshot…');
+        updateHud();
+      },
       onSnapshotBinary(buf) {
         if (global.loadSnapshotFromNetwork)
           global.loadSnapshotFromNetwork(buf);
@@ -136,27 +170,7 @@
         if (global.onMultiplayerSyncMeta)
           global.onMultiplayerSyncMeta(meta);
       },
-      onDisconnected() {
-        if (global.multiplayerPeerMode && window.multiplayerJoinInfo && global.multiplayerSimReady) {
-          setStatus('Reconnecting…');
-          mp().reconnectAsPeer().then((ok) => {
-            if (ok) {
-              setStatus('Reconnected — syncing…');
-              mp().requestSnapshot();
-            } else {
-              setStatus('Disconnected', true);
-              global.multiplayerHostMode = false;
-              global.multiplayerPeerMode = false;
-              renderPlayerList([]);
-            }
-          });
-          return;
-        }
-        setStatus('Disconnected', true);
-        global.multiplayerHostMode = false;
-        global.multiplayerPeerMode = false;
-        renderPlayerList([]);
-      },
+      onDisconnected: handleDisconnected,
     });
   }
 
@@ -168,6 +182,7 @@
     setStatus,
     renderPlayerList,
     showPanel,
+    handleDisconnected,
   };
 
   if (document.readyState === 'loading')
