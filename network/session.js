@@ -26,6 +26,8 @@
       this._presenceIntervalMs = 50;
       this._lastBrushSend = 0;
       this._brushIntervalMs = 33;
+      this._guiDebounceTimers = new Map();
+      this._guiDebounceMs = 60;
       this._pendingSnapshotTarget = null;
       this._snapshotSending = false;
       this._textureSyncSending = false;
@@ -51,6 +53,7 @@
         onRemotePause: null,
         onRemoteNuke: null,
         onRemoteGuiChange: null,
+        onGuiSet: null,
         onPlayersChanged: null,
         onDisconnected: null,
         onJoinError: null,
@@ -634,6 +637,36 @@
       });
     }
 
+    _flushGuiSet(key, value) {
+      if (!this.isHost() || !this.connected) return;
+      if (!key || isLocalPeerGuiKey(key)) return;
+      this.transport.sendJson({
+        type: MSG.GUI_SET,
+        key,
+        value,
+      });
+    }
+
+    broadcastGuiSet(key, value, immediate) {
+      if (!this.isHost() || !this.connected) return;
+      if (!key || isLocalPeerGuiKey(key)) return;
+      if (immediate) {
+        const pending = this._guiDebounceTimers.get(key);
+        if (pending) {
+          clearTimeout(pending);
+          this._guiDebounceTimers.delete(key);
+        }
+        this._flushGuiSet(key, value);
+        return;
+      }
+      const existing = this._guiDebounceTimers.get(key);
+      if (existing) clearTimeout(existing);
+      this._guiDebounceTimers.set(key, setTimeout(() => {
+        this._guiDebounceTimers.delete(key);
+        this._flushGuiSet(key, value);
+      }, this._guiDebounceMs));
+    }
+
     tick() {
       if (!this.connected || !this._hooks.getPresence) return;
       const now = performance.now();
@@ -735,16 +768,27 @@
             this._hooks.onRemotePlace(msg.playerId, msg);
           break;
         case MSG.INPUT_PAUSE:
-          if (this.isHost() && this._checkPausePermission(msg.playerId) && this._hooks.onRemotePause)
-            this._hooks.onRemotePause(msg.playerId, msg);
+          if (this.isHost() && this._checkPausePermission(msg.playerId)) {
+            if (this._hooks.onRemotePause)
+              this._hooks.onRemotePause(msg.playerId, msg);
+            if (msg.paused != null)
+              this.broadcastGuiSet('paused', !!msg.paused, true);
+          }
           break;
         case MSG.INPUT_NUKE:
           if (this.isHost() && this._checkNukePermission(msg.playerId) && this._hooks.onRemoteNuke)
             this._hooks.onRemoteNuke(msg.playerId, msg);
           break;
         case MSG.INPUT_GUI:
-          if (this.isHost() && this._checkGuiPermission(msg.playerId, msg.key) && this._hooks.onRemoteGuiChange)
-            this._hooks.onRemoteGuiChange(msg.playerId, msg);
+          if (this.isHost() && this._checkGuiPermission(msg.playerId, msg.key)) {
+            if (this._hooks.onRemoteGuiChange)
+              this._hooks.onRemoteGuiChange(msg.playerId, msg);
+            this.broadcastGuiSet(msg.key, msg.value, true);
+          }
+          break;
+        case MSG.GUI_SET:
+          if (this.isPeer() && msg.key != null && this._hooks.onGuiSet)
+            this._hooks.onGuiSet(msg);
           break;
         case MSG.PRESENCE:
           this._updateRemotePresence(msg.playerId, msg);

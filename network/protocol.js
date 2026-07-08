@@ -16,6 +16,7 @@
     INPUT_PAUSE: 'input_pause',
     INPUT_NUKE: 'input_nuke',
     INPUT_GUI: 'input_gui',
+    GUI_SET: 'gui_set',
     PRESENCE: 'presence',
     SYNC_META: 'sync_meta',
     SNAPSHOT_REQUEST: 'snapshot_request',

@@ -412,6 +412,7 @@ var multiplayerLoadPhase = 'idle';
 var pendingSnapshotBuffer = null;
 var multiplayerHooksRegistered = false;
 var mpGuiControllerMap = new Map();
+var mpGuiApplyDepth = 0;
 
 function asSaveBytes(decompressed)
 {
@@ -9132,6 +9133,8 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         return;
       }
       handlePause();
+      if (multiplayerHostMode && window.WeatherMultiplayer && window.WeatherMultiplayer.isHost())
+        window.WeatherMultiplayer.broadcastGuiSet('paused', !!value, true);
     }).name('Paused').listen();
     datGui.add(guiControls, 'download').name('Save Simulation to File');
     datGui.add(guiControls, 'openColorScaleEditor').name('Open Color Scale Editor');
@@ -9161,6 +9164,45 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
     datGui.width = 400;
     installMultiplayerGuiRelay(datGui);
+  }
+
+  function applySyncedGuiChange(key, value)
+  {
+    if (!guiControls || key == null) return;
+    mpGuiApplyDepth++;
+    try {
+      guiControls[key] = value;
+      const entry = mpGuiControllerMap.get(key);
+      if (entry) {
+        entry.controller.setValue(value);
+        if (entry.origOnChange)
+          entry.origOnChange.call(entry.controller, value);
+      } else if (key === 'paused' && typeof handlePause === 'function') {
+        handlePause();
+      }
+      if (typeof datGui !== 'undefined' && datGui && datGui.updateDisplay)
+        datGui.updateDisplay();
+    } finally {
+      mpGuiApplyDepth--;
+    }
+  }
+
+  function setSyncedGuiControl(key, value, options)
+  {
+    if (!guiControls || key == null) return;
+    const proto = window.WeatherMpProtocol;
+    if (proto && proto.isLocalPeerGuiKey(key)) {
+      guiControls[key] = value;
+      return;
+    }
+    applySyncedGuiChange(key, value);
+    if (mpGuiApplyDepth > 0 || (options && options.skipNetwork)) return;
+    const mp = window.WeatherMultiplayer;
+    if (!mp || !mp.connected) return;
+    if (multiplayerHostMode && mp.isHost())
+      mp.broadcastGuiSet(key, value);
+    else if (multiplayerPeerMode && mp.isPeer() && mp.getMyPermissions().settings)
+      mp.emitGuiChange(key, value);
   }
 
   function installMultiplayerGuiRelay(gui)
@@ -9195,10 +9237,21 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         return;
 
       controller.onChange(function(value) {
+        if (mpGuiApplyDepth > 0) {
+          if (origOnChange)
+            origOnChange.call(this, value);
+          return;
+        }
         if (multiplayerPeerMode && window.WeatherMultiplayer && !proto.isLocalPeerGuiKey(property)) {
           if (window.WeatherMultiplayer.getMyPermissions().settings)
             window.WeatherMultiplayer.emitGuiChange(property, value);
+          if (origOnChange)
+            origOnChange.call(this, value);
           return;
+        }
+        if (multiplayerHostMode && window.WeatherMultiplayer && window.WeatherMultiplayer.isHost()
+            && !proto.isLocalPeerGuiKey(property)) {
+          window.WeatherMultiplayer.broadcastGuiSet(property, value);
         }
         if (origOnChange)
           origOnChange.call(this, value);
@@ -9206,20 +9259,6 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     }
 
     walkFolder(gui);
-  }
-
-  function applyRemoteGuiChange(key, value)
-  {
-    if (!guiControls || key == null) return;
-    guiControls[key] = value;
-    const entry = mpGuiControllerMap.get(key);
-    if (entry) {
-      entry.controller.setValue(value);
-      if (entry.origOnChange)
-        entry.origOnChange.call(entry.controller, value);
-    }
-    if (typeof datGui !== 'undefined' && datGui && datGui.updateDisplay)
-      datGui.updateDisplay();
   }
 
   // guiControls.paused = true; // pause before first iteration for debugging
@@ -14530,11 +14569,19 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
           window.WeatherMultiplayer.emitPause(!guiControls.paused);
           return;
         }
+        if (multiplayerHostMode && window.WeatherMultiplayer) {
+          const next = !guiControls.paused;
+          applySyncedGuiChange('paused', next);
+          window.WeatherMultiplayer.broadcastGuiSet('paused', next, true);
+          return;
+        }
         guiControls.paused = !guiControls.paused;
         handlePause();
       } },
     { id: 'showDrops', name: 'Toggle precipitation drops', category: 'Simulation', defaultCode: 'KeyD',
-      onDown() { guiControls.showDrops = !guiControls.showDrops; } },
+      onDown() {
+        setSyncedGuiControl('showDrops', !guiControls.showDrops);
+      } },
     { id: 'brushResizeHold', name: 'Hold to resize brush with scroll', category: 'Tools', defaultCode: 'KeyB',
       onDown() {
         bPressed = true;
@@ -14550,18 +14597,16 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       onDown() { cam.center(); } },
     { id: 'toggleGraph', name: 'Toggle sounding graph', category: 'Graph & UI', defaultCode: 'KeyG',
       onDown() {
-        guiControls.showGraph = !guiControls.showGraph;
-        if (guiControls.showGraph)
-          guiControls.graphFixedPosition = false;
-        else
-          guiControls.graphFixedPosition = false;
+        const next = !guiControls.showGraph;
+        setSyncedGuiControl('showGraph', next);
+        guiControls.graphFixedPosition = false;
         hideOrShowGraph();
       } },
     { id: 'toggleVectorField', name: 'Toggle vector field overlay', category: 'Display', defaultCode: 'Tab',
       preventDefault: true,
-      onDown() { guiControls.enableVectorField = !guiControls.enableVectorField; } },
+      onDown() { setSyncedGuiControl('enableVectorField', !guiControls.enableVectorField); } },
     { id: 'toggleRadarOverlay', name: 'Toggle radar on realistic view', category: 'Radar', defaultCode: 'KeyS',
-      onDown() { guiControls.radarOverlay = !guiControls.radarOverlay; } },
+      onDown() { setSyncedGuiControl('radarOverlay', !guiControls.radarOverlay); } },
     { id: 'displayRisk', name: 'Risk display mode', category: 'Display', defaultCode: 'KeyZ',
       onDown() { guiControls.displayMode = 'DISP_RISK'; },
       onUp() { zPressed = false; } },
@@ -22253,18 +22298,18 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     if (meta.iterNum != null)
       iterNum = meta.iterNum;
     if (meta.paused != null && multiplayerPeerMode)
-      guiControls.paused = !!meta.paused;
+      applySyncedGuiChange('paused', !!meta.paused);
     if (multiplayerPeerMode) {
       if (meta.timeOfDay != null)
-        guiControls.timeOfDay = meta.timeOfDay;
+        applySyncedGuiChange('timeOfDay', meta.timeOfDay);
       if (meta.month != null)
-        guiControls.month = meta.month;
+        applySyncedGuiChange('month', meta.month);
       if (meta.sunAngle != null)
-        guiControls.sunAngle = meta.sunAngle;
+        applySyncedGuiChange('sunAngle', meta.sunAngle);
       if (meta.simDateTimeMs != null && meta.simDateTimeMs > 0)
         simDateTime = new Date(meta.simDateTimeMs);
       if (meta.dayNightCycle != null)
-        guiControls.dayNightCycle = !!meta.dayNightCycle;
+        applySyncedGuiChange('dayNightCycle', !!meta.dayNightCycle);
       if (typeof updateSunlight === 'function')
         updateSunlight('MANUAL_ANGLE');
     }
@@ -22303,8 +22348,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       },
       onRemotePause(playerId, msg) {
         if (msg.paused == null) return;
-        guiControls.paused = !!msg.paused;
-        handlePause();
+        applySyncedGuiChange('paused', !!msg.paused);
       },
       onRemoteNuke(playerId, msg) {
         if (msg.x == null || msg.y == null) return;
@@ -22312,7 +22356,11 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       },
       onRemoteGuiChange(playerId, msg) {
         if (msg.key != null)
-          applyRemoteGuiChange(msg.key, msg.value);
+          applySyncedGuiChange(msg.key, msg.value);
+      },
+      onGuiSet(msg) {
+        if (msg.key != null)
+          applySyncedGuiChange(msg.key, msg.value);
       },
       onPlayersChanged(players) {
         if (window.WeatherMultiplayerUI)
