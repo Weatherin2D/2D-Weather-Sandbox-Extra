@@ -1,10 +1,12 @@
 {
+  "homepage": "https://weather-sandbox.onrender.com",
   "dependencies": {
     "@webgpu/glslang": "^0.0.15",
     "ws": "^8.18.0"
   },
   "scripts": {
-    "relay": "node server/relay.js",
-    "relay:dev": "node server/relay.js 8787"
+    "start": "node server/index.js",
+    "dev": "node server/index.js",
+    "relay": "node server/relay.js"
   }
 }

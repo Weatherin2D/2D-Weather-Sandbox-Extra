@@ -13,6 +13,9 @@
     PLAYER_LEFT: 'player_left',
     INPUT_BRUSH: 'input_brush',
     INPUT_PLACE: 'input_place',
+    INPUT_PAUSE: 'input_pause',
+    INPUT_NUKE: 'input_nuke',
+    INPUT_GUI: 'input_gui',
     PRESENCE: 'presence',
     SYNC_META: 'sync_meta',
     SNAPSHOT_REQUEST: 'snapshot_request',
@@ -21,9 +24,51 @@
     PEER_LOADING: 'peer_loading',
     PEER_READY: 'peer_ready',
     CHAT: 'chat',
+    PLAYER_PERMISSIONS: 'player_permissions',
+    PERMISSIONS_DENIED: 'permissions_denied',
+    KICK_PLAYER: 'kick_player',
+    KICKED: 'kicked',
+    ROOM_CODE_CHANGE: 'room_code_change',
+    ROOM_CODE_CHANGED: 'room_code_changed',
+    LIGHTNING_FLASH: 'lightning_flash',
   };
 
+  function defaultPermissions() {
+    return { paint: true, place: true, pause: false, nuke: false, settings: false };
+  }
+
+  function clonePermissions(perms) {
+    return {
+      paint: !!(perms && perms.paint),
+      place: !!(perms && perms.place),
+      pause: !!(perms && perms.pause),
+      nuke: !!(perms && perms.nuke),
+      settings: !!(perms && perms.settings),
+    };
+  }
+
+  const LOCAL_PEER_GUI_KEYS = new Set([
+    'displayMode', 'exposure', 'saturation', 'contrast', 'bloomStrength', 'sound',
+    'readoutCursor', 'graphFixedPosition', 'menuWidth', 'skewTSourceMode',
+    'weatherBalloonAscentMps', 'weatherBalloonSampleIntervalM', 'hodograph2DNodes',
+    'hodographProfileNodes', 'analogRelevancy',
+  ]);
+
+  function isLocalPeerGuiKey(key) {
+    return LOCAL_PEER_GUI_KEYS.has(key);
+  }
+
+  function isPaintTool(tool) {
+    return isBrushTool(tool) && tool !== 'TOOL_NONE';
+  }
+
+  function isNukeTool(tool) {
+    return tool === 'TOOL_NUKE';
+  }
+
   const BINARY_SNAPSHOT = 0x01;
+  const BINARY_TEXTURE_SYNC = 0x02;
+  const TEXTURE_SYNC_HEADER_BYTES = 17; // 5-byte wire header + 12-byte payload header minimum
 
   const PLAYER_COLORS = [
     '#ff6b6b', '#4ecdc4', '#ffe66d', '#a29bfe', '#fd79a8',
@@ -95,13 +140,21 @@
   global.WeatherMpProtocol = {
     MSG,
     BINARY_SNAPSHOT,
+    BINARY_TEXTURE_SYNC,
+    TEXTURE_SYNC_HEADER_BYTES,
     PLAYER_COLORS,
     pickPlayerColor,
     generateRoomCode,
     encodeJson,
     decodeJson,
     isBrushTool,
+    isPaintTool,
     isPlacementTool,
+    isNukeTool,
+    isLocalPeerGuiKey,
+    LOCAL_PEER_GUI_KEYS,
     toolToInputType,
+    defaultPermissions,
+    clonePermissions,
   };
 })(typeof window !== 'undefined' ? window : global);

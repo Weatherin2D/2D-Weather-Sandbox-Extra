@@ -33,9 +33,42 @@ A semi-realistic, real-time, two-dimensional interactive weather simulation buil
 ```
 
 ## Development Server
-The app is served as a static site using `npx serve` on port 5000.
 
-**Workflow:** "Start application" — runs `npx serve . -p 5000 -l 5000`
+The app runs as a **unified Node server** that serves the game and multiplayer on one port:
 
-## Deployment
-Configured as a **static** deployment. The entire project root (`.`) is the public directory.
+```bash
+npm install
+npm start
+```
+
+Open **http://localhost:8080** — single-player and multiplayer both work from this URL.
+
+Legacy static-only serving (multiplayer will not work):
+
+```bash
+npx serve . -p 5000
+```
+
+## Multiplayer
+
+Multiplayer is built into the server — no separate relay process. Players open the site, enter a name, and click **Host Game** or **Join Game**.
+
+**Local:** run `npm start` and open two browser tabs to `http://localhost:8080`.
+
+**Online:** deploy to Render (see below) and share your `https://*.onrender.com` URL.
+
+GitHub Pages hosts static files only and **cannot** run multiplayer.
+
+## Deploy to Render (recommended)
+
+1. Push this repo to GitHub.
+2. Create a [Render](https://render.com) account and **New → Blueprint** (or Web Service).
+3. Connect the repo — Render reads [`render.yaml`](render.yaml) automatically.
+4. Deploy completes with `npm start` — visit your `https://weather-sandbox.onrender.com` URL.
+5. Share that URL with friends; Host/Join works with no terminal commands.
+
+Free tier note: the server sleeps after inactivity. First connection may take ~30 seconds to wake up — use **Test connection** on the menu if needed.
+
+## Deployment (legacy static)
+
+Configured as a **static** deployment. The entire project root (`.`) is the public directory. Use this for GitHub Pages single-player only.

@@ -1,4 +1,11 @@
 # 2D Weather Sandbox
+
+## Play online (multiplayer)
+
+**[Play here](https://weather-sandbox.onrender.com)** — host or join from your browser, no install.
+
+After hosting, use **Copy invite link** to share a URL with the room code included. Friends open the link, enter their name, and click **Join Game**.
+
 THIS IS FORK OF 2D WEATHER SANDBOX. I DO NOT GUARANTE THAT IT WILL WORK AS INTENDED!
 
 Previously called "Weather_Sim_4"
@@ -101,6 +108,18 @@ DatGui: Used for the user interface because it's very easy to add more controlla
 Pako: Only used for data compression to reduce save file sizes. Size reduction can be 2-4 times depending on the state of the simulation. Not essential. Downside is that it takes longer to save and load files.
   
 # How to run it locally and modify code
+
+### Quick start (game + multiplayer)
+
+```bash
+npm install
+npm start
+```
+
+Open **http://localhost:8080** in your browser. Multiplayer works automatically — no separate relay terminal.
+
+### VS Code + Live Server (single-player only)
+
   1. Install VS code: https://code.visualstudio.com/
   2. Install VS Code extensions:
    * Live Server (required)
@@ -111,3 +130,31 @@ Pako: Only used for data compression to reduce save file sizes. Size reduction c
   4. Open project folder in VS Code
   5. Open index.html
   6. Start live server (Go Live), automatically opens page in browser
+
+Note: Live Server does **not** include multiplayer. Use **Open online multiplayer** in the menu (after setting [`network/config.js`](network/config.js)) or deploy to Render.
+
+## Deploy online (multiplayer for everyone — no terminal for players)
+
+Friends only need a browser. Nobody runs `npm start` on their own PC.
+
+1. Push to GitHub.
+2. [Render.com](https://render.com) → **New → Blueprint** → connect this repo ([`render.yaml`](render.yaml) is included).
+3. When deploy finishes, open **https://weather-sandbox.onrender.com** (or your service URL from the Render dashboard).
+4. In GitHub repo **Settings → General → Website**, set the URL to the same Render link so the repo page links to the game.
+5. Click **Host Game**, then **Copy invite link** (includes `?room=CODE`) and send to friends.
+6. Friends open the link, enter their name, and click **Join Game**.
+
+[`network/config.js`](network/config.js) already points Live Server / downloaded copies at the online URL. If your Render service uses a different hostname, update that file and `homepage` in [`package.json`](package.json).
+
+Free tier note: the server sleeps after inactivity. First connection may take ~30 seconds — use **Test connection** if needed.
+
+### Play with friends online (quick summary)
+
+| Who | What to do |
+|-----|------------|
+| You (once) | Deploy to Render via [`render.yaml`](render.yaml) |
+| Everyone | Open the `https://*.onrender.com` link in a browser |
+| Host | Host Game → share link + room code |
+| Friends | Join Game with room code |
+
+No command prompt, Node install, or `npm start` required for players.

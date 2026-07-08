@@ -8,6 +8,7 @@
     <script type="text/javascript" src="libraries/pako.min.js"></script>
     <script type="text/javascript" src="libraries/chart.js"></script>
     <script type="text/javascript" src="libraries/chartjs-adapter-date-fns.js"></script>
+    <script type="text/javascript" src="network/config.js"></script>
     <script type="text/javascript" src="network/protocol.js"></script>
     <script type="text/javascript" src="network/transport.js"></script>
     <script type="text/javascript" src="network/session.js"></script>
@@ -165,6 +166,22 @@
             margin: 20px;
             border-radius: var(--border-radius);
             animation: fadeIn 1s ease-in-out;
+        }
+
+        #mpHostMenuBtn,
+        #multiplayerAdminPanel,
+        #multiplayerHud {
+            z-index: 10050;
+        }
+
+        #mpAdminDragHandle {
+            cursor: move;
+            user-select: none;
+            flex: 1;
+        }
+
+        #mpAdminDragHandle:active {
+            cursor: grabbing;
         }
 
         table {
@@ -1420,10 +1437,10 @@
 
         <div id="multiplayerPanel" style="margin-top: 40px; padding: 20px; border: 1px solid rgba(74,144,226,0.5); border-radius: 12px; max-width: 520px; background: rgba(0,0,0,0.45);">
             <h2 style="margin-top:0;">Multiplayer Co-op</h2>
-            <p style="opacity:0.85; font-size: 14px;">Host runs the simulation. Peers paint and place tools in real time. <b>First run <code>npm run relay</code> in a terminal.</b></p>
-            <div style="margin-bottom: 12px;">
-                <label for="mpRelayUrl">Relay server URL</label><br>
-                <input type="text" id="mpRelayUrl" value="ws://127.0.0.1:8787" style="width: 280px; padding: 6px; margin-top: 4px;" />
+            <p id="mpIntroText" style="opacity:0.85; font-size: 14px;">Host runs the simulation. Peers paint and place tools in real time.</p>
+            <div id="mpPlayOnlineBanner" style="display:none; margin-bottom: 12px; padding: 10px 12px; border-radius: 8px; background: rgba(74,144,226,0.2); border: 1px solid rgba(74,144,226,0.45); font-size: 14px;">
+                <span id="mpPlayOnlineText">Multiplayer needs the online version of this game.</span>
+                <button type="button" id="mpPlayOnlineBtn" style="display: block; margin-top: 8px; padding: 8px 16px;">Open online multiplayer</button>
             </div>
             <div style="margin-bottom: 12px;">
                 <label for="mpPlayerName">Your name</label><br>
@@ -1436,16 +1453,22 @@
             <div style="margin-bottom: 12px;">
                 <button type="button" id="mpHostBtn" style="margin-right: 8px; padding: 8px 16px;">Host Game</button>
                 <button type="button" id="mpJoinBtn" style="margin-right: 8px; padding: 8px 16px;">Join Game</button>
-                <button type="button" id="mpLeaveBtn" style="padding: 8px 16px;">Leave</button>
+                <button type="button" id="mpLeaveBtn" style="margin-right: 8px; padding: 8px 16px;">Leave</button>
+                <button type="button" id="mpTestBtn" style="padding: 8px 16px;">Test connection</button>
             </div>
+            <div id="mpInviteRow" style="display:none; margin-bottom: 12px;">
+                <button type="button" id="mpCopyInviteLinkBtn" style="margin-right: 8px; padding: 6px 12px; font-size: 13px;">Copy invite link</button>
+                <button type="button" id="mpCopyJoinInstructionsBtn" style="padding: 6px 12px; font-size: 13px;">Copy join instructions</button>
+                <p id="mpInviteHint" style="margin: 8px 0 0; font-size: 13px; opacity: 0.85;">Send this link to friends — they only need a browser.</p>
+            </div>
+            <details id="mpRelayDetails" style="margin-bottom: 12px; font-size: 13px; opacity: 0.85;">
+                <summary style="cursor: pointer;">Advanced relay settings</summary>
+                <label for="mpRelayUrl" style="display: block; margin-top: 8px;">Custom relay URL (leave blank for same server)</label>
+                <input type="text" id="mpRelayUrl" placeholder="Same as this website" style="width: 280px; padding: 6px; margin-top: 4px;" />
+            </details>
             <div style="margin-bottom: 8px;">Room: <strong id="mpRoomCodeDisplay">—</strong></div>
             <div id="mpStatus" style="color: #a8dadc; font-size: 14px; margin-bottom: 8px;">Not connected</div>
             <ul id="mpPlayerList" style="list-style: none; padding: 0; margin: 0;"></ul>
-        </div>
-
-        <div id="multiplayerHud" style="display:none; position: fixed; top: 52px; right: 12px; z-index: 5; background: rgba(0,0,0,0.65); padding: 10px 14px; border-radius: 8px; font-size: 13px; pointer-events: none;">
-            <div>Room: <span id="mpHudRoom">—</span></div>
-            <div id="mpHudRole">—</div>
         </div>
 
 
@@ -1652,6 +1675,37 @@
         </div>
     </div>
 
+    </div>
+
+    <div id="multiplayerHud" style="display:none; position: fixed; top: 52px; right: 12px; background: rgba(0,0,0,0.65); padding: 10px 14px; border-radius: 8px; font-size: 13px; pointer-events: none;">
+        <div>Room: <span id="mpHudRoom">—</span></div>
+        <div id="mpHudRole">—</div>
+        <div id="mpHudSyncAge" style="display:none; color: #a8dadc; margin-top: 4px;">—</div>
+        <div id="mpHudPerms" style="display:none; color: #a8dadc; margin-top: 6px; font-size: 11px; line-height: 1.4;">—</div>
+    </div>
+
+    <button type="button" id="mpHostMenuBtn" style="display:none; position: fixed; top: 52px; right: 12px; padding: 8px 14px; border-radius: 8px; border: 1px solid rgba(74,144,226,0.6); background: rgba(0,0,0,0.85); color: #a8dadc; font-size: 13px; cursor: pointer; pointer-events: auto;">Host Menu</button>
+
+    <div id="multiplayerAdminPanel" style="display:none; position: fixed; top: 52px; right: 12px; background: rgba(0,0,0,0.9); padding: 12px 14px; border-radius: 8px; font-size: 12px; max-width: 360px; max-height: 75vh; overflow-y: auto; pointer-events: auto; border: 1px solid rgba(74,144,226,0.4);">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; gap: 8px;">
+            <div id="mpAdminDragHandle" style="font-weight: bold; font-size: 14px;">Host Controls <span style="font-size:10px;color:#888;font-weight:normal;">(drag)</span></div>
+            <button type="button" id="mpHostMenuClose" style="padding: 2px 8px; font-size: 11px; cursor: pointer; flex-shrink: 0;">Close</button>
+        </div>
+        <div style="margin-bottom: 12px; padding-bottom: 10px; border-bottom: 1px solid rgba(255,255,255,0.15);">
+            <div style="font-weight: bold; margin-bottom: 6px;">Room</div>
+            <div style="font-size: 22px; font-weight: bold; letter-spacing: 2px; margin-bottom: 6px;" id="mpAdminRoomCode">—</div>
+            <div style="margin-bottom: 6px;">
+                <button type="button" id="mpCopyCodeBtn" style="padding: 3px 10px; font-size: 11px; cursor: pointer;">Copy code</button>
+                <button type="button" id="mpRerollCodeBtn" style="margin-left: 4px; padding: 3px 10px; font-size: 11px; cursor: pointer;">New code</button>
+            </div>
+            <div id="mpAdminRoomStatus" style="color: #a8dadc; margin-bottom: 4px;">—</div>
+            <div id="mpAdminPlayerCount" style="color: #ccc; margin-bottom: 4px;">Players: —</div>
+            <div style="color: #888; font-size: 11px;">Share this code for players joining late.</div>
+        </div>
+        <div>
+            <div style="font-weight: bold; margin-bottom: 6px;">Players</div>
+            <div id="mpAdminPlayerList" style="margin-bottom: 4px;"></div>
+        </div>
     </div>
 
     <div id="soundingDashboard" aria-hidden="true">

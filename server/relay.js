@@ -1,22 +1,20 @@
-#!/usr/bin/env node
 /**
- * Lightweight WebSocket relay for 2D Weather Sandbox multiplayer.
- * Routes messages between players in a room; does not run simulation physics.
- *
- * Usage: node server/relay.js [port]
+ * Multiplayer WebSocket relay — routes messages between players in a room.
+ * Does not run simulation physics.
  */
 'use strict';
 
-const http = require('http');
 const { WebSocketServer } = require('ws');
 
-const PORT = parseInt(process.argv[2] || process.env.PORT || '8787', 10);
 const BINARY_SNAPSHOT = 0x01;
+const BINARY_TEXTURE_SYNC = 0x02;
 
 /** @type {Map<string, { hostId: string, players: Map<string, object> }>} */
 const rooms = new Map();
 
 let nextPlayerId = 1;
+
+const DEFAULT_PERMISSIONS = { paint: true, place: true, pause: false, nuke: false, settings: false };
 
 function sanitizePlayers(room) {
   return Array.from(room.players.values()).map((p) => ({
@@ -25,6 +23,7 @@ function sanitizePlayers(room) {
     color: p.color,
     isHost: p.isHost,
     loading: !!p.loading,
+    permissions: p.isHost ? undefined : (p.permissions || DEFAULT_PERMISSIONS),
   }));
 }
 
@@ -81,175 +80,247 @@ function removePlayer(ws) {
   });
 }
 
-const server = http.createServer((_req, res) => {
-  res.writeHead(200, { 'Content-Type': 'text/plain' });
-  res.end('2D Weather Sandbox multiplayer relay\n');
-});
+/**
+ * Attach multiplayer relay WebSocket handler to an existing HTTP server.
+ * @param {import('http').Server} httpServer
+ * @returns {{ wss: WebSocketServer, stop: () => void }}
+ */
+function attachMultiplayerRelay(httpServer) {
+  const wss = new WebSocketServer({
+    server: httpServer,
+    maxPayload: 128 * 1024 * 1024,
+  });
 
-const wss = new WebSocketServer({
-  server,
-  maxPayload: 128 * 1024 * 1024,
-});
+  wss.on('connection', (ws) => {
+    ws._roomCode = null;
+    ws._playerId = null;
+    ws.isAlive = true;
+    ws.on('pong', () => { ws.isAlive = true; });
 
-wss.on('connection', (ws) => {
-  ws._roomCode = null;
-  ws._playerId = null;
-  ws.isAlive = true;
-  ws.on('pong', () => { ws.isAlive = true; });
+    ws.on('message', (data, isBinary) => {
+      if (isBinary) {
+        const roomCode = ws._roomCode;
+        if (!roomCode) return;
+        const room = rooms.get(roomCode);
+        if (!room) return;
 
-  ws.on('message', (data, isBinary) => {
-    if (isBinary) {
+        const bytes = Buffer.from(data);
+        if (bytes.length >= 5 && (bytes[0] === BINARY_SNAPSHOT || bytes[0] === BINARY_TEXTURE_SYNC)) {
+          const targetId = bytes.readUInt32LE(1);
+          if (targetId > 0) {
+            sendToPlayer(room, targetId, data, true);
+            return;
+          }
+        }
+
+        for (const p of room.players.values()) {
+          if (p.ws !== ws && p.ws.readyState === p.ws.OPEN)
+            p.ws.send(data, { binary: true });
+        }
+        return;
+      }
+
+      let msg;
+      try {
+        msg = JSON.parse(data.toString());
+      } catch {
+        return;
+      }
+
+      if (msg.type === 'join') {
+        const roomCode = String(msg.roomCode || '').toUpperCase().trim();
+        const role = msg.role === 'host' ? 'host' : 'peer';
+        const playerName = String(msg.playerName || 'Player').slice(0, 24);
+
+        if (!roomCode) {
+          sendJson(ws, { type: 'join_error', message: 'Invalid room code' });
+          return;
+        }
+
+        let room = rooms.get(roomCode);
+
+        if (role === 'host') {
+          if (room) {
+            sendJson(ws, { type: 'join_error', message: 'Room already exists' });
+            return;
+          }
+          room = { hostId: null, players: new Map() };
+          rooms.set(roomCode, room);
+        } else {
+          if (!room) {
+            sendJson(ws, { type: 'join_error', message: 'Room not found' });
+            return;
+          }
+          if (room.players.size >= 8) {
+            sendJson(ws, { type: 'join_error', message: 'Room is full' });
+            return;
+          }
+        }
+
+        const playerId = nextPlayerId++;
+        const colorIndex = room.players.size;
+        const colors = [
+          '#ff6b6b', '#4ecdc4', '#ffe66d', '#a29bfe', '#fd79a8',
+          '#55efc4', '#74b9ff', '#fab1a0',
+        ];
+        const player = {
+          id: playerId,
+          name: playerName,
+          color: colors[colorIndex % colors.length],
+          isHost: role === 'host',
+          loading: false,
+          permissions: role === 'host' ? undefined : { ...DEFAULT_PERMISSIONS },
+          ws,
+        };
+
+        room.players.set(String(playerId), player);
+        ws._roomCode = roomCode;
+        ws._playerId = playerId;
+
+        if (role === 'host')
+          room.hostId = String(playerId);
+
+        sendJson(ws, {
+          type: 'joined',
+          playerId,
+          roomCode,
+          isHost: role === 'host',
+          players: sanitizePlayers(room),
+        });
+
+        if (role === 'peer') {
+          broadcastRoom(roomCode, {
+            type: 'player_joined',
+            playerId,
+            players: sanitizePlayers(room),
+          }, ws);
+        }
+        return;
+      }
+
       const roomCode = ws._roomCode;
       if (!roomCode) return;
       const room = rooms.get(roomCode);
       if (!room) return;
 
-      const bytes = Buffer.from(data);
-      if (bytes.length >= 5 && bytes[0] === BINARY_SNAPSHOT) {
-        const targetId = bytes.readUInt32LE(1);
-        if (targetId > 0) {
-          sendToPlayer(room, targetId, data, true);
-          return;
-        }
-      }
+      msg.playerId = ws._playerId;
 
-      for (const p of room.players.values()) {
-        if (p.ws !== ws && p.ws.readyState === p.ws.OPEN)
-          p.ws.send(data, { binary: true });
-      }
-      return;
-    }
-
-    let msg;
-    try {
-      msg = JSON.parse(data.toString());
-    } catch {
-      return;
-    }
-
-    if (msg.type === 'join') {
-      const roomCode = String(msg.roomCode || '').toUpperCase().trim();
-      const role = msg.role === 'host' ? 'host' : 'peer';
-      const playerName = String(msg.playerName || 'Player').slice(0, 24);
-
-      if (!roomCode) {
-        sendJson(ws, { type: 'join_error', message: 'Invalid room code' });
+      if (msg.type === 'peer_loading' || msg.type === 'peer_ready') {
+        const self = room.players.get(String(ws._playerId));
+        if (self) self.loading = msg.type === 'peer_loading';
+        broadcastRoom(roomCode, {
+          type: msg.type,
+          playerId: ws._playerId,
+          players: sanitizePlayers(room),
+        }, ws);
         return;
       }
 
-      let room = rooms.get(roomCode);
-
-      if (role === 'host') {
-        if (room) {
-          sendJson(ws, { type: 'join_error', message: 'Room already exists' });
-          return;
-        }
-        room = { hostId: null, players: new Map() };
-        rooms.set(roomCode, room);
-      } else {
-        if (!room) {
-          sendJson(ws, { type: 'join_error', message: 'Room not found' });
-          return;
-        }
-        if (room.players.size >= 8) {
-          sendJson(ws, { type: 'join_error', message: 'Room is full' });
-          return;
-        }
+      if (msg.type === 'snapshot_request') {
+        const host = room.players.get(String(room.hostId));
+        if (host && host.ws.readyState === host.ws.OPEN)
+          sendJson(host.ws, { ...msg, playerId: ws._playerId });
+        return;
       }
 
-      const playerId = nextPlayerId++;
-      const colorIndex = room.players.size;
-      const colors = [
-        '#ff6b6b', '#4ecdc4', '#ffe66d', '#a29bfe', '#fd79a8',
-        '#55efc4', '#74b9ff', '#fab1a0',
-      ];
-      const player = {
-        id: playerId,
-        name: playerName,
-        color: colors[colorIndex % colors.length],
-        isHost: role === 'host',
-        loading: false,
-        ws,
-      };
+      if (msg.type === 'snapshot_meta') {
+        const targetId = msg.targetPlayerId || 0;
+        if (targetId > 0)
+          sendToPlayer(room, targetId, JSON.stringify(msg), false);
+        else
+          broadcastRoom(roomCode, msg, ws);
+        return;
+      }
 
-      room.players.set(String(playerId), player);
-      ws._roomCode = roomCode;
-      ws._playerId = playerId;
+      if (msg.type === 'kick_player') {
+        if (String(ws._playerId) !== String(room.hostId)) return;
+        const targetId = String(msg.targetPlayerId);
+        const target = room.players.get(targetId);
+        if (!target || target.isHost) return;
+        sendJson(target.ws, { type: 'kicked', reason: msg.reason || 'Kicked by host' });
+        target.ws.close();
+        return;
+      }
 
-      if (role === 'host')
-        room.hostId = String(playerId);
+      if (msg.type === 'room_code_change') {
+        if (String(ws._playerId) !== String(room.hostId)) return;
+        const newCode = String(msg.newRoomCode || '').toUpperCase().trim();
+        if (!newCode || newCode === roomCode) return;
+        if (rooms.has(newCode)) {
+          sendJson(ws, { type: 'join_error', message: 'Room code already taken' });
+          return;
+        }
+        rooms.delete(roomCode);
+        rooms.set(newCode, room);
+        for (const p of room.players.values())
+          p.ws._roomCode = newCode;
+        broadcastRoom(newCode, { type: 'room_code_changed', roomCode: newCode });
+        return;
+      }
 
-      sendJson(ws, {
-        type: 'joined',
-        playerId,
-        roomCode,
-        isHost: role === 'host',
-        players: sanitizePlayers(room),
-      });
-
-      if (role === 'peer') {
+      if (msg.type === 'player_permissions') {
+        if (String(ws._playerId) !== String(room.hostId)) return;
+        if (msg.permissions) {
+          for (const [pid, perms] of Object.entries(msg.permissions)) {
+            const p = room.players.get(String(pid));
+            if (p && !p.isHost) p.permissions = perms;
+          }
+        }
         broadcastRoom(roomCode, {
-          type: 'player_joined',
-          playerId,
+          type: msg.type,
+          permissions: msg.permissions,
           players: sanitizePlayers(room),
         }, ws);
+        return;
       }
-      return;
-    }
 
-    const roomCode = ws._roomCode;
-    if (!roomCode) return;
-    const room = rooms.get(roomCode);
-    if (!room) return;
+      if (msg.type === 'permissions_denied') {
+        if (String(ws._playerId) !== String(room.hostId)) return;
+        if (msg.targetPlayerId)
+          sendToPlayer(room, msg.targetPlayerId, JSON.stringify(msg), false);
+        return;
+      }
 
-    msg.playerId = ws._playerId;
+      broadcastRoom(roomCode, msg, ws);
+    });
 
-    if (msg.type === 'peer_loading' || msg.type === 'peer_ready') {
-      const self = room.players.get(String(ws._playerId));
-      if (self) self.loading = msg.type === 'peer_loading';
-      broadcastRoom(roomCode, {
-        type: msg.type,
-        playerId: ws._playerId,
-        players: sanitizePlayers(room),
-      }, ws);
-      return;
-    }
-
-    if (msg.type === 'snapshot_request') {
-      const host = room.players.get(String(room.hostId));
-      if (host && host.ws.readyState === host.ws.OPEN)
-        sendJson(host.ws, { ...msg, playerId: ws._playerId });
-      return;
-    }
-
-    if (msg.type === 'snapshot_meta') {
-      const targetId = msg.targetPlayerId || 0;
-      if (targetId > 0)
-        sendToPlayer(room, targetId, JSON.stringify(msg), false);
-      else
-        broadcastRoom(roomCode, msg, ws);
-      return;
-    }
-
-    broadcastRoom(roomCode, msg, ws);
+    ws.on('close', () => removePlayer(ws));
   });
 
-  ws.on('close', () => removePlayer(ws));
-});
-
-const heartbeat = setInterval(() => {
-  for (const ws of wss.clients) {
-    if (!ws.isAlive) {
-      ws.terminate();
-      continue;
+  const heartbeat = setInterval(() => {
+    for (const ws of wss.clients) {
+      if (!ws.isAlive) {
+        ws.terminate();
+        continue;
+      }
+      ws.isAlive = false;
+      ws.ping();
     }
-    ws.isAlive = false;
-    ws.ping();
-  }
-}, 30000);
+  }, 30000);
 
-wss.on('close', () => clearInterval(heartbeat));
+  wss.on('close', () => clearInterval(heartbeat));
 
-server.listen(PORT, () => {
-  console.log('Weather Sandbox relay listening on port ' + PORT);
-});
+  return {
+    wss,
+    stop() {
+      clearInterval(heartbeat);
+      wss.close();
+    },
+  };
+}
+
+module.exports = { attachMultiplayerRelay };
+
+// Standalone relay-only mode: node server/relay.js [port]
+if (require.main === module) {
+  const http = require('http');
+  const PORT = parseInt(process.argv[2] || process.env.PORT || '8787', 10);
+  const server = http.createServer((_req, res) => {
+    res.writeHead(200, { 'Content-Type': 'text/plain' });
+    res.end('2D Weather Sandbox multiplayer relay\n');
+  });
+  attachMultiplayerRelay(server);
+  server.listen(PORT, () => {
+    console.log('Weather Sandbox relay listening on port ' + PORT);
+  });
+}

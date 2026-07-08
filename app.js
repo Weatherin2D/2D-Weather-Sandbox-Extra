@@ -407,6 +407,176 @@ const saveFileVersionID = 263574038; // Uint32 id — includes airmass generator
 var multiplayerPeerMode = false;
 var multiplayerHostMode = false;
 var multiplayerSimReady = false;
+var multiplayerSnapshotLoadInProgress = false;
+var multiplayerLoadPhase = 'idle';
+var pendingSnapshotBuffer = null;
+var multiplayerHooksRegistered = false;
+var mpGuiControllerMap = new Map();
+
+function asSaveBytes(decompressed)
+{
+  return decompressed instanceof Uint8Array
+    ? decompressed
+    : new Uint8Array(decompressed);
+}
+
+function createSaveBlobAdapter(bytes)
+{
+  return {
+    slice(start, end) {
+      const sub = bytes.subarray(start, end);
+      return {
+        arrayBuffer() {
+          if (sub.byteOffset === 0 && sub.byteLength === sub.buffer.byteLength)
+            return sub.buffer;
+          const copy = new ArrayBuffer(sub.byteLength);
+          new Uint8Array(copy).set(sub);
+          return copy;
+        },
+        text() {
+          return Promise.resolve(new TextDecoder().decode(sub));
+        },
+      };
+    },
+  };
+}
+
+function setMultiplayerLoadPhase(phase)
+{
+  multiplayerLoadPhase = phase;
+  if (window.WeatherMultiplayerUI && window.WeatherMultiplayerUI.updateLoadPhaseStatus)
+    window.WeatherMultiplayerUI.updateLoadPhaseStatus(phase);
+}
+
+function resetMultiplayerLoadState()
+{
+  multiplayerLoadPhase = 'idle';
+  multiplayerSimReady = false;
+  multiplayerSnapshotLoadInProgress = false;
+  pendingSnapshotBuffer = null;
+}
+
+async function markMultiplayerLoadReady()
+{
+  multiplayerSimReady = true;
+  multiplayerSnapshotLoadInProgress = false;
+  setMultiplayerLoadPhase('ready');
+  const mp = window.WeatherMultiplayer;
+  if (mp && mp.isPeer()) {
+    mp.notifyPeerLoading(false);
+  }
+  if (pendingSnapshotBuffer) {
+    const buf = pendingSnapshotBuffer;
+    pendingSnapshotBuffer = null;
+    await window.loadSnapshotFromNetwork(buf);
+  }
+}
+
+async function applySnapshotFromBuffer(arrayBuffer, inPlaceApplyFn)
+{
+  let buf = arrayBuffer;
+  if (arrayBuffer instanceof Uint8Array)
+    buf = arrayBuffer.buffer.slice(arrayBuffer.byteOffset, arrayBuffer.byteOffset + arrayBuffer.byteLength);
+
+  const version = new Uint32Array(buf, 0, 1)[0];
+  const compressed = new Uint8Array(buf, 4);
+  const decompressed = window.pako.inflate(compressed);
+  await loadSnapshotFromDecompressed(decompressed, version, inPlaceApplyFn);
+}
+
+function peerCanUseTool(tool)
+{
+  if (!multiplayerPeerMode || !window.WeatherMultiplayer || !window.WeatherMpProtocol)
+    return true;
+  const perms = window.WeatherMultiplayer.getMyPermissions();
+  const proto = window.WeatherMpProtocol;
+  if (proto.isPaintTool(tool) && !perms.paint) return false;
+  if (proto.isPlacementTool(tool) && !perms.place) return false;
+  if (proto.isNukeTool(tool) && !perms.nuke) return false;
+  return true;
+}
+
+window.setGuiTool = function(tool)
+{
+  if (!peerCanUseTool(tool)) {
+    if (window.WeatherMultiplayerUI && window.WeatherMpProtocol) {
+      const proto = window.WeatherMpProtocol;
+      let msg = 'Action not allowed';
+      if (proto.isPaintTool(tool)) msg = 'Painting is disabled for your account';
+      else if (proto.isPlacementTool(tool)) msg = 'Placing objects is disabled for your account';
+      else if (proto.isNukeTool(tool)) msg = 'Nukes are disabled for your account';
+      window.WeatherMultiplayerUI.setStatus(msg, true);
+    }
+    return false;
+  }
+  guiControls.tool = tool;
+  return true;
+};
+
+function applyPeerDatGuiLock(allowed)
+{
+  if (!datGui || !datGui.domElement) return;
+  if (allowed) {
+    datGui.domElement.style.pointerEvents = '';
+    datGui.domElement.style.opacity = '';
+  } else {
+    datGui.domElement.style.pointerEvents = 'none';
+    datGui.domElement.style.opacity = '0.45';
+  }
+}
+
+function syncPeerPermissionControls(perms)
+{
+  if (!multiplayerPeerMode || !perms) return;
+  applyPeerDatGuiLock(!!perms.settings);
+  const pausedEntry = mpGuiControllerMap.get('paused');
+  if (pausedEntry && pausedEntry.controller && pausedEntry.controller.domElement) {
+    const el = pausedEntry.controller.domElement;
+    if (!perms.pause) {
+      el.style.pointerEvents = 'none';
+      el.style.opacity = '0.45';
+    } else {
+      el.style.pointerEvents = '';
+      el.style.opacity = '';
+    }
+  }
+}
+
+function releasePeerBrushIfNeeded(perms)
+{
+  if (!multiplayerPeerMode || !window.WeatherMultiplayer || !perms || perms.paint) return;
+  if (window.releasePeerBrushIfNeeded)
+    window.releasePeerBrushIfNeeded(perms);
+}
+
+window.enforceMultiplayerGuardrails = function()
+{
+  if (!multiplayerHostMode && !multiplayerPeerMode) return;
+  if (!guiControls) return;
+  guiControls.realtimeMode = false;
+  guiControls.auto_IterPerFrame = false;
+  if (multiplayerHostMode || multiplayerPeerMode) {
+    if (guiControls.IterPerFrame > 8)
+      guiControls.IterPerFrame = 8;
+  } else if (guiControls.IterPerFrame > 20) {
+    guiControls.IterPerFrame = 10;
+  }
+  if (multiplayerPeerMode && window.WeatherMultiplayer && window.WeatherMpProtocol) {
+    const perms = window.WeatherMultiplayer.getMyPermissions();
+    const proto = window.WeatherMpProtocol;
+    const tool = guiControls.tool;
+    if (!perms.paint && proto.isPaintTool(tool))
+      guiControls.tool = 'TOOL_NONE';
+    if (!perms.place && proto.isPlacementTool(tool))
+      guiControls.tool = 'TOOL_NONE';
+    if (!perms.nuke && proto.isNukeTool(tool))
+      guiControls.tool = 'TOOL_NONE';
+    releasePeerBrushIfNeeded(perms);
+    syncPeerPermissionControls(perms);
+  }
+  if ((multiplayerHostMode || multiplayerPeerMode) && airplaneMode)
+    airplaneMode = false;
+};
 
 const guiControls_default = {
   vorticity : 0.005,
@@ -5391,12 +5561,14 @@ async function loadNewFormatSettings(dataBlob, sliceStart, totalBytes, fileVersi
 
 async function loadSnapshotFromDecompressed(decompressed, version, inPlaceApplyFn)
 {
-  const dataBlob = new Blob([ decompressed ]);
+  const bytes = asSaveBytes(decompressed);
+  const totalBytes = bytes.byteLength;
+  const byteOffset = bytes.byteOffset;
+  const buffer = bytes.buffer;
   let sliceStart = 0;
   let sliceEnd = 4;
 
-  let resBuf = await dataBlob.slice(sliceStart, sliceEnd).arrayBuffer();
-  let resArray = new Uint16Array(resBuf);
+  const resArray = new Uint16Array(buffer, byteOffset + sliceStart, 2);
   sim_res_x = resArray[0];
   sim_res_y = resArray[1];
 
@@ -5408,28 +5580,29 @@ async function loadSnapshotFromDecompressed(decompressed, version, inPlaceApplyF
     NUM_DROPLETS = Math.floor(NUM_DROPLETS * 0.5);
   NUM_DROPLETS = Math.min(NUM_DROPLETS, 120000);
 
+  const cellCount = sim_res_x * sim_res_y;
   sliceStart = sliceEnd;
-  sliceEnd += sim_res_x * sim_res_y * 4 * 4;
-  let baseTexF32 = new Float32Array(await dataBlob.slice(sliceStart, sliceEnd).arrayBuffer());
+  sliceEnd += cellCount * 16;
+  let baseTexF32 = new Float32Array(buffer, byteOffset + sliceStart, cellCount * 4);
 
   sliceStart = sliceEnd;
-  sliceEnd += sim_res_x * sim_res_y * 4 * 4;
-  let waterTexF32 = new Float32Array(await dataBlob.slice(sliceStart, sliceEnd).arrayBuffer());
+  sliceEnd += cellCount * 16;
+  let waterTexF32 = new Float32Array(buffer, byteOffset + sliceStart, cellCount * 4);
 
   sliceStart = sliceEnd;
-  sliceEnd += sim_res_x * sim_res_y * 4 * 1;
-  let wallTexI8 = new Int8Array(await dataBlob.slice(sliceStart, sliceEnd).arrayBuffer());
+  sliceEnd += cellCount * 4;
+  let wallTexI8 = new Int8Array(buffer, byteOffset + sliceStart, cellCount * 4);
 
   let precipArray = null;
   if (version == saveFileVersionID || version == 263574037) {
     sliceStart = sliceEnd;
     sliceEnd += Uint32Array.BYTES_PER_ELEMENT;
-    let savedNumDroplets = new Uint32Array(await dataBlob.slice(sliceStart, sliceEnd).arrayBuffer())[0];
+    let savedNumDroplets = new Uint32Array(buffer, byteOffset + sliceStart, 1)[0];
     NUM_DROPLETS = savedNumDroplets;
 
     sliceStart = sliceEnd;
     sliceEnd += NUM_DROPLETS * Float32Array.BYTES_PER_ELEMENT * 5;
-    precipArray = new Float32Array(await dataBlob.slice(sliceStart, sliceEnd).arrayBuffer());
+    precipArray = new Float32Array(buffer, byteOffset + sliceStart, NUM_DROPLETS * 5);
   }
 
   guiControlsFromSaveFile = null;
@@ -5440,17 +5613,17 @@ async function loadSnapshotFromDecompressed(decompressed, version, inPlaceApplyF
   airmassGenerators = [];
 
   if (version == saveFileVersionID || version == 263574037) {
-    const totalBytes = decompressed.byteLength;
     sliceStart = sliceEnd;
+    const dataBlob = createSaveBlobAdapter(bytes);
 
     sliceEnd = sliceStart + Int16Array.BYTES_PER_ELEMENT;
     if (sliceStart < totalBytes) {
-      let numWeatherStations = new Int16Array(await dataBlob.slice(sliceStart, sliceEnd).arrayBuffer())[0];
+      let numWeatherStations = new Int16Array(buffer, byteOffset + sliceStart, 1)[0];
       sliceStart = sliceEnd;
       if (numWeatherStations > 0 && numWeatherStations < 10000) {
         sliceEnd = sliceStart + numWeatherStations * 2 * Int16Array.BYTES_PER_ELEMENT;
         if (sliceEnd <= totalBytes) {
-          let weatherStationArray = new Int16Array(await dataBlob.slice(sliceStart, sliceEnd).arrayBuffer());
+          let weatherStationArray = new Int16Array(buffer, byteOffset + sliceStart, numWeatherStations * 2);
           for (let i = 0; i < Math.floor(weatherStationArray.length / 2); i++)
             weatherStations.push(new Weatherstation(weatherStationArray[i * 2], weatherStationArray[i * 2 + 1]));
         }
@@ -5480,39 +5653,77 @@ async function loadSnapshotFromDecompressed(decompressed, version, inPlaceApplyF
 window.loadSnapshotFromNetwork = async function(arrayBuffer)
 {
   const mp = window.WeatherMultiplayer;
-  const isFirstLoad = !multiplayerSimReady;
+
+  if (multiplayerLoadPhase === 'parsing' || multiplayerLoadPhase === 'initializing') {
+    pendingSnapshotBuffer = arrayBuffer;
+    return;
+  }
+
+  if (multiplayerLoadPhase === 'ready' && multiplayerSimReady && window.__applySnapshotInPlace) {
+    try {
+      await applySnapshotFromBuffer(arrayBuffer, window.__applySnapshotInPlace);
+      if (window.refreshMultiplayerEntityOverlays)
+        window.refreshMultiplayerEntityOverlays();
+      if (window.WeatherMultiplayerUI)
+        window.WeatherMultiplayerUI.setStatus('Snapshot synced');
+    } catch (e) {
+      console.error('Failed to apply network snapshot', e);
+      if (window.WeatherMultiplayerUI)
+        window.WeatherMultiplayerUI.setStatus('Snapshot sync failed: ' + e.message, true);
+    }
+    return;
+  }
+
+  if (multiplayerSnapshotLoadInProgress) {
+    pendingSnapshotBuffer = arrayBuffer;
+    return;
+  }
+
+  if (multiplayerLoadPhase !== 'idle') {
+    pendingSnapshotBuffer = arrayBuffer;
+    return;
+  }
+
+  multiplayerSnapshotLoadInProgress = true;
+  multiplayerPeerMode = true;
   try {
     if (mp && mp.isPeer()) {
       mp.notifyPeerLoading(true);
-      if (window.WeatherMultiplayerUI)
-        window.WeatherMultiplayerUI.setStatus('Downloading world — loading shaders…');
+      setMultiplayerLoadPhase('parsing');
     }
 
-    const version = new Uint32Array(arrayBuffer, 0, 1)[0];
-    const compressed = new Uint8Array(arrayBuffer, 4);
+    await setLoadingBar();
+    if (loadingBar)
+      await loadingBar.set(5, 'Decompressing world…');
+
+    let buf = arrayBuffer;
+    if (arrayBuffer instanceof Uint8Array)
+      buf = arrayBuffer.buffer.slice(arrayBuffer.byteOffset, arrayBuffer.byteOffset + arrayBuffer.byteLength);
+    const version = new Uint32Array(buf, 0, 1)[0];
+    const compressed = new Uint8Array(buf, 4);
     const decompressed = window.pako.inflate(compressed);
 
-    if (multiplayerSimReady && window.__applySnapshotInPlace) {
-      await loadSnapshotFromDecompressed(decompressed, version, window.__applySnapshotInPlace);
-      if (window.WeatherMultiplayerUI)
-        window.WeatherMultiplayerUI.setStatus('Snapshot synced');
-    } else {
-      multiplayerPeerMode = true;
-      await loadSnapshotFromDecompressed(decompressed, version, null);
-      if (window.WeatherMultiplayerUI)
-        window.WeatherMultiplayerUI.setStatus('Loaded host simulation');
-    }
+    if (loadingBar)
+      await loadingBar.set(8, 'Parsing textures…');
+
+    setMultiplayerLoadPhase('initializing');
+    await loadSnapshotFromDecompressed(decompressed, version, null);
+    await markMultiplayerLoadReady();
   } catch (e) {
     console.error('Failed to load network snapshot', e);
-    if (window.WeatherMultiplayerUI)
-      window.WeatherMultiplayerUI.setStatus('Snapshot load failed: ' + e.message, true);
-  } finally {
-    if (mp && mp.isPeer()) {
+    resetMultiplayerLoadState();
+    if (mp && mp.isPeer())
       mp.notifyPeerLoading(false);
-      if (isFirstLoad && multiplayerPeerMode && (!mp.connected || mp.role === 'none')) {
-        const ok = await mp.reconnectAsPeer();
-        if (ok) mp.requestSnapshot();
-      }
+    let errMsg = e && e.message ? e.message : String(e);
+    if (/allocation|memory|oom|array buffer/i.test(errMsg))
+      errMsg = 'Out of memory — world may be too large for this device';
+    if (window.WeatherMultiplayerUI)
+      window.WeatherMultiplayerUI.setStatus('Snapshot load failed: ' + errMsg, true);
+  } finally {
+    if (mp && mp.isPeer() && multiplayerLoadPhase !== 'ready'
+        && multiplayerPeerMode && (!mp.connected || mp.role === 'none')) {
+      const ok = await mp.reconnectAsPeer();
+      if (ok) mp.requestSnapshot();
     }
   }
 };
@@ -5520,6 +5731,14 @@ window.loadSnapshotFromNetwork = async function(arrayBuffer)
 
 window.loadData = async function()
 {
+  if (multiplayerPeerMode && multiplayerLoadPhase !== 'idle' && multiplayerLoadPhase !== 'ready') {
+    if (window.WeatherMultiplayerUI)
+      window.WeatherMultiplayerUI.setStatus('Still loading host world — please wait', true);
+    const fileInput = document.getElementById('fileInput');
+    if (fileInput) fileInput.value = '';
+    return;
+  }
+
   let file = document.getElementById('fileInput').files[0];
 
   if (file) {                                                    // load data from save file
@@ -5529,6 +5748,10 @@ window.loadData = async function()
     skewTTrackedBalloon = null;
     radars = [];
     airmassGenerators = [];
+
+    await setLoadingBar();
+    if (loadingBar)
+      await loadingBar.set(5, 'Decompressing save…');
 
     let versionBlob = file.slice(0, 4);                          // extract first 4 bytes containing version id
     let versionBuf = await versionBlob.arrayBuffer();
@@ -5544,22 +5767,28 @@ window.loadData = async function()
       } catch(e) {
         alert('Failed to decompress save file. The file may be corrupted or from an incompatible version.');
         document.getElementById('fileInput').value = '';
+        if (loadingBar) await loadingBar.remove();
         return;
       }
-      let dataBlob = new Blob([ decompressed ]);
+      const bytes = asSaveBytes(decompressed);
+      const byteOffset = bytes.byteOffset;
+      const buffer = bytes.buffer;
+      const dataBlob = createSaveBlobAdapter(bytes);
+
+      if (loadingBar)
+        await loadingBar.set(8, 'Parsing textures…');
 
       let sliceStart = 0;
       let sliceEnd = 4;
 
-      let resBlob = dataBlob.slice(sliceStart, sliceEnd);
-      let resBuf = await resBlob.arrayBuffer();
-      resArray = new Uint16Array(resBuf);
+      resArray = new Uint16Array(buffer, byteOffset + sliceStart, 2);
       sim_res_x = resArray[0];
       sim_res_y = resArray[1];
 
       if (!sim_res_x || !sim_res_y || sim_res_x > 16000 || sim_res_y > 10000) {
         alert('Save file has invalid resolution (' + sim_res_x + 'x' + sim_res_y + '). File may be corrupted.');
         document.getElementById('fileInput').value = '';
+        if (loadingBar) await loadingBar.remove();
         return;
       }
 
@@ -5579,64 +5808,53 @@ window.loadData = async function()
       console.log('File versionID: ' + version);
       console.log('sim_res_x: ' + sim_res_x);
       console.log('sim_res_y: ' + sim_res_y);
-      console.log('Total decompressed size:', decompressed.byteLength);
+      console.log('Total decompressed size:', bytes.byteLength);
 
-
+      const cellCount = sim_res_x * sim_res_y;
       sliceStart = sliceEnd;
-      sliceEnd += sim_res_x * sim_res_y * 4 * 4;
+      sliceEnd += cellCount * 16;
       console.log('baseTex slice:', sliceStart, 'to', sliceEnd, 'size:', sliceEnd - sliceStart);
-      let baseTexBlob = dataBlob.slice(sliceStart, sliceEnd);
-      let baseTexBuf = await baseTexBlob.arrayBuffer();
-      let baseTexF32 = new Float32Array(baseTexBuf);
+      let baseTexF32 = new Float32Array(buffer, byteOffset + sliceStart, cellCount * 4);
 
       sliceStart = sliceEnd;
-      sliceEnd += sim_res_x * sim_res_y * 4 * 4; // 4 * float
+      sliceEnd += cellCount * 16;
       console.log('waterTex slice:', sliceStart, 'to', sliceEnd, 'size:', sliceEnd - sliceStart);
-      let waterTexBlob = dataBlob.slice(sliceStart, sliceEnd);
-      let waterTexBuf = await waterTexBlob.arrayBuffer();
-      let waterTexF32 = new Float32Array(waterTexBuf);
+      let waterTexF32 = new Float32Array(buffer, byteOffset + sliceStart, cellCount * 4);
 
       sliceStart = sliceEnd;
-      sliceEnd += sim_res_x * sim_res_y * 4 * 1; // 4 * byte
+      sliceEnd += cellCount * 4;
       console.log('wallTex slice:', sliceStart, 'to', sliceEnd, 'size:', sliceEnd - sliceStart);
-      let wallTexBlob = dataBlob.slice(sliceStart, sliceEnd);
-      let wallTexBuf = await wallTexBlob.arrayBuffer();
-      let wallTexI8 = new Int8Array(wallTexBuf);
+      let wallTexI8 = new Int8Array(buffer, byteOffset + sliceStart, cellCount * 4);
 
       // Read precipitation: format stores droplet count (263574037 and newer)
       if (version == saveFileVersionID || version == 263574037) {
         sliceStart = sliceEnd;
         sliceEnd += 1 * Uint32Array.BYTES_PER_ELEMENT;
-        let numDropletsBlob = dataBlob.slice(sliceStart, sliceEnd);
-        let numDropletsBuf = await numDropletsBlob.arrayBuffer();
-        let savedNumDroplets = new Uint32Array(numDropletsBuf)[0];
+        let savedNumDroplets = new Uint32Array(buffer, byteOffset + sliceStart, 1)[0];
         NUM_DROPLETS = savedNumDroplets;
         console.log('Loaded saved NUM_DROPLETS:', NUM_DROPLETS);
 
         sliceStart = sliceEnd;
         sliceEnd += NUM_DROPLETS * Float32Array.BYTES_PER_ELEMENT * 5;
         console.log('precipArray slice:', sliceStart, 'to', sliceEnd, 'size:', sliceEnd - sliceStart);
-        
-        if (sliceEnd > decompressed.byteLength) {
+
+        if (sliceEnd > bytes.byteLength) {
           console.error('ERROR: precipArray slice extends past end of file!');
           alert('Save file appears to be corrupted.');
           document.getElementById('fileInput').value = '';
+          if (loadingBar) await loadingBar.remove();
           return;
         }
-        
-        let precipArrayBlob = dataBlob.slice(sliceStart, sliceEnd);
-        let precipArrayBuf = await precipArrayBlob.arrayBuffer();
-        precipArray = new Float32Array(precipArrayBuf);
+
+        precipArray = new Float32Array(buffer, byteOffset + sliceStart, NUM_DROPLETS * 5);
         console.log('precipArray actual length:', precipArray.length, 'expected:', NUM_DROPLETS * 5);
       } else if (version == 263574036 || version == 1939327491) {
         // Master / legacy format: precipitation size is derived from resolution (no saved droplet count)
         NUM_DROPLETS = Math.min(NUM_DROPLETS, 120000);
         sliceStart = sliceEnd;
         sliceEnd += NUM_DROPLETS * Float32Array.BYTES_PER_ELEMENT * 5;
-        if (sliceEnd <= decompressed.byteLength) {
-          let precipArrayBlob = dataBlob.slice(sliceStart, sliceEnd);
-          let precipArrayBuf = await precipArrayBlob.arrayBuffer();
-          precipArray = new Float32Array(precipArrayBuf);
+        if (sliceEnd <= bytes.byteLength) {
+          precipArray = new Float32Array(buffer, byteOffset + sliceStart, NUM_DROPLETS * 5);
           console.log('Loaded precipitation from legacy save file (version ' + version + ')');
         } else {
           sliceEnd = sliceStart;
@@ -5649,9 +5867,8 @@ window.loadData = async function()
 
       if (version == saveFileVersionID || version == 263574037) {             // formats with saved droplet count
         console.log('Loading weather stations, radars, and settings for new version');
-        
-        // Helper: safely read a slice — returns null if not enough bytes remain
-        const totalBytes = decompressed.byteLength;
+
+        const totalBytes = bytes.byteLength;
         function safeSlice(start, end) {
           if (start >= totalBytes) return null;
           return dataBlob.slice(start, Math.min(end, totalBytes));
@@ -5719,7 +5936,14 @@ window.loadData = async function()
         console.log('Oldest save format — simulation textures loaded, default settings used');
       }
 
-      mainScript(baseTexF32, waterTexF32, wallTexI8, precipArray);
+      try {
+        await mainScript(baseTexF32, waterTexF32, wallTexI8, precipArray);
+      } catch (e) {
+        console.error('Failed to load save file', e);
+        alert('Failed to load save file: ' + e.message);
+        document.getElementById('fileInput').value = '';
+        if (loadingBar) await loadingBar.remove();
+      }
     } else {
       // wrong id
       alert('Incompatible file!');
@@ -5841,8 +6065,20 @@ class LoadingBar
 function setLoadingBar()
 {
   return new Promise((resolve) => {
+    if (loadingBar) {
+      setTimeout(() => resolve(), 0);
+      return;
+    }
+
+    if (window.WeatherMultiplayerUI && window.WeatherMultiplayerUI.preserveMultiplayerOverlays)
+      window.WeatherMultiplayerUI.preserveMultiplayerOverlays();
+
     var element = document.getElementById('IntroScreen');
-    element.parentNode.removeChild(element); // remove introscreen div
+    if (element && element.parentNode)
+      element.parentNode.removeChild(element);
+
+    if (window.WeatherMultiplayerUI && window.WeatherMultiplayerUI.updateHud)
+      window.WeatherMultiplayerUI.updateHud();
 
     var nav = document.querySelector('.main-nav');
     if (nav) nav.classList.add('sim-running');
@@ -6074,9 +6310,12 @@ async function prepareSounding()
 
 async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initialRainDrops)
 {
+  let hostIterAtLastTextureSync = 0;
+  let lastHostSnapshotBroadcast = 0;
+  let lastHostSyncMetaBroadcast = 0;
 
-
-  await setLoadingBar();
+  if (!loadingBar)
+    await setLoadingBar();
 
   let lastSaveTime = new Date();
   let postProcessingProgram;
@@ -8877,7 +9116,17 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
     advanced_folder.add(guiControls, 'resetSettings').name('Reset all settings');
 
-    datGui.add(guiControls, 'paused').onChange(handlePause).name('Paused').listen();
+    datGui.add(guiControls, 'paused').onChange(function(value) {
+      if (multiplayerPeerMode && window.WeatherMultiplayer) {
+        if (!window.WeatherMultiplayer.getMyPermissions().pause) {
+          guiControls.paused = !value;
+          return;
+        }
+        window.WeatherMultiplayer.emitPause(value);
+        return;
+      }
+      handlePause();
+    }).name('Paused').listen();
     datGui.add(guiControls, 'download').name('Save Simulation to File');
     datGui.add(guiControls, 'openColorScaleEditor').name('Open Color Scale Editor');
     datGui.add(guiControls, 'openKeybindEditor').name('Open Keybind Editor');
@@ -8905,12 +9154,86 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     });
 
     datGui.width = 400;
+    installMultiplayerGuiRelay(datGui);
+  }
+
+  function installMultiplayerGuiRelay(gui)
+  {
+    if (!gui || !window.WeatherMpProtocol) return;
+    const proto = window.WeatherMpProtocol;
+
+    function walkFolder(folder)
+    {
+      if (!folder) return;
+      if (folder.__controllers) {
+        for (const controller of folder.__controllers)
+          wrapController(controller);
+      }
+      if (folder.__folders) {
+        const subs = Array.isArray(folder.__folders)
+          ? folder.__folders
+          : Object.values(folder.__folders);
+        for (const sub of subs)
+          walkFolder(sub);
+      }
+    }
+
+    function wrapController(controller)
+    {
+      if (!controller || !controller.property) return;
+      const property = controller.property;
+      const origOnChange = controller.__onChange;
+      mpGuiControllerMap.set(property, { controller, origOnChange });
+
+      if (property === 'paused' || typeof guiControls[property] === 'function')
+        return;
+
+      controller.onChange(function(value) {
+        if (multiplayerPeerMode && window.WeatherMultiplayer && !proto.isLocalPeerGuiKey(property)) {
+          if (window.WeatherMultiplayer.getMyPermissions().settings)
+            window.WeatherMultiplayer.emitGuiChange(property, value);
+          return;
+        }
+        if (origOnChange)
+          origOnChange.call(this, value);
+      });
+    }
+
+    walkFolder(gui);
+  }
+
+  function applyRemoteGuiChange(key, value)
+  {
+    if (!guiControls || key == null) return;
+    guiControls[key] = value;
+    const entry = mpGuiControllerMap.get(key);
+    if (entry) {
+      entry.controller.setValue(value);
+      if (entry.origOnChange)
+        entry.origOnChange.call(entry.controller, value);
+    }
+    if (typeof datGui !== 'undefined' && datGui && datGui.updateDisplay)
+      datGui.updateDisplay();
   }
 
   // guiControls.paused = true; // pause before first iteration for debugging
 
   await loadingBar.set(3, 'Initializing Sounding Graph');
   // END OF GUI
+
+  function buildHostSyncMeta(simStarted)
+  {
+    return {
+      simStarted: !!simStarted,
+      iterNum,
+      paused: guiControls.paused,
+      timeOfDay: guiControls.timeOfDay,
+      month: guiControls.month,
+      sunAngle: guiControls.sunAngle,
+      simDateTimeMs: simDateTime ? simDateTime.getTime() : 0,
+      dayNightCycle: guiControls.dayNightCycle,
+    };
+  }
 
   window.startSimulation = function()
   {
@@ -8930,6 +9253,11 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         gl.uniform1f(postProc_bloomStrength_loc, guiControls.bloomStrength ?? 1.0);
     }
     datGui.show(); // unhide
+
+    if (multiplayerHostMode && window.WeatherMultiplayerUI) {
+      window.WeatherMultiplayerUI.preserveMultiplayerOverlays();
+      window.WeatherMultiplayerUI.updateHud();
+    }
 
     clockEl = document.createElement('div');
     document.body.appendChild(clockEl);
@@ -8964,19 +9292,12 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     if (guiControls.realtimeMode)
       enableRealtimeMode();
 
-    enforceMultiplayerGuardrails();
+    window.enforceMultiplayerGuardrails();
     if (multiplayerHostMode && window.WeatherMultiplayer && window.WeatherMultiplayer.isHost()) {
       const mp = window.WeatherMultiplayer;
-      mp.broadcastSyncMeta({
-        simStarted: true,
-        iterNum,
-        sim_res_x,
-        sim_res_y,
-        sim_height: guiControls.simHeight,
-      });
-      const peers = (mp.players || []).filter((p) => !p.isHost);
-      for (const peer of peers)
-        setTimeout(() => mp.sendSnapshotTo(peer.id), 100);
+      hostIterAtLastTextureSync = iterNum;
+      mp.broadcastSyncMeta(buildHostSyncMeta(true));
+      setTimeout(() => mp.broadcastSnapshotToAll(), 100);
     }
   }
 
@@ -14193,7 +14514,19 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
 
   const KEYBIND_DEFINITIONS = [
     { id: 'pause', name: 'Toggle pause', category: 'Simulation', defaultCode: 'Space',
-      onDown() { guiControls.paused = !guiControls.paused; handlePause(); } },
+      onDown() {
+        if (multiplayerPeerMode && window.WeatherMultiplayer && !window.WeatherMultiplayer.getMyPermissions().pause) {
+          if (window.WeatherMultiplayerUI)
+            window.WeatherMultiplayerUI.setStatus('Pause is disabled for your account', true);
+          return;
+        }
+        if (multiplayerPeerMode && window.WeatherMultiplayer) {
+          window.WeatherMultiplayer.emitPause(!guiControls.paused);
+          return;
+        }
+        guiControls.paused = !guiControls.paused;
+        handlePause();
+      } },
     { id: 'showDrops', name: 'Toggle precipitation drops', category: 'Simulation', defaultCode: 'KeyD',
       onDown() { guiControls.showDrops = !guiControls.showDrops; } },
     { id: 'brushResizeHold', name: 'Hold to resize brush with scroll', category: 'Tools', defaultCode: 'KeyB',
@@ -14297,45 +14630,45 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         }
       } },
     { id: 'toolTemperature', name: 'Tool: temperature', category: 'Tools', defaultCode: 'KeyQ',
-      onDown() { guiControls.tool = 'TOOL_TEMPERATURE'; } },
+      onDown() { setGuiTool('TOOL_TEMPERATURE'); } },
     { id: 'toolWater', name: 'Tool: water', category: 'Tools', defaultCode: 'KeyW',
-      onDown() { guiControls.tool = 'TOOL_WATER'; } },
+      onDown() { setGuiTool('TOOL_WATER'); } },
     { id: 'toolWallLand', name: 'Tool: land wall', category: 'Tools', defaultCode: 'KeyE',
-      onDown() { guiControls.tool = 'TOOL_WALL_LAND'; } },
+      onDown() { setGuiTool('TOOL_WALL_LAND'); } },
     { id: 'toolWallFresh', name: 'Tool: fresh water / lake', category: 'Tools', defaultCode: 'KeyR',
-      onDown() { guiControls.tool = 'TOOL_WALL_FRESH'; } },
+      onDown() { setGuiTool('TOOL_WALL_FRESH'); } },
     { id: 'toolWallSea', name: 'Tool: salt water / ocean', category: 'Tools',
-      onDown() { guiControls.tool = 'TOOL_WALL_SEA'; } },
+      onDown() { setGuiTool('TOOL_WALL_SEA'); } },
     { id: 'toolWallIceSheet', name: 'Tool: ice sheet', category: 'Tools',
-      onDown() { guiControls.tool = 'TOOL_WALL_ICE_SHEET'; } },
+      onDown() { setGuiTool('TOOL_WALL_ICE_SHEET'); } },
     { id: 'toolWallIceCap', name: 'Tool: ice cap / glacier', category: 'Tools',
-      onDown() { guiControls.tool = 'TOOL_WALL_ICE_CAP'; } },
+      onDown() { setGuiTool('TOOL_WALL_ICE_CAP'); } },
     { id: 'toolWallFire', name: 'Tool: fire wall', category: 'Tools', defaultCode: 'KeyT',
-      onDown() { guiControls.tool = 'TOOL_WALL_FIRE'; } },
+      onDown() { setGuiTool('TOOL_WALL_FIRE'); } },
     { id: 'toolSmoke', name: 'Tool: smoke', category: 'Tools', defaultCode: 'KeyY',
-      onDown() { guiControls.tool = 'TOOL_SMOKE'; } },
+      onDown() { setGuiTool('TOOL_SMOKE'); } },
     { id: 'toolWallMoist', name: 'Tool: moist wall', category: 'Tools', defaultCode: 'KeyU',
-      onDown() { guiControls.tool = 'TOOL_WALL_MOIST'; } },
+      onDown() { setGuiTool('TOOL_WALL_MOIST'); } },
     { id: 'toolVegGrass', name: 'Tool: grass / shrub', category: 'Tools', defaultCode: 'KeyI',
-      onDown() { guiControls.tool = 'TOOL_VEG_GRASS'; } },
+      onDown() { setGuiTool('TOOL_VEG_GRASS'); } },
     { id: 'toolVegForest', name: 'Tool: forest', category: 'Tools', defaultCode: null,
-      onDown() { guiControls.tool = 'TOOL_VEG_FOREST'; } },
+      onDown() { setGuiTool('TOOL_VEG_FOREST'); } },
     { id: 'toolWallSnow', name: 'Tool: snow wall', category: 'Tools', defaultCode: 'KeyO',
-      onDown() { guiControls.tool = 'TOOL_WALL_SNOW'; } },
+      onDown() { setGuiTool('TOOL_WALL_SNOW'); } },
     { id: 'toolWind', name: 'Tool: wind', category: 'Tools', defaultCode: 'KeyP',
-      onDown() { guiControls.tool = 'TOOL_WIND'; } },
+      onDown() { setGuiTool('TOOL_WIND'); } },
     { id: 'toolCharge', name: 'Tool: charge', category: 'Tools', defaultCode: 'Semicolon',
-      onDown() { guiControls.tool = 'TOOL_CHARGE'; } },
+      onDown() { setGuiTool('TOOL_CHARGE'); } },
     { id: 'toggleInvertTool', name: 'Toggle invert tool (charge direction)', category: 'Tools', defaultCode: 'Quote',
       onDown() { guiControls.invertTool = !guiControls.invertTool; } },
     { id: 'toolWallUrban', name: 'Tool: urban wall', category: 'Tools', defaultCode: 'BracketLeft',
-      onDown() { guiControls.tool = 'TOOL_WALL_URBAN'; } },
+      onDown() { setGuiTool('TOOL_WALL_URBAN'); } },
     { id: 'toolWallSuburban', name: 'Tool: suburban wall', category: 'Tools', defaultCode: 'KeyH',
-      onDown() { guiControls.tool = 'TOOL_WALL_SUBURBAN'; } },
+      onDown() { setGuiTool('TOOL_WALL_SUBURBAN'); } },
     { id: 'toolWallRunway', name: 'Tool: runway wall', category: 'Tools', defaultCode: 'BracketRight',
-      onDown() { guiControls.tool = 'TOOL_WALL_RUNWAY'; } },
+      onDown() { setGuiTool('TOOL_WALL_RUNWAY'); } },
     { id: 'toolWallIndustrial', name: 'Tool: industrial wall', category: 'Tools', defaultCode: 'Backslash',
-      onDown() { guiControls.tool = 'TOOL_WALL_INDUSTRIAL'; } },
+      onDown() { setGuiTool('TOOL_WALL_INDUSTRIAL'); } },
     { id: 'periodAction', name: 'Radar display / airplane brakes', category: 'Airplane', defaultCode: 'Period',
       onDown() {
         if (airplaneMode)
@@ -14346,21 +14679,21 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       onUp() { airplane.setBrakes(false); } },
     { id: 'toolStation', name: 'Tool: weather station', category: 'Tools', defaultCode: 'KeyM',
       onDown() {
-        guiControls.tool = 'TOOL_STATION';
+        if (!setGuiTool('TOOL_STATION')) return;
         displayWeatherStations = true;
         for (let i = 0; i < weatherStations.length; i++)
           weatherStations[i].setHidden(false);
       } },
     { id: 'toolBalloon', name: 'Tool: weather balloon', category: 'Tools', defaultCode: null,
       onDown() {
-        guiControls.tool = 'TOOL_BALLOON';
+        if (!setGuiTool('TOOL_BALLOON')) return;
         displayWeatherBalloons = true;
         guiControls.displayWeatherBalloons = true;
         for (let i = 0; i < weatherBalloons.length; i++)
           weatherBalloons[i].setHidden(false);
       } },
     { id: 'toolMarker', name: 'Tool: marker', category: 'Tools', defaultCode: 'KeyN',
-      onDown() { guiControls.tool = 'TOOL_MARKER'; } },
+      onDown() { setGuiTool('TOOL_MARKER'); } },
     { id: 'reloadSimulation', name: 'Reload simulation', category: 'Simulation', defaultCode: 'KeyL',
       onDown() {
         if (new Date() - lastSaveTime > 120000)
@@ -14382,6 +14715,11 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       onDown() { guiControls.auto_IterPerFrame = false; guiControls.IterPerFrame = 1; } },
     { id: 'toggleGui', name: 'Show / hide settings GUI', category: 'Graph & UI', defaultCode: 'KeyH',
       onDown() {
+        if (multiplayerPeerMode && window.WeatherMultiplayer && !window.WeatherMultiplayer.getMyPermissions().settings) {
+          if (window.WeatherMultiplayerUI)
+            window.WeatherMultiplayerUI.setStatus('Settings panel is disabled for your account', true);
+          return;
+        }
         if (typeof dat !== 'undefined' && dat.GUI && dat.GUI.toggleHide)
           dat.GUI.toggleHide();
       } },
@@ -14401,11 +14739,11 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     { id: 'airplaneToggleEngine', name: 'Toggle airplane engine', category: 'Airplane', defaultCode: null,
       onDown() { airplane.toggleEngine(); } },
     { id: 'toolRadar', name: 'Tool: radar tower', category: 'Tools', defaultCode: null,
-      onDown() { guiControls.tool = 'TOOL_RADAR'; } },
+      onDown() { setGuiTool('TOOL_RADAR'); } },
     { id: 'toolAirmass', name: 'Tool: airmass generator', category: 'Tools', defaultCode: null,
-      onDown() { guiControls.tool = 'TOOL_AIRMASS'; } },
+      onDown() { setGuiTool('TOOL_AIRMASS'); } },
     { id: 'toolNuke', name: 'Tool: nuke', category: 'Tools', defaultCode: null,
-      onDown() { guiControls.tool = 'TOOL_NUKE'; } },
+      onDown() { setGuiTool('TOOL_NUKE'); } },
     { id: 'displayPrecipVapor', name: 'Precipitation vapor feedback display', category: 'Display', defaultCode: null,
       onDown() { guiControls.displayMode = 'DISP_PRECIPFEEDBACK_VAPOR'; } },
     { id: 'displayPrecipRain', name: 'Rain deposition display', category: 'Display', defaultCode: null,
@@ -14948,11 +15286,13 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       if (SETUP_MODE) {
         startSimulation();
       } else if (multiplayerPeerMode && window.WeatherMpProtocol && window.WeatherMpProtocol.isPlacementTool(guiControls.tool)) {
-        window.WeatherMultiplayer.emitPlace({
-          tool: guiControls.tool,
-          x: mouseXinSim,
-          y: mouseYinSim,
-        });
+        if (window.WeatherMultiplayer) {
+          window.WeatherMultiplayer.emitPlace({
+            tool: guiControls.tool,
+            x: mouseXinSim,
+            y: mouseYinSim,
+          });
+        }
       } else if (guiControls.tool == 'TOOL_STATION') {
         let simXpos = Math.floor(mouseXinSim * sim_res_x);
         let simYpos = findSimYposAboveSurfaceAtMouseX();
@@ -14991,21 +15331,12 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         if (simXpos >= 0 && simXpos < sim_res_x)
           markers.push(new Marker(simXpos, simYpos)); // add marker
       } else if (guiControls.tool == 'TOOL_NUKE') {
-        if (multiplayerPeerMode) return;
-        let simXpos = Math.floor(mouseXinSim * sim_res_x);
-        let cursorYpos = Math.floor(mouseYinSim * sim_res_y);
-        let surfaceYpos = findSimYposAboveSurfaceAtMouseX();
-        let startYpos;
-
-        if (surfaceYpos !== undefined) {
-          startYpos = Math.min(cursorYpos, surfaceYpos - 5);
-          startYpos = Math.max(0, startYpos);
-        } else {
-          startYpos = Math.max(0, cursorYpos);
+        if (multiplayerPeerMode) {
+          if (window.WeatherMultiplayer)
+            window.WeatherMultiplayer.emitNuke(mouseXinSim, mouseYinSim);
+          return;
         }
-
-        if (simXpos >= 0 && simXpos < sim_res_x)
-          nukes.push(new Nuke(simXpos, startYpos)); // add nuke
+        spawnNukeAtSim(mouseXinSim, mouseYinSim);
       }
     } else if (e.button == 1) {
       // middle mouse button
@@ -16058,6 +16389,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   const lightTexture_0 = gl.createTexture();
   const lightTexture_1 = gl.createTexture();
   let latestLightTexture = lightTexture_0;
+  let latestChargeTexture = chargeTexture_0;
   const precipitationFeedbackTexture = gl.createTexture();
   const precipitationDepositionTexture = gl.createTexture();
   const lightningDataTexture = gl.createTexture();
@@ -18833,7 +19165,6 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   }
 
   await loadingBar.set(95, 'Loading sounds'); // loading complete
-  await loadingBar.remove();
   if (typeof stopMenuBackgroundSlideshow === 'function') {
     stopMenuBackgroundSlideshow();
   }
@@ -19110,6 +19441,13 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   setInterval(calcFps, 1000); // log fps
   initMultiplayerIntegration();
   requestAnimationFrame(draw);
+  await new Promise((resolve) => {
+    requestAnimationFrame(() => requestAnimationFrame(resolve));
+  });
+  if (loadingBar) {
+    await loadingBar.set(100, 'Ready');
+    await loadingBar.remove();
+  }
 
   function onUpdateTimeOfDaySlider()
   {
@@ -19209,6 +19547,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     else
       clockEl.innerHTML = '';
   }
+  window.updateSunlight = updateSunlight;
 
   function isRadarDisplayMode(mode)
   {
@@ -20687,6 +21026,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       proceduralLightningState.strikes = buildProceduralStrikesForEvent(active.eventId, active.channel);
       proceduralLightningState.flashStartMs = performance.now();
       proceduralLightningState.frozenVisualAge = null;
+      broadcastHostLightningFlash(active.eventId, active.channel, proceduralLightningState.strikes);
 
       for (let s = 0; s < proceduralLightningState.strikes.length; s++) {
         const st = proceduralLightningState.strikes[s];
@@ -21453,20 +21793,28 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   }
 
   const remoteActiveBrushes = new Map();
-  let lastHostSnapshotBroadcast = 0;
-  const HOST_SNAPSHOT_INTERVAL_MS = 12000;
+  const HOST_FULL_SNAPSHOT_INTERVAL_MS = 60000;
+  const HOST_SYNC_META_INTERVAL_MS = 200;
+  const HOST_TEXTURE_SYNC_ITER_DELTA = 24;
 
-  window.enforceMultiplayerGuardrails = function()
+  window.refreshMultiplayerEntityOverlays = function()
   {
-    if (!multiplayerHostMode && !multiplayerPeerMode) return;
-    guiControls.realtimeMode = false;
-    guiControls.auto_IterPerFrame = false;
-    if (guiControls.IterPerFrame > 20)
-      guiControls.IterPerFrame = 10;
-    if (multiplayerPeerMode && guiControls.tool === 'TOOL_NUKE')
-      guiControls.tool = 'TOOL_NONE';
-    if ((multiplayerHostMode || multiplayerPeerMode) && airplaneMode)
-      airplaneMode = false;
+    for (let i = 0; i < weatherStations.length; i++) {
+      if (weatherStations[i].updateCanvas)
+        weatherStations[i].updateCanvas();
+    }
+    for (let i = 0; i < radars.length; i++) {
+      if (radars[i].initCacheFBO && typeof gl !== 'undefined')
+        radars[i].initCacheFBO();
+      if (radars[i].updateCanvas)
+        radars[i].updateCanvas();
+    }
+    for (let i = 0; i < weatherBalloons.length; i++) {
+      if (weatherBalloons[i].updateCanvas)
+        weatherBalloons[i].updateCanvas();
+    }
+    if (typeof refreshRadarOverlaySourceDropdown === 'function')
+      refreshRadarOverlaySourceDropdown();
   };
 
   function toolNameToInputType(tool)
@@ -21502,6 +21850,16 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       active: true,
     };
   }
+
+  window.releasePeerBrushIfNeeded = function(perms)
+  {
+    if (!multiplayerPeerMode || !window.WeatherMultiplayer || !perms || perms.paint) return;
+    if (!leftMousePressed) return;
+    const brush = computeBrushFromTool(guiControls.tool, mouseXinSim, mouseYinSim, 0, 0, false);
+    brush.active = false;
+    brush.inputType = -1;
+    window.WeatherMultiplayer.emitBrush(brush);
+  };
 
   function applyBrushInputToGpu(brush)
   {
@@ -21565,6 +21923,24 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       default:
         break;
     }
+  }
+
+  function spawnNukeAtSim(simX, simY)
+  {
+    const simXpos = Math.floor(simX * sim_res_x);
+    const cursorYpos = Math.floor(simY * sim_res_y);
+    const surfaceYpos = findSimYposAboveSurfaceAtX(simXpos);
+    let startYpos;
+
+    if (surfaceYpos !== undefined) {
+      startYpos = Math.min(cursorYpos, surfaceYpos - 5);
+      startYpos = Math.max(0, startYpos);
+    } else {
+      startYpos = Math.max(0, cursorYpos);
+    }
+
+    if (simXpos >= 0 && simXpos < sim_res_x)
+      nukes.push(new Nuke(simXpos, startYpos));
   }
 
   function findSimYposAboveSurfaceAtX(simXpos)
@@ -21639,8 +22015,169 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     let blob = new Blob(saveDataArray);
     let arrBuff = await blob.arrayBuffer();
     let arr = new Uint8Array(arrBuff);
-    let compressed = window.pako.deflate(arr);
+    let compressed = window.pako.deflate(arr, { level: 1 });
     return new Blob([ Uint32Array.of(saveFileVersionID), compressed ], { type: 'application/x-binary' });
+  }
+
+  function buildTextureSyncBuffer()
+  {
+    const cellCount = sim_res_x * sim_res_y;
+    const precipFloatCount = rainDrops.length;
+
+    gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_0);
+    gl.readBuffer(gl.COLOR_ATTACHMENT0);
+    const baseTextureValues = new Float32Array(cellCount * 4);
+    gl.readPixels(0, 0, sim_res_x, sim_res_y, gl.RGBA, gl.FLOAT, baseTextureValues);
+    gl.readBuffer(gl.COLOR_ATTACHMENT1);
+    const waterTextureValues = new Float32Array(cellCount * 4);
+    gl.readPixels(0, 0, sim_res_x, sim_res_y, gl.RGBA, gl.FLOAT, waterTextureValues);
+    gl.readBuffer(gl.COLOR_ATTACHMENT2);
+    const wallTextureValues = new Int8Array(cellCount * 4);
+    gl.readPixels(0, 0, sim_res_x, sim_res_y, gl.RGBA_INTEGER, gl.BYTE, wallTextureValues);
+
+    const precipBufferValues = new Float32Array(precipFloatCount);
+    gl.bindBuffer(gl.ARRAY_BUFFER, precipVertexBuffer_0);
+    gl.getBufferSubData(gl.ARRAY_BUFFER, 0, precipBufferValues);
+    gl.bindBuffer(gl.ARRAY_BUFFER, null);
+
+    const lightFbo = (latestLightTexture === lightTexture_1) ? lightFrameBuff_1 : lightFrameBuff_0;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, lightFbo);
+    gl.readBuffer(gl.COLOR_ATTACHMENT0);
+    const lightTextureValues = new Float32Array(cellCount * 4);
+    gl.readPixels(0, 0, sim_res_x, sim_res_y, gl.RGBA, gl.FLOAT, lightTextureValues);
+    gl.readBuffer(gl.COLOR_ATTACHMENT1);
+    const emittedLightValues = new Float32Array(cellCount * 4);
+    gl.readPixels(0, 0, sim_res_x, sim_res_y, gl.RGBA, gl.FLOAT, emittedLightValues);
+
+    const chargeFbo = (latestChargeTexture === chargeTexture_1) ? chargeFrameBuff_1 : chargeFrameBuff_0;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, chargeFbo);
+    gl.readBuffer(gl.COLOR_ATTACHMENT0);
+    const chargeTextureValues = new Float32Array(cellCount * 4);
+    gl.readPixels(0, 0, sim_res_x, sim_res_y, gl.RGBA, gl.FLOAT, chargeTextureValues);
+
+    const headerBytes = 12;
+    const totalBytes = headerBytes
+      + baseTextureValues.byteLength
+      + waterTextureValues.byteLength
+      + wallTextureValues.byteLength
+      + precipBufferValues.byteLength
+      + lightTextureValues.byteLength
+      + emittedLightValues.byteLength
+      + chargeTextureValues.byteLength;
+    const buf = new ArrayBuffer(totalBytes);
+    const view = new DataView(buf);
+    view.setUint32(0, sim_res_x, true);
+    view.setUint32(4, sim_res_y, true);
+    view.setUint32(8, precipFloatCount, true);
+    let offset = headerBytes;
+    const parts = [
+      baseTextureValues, waterTextureValues, wallTextureValues, precipBufferValues,
+      lightTextureValues, emittedLightValues, chargeTextureValues,
+    ];
+    for (const part of parts) {
+      new Uint8Array(buf, offset, part.byteLength).set(new Uint8Array(part.buffer, part.byteOffset, part.byteLength));
+      offset += part.byteLength;
+    }
+    return buf;
+  }
+
+  function applyTextureSyncFromBuffer(arrayBuffer)
+  {
+    const view = new DataView(arrayBuffer);
+    const resX = view.getUint32(0, true);
+    const resY = view.getUint32(4, true);
+    const precipFloatCount = view.getUint32(8, true);
+    if (!resX || !resY || resX !== sim_res_x || resY !== sim_res_y)
+      throw new Error('Texture sync resolution mismatch');
+    const cellCount = resX * resY;
+    let offset = 12;
+    const readF32 = (n) => {
+      const arr = new Float32Array(arrayBuffer, offset, n);
+      offset += n * 4;
+      return arr;
+    };
+    const readI8 = (n) => {
+      const arr = new Int8Array(arrayBuffer, offset, n);
+      offset += n;
+      return arr;
+    };
+    const baseTexF32 = readF32(cellCount * 4);
+    const waterTexF32 = readF32(cellCount * 4);
+    const wallTexI8 = readI8(cellCount * 4);
+    const precipArray = readF32(precipFloatCount);
+    const lightTexF32 = readF32(cellCount * 4);
+    const emittedTexF32 = readF32(cellCount * 4);
+    const chargeTexF32 = readF32(cellCount * 4);
+    window.__applyTextureSyncInPlace(
+      baseTexF32, waterTexF32, wallTexI8, precipArray, lightTexF32, emittedTexF32, chargeTexF32);
+  }
+
+  window.applyTextureSyncFromNetwork = function(arrayBuffer)
+  {
+    if (multiplayerPeerMode && multiplayerLoadPhase !== 'ready')
+      return;
+    const apply = () => {
+      let buf = arrayBuffer;
+      if (arrayBuffer instanceof Uint8Array)
+        buf = arrayBuffer.buffer.slice(arrayBuffer.byteOffset, arrayBuffer.byteOffset + arrayBuffer.byteLength);
+      applyTextureSyncFromBuffer(buf);
+      if (window.WeatherMultiplayerUI) {
+        window.WeatherMultiplayerUI.setStatus('Texture synced');
+        window.WeatherMultiplayerUI.updateSyncAgeDisplay();
+      }
+    };
+    if (multiplayerPeerMode && typeof requestIdleCallback === 'function')
+      requestIdleCallback(() => apply());
+    else
+      apply();
+  };
+
+  function serializeLightningStrike(strike)
+  {
+    return {
+      originX: strike.originX,
+      originY: strike.originY,
+      destX: strike.destX,
+      destY: strike.destY,
+      ltType: strike.ltType,
+      groundStrike: !!strike.groundStrike,
+      originMag: strike.originMag,
+      seed: strike.seed,
+      flashOnly: !!strike.flashOnly,
+      flashSize: strike.flashSize,
+      brightness: strike.brightness,
+      numReturnStrokes: strike.numReturnStrokes,
+      routePoints: strike.routePoints,
+      branches: strike.branches,
+    };
+  }
+
+  function applyRemoteLightningFlash(msg)
+  {
+    if (!multiplayerPeerMode || !msg || !msg.strikes || !msg.strikes.length) return;
+    proceduralLightningState.trackedEventId = msg.eventId;
+    proceduralLightningState.trackedChannel = msg.channelId ? { id: msg.channelId, salt: 0, freq: () => 1 } : null;
+    proceduralLightningState.eventId = msg.eventId;
+    proceduralLightningState.eventAge = 0;
+    proceduralLightningState.builtEventId = msg.eventId;
+    proceduralLightningState.channelId = msg.channelId || null;
+    proceduralLightningState.strikes = msg.strikes;
+    proceduralLightningState.flashStartMs = msg.flashStartMs || performance.now();
+    proceduralLightningState.frozenVisualAge = null;
+    if (msg.iterNum != null)
+      iterNum = msg.iterNum;
+  }
+
+  function broadcastHostLightningFlash(eventId, channel, strikes)
+  {
+    if (!multiplayerHostMode || !window.WeatherMultiplayer || !window.WeatherMultiplayer.isHost()) return;
+    window.WeatherMultiplayer.emitLightningFlash({
+      eventId,
+      channelId: channel ? channel.id : null,
+      iterNum,
+      flashStartMs: performance.now(),
+      strikes: strikes.map(serializeLightningStrike),
+    });
   }
 
   window.__applySnapshotInPlace = async function(baseTexF32, waterTexF32, wallTexI8, precipArray)
@@ -21664,25 +22201,95 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       gl.bufferData(gl.ARRAY_BUFFER, precipArray, gl.DYNAMIC_DRAW);
       gl.bindBuffer(gl.ARRAY_BUFFER, null);
     }
-    enforceMultiplayerGuardrails();
+    window.enforceMultiplayerGuardrails();
+  };
+
+  window.__applyTextureSyncInPlace = function(
+    baseTexF32, waterTexF32, wallTexI8, precipArray, lightTexF32, emittedTexF32, chargeTexF32)
+  {
+    gl.bindTexture(gl.TEXTURE_2D, baseTexture_0);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, sim_res_x, sim_res_y, 0, gl.RGBA, gl.FLOAT, baseTexF32);
+    gl.bindTexture(gl.TEXTURE_2D, baseTexture_1);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, sim_res_x, sim_res_y, 0, gl.RGBA, gl.FLOAT, baseTexF32);
+    gl.bindTexture(gl.TEXTURE_2D, waterTexture_0);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, sim_res_x, sim_res_y, 0, gl.RGBA, gl.FLOAT, waterTexF32);
+    gl.bindTexture(gl.TEXTURE_2D, waterTexture_1);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, sim_res_x, sim_res_y, 0, gl.RGBA, gl.FLOAT, waterTexF32);
+    gl.bindTexture(gl.TEXTURE_2D, wallTexture_0);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8I, sim_res_x, sim_res_y, 0, gl.RGBA_INTEGER, gl.BYTE, wallTexI8);
+    gl.bindTexture(gl.TEXTURE_2D, wallTexture_1);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8I, sim_res_x, sim_res_y, 0, gl.RGBA_INTEGER, gl.BYTE, wallTexI8);
+    if (precipArray && precipVertexBuffer_0) {
+      gl.bindBuffer(gl.ARRAY_BUFFER, precipVertexBuffer_0);
+      gl.bufferData(gl.ARRAY_BUFFER, precipArray, gl.DYNAMIC_DRAW);
+      gl.bindBuffer(gl.ARRAY_BUFFER, precipVertexBuffer_1);
+      gl.bufferData(gl.ARRAY_BUFFER, precipArray, gl.DYNAMIC_DRAW);
+      gl.bindBuffer(gl.ARRAY_BUFFER, null);
+    }
+    if (lightTexF32) {
+      gl.bindTexture(gl.TEXTURE_2D, lightTexture_0);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, sim_res_x, sim_res_y, 0, gl.RGBA, gl.FLOAT, lightTexF32);
+      gl.bindTexture(gl.TEXTURE_2D, lightTexture_1);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, sim_res_x, sim_res_y, 0, gl.RGBA, gl.FLOAT, lightTexF32);
+      latestLightTexture = lightTexture_1;
+    }
+    if (chargeTexF32) {
+      gl.bindTexture(gl.TEXTURE_2D, chargeTexture_0);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, sim_res_x, sim_res_y, 0, gl.RGBA, gl.FLOAT, chargeTexF32);
+      gl.bindTexture(gl.TEXTURE_2D, chargeTexture_1);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, sim_res_x, sim_res_y, 0, gl.RGBA, gl.FLOAT, chargeTexF32);
+      latestChargeTexture = chargeTexture_1;
+    }
+    if (emittedTexF32 && emittedLightFBO && emittedLightFBO.texture) {
+      gl.bindTexture(gl.TEXTURE_2D, emittedLightFBO.texture);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, sim_res_x, sim_res_y, 0, gl.RGBA, gl.FLOAT, emittedTexF32);
+    }
+    window.enforceMultiplayerGuardrails();
   };
 
   window.onMultiplayerSyncMeta = function(meta)
   {
     if (meta.iterNum != null)
       iterNum = meta.iterNum;
+    if (meta.paused != null && multiplayerPeerMode)
+      guiControls.paused = !!meta.paused;
+    if (multiplayerPeerMode) {
+      if (meta.timeOfDay != null)
+        guiControls.timeOfDay = meta.timeOfDay;
+      if (meta.month != null)
+        guiControls.month = meta.month;
+      if (meta.sunAngle != null)
+        guiControls.sunAngle = meta.sunAngle;
+      if (meta.simDateTimeMs != null && meta.simDateTimeMs > 0)
+        simDateTime = new Date(meta.simDateTimeMs);
+      if (meta.dayNightCycle != null)
+        guiControls.dayNightCycle = !!meta.dayNightCycle;
+      if (typeof updateSunlight === 'function')
+        updateSunlight('MANUAL_ANGLE');
+    }
   };
 
   function initMultiplayerIntegration()
   {
     if (!window.WeatherMultiplayer) return;
+    if (multiplayerHooksRegistered) return;
+    multiplayerHooksRegistered = true;
     window.WeatherMultiplayer.setHooks({
       buildSnapshot: buildSnapshotBlob,
+      buildTextureSync: buildTextureSyncBuffer,
       onSnapshotBinary(buf) {
         window.loadSnapshotFromNetwork(buf);
       },
+      onTextureSyncBinary(buf) {
+        if (window.applyTextureSyncFromNetwork)
+          window.applyTextureSyncFromNetwork(buf);
+      },
       onSyncMeta(meta) {
-        window.onMultiplayerSyncMeta(meta);
+        if (window.onMultiplayerSyncMeta)
+          window.onMultiplayerSyncMeta(meta);
+      },
+      onLightningFlash(msg) {
+        applyRemoteLightningFlash(msg);
       },
       onRemoteBrush(playerId, msg) {
         if (msg.active)
@@ -21692,6 +22299,19 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       },
       onRemotePlace(playerId, msg) {
         applyRemotePlacement(msg);
+      },
+      onRemotePause(playerId, msg) {
+        if (msg.paused == null) return;
+        guiControls.paused = !!msg.paused;
+        handlePause();
+      },
+      onRemoteNuke(playerId, msg) {
+        if (msg.x == null || msg.y == null) return;
+        spawnNukeAtSim(msg.x, msg.y);
+      },
+      onRemoteGuiChange(playerId, msg) {
+        if (msg.key != null)
+          applyRemoteGuiChange(msg.key, msg.value);
       },
       onPlayersChanged(players) {
         if (window.WeatherMultiplayerUI)
@@ -21710,6 +22330,18 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         if (window.WeatherMultiplayerUI)
           window.WeatherMultiplayerUI.setStatus(msg, true);
       },
+      onPermissionsChanged() {
+        if (window.WeatherMultiplayerUI && window.WeatherMultiplayerUI.updateHud)
+          window.WeatherMultiplayerUI.updateHud();
+      },
+      onPermissionsDenied(reason) {
+        if (window.WeatherMultiplayerUI)
+          window.WeatherMultiplayerUI.setStatus(reason || 'Action not allowed', true);
+      },
+      onRoomCodeChanged(code) {
+        if (window.WeatherMultiplayerUI && window.WeatherMultiplayerUI.updateHud)
+          window.WeatherMultiplayerUI.updateHud();
+      },
       getPresence() {
         return {
           x: mouseXinSim,
@@ -21723,11 +22355,10 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         return !SETUP_MODE;
       },
     });
-    multiplayerSimReady = true;
-    if (multiplayerPeerMode && window.WeatherMultiplayer) {
-      window.WeatherMultiplayer.notifyPeerLoading(false);
-      if (window.WeatherMultiplayerUI)
-        window.WeatherMultiplayerUI.setStatus('Connected — synced with host');
+    if (multiplayerHostMode) {
+      multiplayerSimReady = true;
+      if (window.WeatherMultiplayer)
+        setTimeout(() => window.WeatherMultiplayer.broadcastSnapshotToAll(), 100);
     }
   }
 
@@ -21800,7 +22431,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     let camPanSpeed = guiControls.camSpeed;
 
     if (multiplayerHostMode || multiplayerPeerMode)
-      enforceMultiplayerGuardrails();
+      window.enforceMultiplayerGuardrails();
 
     if (window.WeatherMultiplayer && window.WeatherMultiplayer.isActive())
       window.WeatherMultiplayer.tick();
@@ -22065,6 +22696,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
               gl.bindFramebuffer(gl.FRAMEBUFFER, even ? chargeFrameBuff_1 : chargeFrameBuff_0);
               gl.drawBuffers([ gl.COLOR_ATTACHMENT0 ]);
               gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+              latestChargeTexture = even ? chargeTexture_1 : chargeTexture_0;
             }
 
             // calculate vorticity
@@ -23497,11 +24129,21 @@ drawNukeOverlay();
     if (multiplayerHostMode && window.WeatherMultiplayer && window.WeatherMultiplayer.isHost() && !SETUP_MODE) {
       const now = performance.now();
       const mp = window.WeatherMultiplayer;
-      if (now - lastHostSnapshotBroadcast > HOST_SNAPSHOT_INTERVAL_MS && !mp.hasPeersLoading() && !mp._snapshotSending) {
-        lastHostSnapshotBroadcast = now;
-        const peers = (mp.players || []).filter((p) => !p.isHost && !p.loading);
-        for (const peer of peers)
-          mp.sendSnapshotTo(peer.id);
+      if (mp.hasReadyPeers()) {
+        if (now - lastHostSyncMetaBroadcast > HOST_SYNC_META_INTERVAL_MS) {
+          lastHostSyncMetaBroadcast = now;
+          mp.broadcastSyncMeta(buildHostSyncMeta(true));
+        }
+        if (iterNum - hostIterAtLastTextureSync >= HOST_TEXTURE_SYNC_ITER_DELTA
+            && !mp.hasPeersLoading() && !mp._textureSyncSending) {
+          hostIterAtLastTextureSync = iterNum;
+          mp.broadcastTextureSyncToAll();
+        }
+        if (now - lastHostSnapshotBroadcast > HOST_FULL_SNAPSHOT_INTERVAL_MS
+            && !mp.hasPeersLoading() && !mp._snapshotSending) {
+          lastHostSnapshotBroadcast = now;
+          mp.broadcastSnapshotToAll();
+        }
       }
     }
 
