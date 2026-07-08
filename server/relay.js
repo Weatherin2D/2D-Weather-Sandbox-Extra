@@ -280,6 +280,12 @@ function attachMultiplayerRelay(httpServer) {
         return;
       }
 
+      if (msg.type === 'place_apply') {
+        if (String(ws._playerId) !== String(room.hostId)) return;
+        broadcastRoom(roomCode, msg, ws);
+        return;
+      }
+
       if (msg.type === 'permissions_denied') {
         if (String(ws._playerId) !== String(room.hostId)) return;
         if (msg.targetPlayerId)

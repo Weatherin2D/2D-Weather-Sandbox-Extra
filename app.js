@@ -413,6 +413,7 @@ var pendingSnapshotBuffer = null;
 var multiplayerHooksRegistered = false;
 var mpGuiControllerMap = new Map();
 var mpGuiApplyDepth = 0;
+var seenPlacementEventIds = new Set();
 
 function asSaveBytes(decompressed)
 {
@@ -9175,8 +9176,6 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       const entry = mpGuiControllerMap.get(key);
       if (entry) {
         entry.controller.setValue(value);
-        if (entry.origOnChange)
-          entry.origOnChange.call(entry.controller, value);
       } else if (key === 'paused' && typeof handlePause === 'function') {
         handlePause();
       }
@@ -15344,6 +15343,16 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
             y: mouseYinSim,
           });
         }
+      } else if (multiplayerHostMode && window.WeatherMpProtocol && window.WeatherMpProtocol.isPlacementTool(guiControls.tool)) {
+        const placementMsg = {
+          tool: guiControls.tool,
+          x: mouseXinSim,
+          y: mouseYinSim,
+          placementId: createPlacementEventId('host-place'),
+        };
+        applyRemotePlacement(placementMsg);
+        if (window.WeatherMultiplayer && window.WeatherMultiplayer.isHost())
+          window.WeatherMultiplayer.broadcastPlaceApply(placementMsg);
       } else if (guiControls.tool == 'TOOL_STATION') {
         let simXpos = Math.floor(mouseXinSim * sim_res_x);
         let simYpos = findSimYposAboveSurfaceAtMouseX();
@@ -21939,6 +21948,16 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
 
   function applyRemotePlacement(msg)
   {
+    if (msg && msg.placementId) {
+      const placementId = String(msg.placementId);
+      if (seenPlacementEventIds.has(placementId))
+        return;
+      seenPlacementEventIds.add(placementId);
+      if (seenPlacementEventIds.size > 200) {
+        const first = seenPlacementEventIds.values().next();
+        if (!first.done) seenPlacementEventIds.delete(first.value);
+      }
+    }
     const simX = Math.floor(msg.x * sim_res_x);
     const simY = Math.floor(msg.y * sim_res_y);
     if (simX < 0 || simX >= sim_res_x) return;
@@ -21987,6 +22006,11 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
 
     if (simXpos >= 0 && simXpos < sim_res_x)
       nukes.push(new Nuke(simXpos, startYpos));
+  }
+
+  function createPlacementEventId(prefix)
+  {
+    return prefix + '-' + Date.now() + '-' + Math.floor(Math.random() * 1e9);
   }
 
   function findSimYposAboveSurfaceAtX(simXpos)
@@ -22344,6 +22368,9 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
           remoteActiveBrushes.delete(playerId);
       },
       onRemotePlace(playerId, msg) {
+        applyRemotePlacement(msg);
+      },
+      onPlaceApply(msg) {
         applyRemotePlacement(msg);
       },
       onRemotePause(playerId, msg) {

@@ -50,6 +50,7 @@
         onLightningFlash: null,
         onRemoteBrush: null,
         onRemotePlace: null,
+        onPlaceApply: null,
         onRemotePause: null,
         onRemoteNuke: null,
         onRemoteGuiChange: null,
@@ -667,6 +668,17 @@
       }, this._guiDebounceMs));
     }
 
+    broadcastPlaceApply(place) {
+      if (!this.isHost() || !this.connected || !place) return;
+      this.transport.sendJson({
+        type: MSG.PLACE_APPLY,
+        tool: place.tool,
+        x: place.x,
+        y: place.y,
+        placementId: place.placementId || ('place-' + Date.now() + '-' + Math.floor(Math.random() * 1e9)),
+      });
+    }
+
     tick() {
       if (!this.connected || !this._hooks.getPresence) return;
       const now = performance.now();
@@ -764,8 +776,21 @@
             this._hooks.onRemoteBrush(msg.playerId, msg);
           break;
         case MSG.INPUT_PLACE:
-          if (this.isHost() && this._checkPlacePermission(msg.playerId) && this._hooks.onRemotePlace)
-            this._hooks.onRemotePlace(msg.playerId, msg);
+          if (this.isHost() && this._checkPlacePermission(msg.playerId)) {
+            const applyMsg = {
+              tool: msg.tool,
+              x: msg.x,
+              y: msg.y,
+              placementId: msg.placementId || ('peer-place-' + msg.playerId + '-' + Date.now() + '-' + Math.floor(Math.random() * 1e6)),
+            };
+            if (this._hooks.onRemotePlace)
+              this._hooks.onRemotePlace(msg.playerId, applyMsg);
+            this.broadcastPlaceApply(applyMsg);
+          }
+          break;
+        case MSG.PLACE_APPLY:
+          if (this.isPeer() && this._hooks.onPlaceApply)
+            this._hooks.onPlaceApply(msg);
           break;
         case MSG.INPUT_PAUSE:
           if (this.isHost() && this._checkPausePermission(msg.playerId)) {

@@ -13,6 +13,7 @@
     PLAYER_LEFT: 'player_left',
     INPUT_BRUSH: 'input_brush',
     INPUT_PLACE: 'input_place',
+    PLACE_APPLY: 'place_apply',
     INPUT_PAUSE: 'input_pause',
     INPUT_NUKE: 'input_nuke',
     INPUT_GUI: 'input_gui',
