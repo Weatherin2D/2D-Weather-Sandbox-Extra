@@ -6313,6 +6313,12 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   let hostIterAtLastTextureSync = 0;
   let lastHostSnapshotBroadcast = 0;
   let lastHostSyncMetaBroadcast = 0;
+  // Declared before requestAnimationFrame(draw): draw() can run while later awaits
+  // are pending, so these must not sit in the temporal dead zone after the first rAF.
+  const remoteActiveBrushes = new Map();
+  const HOST_FULL_SNAPSHOT_INTERVAL_MS = 60000;
+  const HOST_SYNC_META_INTERVAL_MS = 200;
+  const HOST_TEXTURE_SYNC_ITER_DELTA = 24;
 
   if (!loadingBar)
     await setLoadingBar();
@@ -21791,11 +21797,6 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
 
     updateProceduralLightningState();
   }
-
-  const remoteActiveBrushes = new Map();
-  const HOST_FULL_SNAPSHOT_INTERVAL_MS = 60000;
-  const HOST_SYNC_META_INTERVAL_MS = 200;
-  const HOST_TEXTURE_SYNC_ITER_DELTA = 24;
 
   window.refreshMultiplayerEntityOverlays = function()
   {
