@@ -214,6 +214,7 @@ const ControlHelp = (function() {
     realtimeMode: 'Run simulation time 1:1 with your system clock.',
     airplaneMode: 'Fly an aircraft through the clouds in first-person style.',
     lightningIllumTexture: 'Pre-render lightning scene illumination to textures for stable flashes. Bolts stay procedural.',
+    lightningIllumBlurStrength: 'Softens lightning flash lighting in the scene. 0 = sharp; higher = smoother, more stable illumination.',
   };
 
   const FOLDER_HELP = {
@@ -527,10 +528,223 @@ const ControlHelp = (function() {
     });
   }
 
+  const SOUNDING_SECTION_HELP = {
+    'PARCEL & INSTABILITY': 'Energy available for updrafts — CAPE, inhibition, and parcel buoyancy metrics.',
+    'LEVELS': 'Heights of key levels: cloud base (LCL), free convection (LFC), equilibrium (EL), and freezing.',
+    'SHEAR': 'Wind change with height — critical for storm organization and supercells.',
+    'STORM MOTION': 'Estimated storm motion vectors (Bunkers left/right, Corfidi up/downshear).',
+    'STORM MODE': 'Best-fit storm type scores from the current sounding (pulse, multicell, supercell, etc.).',
+    'HAZARDS': 'Estimated severe weather hazards for this atmospheric column.',
+    'INDICES': 'Composite severe weather indices (STP, SCP, EHI, SHIP, etc.).',
+    'OUTLOOK': 'Overall convective and fire risk summary.',
+    'Similar Analogs': 'Real-world or custom soundings that most closely match the current profile.',
+    'BALLOON SOUNDING': 'Observed profile from an active weather balloon at this column.',
+  };
+
+  const SOUNDING_METRIC_HELP = {
+    'SBCAPE': 'Surface-based CAPE — buoyancy if a surface parcel is lifted. Higher values favor stronger updrafts.',
+    'MLCAPE': 'Mixed-layer CAPE using the lowest ~100 hPa. Often more representative than surface-based.',
+    'MUCAPE': 'Most-unstable CAPE from the level with the highest instability in the column.',
+    '3CAPE': 'CAPE in the lowest 3 km — helpful for low-topped convection.',
+    'SBCINH': 'Surface convective inhibition. Negative values mean the parcel must be forced upward.',
+    'DCAPE': 'Downdraft CAPE — potential for cold, damaging downdrafts and microbursts.',
+    'LI': 'Lifted Index. Negative values indicate instability; below −4 is strongly unstable.',
+    'LCL': 'Lifting Condensation Level — cloud base height of a lifted parcel.',
+    'LFC': 'Level of Free Convection — where a lifted parcel becomes warmer than the environment.',
+    'EL': 'Equilibrium Level — top of the buoyant updraft.',
+    'FZL': 'Freezing level altitude in the column.',
+    'WBL': 'Wet-bulb zero level — where wet-bulb temperature reaches 0°C.',
+    '0-1 km': 'Vertical wind shear in the lowest 1 km. Important for tornado potential with SRH.',
+    '0-3 km': 'Deep-layer shear in the lowest 3 km — organizes multicells and supercells.',
+    '0-6 km': 'Bulk shear through the troposphere — drives storm mode and longevity.',
+    'Bulk': 'Bulk wind difference (here 0–6 km) — classic supercell shear metric.',
+    'Bunkers R': 'Bunkers storm motion — right-moving supercell vector.',
+    'Bunkers L': 'Bunkers storm motion — left-moving supercell vector.',
+    'Corfidi DS': 'Corfidi downshear propagation vector for mesoscale convective systems.',
+    'Corfidi US': 'Corfidi upshear propagation vector.',
+    'Mode': 'Dominant predicted storm mode from sounding indices.',
+    'Hail Size': 'Estimated maximum hail size from thermodynamics and moisture.',
+    'Lightning': 'Estimated lightning flash rate based on storm electrification proxies.',
+    'Damaging Winds': 'Probability of severe straight-line winds.',
+    'Tornado Risk': 'Tornado hazard probability and categorical risk label.',
+    'EHI': 'Energy-Helicity Index — combines CAPE and helicity for supercell tornado potential.',
+    'STP (fixed)': 'Significant Tornado Parameter using fixed-layer ingredients.',
+    'STP (eff.)': 'STP adjusted for local effective-layer shear and CAPE.',
+    'SHIP': 'Significant Hail Parameter — large hail potential.',
+    'SCP': 'Supercell Composite Parameter.',
+    'Eff. SRH': 'Effective storm-relative helicity in the inflow layer.',
+    '700-500 mb': 'Lapse rate between 700 and 500 mb — steep lapse aids hail growth.',
+    'Risk': 'Overall convective outlook risk category.',
+    'Fire': 'Wildfire weather risk from heat, dryness, and wind.',
+    'Pulse TS': 'Short-lived pulse thunderstorm mode likelihood.',
+    'Multicell': 'Classic multicell thunderstorm likelihood.',
+    'LP Supercell': 'Low-precipitation supercell mode score.',
+    'Classic SC': 'Classic supercell mode score.',
+    'HP Supercell': 'High-precipitation supercell mode score.',
+    'Squall Line': 'Quasi-linear convective system / squall line score.',
+    'Derecho': 'Derecho or widespread damaging wind event score.',
+  };
+
+  const SOUNDING_CONTROL_HELP = {
+    'soundingSaveBtn': { title: 'Save sounding', body: 'Freeze the current column and save it as a snapshot for later comparison or export.' },
+    'soundingFreezeBtn': { title: 'Freeze column', body: 'Lock the skew-T to the current atmospheric column so it stops updating as the sim runs.' },
+    'soundingShareImageBtn': { title: 'Share image', body: 'Export the skew-T dashboard as a PNG image.' },
+    'soundingMetrics-tab-metrics': { title: 'Metrics tab', body: 'Thermodynamic and severe weather indices computed from the sampled column.' },
+    'soundingMetrics-tab-analogs': { title: 'Analogs tab', body: 'Browse, create, and import sounding analogs to compare with the live profile.' },
+    'soundingAnalogCreateBtn': { title: 'Create analog', body: 'Save the current sounding as a reusable analog in your library.' },
+    'soundingAnalogImportBtn': { title: 'Import analog', body: 'Load an analog sounding from a JSON file.' },
+    'soundingAnalogPasteBtn': { title: 'Paste analog', body: 'Paste analog JSON from the clipboard.' },
+    'soundingAnalogExportAllBtn': { title: 'Export all analogs', body: 'Download your full custom analog library.' },
+    'soundingAnalogSearch': { title: 'Search analogs', body: 'Filter the analog library by name, event, or hazard keywords.' },
+    'togWindBarbs': { title: 'Wind barbs', body: 'Show wind direction and speed barbs on the skew-T.' },
+    'togParcels': { title: 'Parcel paths', body: 'Draw lifted parcel traces (surface, mixed-layer, most-unstable).' },
+    'togMixing': { title: 'Mixing ratio', body: 'Show lines of constant mixing ratio on the diagram.' },
+    'togHeights': { title: 'Heights', body: 'Label pressure heights on the skew-T axes.' },
+    'togThetaE': { title: 'θe column', body: 'Show equivalent potential temperature column alongside the sounding.' },
+    'togLayoutEdit': { title: 'Customize layout', body: 'Drag and resize skew-T dashboard panels. Use Reset layout to restore defaults.' },
+    'soundingLayoutResetBtn': { title: 'Reset layout', body: 'Restore the default skew-T dashboard panel positions and sizes.' },
+    'soundingReadoutPanel': { title: 'Skew-T readout', body: 'Values at the cursor position on the diagram — temperature, dew point, wind, height.' },
+    'soundingParcelPanel': { title: 'Parcel info', body: 'Surface parcel temperature, dew point, and lifted parcel diagnostics.' },
+    'soundingControlsPanel': { title: 'Skew-T controls', body: 'Toggle overlays and customize the sounding dashboard layout.' },
+  };
+
+  const MULTIPLAYER_HELP = {
+    'mpIntroText': { title: 'Multiplayer co-op', body: 'One player hosts the simulation; others join to paint and place tools in real time.' },
+    'mpPlayerName': { title: 'Your name', body: 'Display name shown to other players in the room.' },
+    'mpRoomCode': { title: 'Room code', body: 'Enter the 6-letter code from the host to join an existing game.' },
+    'mpHostBtn': { title: 'Host game', body: 'Start a multiplayer room. You run the simulation; peers can paint and place objects per your permissions.' },
+    'mpJoinBtn': { title: 'Join game', body: 'Connect to a host using the room code. Requires the online or local server version.' },
+    'mpLeaveBtn': { title: 'Leave', body: 'Disconnect from the current multiplayer session.' },
+    'mpTestBtn': { title: 'Test connection', body: 'Verify that the relay server is reachable before hosting or joining.' },
+    'mpCopyInviteLinkBtn': { title: 'Copy invite link', body: 'Copy a URL that opens the game and fills in the room code automatically.' },
+    'mpCopyJoinInstructionsBtn': { title: 'Copy join instructions', body: 'Copy plain-text steps for friends to join your room.' },
+    'mpRelayUrl': { title: 'Custom relay URL', body: 'Optional WebSocket relay address. Leave blank to use the same server as this page.' },
+    'mpHudRoom': { title: 'Room HUD', body: 'Quick view of the active room code while playing.' },
+    'mpHudRole': { title: 'Your role', body: 'Whether you are the host (runs simulation) or a peer (joins tools only).' },
+    'mpHudPerms': { title: 'Permissions', body: 'What you are allowed to do in this session (paint, place, pause, settings).' },
+    'mpHostMenuBtn': { title: 'Host menu', body: 'Open host controls to manage players and room settings during a session.' },
+    'mpAdminRoomCode': { title: 'Host room code', body: 'Share this code so late joiners can enter the same simulation.' },
+    'mpCopyCodeBtn': { title: 'Copy code', body: 'Copy the room code to the clipboard.' },
+    'mpRerollCodeBtn': { title: 'New code', body: 'Generate a new room code (existing players may need to rejoin).' },
+    'mpAdminPlayerList': { title: 'Player list', body: 'Connected peers and permission toggles for the host.' },
+  };
+
+  const WEATHER_STATION_HELP = {
+    icon: {
+      title: 'Weather station',
+      body: 'Live conditions at this point. Left-click toggles the history chart (day/night cycle on). Right-click toggles solar/IR flux on the chart. Use the station tool + click to remove.',
+    },
+    chart: {
+      title: 'Station history chart',
+      body: 'Time series of temperature, dew point, wind, and more. Click legend items to show or hide datasets. Stores up to 24 hours while the day/night cycle runs.',
+    },
+    'Temperature': 'Air temperature at the station over time.',
+    'Dew Point': 'Dew point temperature — moisture content of the air.',
+    'Wind Speed': 'Wind speed measured at the station.',
+    'Air Quality': 'Smoke/dust air quality index proxy.',
+    'Precipitation': 'Soil moisture proxy when the station is over land.',
+    'Snow Height': 'Snow depth on the ground at the station.',
+    'Water Temperature': 'Lake or sea surface temperature when the station is over water.',
+  };
+
+  function attachById(id, fallbackTitle, fallbackBody) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    const mapEntry = SOUNDING_CONTROL_HELP[id] || MULTIPLAYER_HELP[id];
+    const title = mapEntry ? mapEntry.title : (fallbackTitle || id);
+    const body = mapEntry ? mapEntry.body : fallbackBody;
+    if (body) attachElement(el, title, body);
+  }
+
+  function attachSoundingMetrics() {
+    document.querySelectorAll('#soundingMetricsBody .sounding-metrics-section').forEach((el) => {
+      const title = el.textContent.trim();
+      const body = SOUNDING_SECTION_HELP[title];
+      if (body) attachElement(el, title, body);
+    });
+    document.querySelectorAll('#soundingMetricsBody .sounding-metrics-row').forEach((row) => {
+      const lbl = row.querySelector('.lbl');
+      if (!lbl) return;
+      const title = lbl.textContent.trim();
+      const body = SOUNDING_METRIC_HELP[title];
+      if (body) attachElement(row, title, body);
+    });
+    document.querySelectorAll('#soundingMetricsBody .sounding-metrics-bar, #soundingMetricsSimilarList .sounding-metrics-bar').forEach((bar) => {
+      const nameEl = bar.querySelector('.name');
+      if (!nameEl) return;
+      const title = nameEl.textContent.trim();
+      const body = SOUNDING_METRIC_HELP[title] || SOUNDING_METRIC_HELP[title.replace(' SC', ' Supercell')];
+      if (body) attachElement(bar, title, body);
+    });
+    document.querySelectorAll('#soundingMetricsSimilarBlock .sounding-metrics-section').forEach((el) => {
+      const title = el.textContent.trim();
+      const body = SOUNDING_SECTION_HELP[title];
+      if (body) attachElement(el, title, body);
+    });
+  }
+
+  function attachSoundingDashboard() {
+    const dash = document.getElementById('soundingDashboard');
+    if (!dash) return;
+    const hdr = dash.querySelector('.sounding-header');
+    if (hdr) {
+      attachElement(hdr, 'Sounding dashboard',
+        'Skew-T diagram with thermodynamic metrics, hazard scores, and analog matching for the sampled column.');
+    }
+    Object.keys(SOUNDING_CONTROL_HELP).forEach((id) => attachById(id));
+    document.querySelectorAll('.sounding-metrics-tab').forEach((tab) => {
+      const key = 'soundingMetrics-tab-' + tab.dataset.tab;
+      const info = SOUNDING_CONTROL_HELP[key];
+      if (info) attachElement(tab, info.title, info.body);
+    });
+    document.querySelectorAll('#soundingMetricsAnalogSource button').forEach((btn) => {
+      const src = btn.dataset.analogSource || btn.textContent.trim().toLowerCase();
+      attachElement(btn, 'Analog source: ' + btn.textContent.trim(),
+        src === 'builtin' ? 'Show only real-world historical analog soundings.'
+          : src === 'custom' ? 'Show only user-created analog soundings.'
+            : 'Show all matching analog soundings.');
+    });
+    document.querySelectorAll('#soundingAnalogSourceFilters button, #soundingAnalogFilters button').forEach((btn) => {
+      attachElement(btn, 'Filter: ' + btn.textContent.trim(),
+        'Narrow the analog library list by source type or hazard category.');
+    });
+    attachSoundingMetrics();
+  }
+
+  function attachMultiplayerPanels() {
+    const introPanel = document.getElementById('multiplayerPanel');
+    if (introPanel) {
+      attachElement(introPanel.querySelector('h2'), 'Multiplayer co-op', MULTIPLAYER_HELP.mpIntroText.body);
+    }
+    Object.keys(MULTIPLAYER_HELP).forEach((id) => {
+      if (id === 'mpIntroText') return;
+      attachById(id);
+    });
+    const hud = document.getElementById('multiplayerHud');
+    if (hud) {
+      attachElement(hud, 'Session HUD', 'Live multiplayer status while the simulation is running.');
+    }
+    const admin = document.getElementById('multiplayerAdminPanel');
+    if (admin) {
+      attachElement(admin, 'Host controls', 'Manage room code, connected players, and peer permissions.');
+    }
+  }
+
+  function registerWeatherStationChart(chartCanvas, iconCanvas) {
+    if (iconCanvas) {
+      attachElement(iconCanvas, WEATHER_STATION_HELP.icon.title, WEATHER_STATION_HELP.icon.body);
+    }
+    if (chartCanvas) {
+      attachElement(chartCanvas, WEATHER_STATION_HELP.chart.title, WEATHER_STATION_HELP.chart.body);
+    }
+  }
+
   function attachCustomPanels() {
     attachSkyEditor();
     attachColorScaleEditor();
     attachKeybindEditor();
+    attachSoundingDashboard();
+    attachMultiplayerPanels();
   }
 
   function registerEntityMenu(menuEl) {
@@ -574,6 +788,10 @@ const ControlHelp = (function() {
     init,
     attachDatGui,
     attachCustomPanels,
+    attachSoundingDashboard,
+    attachSoundingMetrics,
+    attachMultiplayerPanels,
+    registerWeatherStationChart,
     registerEntityMenu,
     attachElement,
     onToolChanged,
