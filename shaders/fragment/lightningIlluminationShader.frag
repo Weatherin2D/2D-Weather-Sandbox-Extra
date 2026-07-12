@@ -11,6 +11,8 @@ uniform vec2 aspectRatios;
 uniform vec2 texelSize;
 uniform vec2 resolution;
 
+uniform float dryLapse;
+
 #include "common.glsl"
 #include "lightningV2.glsl"
 

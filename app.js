@@ -19281,6 +19281,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     gl.uniform2f(uloc_illum_resolution, sim_res_x, sim_res_y);
     gl.uniform2f(uloc_illum_texelSize, texelSizeX, texelSizeY);
     gl.uniform2f(uloc_illum_aspectRatios, sim_aspect, canvas.width / Math.max(canvas.height, 1));
+    gl.uniform1f(gl.getUniformLocation(lightningIllumProgram, 'dryLapse'), dryLapse);
   }
 
   gl.useProgram(lightningLocationProgram);
