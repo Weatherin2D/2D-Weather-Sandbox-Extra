@@ -6256,14 +6256,8 @@ function loadSoundingFromFile(file)
 function updateSoundingUniforms()
 {
   if (!soundingData || soundingData.length < 10) return;
-  if (!guiControls || !guiControls.simHeight) {
-    console.warn('guiControls not initialized yet, cannot update sounding uniforms');
-    return;
-  }
-  if (!realWorldSounding_T || !realWorldSounding_W || !realWorldSounding_Vel) {
-    console.warn('Sounding arrays not initialized yet, cannot update sounding uniforms');
-    return;
-  }
+  if (!guiControls || !guiControls.simHeight) return;
+  if (!realWorldSounding_T || !realWorldSounding_W || !realWorldSounding_Vel) return;
   
   var soundingForSim = rawSoundingToSimSounding(soundingData, guiControls.simHeight, sim_res_y + 1);
   
@@ -6377,7 +6371,7 @@ async function prepareSounding()
   customSoundingLoaded = false; // This is a real-world sounding, not custom
   
   // Update the shader uniforms with the new sounding data
-  if (soundingData && soundingData.length > 10) {
+  if (soundingData && soundingData.length > 10 && guiControls && guiControls.simHeight) {
     updateSoundingUniforms();
   }
 }
@@ -15968,6 +15962,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
 
   // load shaders
+  const SHADER_ASSET_VERSION = 3; // bump to bust CDN/browser cache after shader edits
+
   var commonSource = await loadSourceFile('shaders/common.glsl');
   var commonDisplaySource = await loadSourceFile('shaders/commonDisplay.glsl');
   var lightningV2Source = await loadSourceFile('shaders/fragment/lightningV2.glsl');
@@ -19281,7 +19277,6 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     gl.uniform2f(uloc_illum_resolution, sim_res_x, sim_res_y);
     gl.uniform2f(uloc_illum_texelSize, texelSizeX, texelSizeY);
     gl.uniform2f(uloc_illum_aspectRatios, sim_aspect, canvas.width / Math.max(canvas.height, 1));
-    gl.uniform1f(gl.getUniformLocation(lightningIllumProgram, 'dryLapse'), dryLapse);
   }
 
   gl.useProgram(lightningLocationProgram);
@@ -24791,7 +24786,7 @@ drawNukeOverlay();
   async function loadSourceFile(fileName)
   {
     try {
-      const response = await fetch(fileName);
+      const response = await fetch(fileName + '?v=' + SHADER_ASSET_VERSION);
       if (!response.ok) {
         if (response.status === 404)
           throw new Error('File not found: ' + fileName);
@@ -24828,6 +24823,13 @@ drawNukeOverlay();
 
     var shaderSource = await loadSourceFile(filename);
     if (shaderSource.includes('#include "common.glsl"')) {
+      const beforeCommon = shaderSource.split('#include "common.glsl"')[0];
+      if (!/\bdryLapse\b/.test(beforeCommon)) {
+        shaderSource = shaderSource.replace(
+          '#include "common.glsl"',
+          'const float dryLapse = 0.;\n#include "common.glsl"'
+        );
+      }
       shaderSource = shaderSource.replace('#include "common.glsl"', commonSource);
     }
 
