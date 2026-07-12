@@ -24,6 +24,11 @@ uniform sampler2D lightningTex;
 uniform sampler2D lightningDataTex;
 
 uniform sampler2D ambientLightTex;
+uniform sampler2D lightningOnLightTex;
+uniform sampler2D lightningCloudFlashTex;
+uniform sampler2D lightningSurfFlashTex;
+
+uniform int ltUseIllumTexture;
 
 uniform vec2 aspectRatios; // [0] Sim       [1] canvas
 
@@ -419,14 +424,26 @@ void applyAirLightning(vec2 uv, float cloudwater, float precip, float cloudDensi
   } else if (ltNumStrikes > 0 && ltEventAge >= 0.0) {
     vec3 ltBolts;
     vec3 ltBoltsBehind;
-    vec3 ltIllum;
-    ltAccumulateBoltsAndIllum(uv, aspectRatios[0], cloudwater, precip, nightFactor, ltBolts, ltBoltsBehind, ltIllum);
+    vec3 ltIllumUnused;
+
+    if (ltUseIllumTexture != 0) {
+      onLight += texture(lightningOnLightTex, uv).rgb;
+      flashCloud = texture(lightningCloudFlashTex, uv).rgb;
+      flashSurf = texture(lightningSurfFlashTex, uv).rgb;
+      ltAccumulateBoltsAndIllum(uv, aspectRatios[0], cloudwater, precip, nightFactor,
+        ltBolts, ltBoltsBehind, ltIllumUnused);
+    } else {
+      vec3 ltIllum;
+      ltAccumulateBoltsAndIllum(uv, aspectRatios[0], cloudwater, precip, nightFactor,
+        ltBolts, ltBoltsBehind, ltIllum);
+      onLight += ltIllum;
+      ltAccumulateFlashes(uv, aspectRatios[0], cloudwater, precip, nightFactor,
+        flashEmit, flashCloud, flashSurf, precipShafts);
+      emittedLight += flashEmit;
+    }
+
     emittedLight += ltBolts * ltCloudPierce;
     emittedLight += ltBoltsBehind;
-    onLight += ltIllum;
-    ltAccumulateFlashes(uv, aspectRatios[0], cloudwater, precip, nightFactor,
-      flashEmit, flashCloud, flashSurf, precipShafts);
-    emittedLight += flashEmit;
   }
 }
 

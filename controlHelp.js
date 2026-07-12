@@ -213,6 +213,7 @@ const ControlHelp = (function() {
     gpuEffectQuality: 'Quality of GPU lightning and shadow smoothing effects.',
     realtimeMode: 'Run simulation time 1:1 with your system clock.',
     airplaneMode: 'Fly an aircraft through the clouds in first-person style.',
+    lightningIllumTexture: 'Pre-render lightning scene illumination to textures for stable flashes. Bolts stay procedural.',
   };
 
   const FOLDER_HELP = {
@@ -376,6 +377,166 @@ const ControlHelp = (function() {
     }
   }
 
+  const SKY_HELP = {
+    'Time of day (hours)': 'Clock hour (0–24). Drives sun position when the day/night cycle is enabled.',
+    'Sun angle (°)': 'Manual sun elevation. 90° is overhead; lower values mean a lower sun.',
+    'Month': 'Calendar month — shifts day length and solar declination.',
+    'Latitude (°)': 'Observer latitude for the solar path and day/night balance.',
+    'Sun intensity': 'Scales incoming solar radiation strength.',
+    'Min shadow light': 'Minimum fill light in shadows. 0 is darkest.',
+    'Star visibility': 'How bright stars appear at night.',
+    'Star light emit': 'How much light stars add to the night sky.',
+    'Star density': 'How many stars are visible.',
+  };
+
+  const COLOR_SCALE_TAB_HELP = {
+    'RH': 'Relative humidity color scale used in moisture display modes.',
+    'Temp': 'Temperature color scale for thermal display modes.',
+    'CAPE': 'Convective available potential energy colors on risk overlays.',
+    'Hail': 'Hail size or intensity color scale.',
+    'Wind': 'Wind speed color scale for velocity displays.',
+    'Precip': 'Precipitation intensity color scale.',
+    'IR': 'Infrared temperature or heating color scale.',
+    'Soil': 'Soil moisture color scale.',
+    'Risk': 'Convective risk overlay color scale.',
+  };
+
+  const COLOR_SCALE_ACTION_HELP = {
+    '+ Add': 'Insert a new color stop into the active scale.',
+    '− Remove': 'Delete the selected color stop.',
+    'Copy': 'Copy the current scale JSON to the import/export box.',
+    'Paste': 'Apply scale colors from the JSON in the import/export box.',
+    '↺ Apply': 'Apply manual JSON edits from the text area.',
+    '↓ Import': 'Load scale colors from the JSON text area.',
+    '⎘ Copy to Clipboard': 'Copy the active scale definition to the clipboard.',
+    'Interpolate stops': 'Smoothly blend colors between stops instead of hard steps.',
+  };
+
+  const KEYBIND_HELP = {
+    panel: 'Remap keyboard shortcuts for tools, camera, and simulation controls. Click Change, then press the desired key.',
+    change: 'Start listening for a new key assignment.',
+    clear: 'Remove the binding for the selected action.',
+    reset: 'Restore all keybinds to defaults.',
+  };
+
+  const ENTITY_HELP = {
+    'radar-product': 'Radar product to display — reflectivity, velocity, correlation coefficient, and more.',
+    'radar-range': 'Maximum range of the radar beam in simulation cells.',
+    'radar-resolution': 'Gate size — smaller values give sharper but noisier data.',
+    'radar-sensitivity': 'Gain applied to weak returns. Raise to see light precipitation.',
+    'radar-overlay': 'Draw this radar on the realistic view while the menu is open.',
+    'station-name': 'Label shown above the weather station icon.',
+    'balloon-ascent': 'How fast the balloon rises through the atmosphere.',
+    'airmass-temp': 'Temperature offset this generator applies to nearby air.',
+    'airmass-moisture': 'Moisture added or removed by the airmass generator.',
+    'marker-label': 'Optional text label for the map marker.',
+  };
+
+  const PANEL_INTRO = {
+    '#skyPanel': {
+      title: 'Sky Editor',
+      body: 'Fine-tune sky colors, twilight bands, stars, and sun appearance. Changes apply live to the realistic view.',
+    },
+    '#colorScalePanel': {
+      title: 'Color Scale Editor',
+      body: 'Edit the color ramps used by display modes and overlays. Select a scale tab, adjust stops, and optionally interpolate smoothly between them.',
+    },
+    '#keybindPanel': {
+      title: 'Keybind Editor',
+      body: KEYBIND_HELP.panel,
+    },
+  };
+
+  let panelIntroEl = null;
+
+  function attachElement(el, title, body, keys) {
+    if (!el || el.dataset.chHelpBound) return;
+    el.dataset.chHelpBound = '1';
+    el.addEventListener('mouseenter', function() {
+      if (!enabled || !controls || controls.showControlHelp === false) return;
+      hoverKey = 'el:' + title;
+      setContent(title, body, keys || '');
+      refreshVisibility();
+    });
+    el.addEventListener('mouseleave', function() {
+      if (hoverKey === 'el:' + title) clearHover();
+    });
+  }
+
+  function attachBySelector(selector, getHelp) {
+    document.querySelectorAll(selector).forEach((el) => {
+      const info = getHelp(el);
+      if (info) attachElement(el, info.title, info.body, info.keys);
+    });
+  }
+
+  function attachPanelIntro(panelSelector) {
+    const intro = PANEL_INTRO[panelSelector];
+    const panel = document.querySelector(panelSelector);
+    if (!intro || !panel) return;
+    const hdr = panel.querySelector('[class*="-hdr"], .cse-hdr, .kbe-hdr, .ske-hdr');
+    if (hdr) attachElement(hdr, intro.title, intro.body);
+  }
+
+  function attachSkyEditor() {
+    attachPanelIntro('#skyPanel');
+    document.querySelectorAll('#skyPanel .ske-row').forEach((row) => {
+      const lbl = row.querySelector('.ske-lbl');
+      if (!lbl) return;
+      const title = lbl.childNodes[0] && lbl.childNodes[0].textContent
+        ? lbl.childNodes[0].textContent.trim() : lbl.textContent.trim();
+      const body = SKY_HELP[title] || lbl.querySelector('small')?.textContent;
+      if (body) attachElement(row, title, body);
+    });
+    document.querySelectorAll('#skyPanel .ske-chk').forEach((chk) => {
+      const title = chk.textContent.trim();
+      if (SKY_HELP[title]) attachElement(chk, title, SKY_HELP[title]);
+    });
+  }
+
+  function attachColorScaleEditor() {
+    attachPanelIntro('#colorScalePanel');
+    document.querySelectorAll('#colorScalePanel .cse-tab').forEach((tab) => {
+      const name = tab.textContent.trim();
+      const body = COLOR_SCALE_TAB_HELP[name] || 'Color stops for the ' + name + ' display scale.';
+      attachElement(tab, name + ' scale', body);
+    });
+    document.querySelectorAll('#colorScalePanel .cse-ctrl-btn, #colorScalePanel .cse-btn').forEach((btn) => {
+      const label = btn.textContent.trim();
+      const body = COLOR_SCALE_ACTION_HELP[label];
+      if (body) attachElement(btn, label, body);
+    });
+    const interp = document.querySelector('#colorScalePanel .cse-opt-lbl');
+    if (interp) attachElement(interp, 'Interpolate stops', COLOR_SCALE_ACTION_HELP['Interpolate stops']);
+  }
+
+  function attachKeybindEditor() {
+    attachPanelIntro('#keybindPanel');
+    const hint = document.querySelector('#keybindPanel .kbe-hint');
+    if (hint) attachElement(hint, 'Keybind help', KEYBIND_HELP.panel);
+  }
+
+  function attachEntityMenu(menuEl, entityType) {
+    if (!menuEl) return;
+    menuEl.querySelectorAll('[data-ch-help]').forEach((el) => {
+      const key = el.getAttribute('data-ch-help');
+      const body = ENTITY_HELP[key];
+      if (!body) return;
+      const title = el.getAttribute('data-ch-title') || key;
+      attachElement(el, title, body);
+    });
+  }
+
+  function attachCustomPanels() {
+    attachSkyEditor();
+    attachColorScaleEditor();
+    attachKeybindEditor();
+  }
+
+  function registerEntityMenu(menuEl) {
+    attachEntityMenu(menuEl);
+  }
+
   function attachDatGui(datGui) {
     if (!datGui) return;
     walkFolder(datGui);
@@ -412,6 +573,9 @@ const ControlHelp = (function() {
     SETTING_HELP,
     init,
     attachDatGui,
+    attachCustomPanels,
+    registerEntityMenu,
+    attachElement,
     onToolChanged,
     setEnabled,
     refresh: refreshVisibility,
