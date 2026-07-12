@@ -1,5 +1,5 @@
 {
-  "homepage": "https://weather-sandbox.onrender.com",
+  "homepage": "https://weatherin2d.github.io/2D-Weather-Sandbox-Extra/",
   "dependencies": {
     "@webgpu/glslang": "^0.0.15",
     "ws": "^8.18.0"

@@ -1331,6 +1331,71 @@
             fill: #ffffff;
             text-anchor: middle
         }
+
+        .mp-wip-notice {
+            margin: 0 0 12px;
+            padding: 8px 10px;
+            border-radius: 8px;
+            background: rgba(255, 193, 7, 0.12);
+            border: 1px solid rgba(255, 193, 7, 0.45);
+            color: #ffe8a3;
+            font-size: 13px;
+            line-height: 1.45;
+        }
+
+        #mpWipModal {
+            display: none;
+            position: fixed;
+            inset: 0;
+            z-index: 1200;
+            align-items: center;
+            justify-content: center;
+            padding: 16px;
+            background: rgba(0, 0, 0, 0.55);
+            backdrop-filter: blur(4px);
+        }
+
+        #mpWipModal.visible {
+            display: flex;
+        }
+
+        #mpWipModal .mp-wip-dialog {
+            max-width: 420px;
+            width: 100%;
+            padding: 18px 20px;
+            border-radius: 12px;
+            background: rgba(16, 18, 28, 0.96);
+            border: 1px solid rgba(255, 193, 7, 0.45);
+            box-shadow: 0 10px 32px rgba(0, 0, 0, 0.45);
+        }
+
+        #mpWipModal .mp-wip-dialog h3 {
+            margin: 0 0 8px;
+            font-size: 16px;
+            color: #ffd86b;
+        }
+
+        #mpWipModal .mp-wip-dialog p {
+            margin: 0 0 14px;
+            font-size: 14px;
+            line-height: 1.5;
+            color: #e8eef2;
+            opacity: 0.92;
+        }
+
+        #mpWipModal .mp-wip-dialog button {
+            padding: 8px 16px;
+            border: none;
+            border-radius: 8px;
+            background: #4a90e2;
+            color: #fff;
+            font-size: 14px;
+            cursor: pointer;
+        }
+
+        #mpWipModal .mp-wip-dialog button:hover {
+            background: #007bff;
+        }
     </style>
 </head>
 
@@ -1344,7 +1409,7 @@
             <h1>2D Weather Sandbox EXTRA</h1>
         </div>
         <div class="nav-icons">
-            <a href="https://github.com/niels747/2D-Weather-Sandbox" target="_blank" rel="noopener noreferrer">
+            <a href="https://github.com/Weatherin2D/2D-Weather-Sandbox-Extra" target="_blank" rel="noopener noreferrer">
                 <img src="resources/img/Github.png" alt="GitHub">
             </a>
             <a href="https://www.patreon.com/user?u=76043935" target="_blank" rel="noopener noreferrer">
@@ -1438,10 +1503,11 @@
 
         <div id="multiplayerPanel" style="margin-top: 40px; padding: 20px; border: 1px solid rgba(74,144,226,0.5); border-radius: 12px; max-width: 520px; background: rgba(0,0,0,0.45);">
             <h2 style="margin-top:0;">Multiplayer Co-op</h2>
+            <p id="mpWipNotice" class="mp-wip-notice">Multiplayer is still work-in-progress — it may be laggy, glitchy, and at times unplayable.</p>
             <p id="mpIntroText" style="opacity:0.85; font-size: 14px;">Host runs the simulation. Peers paint and place tools in real time.</p>
             <div id="mpPlayOnlineBanner" style="display:none; margin-bottom: 12px; padding: 10px 12px; border-radius: 8px; background: rgba(74,144,226,0.2); border: 1px solid rgba(74,144,226,0.45); font-size: 14px;">
                 <span id="mpPlayOnlineText">Multiplayer needs the online version of this game.</span>
-                <button type="button" id="mpPlayOnlineBtn" style="display: block; margin-top: 8px; padding: 8px 16px;">Open online multiplayer</button>
+                <button type="button" id="mpPlayOnlineBtn" style="display: block; margin-top: 8px; padding: 8px 16px;">Open in browser</button>
             </div>
             <div style="margin-bottom: 12px;">
                 <label for="mpPlayerName">Your name</label><br>

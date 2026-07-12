@@ -6,6 +6,41 @@
 
   const mp = () => global.WeatherMultiplayer;
 
+  const MP_WIP_ACK_KEY = 'weatherMpWipAck';
+
+  function ensureMultiplayerWipModal() {
+    let modal = document.getElementById('mpWipModal');
+    if (modal) return modal;
+    modal = document.createElement('div');
+    modal.id = 'mpWipModal';
+    modal.innerHTML =
+      '<div class="mp-wip-dialog" role="dialog" aria-labelledby="mpWipTitle" aria-modal="true">' +
+        '<h3 id="mpWipTitle">Multiplayer is work-in-progress</h3>' +
+        '<p>Co-op multiplayer is still being developed. Sessions may be laggy, glitchy, and at times unplayable. ' +
+        'Single-player works normally.</p>' +
+        '<button type="button" id="mpWipOkBtn">Got it</button>' +
+      '</div>';
+    document.body.appendChild(modal);
+    return modal;
+  }
+
+  function ensureMultiplayerWipAcknowledged() {
+    if (global.sessionStorage && global.sessionStorage.getItem(MP_WIP_ACK_KEY) === '1')
+      return Promise.resolve(true);
+    const modal = ensureMultiplayerWipModal();
+    return new Promise((resolve) => {
+      const okBtn = document.getElementById('mpWipOkBtn');
+      const onOk = () => {
+        modal.classList.remove('visible');
+        if (global.sessionStorage) global.sessionStorage.setItem(MP_WIP_ACK_KEY, '1');
+        okBtn.removeEventListener('click', onOk);
+        resolve(true);
+      };
+      okBtn.addEventListener('click', onOk);
+      modal.classList.add('visible');
+    });
+  }
+
   function getPublicPlayUrl() {
     const configured = (global.__WEATHER_PUBLIC_PLAY_URL || '').trim().replace(/\/$/, '');
     if (configured) return configured;
@@ -52,8 +87,12 @@
   function updateMultiplayerIntro() {
     const el = document.getElementById('mpIntroText');
     if (!el) return;
+    if (mp() && mp().isGitHubPagesOrigin && mp().isGitHubPagesOrigin()) {
+      el.textContent = 'Play single-player in your browser. Multiplayer is experimental — run npm start locally on your PC to host a LAN session.';
+      return;
+    }
     if (needsPlayOnlineCta()) {
-      el.textContent = 'Host runs the simulation. Peers paint and place tools in real time. Multiplayer requires the online version — use the button below.';
+      el.textContent = 'Host runs the simulation. Peers paint and place tools in real time. Open the GitHub Pages version below for browser play.';
       return;
     }
     if (mp() && mp().isOnlineMultiplayerOrigin && mp().isOnlineMultiplayerOrigin()) {
@@ -79,8 +118,8 @@
     const url = getPublicPlayUrl();
     if (text) {
       text.textContent = url
-        ? 'Multiplayer is not available from this setup. Open the online version in your browser — no install needed.'
-        : 'Multiplayer is not available from this setup. Deploy to Render (see README), set the URL in network/config.js, then open online multiplayer.';
+        ? 'You are on a local copy. Open the GitHub Pages version in your browser for online single-player.'
+        : 'You are on a local copy. Set the URL in network/config.js, then open the GitHub Pages version.';
     }
     if (btn) {
       btn.style.display = url ? 'block' : 'none';
@@ -433,6 +472,7 @@
   }
 
   async function hostGame() {
+    if (!await ensureMultiplayerWipAcknowledged()) return;
     const nameInput = document.getElementById('mpPlayerName');
     const name = (nameInput && nameInput.value.trim()) || 'Host';
     try {
@@ -461,6 +501,7 @@
   }
 
   async function joinGame() {
+    if (!await ensureMultiplayerWipAcknowledged()) return;
     const nameInput = document.getElementById('mpPlayerName');
     const codeInput = document.getElementById('mpRoomCode');
     const name = (nameInput && nameInput.value.trim()) || 'Player';
@@ -504,9 +545,11 @@
   function getDefaultIdleStatus() {
     if (needsPlayOnlineCta()) {
       if (getPublicPlayUrl())
-        return 'Use “Open online multiplayer” above to play with friends';
-      return 'Set your online URL in network/config.js to enable multiplayer';
+        return 'Use “Open in browser” above for the GitHub Pages version';
+      return 'Set your online URL in network/config.js to enable the browser link';
     }
+    if (mp() && mp().isGitHubPagesOrigin && mp().isGitHubPagesOrigin())
+      return 'Single-player ready — run npm start locally for experimental multiplayer';
     if (mp() && mp().isOnlineMultiplayerOrigin && mp().isOnlineMultiplayerOrigin())
       return 'Multiplayer ready — share this page with friends';
     if (mp() && mp().isLocalDevServer && mp().isLocalDevServer())
@@ -516,12 +559,20 @@
 
   function testConnection() {
     if (!mp()) return;
+    ensureMultiplayerWipAcknowledged().then((ack) => {
+      if (!ack) return;
+      runTestConnection();
+    });
+  }
+
+  function runTestConnection() {
+    if (!mp()) return;
     const url = mp().getRelayUrl();
     setStatus('Testing ' + url + '…');
     const ws = new WebSocket(url);
     const timeout = setTimeout(() => {
       ws.close();
-      setStatus('Connection timed out — server may be waking up (Render free tier)', true);
+      setStatus('Connection timed out — server may be offline or still starting', true);
     }, 8000);
     ws.onopen = () => {
       clearTimeout(timeout);
@@ -533,11 +584,13 @@
       if (needsPlayOnlineCta()) {
         const url = getPublicPlayUrl();
         setStatus(url
-          ? 'Cannot reach multiplayer here — use “Open online multiplayer”'
+          ? 'Cannot reach multiplayer here — use npm start locally, or try again later'
           : 'Cannot reach multiplayer — set network/config.js to your deployed URL', true);
         return;
       }
-      const hint = mp().isStaticDevServer()
+      const hint = mp().isGitHubPagesOrigin && mp().isGitHubPagesOrigin()
+        ? ' GitHub Pages hosts single-player only — run npm start locally for multiplayer.'
+        : mp().isStaticDevServer()
         ? ' Open http://localhost:' + mp().getUnifiedServerPort() + ' or your deployed site URL.'
         : ' Check your connection or try again in a moment.';
       setStatus('Cannot reach multiplayer at ' + url + '.' + hint, true);
