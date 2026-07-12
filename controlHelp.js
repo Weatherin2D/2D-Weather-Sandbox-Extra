@@ -609,10 +609,11 @@ const ControlHelp = (function() {
   };
 
   const MULTIPLAYER_HELP = {
-    'mpIntroText': { title: 'Multiplayer co-op', body: 'One player hosts the simulation; others join to paint and place tools in real time.' },
+    'mpIntroText': { title: 'Multiplayer co-op', body: 'One player hosts the simulation; others join to paint and place tools in real time. Still work-in-progress — may be laggy, glitchy, or unplayable.' },
     'mpPlayerName': { title: 'Your name', body: 'Display name shown to other players in the room.' },
     'mpRoomCode': { title: 'Room code', body: 'Enter the 6-letter code from the host to join an existing game.' },
-    'mpHostBtn': { title: 'Host game', body: 'Start a multiplayer room. You run the simulation; peers can paint and place objects per your permissions.' },
+    'mpPlayOnlineBtn': { title: 'Open in browser', body: 'Open the GitHub Pages version of the game in your browser.' },
+    'mpHostBtn': { title: 'Host game', body: 'Start a multiplayer room. You run the simulation; peers can paint and place objects per your permissions. Still work-in-progress.' },
     'mpJoinBtn': { title: 'Join game', body: 'Connect to a host using the room code. Requires the online or local server version.' },
     'mpLeaveBtn': { title: 'Leave', body: 'Disconnect from the current multiplayer session.' },
     'mpTestBtn': { title: 'Test connection', body: 'Verify that the relay server is reachable before hosting or joining.' },

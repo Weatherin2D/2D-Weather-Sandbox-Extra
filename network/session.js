@@ -104,6 +104,7 @@
     /** Live Server / Vite / static dev servers — no WebSocket on the page port. */
     isStaticDevServer() {
       if (!global.location || global.location.protocol === 'file:') return false;
+      if (this.isGitHubPagesOrigin()) return true;
       const port = global.location.port || (global.location.protocol === 'https:' ? '443' : '80');
       const unifiedPort = String(global.__WEATHER_MP_RELAY_PORT || '8080');
       if (port === unifiedPort) return false;
@@ -117,6 +118,10 @@
       const host = global.location.hostname;
       return (host === 'localhost' || host === '127.0.0.1')
         && port === this.getUnifiedServerPort();
+    }
+
+    isGitHubPagesOrigin() {
+      return !!(global.location && /\.github\.io$/i.test(global.location.hostname));
     }
 
     isOnlineMultiplayerOrigin() {
@@ -155,7 +160,9 @@
     _connectErrorMessage(relayUrl) {
       let msg = 'Multiplayer server unreachable at ' + relayUrl + '.';
       if (this.isOnlineMultiplayerOrigin()) {
-        msg += ' The server may be waking up (Render free tier) — wait ~30s and use Test connection, then try again.';
+        msg += ' Try again in a moment, or run npm start locally for multiplayer.';
+      } else if (this.isGitHubPagesOrigin()) {
+        msg += ' GitHub Pages hosts single-player only — run npm start locally for multiplayer.';
       } else if (this.isStaticDevServer()) {
         msg += ' Live Server cannot host multiplayer — use http://localhost:'
           + this.getUnifiedServerPort() + ' or open the online version.';

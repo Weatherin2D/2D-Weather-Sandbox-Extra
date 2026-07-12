@@ -1,10 +1,10 @@
 # 2D Weather Sandbox
 
-## Play online (multiplayer)
+## Play online
 
-**[Play here](https://weather-sandbox.onrender.com)** — host or join from your browser, no install.
+**[Play here](https://weatherin2d.github.io/2D-Weather-Sandbox-Extra/)** — runs in your browser, no install.
 
-After hosting, use **Copy invite link** to share a URL with the room code included. Friends open the link, enter their name, and click **Join Game**.
+Multiplayer co-op is still **work-in-progress** (may be laggy or glitchy). For local multiplayer testing, run `npm start` and share your LAN URL.
 
 THIS IS FORK OF 2D WEATHER SANDBOX. I DO NOT GUARANTE THAT IT WILL WORK AS INTENDED!
 
@@ -131,30 +131,28 @@ Open **http://localhost:8080** in your browser. Multiplayer works automatically 
   5. Open index.html
   6. Start live server (Go Live), automatically opens page in browser
 
-Note: Live Server does **not** include multiplayer. Use **Open online multiplayer** in the menu (after setting [`network/config.js`](network/config.js)) or deploy to Render.
+Note: Live Server does **not** include multiplayer. Use **Open in browser** in the menu (points at GitHub Pages) or run `npm start` for local multiplayer.
 
-## Deploy online (multiplayer for everyone — no terminal for players)
+## Deploy online (GitHub Pages — recommended)
 
-Friends only need a browser. Nobody runs `npm start` on their own PC.
+The game is hosted on **GitHub Pages** so it stays free and does not depend on Render monthly quotas.
 
-1. Push to GitHub.
-2. [Render.com](https://render.com) → **New → Blueprint** → connect this repo ([`render.yaml`](render.yaml) is included).
-3. When deploy finishes, open **https://weather-sandbox.onrender.com** (or your service URL from the Render dashboard).
-4. In GitHub repo **Settings → General → Website**, set the URL to the same Render link so the repo page links to the game.
-5. Click **Host Game**, then **Copy invite link** (includes `?room=CODE`) and send to friends.
-6. Friends open the link, enter their name, and click **Join Game**.
+1. Push to GitHub (`main` branch).
+2. In the repo go to **Settings → Pages** → Source: **GitHub Actions** (the included [`.github/workflows/deploy-pages.yml`](.github/workflows/deploy-pages.yml) deploys automatically on push to `main`).
+3. When the workflow finishes, open **https://weatherin2d.github.io/2D-Weather-Sandbox-Extra/**
+4. In repo **Settings → General → Website**, set the URL to the same GitHub Pages link.
 
-[`network/config.js`](network/config.js) already points Live Server / downloaded copies at the online URL. If your Render service uses a different hostname, update that file and `homepage` in [`package.json`](package.json).
+[`network/config.js`](network/config.js) and [`package.json`](package.json) `homepage` already point at this URL for local copies and the “Open in browser” button.
 
-Free tier note: the server sleeps after inactivity. First connection may take ~30 seconds — use **Test connection** if needed.
+### Optional: Render (multiplayer relay)
 
-### Play with friends online (quick summary)
+If you still want a Node server with WebSocket relay (e.g. when Render quota is available), use [`render.yaml`](render.yaml) on [Render.com](https://render.com). Free tier sleeps after inactivity; first connection may take ~30 seconds.
+
+### Local multiplayer (WIP)
 
 | Who | What to do |
 |-----|------------|
-| You (once) | Deploy to Render via [`render.yaml`](render.yaml) |
-| Everyone | Open the `https://*.onrender.com` link in a browser |
-| Host | Host Game → share link + room code |
-| Friends | Join Game with room code |
+| Host | `npm install` then `npm start` → open http://localhost:8080 → **Host Game** |
+| Friends (same network) | Open the host's `http://<host-ip>:8080` → **Join Game** with room code |
 
-No command prompt, Node install, or `npm start` required for players.
+Multiplayer is experimental — expect lag, desync, or broken sessions.
