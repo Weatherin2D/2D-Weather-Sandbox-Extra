@@ -512,6 +512,8 @@ window.setGuiTool = function(tool)
     return false;
   }
   guiControls.tool = tool;
+  if (typeof ControlHelp !== 'undefined')
+    ControlHelp.onToolChanged(tool);
   return true;
 };
 
@@ -737,6 +739,8 @@ const guiControls_default = {
   reducedPrecipitation : false,
   disableTempChangeHistory : false,
   skipLightingCalculation : false,
+  showControlHelp : true,
+  performanceAutoScaling : true,
   reducedWeatherStationUpdates : false,
   skipAdvection : false,
   skipChargeCalculation : false,
@@ -8940,6 +8944,15 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       .onChange(function() { uploadSkyUniforms(); })
       .name('Star Density');
 
+    display_folder.add(guiControls, 'showControlHelp')
+      .name('Show Control Help')
+      .onChange(function() {
+        if (typeof ControlHelp !== 'undefined') {
+          ControlHelp.setEnabled(!!guiControls.showControlHelp);
+          ControlHelp.refresh();
+        }
+      });
+
     display_folder.add(guiControls, 'autoMinShadowLight').name('Auto Shadow Light');
 
     display_folder.add(guiControls, 'minShadowLight', 0.0, 0.2, 0.001)
@@ -9165,6 +9178,11 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
     datGui.width = 400;
     installMultiplayerGuiRelay(datGui);
+
+    if (typeof ControlHelp !== 'undefined') {
+      ControlHelp.init(guiControls);
+      ControlHelp.attachDatGui(datGui);
+    }
   }
 
   function applySyncedGuiChange(key, value)
@@ -15489,6 +15507,9 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   var smoothedFrameMs = 18;
   var realisticVisualQuality = 1.0;
   var sunlightVisualQuality = 1.0;
+  var smoothedRealisticVisualQuality = 1.0;
+  var smoothedSunlightVisualQuality = 1.0;
+  var smoothedMinShadowLight = 0.02;
   var smoothedAmbientPressure = 0;
   var ambientBlurPassState = 2;
   var ambientLevelCapState = 6;
@@ -15587,7 +15608,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   function getRealisticVisualQuality()
   {
     let quality = guiControls.gpuEffectQuality || 1.0;
-    const framePressure = getFramePressure();
+    const framePressure = getSmoothedFramePressure();
     if (guiControls.adaptiveLightningQuality !== false)
       quality *= 1.0 - framePressure * 0.55;
     return clamp(quality, 0.35, 1.2);
@@ -19232,6 +19253,9 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   var srcVAO;
   var destVAO;
   var destTF;
+  srcVAO = precipitationVao_0;
+  destVAO = precipitationVao_1;
+  destTF = precipitationTF_1;
 
   // preload uniform locations - avoids expensive driver roundtrips every frame
   var uniformLocation_boundaryProgram_iterNum = gl.getUniformLocation(boundaryProgram, 'iterNum');
@@ -19578,9 +19602,12 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     // minShadowLight = clamp(((90 + 10) - Math.abs(solarZenithAngleDeg)) * 0.006, 0.005, 0.040); // decrease until the sun goes 10 deg below the horizon
 
     if (guiControls.autoMinShadowLight) {
-      minShadowLight = map_range_C(Math.abs(solarZenithAngleDeg), 100.0, 85.0, 0.005, 0.040); // decrease until the sun goes 10 deg below the horizon
+      const targetShadow = map_range_C(Math.abs(solarZenithAngleDeg), 100.0, 85.0, 0.005, 0.040);
+      smoothedMinShadowLight = smoothedMinShadowLight * 0.93 + targetShadow * 0.07;
+      minShadowLight = smoothedMinShadowLight;
     } else {
       minShadowLight = guiControls.minShadowLight;
+      smoothedMinShadowLight = guiControls.minShadowLight;
     }
 
     if (ulocsReady) {
@@ -22797,7 +22824,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
             gl.activeTexture(gl.TEXTURE3);
             gl.bindTexture(gl.TEXTURE_2D, wallTexture_1);
             gl.activeTexture(gl.TEXTURE4);
-            gl.bindTexture(gl.TEXTURE_2D, lightTexture_0);
+            gl.bindTexture(gl.TEXTURE_2D, getCurrentLightTexture());
             gl.activeTexture(gl.TEXTURE5);
             gl.bindTexture(gl.TEXTURE_2D, precipitationFeedbackTexture);
             gl.activeTexture(gl.TEXTURE6);
@@ -22848,7 +22875,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
               temperatureChangeHistoryIndex = (temperatureChangeHistoryIndex + 1) % temperatureChangeHistoryTextures.length;
             }
 
-            // calc light
+            // calc light (ping-pong independent of precipitation buffers)
             if (!guiControls.skipLightingCalculation) {
               gl.useProgram(lightingProgram);
               gl.activeTexture(gl.TEXTURE0);
@@ -22859,28 +22886,16 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
               gl.bindTexture(gl.TEXTURE_2D, wallTexture_1);
               gl.activeTexture(gl.TEXTURE3);
 
-              const writeLightTex = even ? lightTexture_1 : lightTexture_0;
+              const readLightTex = getCurrentLightTexture();
+              const writeLightTex = (readLightTex === lightTexture_0) ? lightTexture_1 : lightTexture_0;
+              const writeLightFbo = (writeLightTex === lightTexture_1) ? lightFrameBuff_1 : lightFrameBuff_0;
 
-              if (even) {
-                gl.bindTexture(gl.TEXTURE_2D, lightTexture_0);
-                gl.bindFramebuffer(gl.FRAMEBUFFER, lightFrameBuff_1);
-
-                srcVAO = precipitationVao_0;
-                destTF = precipitationTF_1;
-                destVAO = precipitationVao_1;
-              } else {
-                gl.bindTexture(gl.TEXTURE_2D, lightTexture_1);
-                gl.bindFramebuffer(gl.FRAMEBUFFER, lightFrameBuff_0);
-
-                srcVAO = precipitationVao_1;
-                destTF = precipitationTF_0;
-                destVAO = precipitationVao_0;
-              }
+              gl.bindTexture(gl.TEXTURE_2D, readLightTex);
+              gl.bindFramebuffer(gl.FRAMEBUFFER, writeLightFbo);
 
               gl.drawBuffers([ gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1 ]); // calc light
               gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
               latestLightTexture = writeLightTex;
-              even = !even;
             }
 
 
@@ -22888,6 +22903,10 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
             gl.clear(gl.COLOR_BUFFER_BIT);         // clear precipitation feedback
 
             if (shouldRunPrecipitationThisIteration(i)) { // move precipitation, HUGE PERFORMANCE BOTTLENECK!
+
+              srcVAO = even ? precipitationVao_0 : precipitationVao_1;
+              destTF = even ? precipitationTF_1 : precipitationTF_0;
+              destVAO = even ? precipitationVao_1 : precipitationVao_0;
 
               gl.useProgram(precipitationProgram);
               gl.uniform1f(uloc_precip_iterNum, iterNum);
@@ -22935,6 +22954,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
                 detectParticleLightningStrike();
               }
 
+              even = !even;
             }
 
             if (displayWeatherStations && iterNum % (guiControls.reducedWeatherStationUpdates ? 416 : 208) == 0) { // ~every 60 in game seconds:  0.00008 *3600 * 208 = 59.9, reduced = every 120 seconds
@@ -23064,8 +23084,12 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
 
       updateHdrRenderScaleIfNeeded();
       getSmoothedFramePressure();
-      realisticVisualQuality = getRealisticVisualQuality();
-      sunlightVisualQuality = getSunlightVisualQuality();
+      const targetRealisticQ = getRealisticVisualQuality();
+      const targetSunlightQ = getSunlightVisualQuality();
+      smoothedRealisticVisualQuality = smoothedRealisticVisualQuality * 0.88 + targetRealisticQ * 0.12;
+      smoothedSunlightVisualQuality = smoothedSunlightVisualQuality * 0.88 + targetSunlightQ * 0.12;
+      realisticVisualQuality = smoothedRealisticVisualQuality;
+      sunlightVisualQuality = smoothedSunlightVisualQuality;
       const hdrW = hdrFBO.width;
       const hdrH = hdrFBO.height;
 
