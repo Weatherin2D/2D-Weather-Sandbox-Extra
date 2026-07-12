@@ -11,7 +11,7 @@ uniform vec2 aspectRatios;
 uniform vec2 texelSize;
 uniform vec2 resolution;
 
-uniform float dryLapse;
+const float dryLapse = 0.; // required by common.glsl (illum pass does not use temperature lapse)
 
 #include "common.glsl"
 #include "lightningV2.glsl"
