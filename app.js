@@ -512,6 +512,8 @@ window.setGuiTool = function(tool)
     return false;
   }
   guiControls.tool = tool;
+  if (typeof ControlHelp !== 'undefined')
+    ControlHelp.onToolChanged(tool);
   return true;
 };
 
@@ -737,6 +739,10 @@ const guiControls_default = {
   reducedPrecipitation : false,
   disableTempChangeHistory : false,
   skipLightingCalculation : false,
+  showControlHelp : true,
+  lightningIllumTexture : true,
+  lightningIllumBlurStrength : 1.0,
+  performanceAutoScaling : true,
   reducedWeatherStationUpdates : false,
   skipAdvection : false,
   skipChargeCalculation : false,
@@ -906,6 +912,14 @@ let bloomFBOs = [];
 
 let ambientLightFBOs = [];
 let emittedLightFBO;
+let lightningOnLightTex = null;
+let lightningCloudFlashTex = null;
+let lightningSurfFlashTex = null;
+let lightningCloudFlashBlurFBO = null;
+let lightningSurfFlashBlurFBO = null;
+let lightningBlurTempFBO = null;
+let lightningIllumFrameBuff = null;
+let lightningIllumProgram = null;
 
 
 function clamp(num, min, max) { return Math.min(Math.max(num, min), max); }
@@ -2613,6 +2627,48 @@ function createAmbientLightFBOs()
     let fbo = new FBO(width, height, gl.RGBA16F, gl.RGBA, gl.HALF_FLOAT, gl.LINEAR, gl.REPEAT);
     ambientLightFBOs.push(fbo);
   }
+  createLightningIllumFBOs();
+}
+
+function createLightningIllumFBOs()
+{
+  if (!sim_res_x || !sim_res_y)
+    return;
+
+  const w = sim_res_x;
+  const h = sim_res_y;
+  const setupTex = (tex) => {
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, w, h, 0, gl.RGBA, gl.HALF_FLOAT, null);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  };
+
+  if (!lightningOnLightTex)
+    lightningOnLightTex = gl.createTexture();
+  if (!lightningCloudFlashTex)
+    lightningCloudFlashTex = gl.createTexture();
+  if (!lightningSurfFlashTex)
+    lightningSurfFlashTex = gl.createTexture();
+
+  setupTex(lightningOnLightTex);
+  setupTex(lightningCloudFlashTex);
+  setupTex(lightningSurfFlashTex);
+
+  lightningCloudFlashBlurFBO = new FBO(w, h, gl.RGBA16F, gl.RGBA, gl.HALF_FLOAT, gl.LINEAR);
+  lightningSurfFlashBlurFBO = new FBO(w, h, gl.RGBA16F, gl.RGBA, gl.HALF_FLOAT, gl.LINEAR);
+  lightningBlurTempFBO = new FBO(w, h, gl.RGBA16F, gl.RGBA, gl.HALF_FLOAT, gl.LINEAR);
+
+  if (!lightningIllumFrameBuff)
+    lightningIllumFrameBuff = gl.createFramebuffer();
+  gl.bindFramebuffer(gl.FRAMEBUFFER, lightningIllumFrameBuff);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, lightningOnLightTex, 0);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT1, gl.TEXTURE_2D, lightningCloudFlashTex, 0);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT2, gl.TEXTURE_2D, lightningSurfFlashTex, 0);
+  gl.drawBuffers([ gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1, gl.COLOR_ATTACHMENT2 ]);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
 }
 
 class Weatherstation
@@ -2806,6 +2862,8 @@ class Weatherstation
         // parsing : false
       }
     });
+    if (typeof ControlHelp !== 'undefined')
+      ControlHelp.registerWeatherStationChart(this.#chartCanvas, this.#canvas);
   }
 
   updateChartJS() // add newest measurement to chart
@@ -3717,6 +3775,8 @@ class Radar
       if (meta.desc) productSelect.title = meta.desc;
     });
     productSelect.title = getRadarProductMeta(this.#product).desc || '';
+    productSelect.setAttribute('data-ch-help', 'radar-product');
+    productSelect.setAttribute('data-ch-title', 'Radar product');
     this.#productSelect = productSelect;
     body.appendChild(productSelect);
     body.appendChild(mkDivider());
@@ -3761,6 +3821,8 @@ class Radar
       (v) => { thisObj.#range = parseInt(v); return parseInt(v); }
     );
     this.#rangeSlider = _rs; this.#rangeValBadge = _rb;
+    rangeHd.setAttribute('data-ch-help', 'radar-range');
+    rangeHd.setAttribute('data-ch-title', 'Radar range');
     body.appendChild(rangeHd); body.appendChild(this.#rangeSlider);
 
     const { hd: resHd, sl: _rss, badge: _rsb } = mkSliderGroup(
@@ -3768,6 +3830,8 @@ class Radar
       (v) => { thisObj.#resolution = parseFloat(v); return parseFloat(v).toFixed(1); }
     );
     this.#resSlider = _rss; this.#resValBadge = _rsb;
+    resHd.setAttribute('data-ch-help', 'radar-resolution');
+    resHd.setAttribute('data-ch-title', 'Gate resolution');
     body.appendChild(resHd); body.appendChild(this.#resSlider);
 
     const { hd: sensHd, sl: _ss, badge: _sb } = mkSliderGroup(
@@ -3775,6 +3839,8 @@ class Radar
       (v) => { thisObj.#sensitivity = parseInt(v) / 100; return Math.round(parseInt(v)); }
     );
     this.#sensSlider = _ss; this.#sensValBadge = _sb;
+    sensHd.setAttribute('data-ch-help', 'radar-sensitivity');
+    sensHd.setAttribute('data-ch-title', 'Radar sensitivity');
     body.appendChild(sensHd); body.appendChild(this.#sensSlider);
     body.appendChild(mkDivider());
 
@@ -3831,6 +3897,8 @@ class Radar
 
     this.#menuDiv.appendChild(body);
     document.body.appendChild(this.#menuDiv);
+    if (typeof ControlHelp !== 'undefined')
+      ControlHelp.registerEntityMenu(this.#menuDiv);
   }
 
   static closeAllMenusExcept(exceptRadar)
@@ -4198,6 +4266,8 @@ class Marker
 
     this.#menuDiv.appendChild(body);
     document.body.appendChild(this.#menuDiv);
+    if (typeof ControlHelp !== 'undefined')
+      ControlHelp.registerEntityMenu(this.#menuDiv);
   }
 
   toggleMenu()
@@ -4738,6 +4808,8 @@ class AirmassGenerator
 
     this.#menuDiv.appendChild(body);
     document.body.appendChild(this.#menuDiv);
+    if (typeof ControlHelp !== 'undefined')
+      ControlHelp.registerEntityMenu(this.#menuDiv);
   }
 
   static closeAllMenusExcept(exceptGen)
@@ -8940,6 +9012,15 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       .onChange(function() { uploadSkyUniforms(); })
       .name('Star Density');
 
+    display_folder.add(guiControls, 'showControlHelp')
+      .name('Show Control Help')
+      .onChange(function() {
+        if (typeof ControlHelp !== 'undefined') {
+          ControlHelp.setEnabled(!!guiControls.showControlHelp);
+          ControlHelp.refresh();
+        }
+      });
+
     display_folder.add(guiControls, 'autoMinShadowLight').name('Auto Shadow Light');
 
     display_folder.add(guiControls, 'minShadowLight', 0.0, 0.2, 0.001)
@@ -9110,6 +9191,11 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     advanced_folder.add(guiControls, 'skipCurlCalculation').name('Skip Curl (Faster)');
     advanced_folder.add(guiControls, 'skipCAPECalculation').name('Skip CAPE (Faster)');
     advanced_folder.add(guiControls, 'skipLightingCalculation').name('Skip Lighting (Major boost)');
+    if (guiControls.lightningIllumTexture !== undefined)
+      advanced_folder.add(guiControls, 'lightningIllumTexture').name('Lightning Illum Texture');
+    if (guiControls.lightningIllumBlurStrength !== undefined)
+      advanced_folder.add(guiControls, 'lightningIllumBlurStrength', 0, 2.5, 0.05)
+        .name('Lightning Illum Blur');
     advanced_folder.add(guiControls, 'skipAdvection').name('Skip Advection (No fluid)');
     advanced_folder.add(guiControls, 'skipChargeCalculation').name('Skip Charge (Faster)');
     advanced_folder.add(guiControls, 'reducedWeatherStationUpdates').name('Reduce Station Updates');
@@ -9165,6 +9251,14 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
     datGui.width = 400;
     installMultiplayerGuiRelay(datGui);
+
+  if (typeof ControlHelp !== 'undefined') {
+    ControlHelp.init(guiControls);
+    ControlHelp.attachDatGui(datGui);
+    ControlHelp.attachCustomPanels();
+    ControlHelp.attachSoundingDashboard();
+    ControlHelp.attachMultiplayerPanels();
+  }
   }
 
   function applySyncedGuiChange(key, value)
@@ -10919,6 +11013,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       }
       body.innerHTML = html;
       this.renderMetricsSimilarSection(this._lastAnalogSnapshot);
+      if (typeof ControlHelp !== 'undefined')
+        ControlHelp.attachSoundingMetrics();
     },
     SOUNDING_ANALOGS_STORAGE_KEY : 'soundingAnalogs_v1',
     SOUNDING_ANALOGS_USER_KEY : 'soundingAnalogsUser_v1',
@@ -15489,6 +15585,9 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   var smoothedFrameMs = 18;
   var realisticVisualQuality = 1.0;
   var sunlightVisualQuality = 1.0;
+  var smoothedRealisticVisualQuality = 1.0;
+  var smoothedSunlightVisualQuality = 1.0;
+  var smoothedMinShadowLight = 0.02;
   var smoothedAmbientPressure = 0;
   var ambientBlurPassState = 2;
   var ambientLevelCapState = 6;
@@ -15587,7 +15686,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   function getRealisticVisualQuality()
   {
     let quality = guiControls.gpuEffectQuality || 1.0;
-    const framePressure = getFramePressure();
+    const framePressure = getSmoothedFramePressure();
     if (guiControls.adaptiveLightningQuality !== false)
       quality *= 1.0 - framePressure * 0.55;
     return clamp(quality, 0.35, 1.2);
@@ -15897,6 +15996,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
 
   const lightingShader = await loadShader('lightingShader.frag');
 
+  const lightningIllumShader = await loadShader('lightningIlluminationShader.frag');
+
   const lightningLocationShader = await loadShader('lightningLocationShader.frag');
 
   const setupShader = await loadShader('setupShader.frag');
@@ -15930,6 +16031,14 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   const vorticityProgram = createProgram(simVertexShader, vorticityShader);
   const boundaryProgram = createProgram(simVertexShader, boundaryShader);
   const lightingProgram = createProgram(simVertexShader, lightingShader);
+  let lightningIllumProgramLocal;
+  try {
+    lightningIllumProgramLocal = createProgram(simVertexShader, lightningIllumShader);
+  } catch (e) {
+    loadingBar.showError('Lightning illumination link error: ' + e.message);
+    throw e;
+  }
+  lightningIllumProgram = lightningIllumProgramLocal;
   const lightningLocationProgram = createProgram(simVertexShader, lightningLocationShader);
   const setupProgram = createProgram(simVertexShader, setupShader);
   gl.deleteShader(simVertexShader);
@@ -19159,9 +19268,20 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   gl.uniform1i(gl.getUniformLocation(realisticDisplayProgram, 'lightningTex'), 7);
   gl.uniform1i(gl.getUniformLocation(realisticDisplayProgram, 'lightningDataTex'), 8);
   gl.uniform1i(gl.getUniformLocation(realisticDisplayProgram, 'ambientLightTex'), 9);
+  gl.uniform1i(gl.getUniformLocation(realisticDisplayProgram, 'lightningOnLightTex'), 11);
+  gl.uniform1i(gl.getUniformLocation(realisticDisplayProgram, 'lightningCloudFlashTex'), 12);
+  gl.uniform1i(gl.getUniformLocation(realisticDisplayProgram, 'lightningSurfFlashTex'), 13);
   gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'dryLapse'), dryLapse);
   gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'cellHeight'), cellHeight);
   gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'visualQuality'), 1.0);
+
+  if (lightningIllumProgram && uloc_illum_waterTex) {
+    gl.useProgram(lightningIllumProgram);
+    gl.uniform1i(uloc_illum_waterTex, 0);
+    gl.uniform2f(uloc_illum_resolution, sim_res_x, sim_res_y);
+    gl.uniform2f(uloc_illum_texelSize, texelSizeX, texelSizeY);
+    gl.uniform2f(uloc_illum_aspectRatios, sim_aspect, canvas.width / Math.max(canvas.height, 1));
+  }
 
   gl.useProgram(lightningLocationProgram);
   gl.uniform1i(gl.getUniformLocation(lightningLocationProgram, 'precipFeedbackTex'), 0);
@@ -19197,6 +19317,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   buildColorScaleEditor();
   buildKeybindEditor();
   buildSkyEditor();
+  if (typeof ControlHelp !== 'undefined')
+    ControlHelp.attachCustomPanels();
 
   gl.bindVertexArray(fluidVao);
 
@@ -19232,6 +19354,9 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   var srcVAO;
   var destVAO;
   var destTF;
+  srcVAO = precipitationVao_0;
+  destVAO = precipitationVao_1;
+  destTF = precipitationTF_1;
 
   // preload uniform locations - avoids expensive driver roundtrips every frame
   var uniformLocation_boundaryProgram_iterNum = gl.getUniformLocation(boundaryProgram, 'iterNum');
@@ -19336,6 +19461,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   const uloc_real_ltDayFlash           = gl.getUniformLocation(realisticDisplayProgram, 'ltDayFlash');
   const uloc_real_ltLODLevel           = gl.getUniformLocation(realisticDisplayProgram, 'ltLODLevel');
   const uloc_real_ltSkipBoltPass       = gl.getUniformLocation(realisticDisplayProgram, 'ltSkipBoltPass');
+  const uloc_real_ltSkipIllumPass      = gl.getUniformLocation(realisticDisplayProgram, 'ltSkipIllumPass');
+  const uloc_real_ltUseIllumTexture    = gl.getUniformLocation(realisticDisplayProgram, 'ltUseIllumTexture');
   const uloc_real_ltHasPrecipShaftStrikes = gl.getUniformLocation(realisticDisplayProgram, 'ltHasPrecipShaftStrikes');
   const uloc_real_ltEnableAtmos        = gl.getUniformLocation(realisticDisplayProgram, 'ltEnableAtmos');
   const uloc_real_ltEnableCloudIllum   = gl.getUniformLocation(realisticDisplayProgram, 'ltEnableCloudIllum');
@@ -19353,6 +19480,36 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   const uloc_real_ltCloudObscuration   = gl.getUniformLocation(realisticDisplayProgram, 'ltCloudObscuration');
   const uloc_real_ltChannelIllumRatio  = gl.getUniformLocation(realisticDisplayProgram, 'ltChannelIllumRatio');
   const uloc_real_ltStrobeFlicker      = gl.getUniformLocation(realisticDisplayProgram, 'ltStrobeFlicker');
+
+  const uloc_illum_waterTex            = lightningIllumProgram ? gl.getUniformLocation(lightningIllumProgram, 'waterTex') : null;
+  const uloc_illum_sunAngle            = lightningIllumProgram ? gl.getUniformLocation(lightningIllumProgram, 'sunAngle') : null;
+  const uloc_illum_aspectRatios        = lightningIllumProgram ? gl.getUniformLocation(lightningIllumProgram, 'aspectRatios') : null;
+  const uloc_illum_texelSize           = lightningIllumProgram ? gl.getUniformLocation(lightningIllumProgram, 'texelSize') : null;
+  const uloc_illum_resolution          = lightningIllumProgram ? gl.getUniformLocation(lightningIllumProgram, 'resolution') : null;
+  const uloc_illum_ltNumStrikes        = lightningIllumProgram ? gl.getUniformLocation(lightningIllumProgram, 'ltNumStrikes') : null;
+  const uloc_illum_ltEventAge          = lightningIllumProgram ? gl.getUniformLocation(lightningIllumProgram, 'ltEventAge') : null;
+  const uloc_illum_ltStrikePos         = lightningIllumProgram ? gl.getUniformLocation(lightningIllumProgram, 'ltStrikePos') : null;
+  const uloc_illum_ltStrikeDest        = lightningIllumProgram ? gl.getUniformLocation(lightningIllumProgram, 'ltStrikeDest') : null;
+  const uloc_illum_ltStrikeMeta        = lightningIllumProgram ? gl.getUniformLocation(lightningIllumProgram, 'ltStrikeMeta') : null;
+  const uloc_illum_ltStrikeRoute       = lightningIllumProgram ? gl.getUniformLocation(lightningIllumProgram, 'ltStrikeRoute') : null;
+  const uloc_illum_ltSkipBoltPass      = lightningIllumProgram ? gl.getUniformLocation(lightningIllumProgram, 'ltSkipBoltPass') : null;
+  const uloc_illum_ltSkipIllumPass     = lightningIllumProgram ? gl.getUniformLocation(lightningIllumProgram, 'ltSkipIllumPass') : null;
+  const uloc_illum_ltHasPrecipShaftStrikes = lightningIllumProgram ? gl.getUniformLocation(lightningIllumProgram, 'ltHasPrecipShaftStrikes') : null;
+  const uloc_illum_ltBrightness        = lightningIllumProgram ? gl.getUniformLocation(lightningIllumProgram, 'ltBrightness') : null;
+  const uloc_illum_ltContrast          = lightningIllumProgram ? gl.getUniformLocation(lightningIllumProgram, 'ltContrast') : null;
+  const uloc_illum_ltFlashDuration     = lightningIllumProgram ? gl.getUniformLocation(lightningIllumProgram, 'ltFlashDuration') : null;
+  const uloc_illum_ltGlowStrength      = lightningIllumProgram ? gl.getUniformLocation(lightningIllumProgram, 'ltGlowStrength') : null;
+  const uloc_illum_ltAtmosIllum        = lightningIllumProgram ? gl.getUniformLocation(lightningIllumProgram, 'ltAtmosIllum') : null;
+  const uloc_illum_ltCloudIllum        = lightningIllumProgram ? gl.getUniformLocation(lightningIllumProgram, 'ltCloudIllum') : null;
+  const uloc_illum_ltRainIllum         = lightningIllumProgram ? gl.getUniformLocation(lightningIllumProgram, 'ltRainIllum') : null;
+  const uloc_illum_ltNightFlash        = lightningIllumProgram ? gl.getUniformLocation(lightningIllumProgram, 'ltNightFlash') : null;
+  const uloc_illum_ltDayFlash          = lightningIllumProgram ? gl.getUniformLocation(lightningIllumProgram, 'ltDayFlash') : null;
+  const uloc_illum_ltLODLevel          = lightningIllumProgram ? gl.getUniformLocation(lightningIllumProgram, 'ltLODLevel') : null;
+  const uloc_illum_ltEnableAtmos       = lightningIllumProgram ? gl.getUniformLocation(lightningIllumProgram, 'ltEnableAtmos') : null;
+  const uloc_illum_ltEnableCloudIllum  = lightningIllumProgram ? gl.getUniformLocation(lightningIllumProgram, 'ltEnableCloudIllum') : null;
+  const uloc_illum_ltEnableRainIllum   = lightningIllumProgram ? gl.getUniformLocation(lightningIllumProgram, 'ltEnableRainIllum') : null;
+  const uloc_illum_ltChannelIllumRatio = lightningIllumProgram ? gl.getUniformLocation(lightningIllumProgram, 'ltChannelIllumRatio') : null;
+  const uloc_illum_ltCloudObscuration  = lightningIllumProgram ? gl.getUniformLocation(lightningIllumProgram, 'ltCloudObscuration') : null;
 
   // precipDisplay per-frame
   const uloc_precipDisp_aspectRatios   = gl.getUniformLocation(precipDisplayProgram, 'aspectRatios');
@@ -19578,9 +19735,12 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     // minShadowLight = clamp(((90 + 10) - Math.abs(solarZenithAngleDeg)) * 0.006, 0.005, 0.040); // decrease until the sun goes 10 deg below the horizon
 
     if (guiControls.autoMinShadowLight) {
-      minShadowLight = map_range_C(Math.abs(solarZenithAngleDeg), 100.0, 85.0, 0.005, 0.040); // decrease until the sun goes 10 deg below the horizon
+      const targetShadow = map_range_C(Math.abs(solarZenithAngleDeg), 100.0, 85.0, 0.005, 0.040);
+      smoothedMinShadowLight = smoothedMinShadowLight * 0.93 + targetShadow * 0.07;
+      minShadowLight = smoothedMinShadowLight;
     } else {
       minShadowLight = guiControls.minShadowLight;
+      smoothedMinShadowLight = guiControls.minShadowLight;
     }
 
     if (ulocsReady) {
@@ -21116,25 +21276,14 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   // when settings haven't changed.
   var _ltStaticUniformsKey = null;
   var _ltStaticUniformsLod = -1;
+  var _lastLightningStrikeState = { count: 0, visualAge: -1, hasPrecipShaftStrikes: 0, skipBoltPass: 0 };
 
-  function uploadProceduralLightningUniforms()
+  function syncLightningStrikeUniformBuffers()
   {
-    const legacyStyle = isLegacyLightningStyle() || !lightningV2InRealisticShader;
-    if (uloc_real_ltUseLegacyStyle)
-      gl.uniform1i(uloc_real_ltUseLegacyStyle, legacyStyle ? 1 : 0);
-    if (!lightningV2InRealisticShader || !uloc_real_ltNumStrikes)
-      return;
-    if (legacyStyle) {
-      gl.uniform1i(uloc_real_ltNumStrikes, 0);
-      gl.uniform1f(uloc_real_ltEventAge, -1);
-      return;
-    }
     const st = proceduralLightningState;
     const maxShader = typeof LightningV2 !== 'undefined' ? LightningV2.MAX_SHADER_STRIKES : 8;
     const visualAge = getLightningVisualAge();
     const count = visualAge >= 0 ? Math.min(st.strikes.length, maxShader) : 0;
-    gl.uniform1f(uloc_real_ltEventAge, visualAge);
-    gl.uniform1i(uloc_real_ltNumStrikes, count);
 
     let skipBoltPass = 0;
     if (count > 0) {
@@ -21147,8 +21296,6 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         }
       }
     }
-    if (uloc_real_ltSkipBoltPass)
-      gl.uniform1i(uloc_real_ltSkipBoltPass, skipBoltPass);
 
     let hasPrecipShaftStrikes = 0;
     if (count > 0 && guiControls.ltEnableRainShaftIllumination !== false) {
@@ -21159,8 +21306,6 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         }
       }
     }
-    if (uloc_real_ltHasPrecipShaftStrikes)
-      gl.uniform1i(uloc_real_ltHasPrecipShaftStrikes, hasPrecipShaftStrikes);
 
     procLightningPosArr.fill(0);
     procLightningDestArr.fill(0);
@@ -21189,11 +21334,178 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       procLightningRouteArr[i * 4 + 2] = route[2];
       procLightningRouteArr[i * 4 + 3] = route[3];
     }
+
+    _lastLightningStrikeState = { count, visualAge, hasPrecipShaftStrikes, skipBoltPass, channelId: st.channelId };
+    return _lastLightningStrikeState;
+  }
+
+  function applyLightningV2StaticUniforms(locs, lodVal, channelId)
+  {
+    if (!locs || locs.ltBrightness == null) return;
+    gl.uniform1f(locs.ltBrightness, guiControls.lightningBrightness || 1);
+    gl.uniform1f(locs.ltContrast, guiControls.lightningContrast || 1);
+    if (locs.ltFlashDuration) gl.uniform1f(locs.ltFlashDuration, getEffectiveLtFlashDuration());
+    if (locs.ltGlowStrength) gl.uniform1f(locs.ltGlowStrength, guiControls.glowStrength || 1);
+    if (locs.ltAtmosIllum) gl.uniform1f(locs.ltAtmosIllum, guiControls.atmosphericIlluminationStrength || 1);
+    if (locs.ltCloudIllum) gl.uniform1f(locs.ltCloudIllum, guiControls.cloudIlluminationStrength || 1);
+    if (locs.ltRainIllum) gl.uniform1f(locs.ltRainIllum, guiControls.rainShaftIlluminationStrength || 1);
+    if (locs.ltNightFlash) gl.uniform1f(locs.ltNightFlash, guiControls.nighttimeFlashStrength || 1);
+    if (locs.ltDayFlash) gl.uniform1f(locs.ltDayFlash, guiControls.daytimeFlashStrength || 0.45);
+    if (locs.ltLODLevel) gl.uniform1f(locs.ltLODLevel, lodVal);
+    if (locs.ltEnableAtmos) gl.uniform1i(locs.ltEnableAtmos, guiControls.ltEnableAtmosphericLighting !== false ? 1 : 0);
+    if (locs.ltEnableCloudIllum) gl.uniform1i(locs.ltEnableCloudIllum, guiControls.ltEnableCloudIllumination !== false ? 1 : 0);
+    if (locs.ltEnableRainIllum) gl.uniform1i(locs.ltEnableRainIllum, guiControls.ltEnableRainShaftIllumination !== false ? 1 : 0);
+    if (locs.ltChannelIllumRatio) gl.uniform1f(locs.ltChannelIllumRatio, guiControls.channelIllumRatio ?? 0.5);
+    if (locs.ltCloudObscuration) gl.uniform1f(locs.ltCloudObscuration, guiControls.cloudObscurationStrength ?? 0.55);
+  }
+
+  function blurLightningIllumTexture(srcTex, destFbo, strength)
+  {
+    if (!srcTex || !destFbo || !bloomBlurProgram || !lightningBlurTempFBO)
+      return;
+    const blurStrength = strength != null ? strength : (guiControls.lightningIllumBlurStrength ?? 1.0);
+    if (blurStrength <= 0.01)
+      return;
+
+    const spread = 0.75 + blurStrength * 2.35;
+    gl.useProgram(bloomBlurProgram);
+    gl.bindVertexArray(postProcessingVao);
+    gl.uniform1i(uloc_bloom_bloomTexture, 0);
+    gl.viewport(0, 0, sim_res_x, sim_res_y);
+
+    gl.uniform2f(uloc_bloom_texelSize, spread / sim_res_x, 0.0);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, srcTex);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, lightningBlurTempFBO.frameBuffer);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+
+    gl.uniform2f(uloc_bloom_texelSize, 0.0, spread / sim_res_y);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, lightningBlurTempFBO.texture);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, destFbo.frameBuffer);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+
+    gl.bindVertexArray(fluidVao);
+  }
+
+  function getLightningFlashIllumTexture(rawTex, blurFbo)
+  {
+    const blurStrength = guiControls.lightningIllumBlurStrength ?? 1.0;
+    if (blurStrength <= 0.01 || !blurFbo || !blurFbo.texture)
+      return rawTex;
+    return blurFbo.texture;
+  }
+
+  function updateLightningIlluminationTexture()
+  {
+    if (!lightningIllumProgram || !lightningIllumFrameBuff || guiControls.paused)
+      return;
+    if (isLegacyLightningStyle() || !lightningV2InRealisticShader || guiControls.lightningIllumTexture === false)
+      return;
+
+    const strikeState = syncLightningStrikeUniformBuffers();
+    if (strikeState.count <= 0 || strikeState.visualAge < 0)
+      return;
+
+    const zoomNorm = clamp(cam.curZoom / sim_res_x / (guiControls.lightningLODDistance || 1), 0, 1);
+    let lod = guiControls.dynamicLOD ? clamp(zoomNorm * 2.5, 0, 1) : 1.0;
+    let gpuQuality = realisticVisualQuality;
+    if (guiControls.adaptiveLightningQuality !== false) {
+      const frameLod = clamp(1.0 - (smoothedFrameMs - TARGET_FRAME_MS) / 38.0, 0.35, 1.0);
+      lod *= frameLod;
+    }
+    const lodVal = lod * gpuQuality;
+
+    gl.bindFramebuffer(gl.FRAMEBUFFER, lightningIllumFrameBuff);
+    gl.viewport(0, 0, sim_res_x, sim_res_y);
+    gl.drawBuffers([ gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1, gl.COLOR_ATTACHMENT2 ]);
+    gl.clearColor(0.0, 0.0, 0.0, 0.0);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+
+    gl.useProgram(lightningIllumProgram);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, waterTexture_1);
+    if (uloc_illum_sunAngle)
+      gl.uniform1f(uloc_illum_sunAngle, (90 - guiControls.sunAngle) * degToRad);
+    if (uloc_illum_aspectRatios)
+      gl.uniform2f(uloc_illum_aspectRatios, sim_aspect, canvas.width / Math.max(canvas.height, 1));
+    gl.uniform1f(uloc_illum_ltEventAge, strikeState.visualAge);
+    gl.uniform1i(uloc_illum_ltNumStrikes, strikeState.count);
+    if (uloc_illum_ltSkipBoltPass) gl.uniform1i(uloc_illum_ltSkipBoltPass, 1);
+    if (uloc_illum_ltSkipIllumPass) gl.uniform1i(uloc_illum_ltSkipIllumPass, 0);
+    if (uloc_illum_ltHasPrecipShaftStrikes)
+      gl.uniform1i(uloc_illum_ltHasPrecipShaftStrikes, strikeState.hasPrecipShaftStrikes);
+    gl.uniform4fv(uloc_illum_ltStrikePos, procLightningPosArr);
+    gl.uniform4fv(uloc_illum_ltStrikeDest, procLightningDestArr);
+    gl.uniform4fv(uloc_illum_ltStrikeMeta, procLightningMetaArr);
+    if (uloc_illum_ltStrikeRoute)
+      gl.uniform4fv(uloc_illum_ltStrikeRoute, procLightningRouteArr);
+    applyLightningV2StaticUniforms({
+      ltBrightness: uloc_illum_ltBrightness,
+      ltContrast: uloc_illum_ltContrast,
+      ltFlashDuration: uloc_illum_ltFlashDuration,
+      ltGlowStrength: uloc_illum_ltGlowStrength,
+      ltAtmosIllum: uloc_illum_ltAtmosIllum,
+      ltCloudIllum: uloc_illum_ltCloudIllum,
+      ltRainIllum: uloc_illum_ltRainIllum,
+      ltNightFlash: uloc_illum_ltNightFlash,
+      ltDayFlash: uloc_illum_ltDayFlash,
+      ltLODLevel: uloc_illum_ltLODLevel,
+      ltEnableAtmos: uloc_illum_ltEnableAtmos,
+      ltEnableCloudIllum: uloc_illum_ltEnableCloudIllum,
+      ltEnableRainIllum: uloc_illum_ltEnableRainIllum,
+      ltChannelIllumRatio: uloc_illum_ltChannelIllumRatio,
+      ltCloudObscuration: uloc_illum_ltCloudObscuration,
+    }, lodVal, strikeState.channelId);
+
+    gl.bindVertexArray(fluidVao);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+
+    const blurStrength = guiControls.lightningIllumBlurStrength ?? 1.0;
+    if (blurStrength > 0.01) {
+      blurLightningIllumTexture(lightningCloudFlashTex, lightningCloudFlashBlurFBO, blurStrength);
+      blurLightningIllumTexture(lightningSurfFlashTex, lightningSurfFlashBlurFBO, blurStrength);
+    }
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  }
+
+  function uploadProceduralLightningUniforms()
+  {
+    const legacyStyle = isLegacyLightningStyle() || !lightningV2InRealisticShader;
+    if (uloc_real_ltUseLegacyStyle)
+      gl.uniform1i(uloc_real_ltUseLegacyStyle, legacyStyle ? 1 : 0);
+    if (!lightningV2InRealisticShader || !uloc_real_ltNumStrikes)
+      return;
+    if (legacyStyle) {
+      gl.uniform1i(uloc_real_ltNumStrikes, 0);
+      gl.uniform1f(uloc_real_ltEventAge, -1);
+      return;
+    }
+    const st = proceduralLightningState;
+    const strikeState = syncLightningStrikeUniformBuffers();
+    const visualAge = strikeState.visualAge;
+    const count = strikeState.count;
+    gl.uniform1f(uloc_real_ltEventAge, visualAge);
+    gl.uniform1i(uloc_real_ltNumStrikes, count);
+
+    if (uloc_real_ltSkipBoltPass)
+      gl.uniform1i(uloc_real_ltSkipBoltPass, strikeState.skipBoltPass);
+
+    if (uloc_real_ltHasPrecipShaftStrikes)
+      gl.uniform1i(uloc_real_ltHasPrecipShaftStrikes, strikeState.hasPrecipShaftStrikes);
+
     gl.uniform4fv(uloc_real_ltStrikePos, procLightningPosArr);
     gl.uniform4fv(uloc_real_ltStrikeDest, procLightningDestArr);
     gl.uniform4fv(uloc_real_ltStrikeMeta, procLightningMetaArr);
     if (uloc_real_ltStrikeRoute)
       gl.uniform4fv(uloc_real_ltStrikeRoute, procLightningRouteArr);
+
+    const useIllumTex = count > 0 && visualAge >= 0 && lightningIllumProgram
+      && guiControls.lightningIllumTexture !== false && !guiControls.paused;
+    if (uloc_real_ltUseIllumTexture)
+      gl.uniform1i(uloc_real_ltUseIllumTexture, useIllumTex ? 1 : 0);
+    if (uloc_real_ltSkipIllumPass)
+      gl.uniform1i(uloc_real_ltSkipIllumPass, useIllumTex ? 1 : 0);
 
     // Static settings uniforms: only re-upload when the value key changes.
     // These ~25 gl.uniform calls were happening every frame even with no lightning active.
@@ -22797,7 +23109,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
             gl.activeTexture(gl.TEXTURE3);
             gl.bindTexture(gl.TEXTURE_2D, wallTexture_1);
             gl.activeTexture(gl.TEXTURE4);
-            gl.bindTexture(gl.TEXTURE_2D, lightTexture_0);
+            gl.bindTexture(gl.TEXTURE_2D, getCurrentLightTexture());
             gl.activeTexture(gl.TEXTURE5);
             gl.bindTexture(gl.TEXTURE_2D, precipitationFeedbackTexture);
             gl.activeTexture(gl.TEXTURE6);
@@ -22848,7 +23160,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
               temperatureChangeHistoryIndex = (temperatureChangeHistoryIndex + 1) % temperatureChangeHistoryTextures.length;
             }
 
-            // calc light
+            // calc light (ping-pong independent of precipitation buffers)
             if (!guiControls.skipLightingCalculation) {
               gl.useProgram(lightingProgram);
               gl.activeTexture(gl.TEXTURE0);
@@ -22859,28 +23171,16 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
               gl.bindTexture(gl.TEXTURE_2D, wallTexture_1);
               gl.activeTexture(gl.TEXTURE3);
 
-              const writeLightTex = even ? lightTexture_1 : lightTexture_0;
+              const readLightTex = getCurrentLightTexture();
+              const writeLightTex = (readLightTex === lightTexture_0) ? lightTexture_1 : lightTexture_0;
+              const writeLightFbo = (writeLightTex === lightTexture_1) ? lightFrameBuff_1 : lightFrameBuff_0;
 
-              if (even) {
-                gl.bindTexture(gl.TEXTURE_2D, lightTexture_0);
-                gl.bindFramebuffer(gl.FRAMEBUFFER, lightFrameBuff_1);
-
-                srcVAO = precipitationVao_0;
-                destTF = precipitationTF_1;
-                destVAO = precipitationVao_1;
-              } else {
-                gl.bindTexture(gl.TEXTURE_2D, lightTexture_1);
-                gl.bindFramebuffer(gl.FRAMEBUFFER, lightFrameBuff_0);
-
-                srcVAO = precipitationVao_1;
-                destTF = precipitationTF_0;
-                destVAO = precipitationVao_0;
-              }
+              gl.bindTexture(gl.TEXTURE_2D, readLightTex);
+              gl.bindFramebuffer(gl.FRAMEBUFFER, writeLightFbo);
 
               gl.drawBuffers([ gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1 ]); // calc light
               gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
               latestLightTexture = writeLightTex;
-              even = !even;
             }
 
 
@@ -22888,6 +23188,10 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
             gl.clear(gl.COLOR_BUFFER_BIT);         // clear precipitation feedback
 
             if (shouldRunPrecipitationThisIteration(i)) { // move precipitation, HUGE PERFORMANCE BOTTLENECK!
+
+              srcVAO = even ? precipitationVao_0 : precipitationVao_1;
+              destTF = even ? precipitationTF_1 : precipitationTF_0;
+              destVAO = even ? precipitationVao_1 : precipitationVao_0;
 
               gl.useProgram(precipitationProgram);
               gl.uniform1f(uloc_precip_iterNum, iterNum);
@@ -22935,6 +23239,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
                 detectParticleLightningStrike();
               }
 
+              even = !even;
             }
 
             if (displayWeatherStations && iterNum % (guiControls.reducedWeatherStationUpdates ? 416 : 208) == 0) { // ~every 60 in game seconds:  0.00008 *3600 * 208 = 59.9, reduced = every 120 seconds
@@ -23064,10 +23369,16 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
 
       updateHdrRenderScaleIfNeeded();
       getSmoothedFramePressure();
-      realisticVisualQuality = getRealisticVisualQuality();
-      sunlightVisualQuality = getSunlightVisualQuality();
+      const targetRealisticQ = getRealisticVisualQuality();
+      const targetSunlightQ = getSunlightVisualQuality();
+      smoothedRealisticVisualQuality = smoothedRealisticVisualQuality * 0.88 + targetRealisticQ * 0.12;
+      smoothedSunlightVisualQuality = smoothedSunlightVisualQuality * 0.88 + targetSunlightQ * 0.12;
+      realisticVisualQuality = smoothedRealisticVisualQuality;
+      sunlightVisualQuality = smoothedSunlightVisualQuality;
       const hdrW = hdrFBO.width;
       const hdrH = hdrFBO.height;
+
+      updateLightningIlluminationTexture();
 
       { // Ambient light from emitted sources (lightning bloom) — skip while paused to preserve last frame
         if (!guiControls.paused && needsAmbientLightBlur()) {
@@ -23168,6 +23479,14 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       gl.bindTexture(gl.TEXTURE_2D, ambientLightFBOs[0].texture);
       gl.activeTexture(gl.TEXTURE10);
       gl.bindTexture(gl.TEXTURE_2D, A380GearTexture);
+      gl.activeTexture(gl.TEXTURE11);
+      gl.bindTexture(gl.TEXTURE_2D, lightningOnLightTex);
+      gl.activeTexture(gl.TEXTURE12);
+      gl.bindTexture(gl.TEXTURE_2D,
+        getLightningFlashIllumTexture(lightningCloudFlashTex, lightningCloudFlashBlurFBO));
+      gl.activeTexture(gl.TEXTURE13);
+      gl.bindTexture(gl.TEXTURE_2D,
+        getLightningFlashIllumTexture(lightningSurfFlashTex, lightningSurfFlashBlurFBO));
 
       gl.useProgram(skyBackgroundDisplayProgram);
       gl.uniform2f(uloc_sky_aspectRatios, sim_aspect, canvas_aspect);

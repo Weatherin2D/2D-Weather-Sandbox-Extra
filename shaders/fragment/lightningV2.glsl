@@ -34,6 +34,7 @@ uniform float ltStrobeFlicker;
 
 uniform float ltLODLevel;
 uniform int ltSkipBoltPass;
+uniform int ltSkipIllumPass;
 uniform int ltHasPrecipShaftStrikes;
 
 const vec3 LT_CORE_COL = vec3(1.0, 0.98, 1.0);
@@ -686,7 +687,7 @@ void ltAccumulateBoltsAndIllum(vec2 uv, float aspect, float cloudwater, float pr
         bolts += boltCol;
     }
 
-    if (illumActive) {
+    if (illumActive && ltSkipIllumPass == 0) {
       float prop = ltPropagate(ltEventAge, ltType);
       float pathGlow = ltBoltChannelGlow(p, oA, dA, prop, cloudwater) * proxFade;
       float behindMult = behindCloud
