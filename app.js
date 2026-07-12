@@ -8328,7 +8328,10 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   // SETUP GUI
 
   if (guiControlsFromSaveFile == null) { // use default settings
-    setupDatGui(JSON.stringify(guiControls_default));
+    const defaults = JSON.parse(JSON.stringify(guiControls_default));
+    if (typeof ControlHelp !== 'undefined' && ControlHelp.loadShowControlHelpPreference)
+      defaults.showControlHelp = ControlHelp.loadShowControlHelpPreference();
+    setupDatGui(JSON.stringify(defaults));
     guiControls.simHeight = sim_height;
     guiControls.globalEffectsEndAlt = sim_height;
 
@@ -9010,8 +9013,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       .name('Show Control Help')
       .onChange(function() {
         if (typeof ControlHelp !== 'undefined') {
-          ControlHelp.setEnabled(!!guiControls.showControlHelp);
-          ControlHelp.refresh();
+          ControlHelp.applyShowControlHelp(!!guiControls.showControlHelp);
         }
       });
 

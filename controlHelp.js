@@ -270,6 +270,9 @@ const ControlHelp = (function() {
         '#controlHelpPanel .chp-keys{margin-top:6px;font-size:11px;color:#8a93a8;}' +
         '#controlHelpPanel .chp-keys strong{color:#a8c4e8;font-weight:600;}' +
         '.dg .cr.ch-help-hover{background:rgba(74,144,226,.12)!important;}' +
+        '.intro-hints-option{margin-top:14px;font-size:14px;}' +
+        '.intro-hints-option label{cursor:pointer;display:inline-flex;align-items:center;gap:8px;color:#d8dde8;}' +
+        '.intro-hints-option input{width:16px;height:16px;cursor:pointer;}' +
         '@media(max-width:900px){#controlHelpPanel{max-width:calc(100vw - 24px);left:12px;right:12px;}}';
       document.head.appendChild(style);
     }
@@ -449,6 +452,48 @@ const ControlHelp = (function() {
   };
 
   let panelIntroEl = null;
+
+  const SHOW_CONTROL_HELP_KEY = 'wse_showControlHelp';
+
+  function loadShowControlHelpPreference() {
+    try {
+      const raw = localStorage.getItem(SHOW_CONTROL_HELP_KEY);
+      if (raw === '0' || raw === 'false') return false;
+      if (raw === '1' || raw === 'true') return true;
+    } catch (e) { /* ignore quota */ }
+    return true;
+  }
+
+  function saveShowControlHelpPreference(on) {
+    try {
+      localStorage.setItem(SHOW_CONTROL_HELP_KEY, on ? '1' : '0');
+    } catch (e) { /* ignore quota */ }
+  }
+
+  function syncIntroHelpToggle(on) {
+    const el = document.getElementById('introShowHints');
+    if (el) el.checked = !!on;
+  }
+
+  function applyShowControlHelp(on) {
+    const enabledHelp = !!on;
+    saveShowControlHelpPreference(enabledHelp);
+    syncIntroHelpToggle(enabledHelp);
+    if (controls)
+      controls.showControlHelp = enabledHelp;
+    setEnabled(enabledHelp);
+    refreshVisibility();
+  }
+
+  function initIntroHelpToggle() {
+    const el = document.getElementById('introShowHints');
+    if (!el || el.dataset.chHelpBound) return;
+    el.dataset.chHelpBound = '1';
+    el.checked = loadShowControlHelpPreference();
+    el.addEventListener('change', function() {
+      applyShowControlHelp(el.checked);
+    });
+  }
 
   function attachElement(el, title, body, keys) {
     if (!el || el.dataset.chHelpBound) return;
@@ -761,6 +806,7 @@ const ControlHelp = (function() {
   function init(guiControlsRef) {
     controls = guiControlsRef;
     ensurePanel();
+    applyShowControlHelp(loadShowControlHelpPreference());
     if (controls.tool)
       lastTool = controls.tool;
     showTool(controls.tool || 'TOOL_NONE');
@@ -798,8 +844,16 @@ const ControlHelp = (function() {
     onToolChanged,
     setEnabled,
     refresh: refreshVisibility,
+    loadShowControlHelpPreference,
+    applyShowControlHelp,
+    initIntroHelpToggle,
   };
 })();
 
-if (typeof window !== 'undefined')
+if (typeof window !== 'undefined') {
   window.ControlHelp = ControlHelp;
+  if (document.readyState === 'loading')
+    document.addEventListener('DOMContentLoaded', function() { ControlHelp.initIntroHelpToggle(); });
+  else
+    ControlHelp.initIntroHelpToggle();
+}
