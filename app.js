@@ -936,6 +936,9 @@ var lastFrameNum = 0;
 
 var iterNum = 0;
 var lastRadarCacheIterNum = -1;
+// Precip feedback is cleared every sim iter; skipped precip passes leave it empty.
+// Snapshot after a successful precip run so radar cache never copies a cleared buffer.
+var precipFeedbackReadyForRadar = false;
 
 // global framebuffers for measurements
 var frameBuff_0;
@@ -15984,11 +15987,9 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
 
   function shouldDrawRadarOverlayThisFrame()
   {
-    if (!guiControls.radarOverlay)
-      return false;
-    if (!useLiteVisualsMode() && !guiControls.highResPerformanceMode)
-      return true;
-    return frameNum % 2 === 0;
+    // Always draw when enabled — lite/perf every-other-frame skips (and lightning
+    // frame-pressure flips) made the overlay flicker on and off.
+    return !!guiControls.radarOverlay;
   }
 
   function getSmoothedFramePressure()
@@ -20294,6 +20295,18 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     return (iterNum - lastRadarCacheIterNum) >= updateFreq;
   }
 
+  function copyRadarPrecipCacheFromFeedback()
+  {
+    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, precipitationFeedbackFrameBuff);
+    gl.readBuffer(gl.COLOR_ATTACHMENT0);
+    gl.bindTexture(gl.TEXTURE_2D, cachedPrecipFeedbackTexture);
+    gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, sim_res_x, sim_res_y);
+    gl.readBuffer(gl.COLOR_ATTACHMENT1);
+    gl.bindTexture(gl.TEXTURE_2D, cachedPrecipDepositionTexture);
+    gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, sim_res_x, sim_res_y);
+    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, null);
+  }
+
   function updateRadarDisplayCache()
   {
     if (!shouldUpdateRadarDisplayCache())
@@ -20311,14 +20324,10 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, sim_res_x, sim_res_y);
     gl.bindFramebuffer(gl.READ_FRAMEBUFFER, null);
 
-    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, precipitationFeedbackFrameBuff);
-    gl.readBuffer(gl.COLOR_ATTACHMENT0);
-    gl.bindTexture(gl.TEXTURE_2D, cachedPrecipFeedbackTexture);
-    gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, sim_res_x, sim_res_y);
-    gl.readBuffer(gl.COLOR_ATTACHMENT1);
-    gl.bindTexture(gl.TEXTURE_2D, cachedPrecipDepositionTexture);
-    gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, sim_res_x, sim_res_y);
-    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, null);
+    // Only copy precip feedback when it was filled this frame. Later skipped
+    // iters clear the FBO without rewriting it; copying that blanked the radar.
+    if (precipFeedbackReadyForRadar)
+      copyRadarPrecipCacheFromFeedback();
 
     lastRadarCacheIterNum = iterNum;
     updateRadarAccumTextureFromCache();
@@ -23958,6 +23967,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
 
             gl.bindFramebuffer(gl.FRAMEBUFFER, precipitationFeedbackFrameBuff);
             gl.clear(gl.COLOR_BUFFER_BIT);         // clear precipitation feedback
+            precipFeedbackReadyForRadar = false;
 
             if (shouldRunPrecipitationThisIteration(i)) { // move precipitation, HUGE PERFORMANCE BOTTLENECK!
 
@@ -23998,6 +24008,11 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
               gl.bindTransformFeedback(gl.TRANSFORM_FEEDBACK, null);
               gl.disable(gl.BLEND);
               gl.bindVertexArray(fluidVao); // set screenfilling rect again
+
+              // Keep last good precip sample for radar before later iters clear it.
+              precipFeedbackReadyForRadar = true;
+              if (typeof cachedPrecipFeedbackTexture !== 'undefined' && cachedPrecipFeedbackTexture)
+                copyRadarPrecipCacheFromFeedback();
 
               if (particleLightningCheckPending && i === 0) {
                 gl.useProgram(lightningLocationProgram);
