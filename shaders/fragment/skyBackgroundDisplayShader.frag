@@ -282,17 +282,25 @@ void main()
   }
   twilightAmt = clamp(twilightAmt, 0.0, 1.0);
 
-  // Blue above, warm gold at horizon — skip desaturated purple/grey mid-tones.
+  // Warm gold at horizon → twilight bands → black zenith (never leave warm color at the top).
   vec3 horizonWarm = mix(skyTwilightHorizon, skyHorizonGold, clamp(scatter * 0.95, 0.0, 1.0)) * 0.78;
-  vec3 twilightSky = mix(horizonWarm, skyTwilightLow * 0.82, smoothstep(0.0, 0.20, skyHeight));
-  twilightSky = mix(twilightSky, daySky, smoothstep(0.08, 0.52, skyHeight));
+  vec3 twilightSky = mix(horizonWarm, skyTwilightLow * 0.82, smoothstep(0.0, 0.14, skyHeight));
+  twilightSky = mix(twilightSky, skyTwilightMid * 0.90, smoothstep(0.10, 0.32, skyHeight));
+  twilightSky = mix(twilightSky, skyTwilightUpper * 0.75, smoothstep(0.26, 0.52, skyHeight));
+  twilightSky = mix(twilightSky, skyTwilightTop * 0.55, smoothstep(0.42, 0.72, skyHeight));
+  twilightSky = mix(twilightSky, vec3(0.0), smoothstep(0.58, 1.0, skyHeight));
 
   vec2 relSun = texCoord - vec2(sunHoriz, horizonLine + 0.04);
   relSun.x *= aspectRatios.x;
   float sunWarmth = exp(-length(relSun) * 2.2) * (0.35 + scatter * 0.30);
+  // Keep sun warmth near the horizon so it cannot tint the zenith.
+  sunWarmth *= 1.0 - smoothstep(0.32, 0.72, skyHeight);
   twilightSky = mix(twilightSky, vec3(0.88, 0.62, 0.24), sunWarmth * twilightAmt * 0.55);
 
   vec3 mixedCol = mix(daySky, twilightSky, smoothstep(0.0, 0.82, twilightAmt));
+  // Day and twilight both must finish black at the top of the skybox.
+  float zenithBlack = smoothstep(0.62, 1.0, skyHeight);
+  mixedCol = mix(mixedCol, vec3(0.0), zenithBlack);
 
   // Star field - only visible at night (sun below horizon)
   vec3 starColor = vec3(0.0);
@@ -404,8 +412,10 @@ void main()
 
   float hazeStrength = clamp(twilightAmt * 0.85 + hazeBoost * bandMask, 0.0, 1.0);
   hazeStrength *= smoothstep(0.18, 0.55, scatter + twilightAmt * 0.35);
+  // Confine haze to lower sky so sunset orange cannot paint the zenith.
+  hazeStrength *= 1.0 - zenithBlack;
   mixedCol = mix(mixedCol, hazeCol * 0.80, hazeStrength * skyHazeMixStrength * 0.72);
-  mixedCol += hazeCol * bandMask * hazeBoost * sunProximity * skyHazeBoostStrength * 0.38 * smoothstep(0.22, 0.60, scatter + twilightAmt * 0.3);
+  mixedCol += hazeCol * bandMask * hazeBoost * sunProximity * skyHazeBoostStrength * 0.38 * smoothstep(0.22, 0.60, scatter + twilightAmt * 0.3) * (1.0 - zenithBlack);
 
   // Crepuscular rays from sun (reference photo god-rays)
   if (twilightAmt > 0.15 || scatter > 0.3) {
@@ -417,6 +427,7 @@ void main()
     rays += pow(max(cos(ang * 4.0 + 0.2), 0.0), 18.0);
     rays += pow(max(cos(ang * 7.0 - 0.5), 0.0), 22.0) * 0.6;
     rays *= exp(-dist * 1.6) * smoothstep(horizonLine + 0.08, 0.45, texCoord.y);
+    rays *= 1.0 - zenithBlack;
     float rayStrength = clamp(twilightAmt + scatter * 0.5, 0.0, 1.0) * sunVisibility;
     mixedCol += skyCrepuscularColor * rays * rayStrength * skyCrepuscularStrength * 0.55;
   }
@@ -441,6 +452,8 @@ void main()
     wideGlow *= aboveHorizon * exp(-pow(abs(texCoord.x - sunHoriz) * 1.8, 2.0) * 0.25);
     wideGlow *= sunVisibility * 0.14;
     sunSkyGlow = glowTint * (skyGlow + wideGlow) * 0.58;
+    // Do not let sun glow recolor the top of the skybox.
+    sunSkyGlow *= 1.0 - zenithBlack;
   }
 
   if (moonVisibility > 0.001) {
