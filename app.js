@@ -19483,12 +19483,12 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'cellHeight'), cellHeight);
   gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'visualQuality'), 1.0);
 
-  if (lightningIllumProgram && uloc_illum_waterTex) {
+  if (lightningIllumProgram) {
     gl.useProgram(lightningIllumProgram);
-    gl.uniform1i(uloc_illum_waterTex, 0);
-    gl.uniform2f(uloc_illum_resolution, sim_res_x, sim_res_y);
-    gl.uniform2f(uloc_illum_texelSize, texelSizeX, texelSizeY);
-    gl.uniform2f(uloc_illum_aspectRatios, sim_aspect, canvas.width / Math.max(canvas.height, 1));
+    gl.uniform1i(gl.getUniformLocation(lightningIllumProgram, 'waterTex'), 0);
+    gl.uniform2f(gl.getUniformLocation(lightningIllumProgram, 'resolution'), sim_res_x, sim_res_y);
+    gl.uniform2f(gl.getUniformLocation(lightningIllumProgram, 'texelSize'), texelSizeX, texelSizeY);
+    gl.uniform2f(gl.getUniformLocation(lightningIllumProgram, 'aspectRatios'), sim_aspect, canvas.width / Math.max(canvas.height, 1));
   }
 
   gl.useProgram(lightningLocationProgram);
