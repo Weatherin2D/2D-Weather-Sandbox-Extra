@@ -25,6 +25,7 @@ uniform float evapHeat;
 uniform vec2 resolution;
 uniform vec2 texelSize;
 uniform float vorticity;
+uniform float lightEffectScale; // 0 = freeze radiative heating this substep (lighting skipped)
 uniform float waterEvaporation;
 uniform float landEvaporation;
 uniform float waterWeight;
@@ -104,7 +105,7 @@ void main()
     wall[TYPE] = wallX0Ym[TYPE];                     // copy wall type from wall below
 
     if (!isLiquidWaterType(wall[TYPE]) && wall[TYPE] != WALLTYPE_ICE)
-      base[TEMPERATURE] += light[NET_HEATING]; // IR heating/cooling effect
+      base[TEMPERATURE] += light[NET_HEATING] * lightEffectScale; // IR heating/cooling effect
 
     // Latitude-based climate soft-forcing for near-surface air
     if (latitudeBasedTemperature != 0 && wall[VERT_DISTANCE] <= 3) {
@@ -245,7 +246,7 @@ void main()
 
         lightPower *= (1. - albedoTotal);
         lightPower *= lightHeatingConst;
-        base[TEMPERATURE] += lightPower; // sun heating land
+        base[TEMPERATURE] += lightPower * lightEffectScale; // sun heating land
 
         // Mild climate tendency toward latitude-based sea-level temperature
         if (latitudeBasedTemperature != 0) {
@@ -598,8 +599,8 @@ void main()
             float lightPower = max(lightAboveSurface[SUNLIGHT] * cos(colSunAngle), 0.0);
             lightPower *= (1. - ALBEDO_WATER);
             lightPower *= lightHeatingConst;
-            netWaterHeating += lightPower;
-            netWaterHeating += lightAboveSurface[NET_HEATING];
+            netWaterHeating += lightPower * lightEffectScale;
+            netWaterHeating += lightAboveSurface[NET_HEATING] * lightEffectScale;
             if (latitudeBasedTemperature != 0)
               netWaterHeating += (CtoK(climateTempC) - base[TEMPERATURE]) * 0.0004;
             base[TEMPERATURE] += netWaterHeating / waterHeatCapacity * waterTempUpdateInterval;
@@ -660,8 +661,8 @@ void main()
             float iceAlbedo = map_rangeC(iceThickness, 0.0, fullWhiteSnowHeight, ALBEDO_WATER, ALBEDO_ICE);
             lightPower *= (1. - iceAlbedo);
             lightPower *= lightHeatingConst;
-            netIceHeating += lightPower;
-            netIceHeating += lightAboveSurface[NET_HEATING] * 0.5;
+            netIceHeating += lightPower * lightEffectScale;
+            netIceHeating += lightAboveSurface[NET_HEATING] * 0.5 * lightEffectScale;
             if (latitudeBasedTemperature != 0)
               netIceHeating += (CtoK(min(climateTempC, 0.0)) - base[TEMPERATURE]) * 0.0002;
             base[TEMPERATURE] += netIceHeating / waterHeatCapacity * waterTempUpdateInterval;

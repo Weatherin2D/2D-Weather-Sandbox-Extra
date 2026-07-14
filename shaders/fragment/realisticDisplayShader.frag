@@ -55,6 +55,7 @@ uniform vec4 cursor; // Xpos   Ypos  Size   type
 
 uniform float displayVectorField;
 uniform int enableRainbows;
+uniform float smoothClouds;
 
 uniform float iterNum;
 uniform float visualQuality;
@@ -435,9 +436,13 @@ float rand(float n) { return fract(sin(n) * 43758.5453123); }
 void main()
 {
   vec2 bndFragCoord = vec2(fragCoord.x, clamp(fragCoord.y, 0., resolution.y)); // bound y within range
-  // Extreme zoom-out: one sim cell spans many pixels — bilinear wall-aware samples are wasted.
+  // Smooth clouds: Hermite-interpolated samples restore soft edges (avoids blocky cells).
+  // When off, keep distance-LOD cheap path (nearest / linear bilerp).
   bool farZoom = view[2] / resolution.x <= 0.0025;
-  if (farZoom || visualQuality < 0.45) {
+  if (smoothClouds > 0.5) {
+    base = smoothBilerpWallVis(baseTex, wallTex, bndFragCoord);
+    water = smoothBilerpWallVis(waterTex, wallTex, bndFragCoord);
+  } else if (farZoom || visualQuality < 0.45) {
     base = texture(baseTex, bndFragCoord * texelSize);
     water = texture(waterTex, bndFragCoord * texelSize);
   } else {
@@ -569,9 +574,11 @@ void main()
         vec2 airFC = fragCoord + vec2(0., 0.5);
         vec2 airUV = airFC * texelSize;
         vec2 airBnd = vec2(airFC.x, clamp(airFC.y, 0., resolution.y));
-        vec4 airWater = (farZoom || visualQuality < 0.45)
-          ? texture(waterTex, airBnd * texelSize)
-          : bilerpWallVis(waterTex, wallTex, airBnd);
+        vec4 airWater = smoothClouds > 0.5
+          ? smoothBilerpWallVis(waterTex, wallTex, airBnd)
+          : ((farZoom || visualQuality < 0.45)
+            ? texture(waterTex, airBnd * texelSize)
+            : bilerpWallVis(waterTex, wallTex, airBnd));
         float airCloud = airWater[CLOUD];
         float airPrecip = airWater[PRECIPITATION];
         vec4 airColor = computeCloudSmokeColor(airCloud, airPrecip, airWater[SMOKE], normalizedSunlightAt(airUV));
