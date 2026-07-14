@@ -1466,13 +1466,18 @@
                 <tr>
                     <td><b>Horizontal resolution</b></td>
                     <td style="width: 30%">
-                        <input type="range" min="100" max="16000" value="3000" step="100" id="simResSelX" />
-                        <input type="number" min="100" max="16000" value="3000" step="100" id="simResInputX" style="width: 80px; margin-left: 10px;" />
+                        <input type="range" min="100" max="50000" value="3000" step="100" id="simResSelX" />
+                        <input type="number" min="100" max="50000" value="3000" step="100" id="simResInputX" style="width: 80px; margin-left: 10px;" />
                         <output id="simResShowX"></output>
                     </td>
                     <td id="simWorldProperties" style="color:rgb(255, 255, 255); width: 50%"> Cellheight: 40m Sim
                         width:
                         40 km</td>
+                </tr>
+                <tr>
+                    <td></td>
+                    <td colspan="2"><i id="simResXWarning" style="color:rgb(255, 61, 61); display: none;">Very high
+                            horizontal resolutions (above 16000) need a lot of GPU memory — expect slower performance.</i></td>
                 </tr>
                 <tr>
                     <td><b>Vertical resolution</b></td>
@@ -1481,9 +1486,8 @@
                         <input type="number" min="50" max="1000" value="300" step="10" id="simResInputY" style="width: 80px; margin-left: 10px;" />
                         <output id="simResShowY"></output>
                     </td>
-                    <td><i id="simResYWarning" style="color:rgb(255, 61, 61); display: none;">Vertical resolutions
-                            other
-                            than 300 are not optimized and may be buggy!</i></td>
+                    <td><i id="simResYWarning" style="color:rgb(255, 61, 61); display: none;">Vertical resolution
+                            of 300 is recommended for best results (up to 1000 supported).</i></td>
                 </tr>
                 <tr>
                     <td><b>Simulation height</b></td>
@@ -1584,8 +1588,8 @@
         <div id="help" class="tips">
             <h2>Tips</h2>
             <ul>
-                <li>Vertical resolution of 300 gives most realistic results</li>
-                <li>Larger horizontal resolutions allow stronger converging winds to develop, forming more
+                <li>Vertical resolution of 300 gives most realistic results (up to 1000 supported)</li>
+                <li>Larger horizontal resolutions (up to 50000) allow stronger converging winds to develop, forming more
                     realistic,
                     longer lasting cells</li>
                 <li>Performance is mostly GPU dependent, GTX 1070 or better recommended for realtime gameplay</li>

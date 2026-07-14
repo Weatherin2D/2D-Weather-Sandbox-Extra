@@ -190,7 +190,7 @@ const ControlHelp = (function() {
     minShadowLight: 'Minimum shadow fill light (0 = darkest shadows).',
     enablePrecipitation: 'Master switch for rain, snow, and hail particle simulation.',
     IterPerFrame: 'Physics iterations per rendered frame. Higher = faster simulation time, lower FPS.',
-    auto_IterPerFrame: 'Automatically tune iterations per frame to hold a target frame rate.',
+    auto_IterPerFrame: 'Automatically tune iterations per frame to hold a target frame rate. When FPS has headroom, prioritizes raising iters so the simulation runs faster.',
     sound: 'Enable environmental wind and storm audio.',
     enableBloom: 'HDR bloom on bright clouds and lightning.',
     performanceAutoScaling: 'Reduce visual quality and stride expensive physics under load to keep the frame rate stable. More aggressive at high resolutions.',

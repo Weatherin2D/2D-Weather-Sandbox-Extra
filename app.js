@@ -20,8 +20,11 @@ function updateSetupSliders()
 
   document.getElementById('simWorldProperties').innerHTML = 'cellHeight: ' + cellHeight.toFixed(1) + ' m  &nbsp&nbsp&nbsp   Simulation width: ' + (simWidth / 1000).toFixed(1) + ' km';
 
-  document.getElementById('simHeightWarning').style.display = (simHeight == 15000) ? 'none' : 'block';
+  document.getElementById('simHeightWarning').style.display = (simHeight == 12000) ? 'none' : 'block';
   document.getElementById('simResYWarning').style.display = (simResY == 300) ? 'none' : 'block';
+  let simResXWarn = document.getElementById('simResXWarning');
+  if (simResXWarn)
+    simResXWarn.style.display = (simResX > 16000) ? 'block' : 'none';
   document.getElementById('simResShowX').value = simResX;
   document.getElementById('simResShowY').value = simResY
   document.getElementById('simHeightShow').value = simHeight + ' m';
@@ -965,6 +968,12 @@ function computeNumDroplets(resX, resY)
     divider = 75;
   if (cells > 4000000)
     divider = 110;
+  if (cells > 8000000)
+    divider = 160;
+  if (cells > 16000000)
+    divider = 250;
+  if (cells > 30000000)
+    divider = 400;
   let n = cells / divider;
   const reduced = guiControls && guiControls.reducedPrecipitation;
   if (reduced)
@@ -5730,7 +5739,7 @@ async function loadSnapshotFromDecompressed(decompressed, version, inPlaceApplyF
   sim_res_x = resArray[0];
   sim_res_y = resArray[1];
 
-  if (!sim_res_x || !sim_res_y || sim_res_x > 16000 || sim_res_y > 10000)
+  if (!sim_res_x || !sim_res_y || sim_res_x > 50000 || sim_res_y > 1000)
     throw new Error('Invalid snapshot resolution');
 
   NUM_DROPLETS = computeNumDroplets(sim_res_x, sim_res_y);
@@ -5993,7 +6002,7 @@ window.loadData = async function()
       sim_res_x = resArray[0];
       sim_res_y = resArray[1];
 
-      if (!sim_res_x || !sim_res_y || sim_res_x > 16000 || sim_res_y > 10000) {
+      if (!sim_res_x || !sim_res_y || sim_res_x > 50000 || sim_res_y > 1000) {
         alert('Save file has invalid resolution (' + sim_res_x + 'x' + sim_res_y + '). File may be corrupted.');
         document.getElementById('fileInput').value = '';
         if (loadingBar) await loadingBar.remove();
@@ -9332,7 +9341,8 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       guiControls.enableBloom = false;
       guiControls.gpuEffectQuality = 0.45;
       guiControls.atmosphericLightingResolution = 0.5;
-      guiControls.IterPerFrame = Math.min(guiControls.IterPerFrame, getMaxAutoIterPerFrame());
+      // Start at a usable sim speed; auto_IterPerFrame climbs further when headroom exists.
+      guiControls.IterPerFrame = Math.min(10, getMaxAutoIterPerFrame());
       if (typeof LightningV2 !== 'undefined' && LightningV2.applyPreset)
         LightningV2.applyPreset(guiControls, 'Performance');
       NUM_DROPLETS = computeNumDroplets();
@@ -15836,8 +15846,9 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     // High-res grids start under more pressure so expensive passes throttle earlier.
     const resBias = clamp((getResolutionCostFactor() - 1.0) * 0.22, 0, 0.55);
     p = clamp(p + resBias, 0, 1);
+    // Mild bias only — keep pass striding without locking lite-mode when FPS is fine.
     if (guiControls.highResPerformanceMode)
-      p = clamp(p + 0.18, 0, 1);
+      p = clamp(p + 0.08, 0, 1);
     return p;
   }
 
@@ -15850,20 +15861,21 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
 
   function getMaxAutoIterPerFrame()
   {
+    // Prefer filling spare GPU budget with physics so sim stays fast while display LOD keeps FPS smooth.
     const resCost = getResolutionCostFactor();
     if (guiControls.highResPerformanceMode) {
       if (resCost > 2.5)
-        return 3;
+        return 10;
       if (resCost > 1.5)
-        return 5;
-      return 7;
+        return 14;
+      return 20;
     }
     if (resCost > 3.0)
-      return 4;
+      return 12;
     if (resCost > 2.0)
-      return 6;
+      return 18;
     if (resCost > 1.4)
-      return 8;
+      return 24;
     return 50;
   }
 
@@ -22410,6 +22422,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       fpsNow + ' fps  (' + frameMs.toFixed(1) + ' ms)  target ' + TARGET_FRAME_MS + ' ms',
       'Iters: ' + iters + '/frame  ' + itersPerSec + '/sec  auto=' + (guiControls.auto_IterPerFrame ? 'on' : 'off')
         + '  cap=' + maxAuto,
+      'Sim rate: ~' + (fpsNow * iters * timePerIteration * 3600).toFixed(1) + 'x realtime',
       'Frame ' + frameNum + '  Iter ' + iterNum + '  Runtime ' + (typeof simRuntimeFrames === 'number' ? simRuntimeFrames : 0),
       '',
       'Sim: ' + sim_res_x + 'x' + sim_res_y + '  cell ' + cellM.toFixed(1) + ' m  height ' + Math.round(guiControls.simHeight) + ' m',
@@ -25335,16 +25348,20 @@ drawNukeOverlay();
         && !airplaneMode && !guiControls.slowMotion && !guiControls.realtimeMode
         && !multiplayerHostMode && !multiplayerPeerMode) {
       // Target: keep smoothedFrameMs close to TARGET_FRAME_MS (28 ms = ~35 fps headroom).
-      // Reduce aggressively if over budget, grow slowly when comfortable.
-      // High-res grids also clamp the max iterations so physics can't bury the GPU.
+      // Cut aggressively when over budget; grow quickly when under so spare display LOD
+      // budget becomes simulation throughput (iters/sec).
       const maxAutoIters = getMaxAutoIterPerFrame();
       if (guiControls.IterPerFrame > maxAutoIters)
         guiControls.IterPerFrame = maxAutoIters;
       const msOverBudget = smoothedFrameMs - TARGET_FRAME_MS;
       if (msOverBudget > 2) {
         adjIterPerFrame(msOverBudget > 8 ? -2 : -1);
-      } else if (msOverBudget < -5 && frameNum % 10 === 0 && guiControls.IterPerFrame < maxAutoIters) {
-        adjIterPerFrame(1);
+      } else if (guiControls.IterPerFrame < maxAutoIters) {
+        if (msOverBudget < -12) {
+          adjIterPerFrame(2);
+        } else if (msOverBudget < -5 && frameNum % 3 === 0) {
+          adjIterPerFrame(1);
+        }
       }
     }
 
