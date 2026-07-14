@@ -182,6 +182,7 @@ const ControlHelp = (function() {
     SmoothCam: 'Smooth interpolated camera movement instead of instant jumps.',
     showGraph: 'Show the skew-T / sounding graph at the cursor or fixed position.',
     showDrops: 'Draw individual precipitation particles over the realistic view.',
+    enableRainbows: 'Show rainbows in rain when the sun is out (realistic view).',
     saturation: 'Color saturation in post-processing.',
     contrast: 'Image contrast in post-processing.',
     starVisibility: 'Brightness of stars at night in the realistic view.',

@@ -691,6 +691,7 @@ const guiControls_default = {
   realDewPoint : false, // show real dew point in graph, instead of dew point with cloud water included
   enablePrecipitation : true,
   showDrops : false,
+  enableRainbows : true,
   paused : false,
   IterPerFrame : 10,
   auto_IterPerFrame : true,
@@ -9125,6 +9126,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
     display_folder.add(guiControls, 'showGraph').onChange(hideOrShowGraph).name('Show Sounding Graph').listen();
     display_folder.add(guiControls, 'showDrops').name('Show Droplets').listen();
+    display_folder.add(guiControls, 'enableRainbows').name('Rainbows').listen();
     display_folder.add(guiControls, 'realDewPoint').name('Show Real Dew Point');
 
     display_folder.add(guiControls, 'saturation', 0.0, 3.0, 0.01)
@@ -16109,7 +16111,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
 
   // load shaders
-  const SHADER_ASSET_VERSION = 5; // bump to bust CDN/browser cache after shader edits
+  const SHADER_ASSET_VERSION = 6; // bump to bust CDN/browser cache after shader edits
 
   var commonSource = await loadSourceFile('shaders/common.glsl');
   var commonDisplaySource = await loadSourceFile('shaders/commonDisplay.glsl');
@@ -19649,6 +19651,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   const uloc_real_Xmult                = gl.getUniformLocation(realisticDisplayProgram, 'Xmult');
   const uloc_real_iterNum              = gl.getUniformLocation(realisticDisplayProgram, 'iterNum');
   const uloc_real_displayVectorField   = gl.getUniformLocation(realisticDisplayProgram, 'displayVectorField');
+  const uloc_real_enableRainbows       = gl.getUniformLocation(realisticDisplayProgram, 'enableRainbows');
   const uloc_real_visualQuality        = gl.getUniformLocation(realisticDisplayProgram, 'visualQuality');
   const uloc_real_ltUseLegacyStyle    = gl.getUniformLocation(realisticDisplayProgram, 'ltUseLegacyStyle');
   const uloc_real_ltEventAge           = gl.getUniformLocation(realisticDisplayProgram, 'ltEventAge');
@@ -23920,6 +23923,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       } else {
         gl.uniform1f(uloc_real_displayVectorField, 0.0);
       }
+      if (uloc_real_enableRainbows)
+        gl.uniform1i(uloc_real_enableRainbows, guiControls.enableRainbows !== false ? 1 : 0);
 
       let lightningTexNum = Math.floor(iterNum / 400) % Math.min(4, numLightningTextures);
       gl.activeTexture(gl.TEXTURE7);
