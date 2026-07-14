@@ -783,6 +783,7 @@ const guiControls_default = {
   lightningIllumTexture : true,
   lightningIllumBlurStrength : 1.0,
   performanceAutoScaling : true,
+  highResPerformanceMode : false, // Aggressive high-res throttling preset (also applied by Performance button)
   reducedWeatherStationUpdates : false,
   skipAdvection : false,
   skipChargeCalculation : false,
@@ -943,7 +944,32 @@ const REALTIME_MAX_CATCHUP_MS = 500; // cap lag catch-up so a long stall does no
 const TARGET_FRAME_MS = 28;
 
 var NUM_DROPLETS;
-const NUM_DROPLETS_DEVIDER = 25; // 25
+const NUM_DROPLETS_DEVIDER = 25; // baseline cells-per-droplet at default res
+const NUM_DROPLETS_CAP = 80000; // hard GPU TF cap (was 120000)
+const NUM_DROPLETS_CAP_REDUCED = 50000;
+
+// Scale droplet density down as grid size grows so transform-feedback cost stays playable.
+function computeNumDroplets(resX, resY)
+{
+  const x = resX != null ? resX : sim_res_x;
+  const y = resY != null ? resY : sim_res_y;
+  const cells = Math.max(1, (x | 0) * (y | 0));
+  let divider = NUM_DROPLETS_DEVIDER;
+  if (cells > 900000)
+    divider = 35;
+  if (cells > 1500000)
+    divider = 50;
+  if (cells > 2500000)
+    divider = 75;
+  if (cells > 4000000)
+    divider = 110;
+  let n = cells / divider;
+  const reduced = guiControls && guiControls.reducedPrecipitation;
+  if (reduced)
+    n *= 0.5;
+  const cap = reduced ? NUM_DROPLETS_CAP_REDUCED : NUM_DROPLETS_CAP;
+  return Math.max(1, Math.min(Math.floor(n), cap));
+}
 
 let hdrFBO;
 var hdrRenderScaleState = 1.0;
@@ -5692,10 +5718,7 @@ async function loadSnapshotFromDecompressed(decompressed, version, inPlaceApplyF
   if (!sim_res_x || !sim_res_y || sim_res_x > 16000 || sim_res_y > 10000)
     throw new Error('Invalid snapshot resolution');
 
-  NUM_DROPLETS = (sim_res_x * sim_res_y) / NUM_DROPLETS_DEVIDER;
-  if (guiControls && guiControls.reducedPrecipitation)
-    NUM_DROPLETS = Math.floor(NUM_DROPLETS * 0.5);
-  NUM_DROPLETS = Math.min(NUM_DROPLETS, 120000);
+  NUM_DROPLETS = computeNumDroplets(sim_res_x, sim_res_y);
 
   const cellCount = sim_res_x * sim_res_y;
   sliceStart = sliceEnd;
@@ -5962,11 +5985,7 @@ window.loadData = async function()
         return;
       }
 
-      NUM_DROPLETS = (sim_res_x * sim_res_y) / NUM_DROPLETS_DEVIDER;
-      if (guiControls && guiControls.reducedPrecipitation) {
-        NUM_DROPLETS = Math.floor(NUM_DROPLETS * 0.5); // Reduce droplets by 50%
-      }
-      NUM_DROPLETS = Math.min(NUM_DROPLETS, 120000); // safety cap to prevent freeze on large old files
+      NUM_DROPLETS = computeNumDroplets(sim_res_x, sim_res_y);
 
       saveFileName = file.name;
 
@@ -6020,7 +6039,7 @@ window.loadData = async function()
         console.log('precipArray actual length:', precipArray.length, 'expected:', NUM_DROPLETS * 5);
       } else if (version == 263574036 || version == 1939327491) {
         // Master / legacy format: precipitation size is derived from resolution (no saved droplet count)
-        NUM_DROPLETS = Math.min(NUM_DROPLETS, 120000);
+        NUM_DROPLETS = Math.min(NUM_DROPLETS, NUM_DROPLETS_CAP);
         sliceStart = sliceEnd;
         sliceEnd += NUM_DROPLETS * Float32Array.BYTES_PER_ELEMENT * 5;
         if (sliceEnd <= bytes.byteLength) {
@@ -6125,10 +6144,7 @@ window.loadData = async function()
     sim_res_y = parseInt(document.getElementById('simResSelY').value);
     sim_height = parseInt(document.getElementById('simHeightSel').value);
 
-    NUM_DROPLETS = (sim_res_x * sim_res_y) / NUM_DROPLETS_DEVIDER;
-    if (guiControls && guiControls.reducedPrecipitation) {
-      NUM_DROPLETS = Math.floor(NUM_DROPLETS * 0.5); // Reduce droplets by 50%
-    }
+    NUM_DROPLETS = computeNumDroplets(sim_res_x, sim_res_y);
     SETUP_MODE = true;
 
     mainScript(null); // run without initial textures
@@ -8464,6 +8480,10 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     guiControls.shearUnit = guiControls.speedUnit || guiControls_default.shearUnit;
   if (!guiControls.lapseUnit)
     guiControls.lapseUnit = guiControls_default.lapseUnit;
+  if (guiControls.highResPerformanceMode === undefined)
+    guiControls.highResPerformanceMode = guiControls_default.highResPerformanceMode;
+  if (guiControls.performanceAutoScaling === undefined)
+    guiControls.performanceAutoScaling = guiControls_default.performanceAutoScaling;
 
   restoreSavedRadarTowersFromGuiControls();
   restoreSavedAirmassGeneratorsFromGuiControls();
@@ -8615,6 +8635,10 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       guiControls.weatherBalloonSampleIntervalM = guiControls_default.weatherBalloonSampleIntervalM;
     else
       guiControls.weatherBalloonSampleIntervalM = clamp(guiControls.weatherBalloonSampleIntervalM, 2, 100);
+    if (guiControls.highResPerformanceMode === undefined)
+      guiControls.highResPerformanceMode = guiControls_default.highResPerformanceMode;
+    if (guiControls.performanceAutoScaling === undefined)
+      guiControls.performanceAutoScaling = guiControls_default.performanceAutoScaling;
 
     if (typeof LightningV2 !== 'undefined') {
       Object.keys(LightningV2.DEFAULT_SETTINGS).forEach(key => {
@@ -9273,6 +9297,34 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     advanced_folder.add(guiControls, 'enableBloom').name('Enable Bloom');
     if (guiControls.performanceAutoScaling !== undefined)
       advanced_folder.add(guiControls, 'performanceAutoScaling').name('Auto Performance Scaling');
+    if (guiControls.highResPerformanceMode !== undefined)
+      advanced_folder.add(guiControls, 'highResPerformanceMode').name('High-Res Performance Mode').listen();
+
+    guiControls.applyPerformancePreset = function() {
+      guiControls.highResPerformanceMode = true;
+      guiControls.performanceAutoScaling = true;
+      guiControls.auto_IterPerFrame = true;
+      guiControls.reducedPrecipitation = true;
+      guiControls.reducedWeatherStationUpdates = true;
+      guiControls.disableTempChangeHistory = true;
+      guiControls.skipCurlCalculation = true;
+      guiControls.skipCAPECalculation = true;
+      guiControls.skipLightingCalculation = false; // auto-stride handles lighting under load
+      guiControls.enableBloom = false;
+      guiControls.gpuEffectQuality = 0.45;
+      guiControls.IterPerFrame = Math.min(guiControls.IterPerFrame, getMaxAutoIterPerFrame());
+      if (typeof LightningV2 !== 'undefined' && LightningV2.applyPreset)
+        LightningV2.applyPreset(guiControls, 'Performance');
+      NUM_DROPLETS = computeNumDroplets();
+      initRainDrops();
+      setupPrecipitationBuffers();
+      guiControls.inactiveDroplets = NUM_DROPLETS;
+      if (typeof setGuiUniforms === 'function')
+        setGuiUniforms();
+      console.log('Performance preset applied — aggressive high-res throttling enabled. Droplets:', NUM_DROPLETS);
+    };
+    advanced_folder.add(guiControls, 'applyPerformancePreset').name('Apply Performance Preset');
+
     advanced_folder.add(guiControls, 'enableVectorField').name('Vector Field');
     advanced_folder.add(guiControls, 'displayWeatherStations')
       .onChange(function() {
@@ -9343,6 +9395,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     advanced_folder.add(guiControls, 'reducedWeatherStationUpdates').name('Reduce Station Updates');
     advanced_folder.add(guiControls, 'reducedPrecipitation')
       .onChange(function() {
+        NUM_DROPLETS = computeNumDroplets();
         initRainDrops();
         setupPrecipitationBuffers();
         guiControls.inactiveDroplets = NUM_DROPLETS;
@@ -15744,17 +15797,51 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   var realtimeLastWallClockMs = 0;
   var realtimeIterAccumulator = 0;
 
+  function getResolutionCostFactor()
+  {
+    // 1.0 at default ~900k cells; grows with grid area.
+    const cells = Math.max(1, (sim_res_x | 0) * (sim_res_y | 0));
+    return Math.max(1.0, cells / (3000 * 300));
+  }
+
   function getFramePressure()
   {
     // 0 = comfortable, 1 = heavy frame pressure. Gradual — not a hard on/off switch.
     if (guiControls.performanceAutoScaling === false)
       return 0;
-    return clamp((smoothedFrameMs - TARGET_FRAME_MS) / 36.0, 0, 1);
+    let p = clamp((smoothedFrameMs - TARGET_FRAME_MS) / 36.0, 0, 1);
+    // High-res grids start under more pressure so expensive passes throttle earlier.
+    const resBias = clamp((getResolutionCostFactor() - 1.0) * 0.22, 0, 0.55);
+    p = clamp(p + resBias, 0, 1);
+    if (guiControls.highResPerformanceMode)
+      p = clamp(p + 0.18, 0, 1);
+    return p;
   }
 
   function useLiteVisualsMode()
   {
-    return getFramePressure() > 0.42;
+    // Aggressive: enter lite mode sooner, especially at high resolution.
+    const threshold = guiControls.highResPerformanceMode ? 0.28 : 0.34;
+    return getFramePressure() > threshold || getResolutionCostFactor() > 2.2;
+  }
+
+  function getMaxAutoIterPerFrame()
+  {
+    const resCost = getResolutionCostFactor();
+    if (guiControls.highResPerformanceMode) {
+      if (resCost > 2.5)
+        return 3;
+      if (resCost > 1.5)
+        return 5;
+      return 7;
+    }
+    if (resCost > 3.0)
+      return 4;
+    if (resCost > 2.0)
+      return 6;
+    if (resCost > 1.4)
+      return 8;
+    return 50;
   }
 
   function getTargetHdrRenderScale()
@@ -15767,11 +15854,17 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       scale = 0.75;
     if (pixels > 2560 * 1440)
       scale = 0.625;
-    const pressure = getSmoothedFramePressure();
-    if (pressure > 0.30)
+    if (getResolutionCostFactor() > 1.8)
       scale = Math.min(scale, 0.75);
-    if (pressure > 0.50)
+    if (getResolutionCostFactor() > 2.8)
+      scale = Math.min(scale, 0.55);
+    const pressure = getSmoothedFramePressure();
+    if (pressure > 0.22)
+      scale = Math.min(scale, 0.75);
+    if (pressure > 0.40)
       scale = Math.min(scale, 0.5);
+    if (pressure > 0.65 || guiControls.highResPerformanceMode)
+      scale = Math.min(scale, 0.45);
     if (useLiteVisualsMode())
       scale = Math.min(scale, 0.5);
     return scale;
@@ -15798,6 +15891,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     // and never run every frame (too expensive).
     if (guiControls.paused)
       return false;
+    if (useLiteVisualsMode() || guiControls.highResPerformanceMode)
+      return (frameNum % 3) === 0;
     return (frameNum & 1) === 0;
   }
 
@@ -15805,16 +15900,69 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   {
     if (!guiControls.enablePrecipitation)
       return false;
-    if (!useLiteVisualsMode())
+    if (guiControls.performanceAutoScaling === false && !guiControls.highResPerformanceMode)
       return true;
-    return iterIndex === 0 || (frameNum % 2 === 0);
+    const pressure = getFramePressure();
+    const resCost = getResolutionCostFactor();
+    // Aggressive high-res / load: precip at most once per frame (iter 0).
+    if (useLiteVisualsMode() || guiControls.highResPerformanceMode || resCost > 1.8 || pressure > 0.40)
+      return iterIndex === 0;
+    if (pressure > 0.22 || resCost > 1.25)
+      return iterIndex === 0 || ((frameNum & 1) === 0 && (iterIndex & 1) === 0);
+    return true;
+  }
+
+  function shouldRunCurlThisIteration(iterIndex)
+  {
+    if (guiControls.skipCurlCalculation)
+      return false;
+    if (guiControls.performanceAutoScaling === false)
+      return true;
+    const pressure = getFramePressure();
+    const resCost = getResolutionCostFactor();
+    if (guiControls.highResPerformanceMode || pressure > 0.55 || resCost > 2.4)
+      return iterIndex % 3 === 0;
+    if (pressure > 0.30 || resCost > 1.5)
+      return (iterIndex & 1) === 0;
+    return true;
+  }
+
+  function shouldRunCapeThisIteration(iterIndex)
+  {
+    if (guiControls.skipCAPECalculation)
+      return false;
+    if (guiControls.performanceAutoScaling === false)
+      return true;
+    const pressure = getFramePressure();
+    const resCost = getResolutionCostFactor();
+    if (guiControls.highResPerformanceMode || pressure > 0.50 || resCost > 2.2)
+      return iterIndex % 3 === 0;
+    if (pressure > 0.28 || resCost > 1.4)
+      return (iterIndex & 1) === 0;
+    return true;
+  }
+
+  function shouldRunLightingThisIteration(iterIndex, numIterations)
+  {
+    if (guiControls.skipLightingCalculation)
+      return false;
+    if (guiControls.performanceAutoScaling === false)
+      return true;
+    const pressure = getFramePressure();
+    const resCost = getResolutionCostFactor();
+    // Lighting is a major full-grid cost — stride hard under load / high res.
+    if (guiControls.highResPerformanceMode || pressure > 0.50 || resCost > 2.5)
+      return iterIndex === numIterations - 1;
+    if (pressure > 0.28 || resCost > 1.5)
+      return (iterIndex & 1) === 0;
+    return true;
   }
 
   function shouldDrawRadarOverlayThisFrame()
   {
     if (!guiControls.radarOverlay)
       return false;
-    if (!useLiteVisualsMode())
+    if (!useLiteVisualsMode() && !guiControls.highResPerformanceMode)
       return true;
     return frameNum % 2 === 0;
   }
@@ -15831,8 +15979,10 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   {
     let quality = clamp(guiControls.gpuEffectQuality || 1.0, 0.72, 1.2);
     if (guiControls.performanceAutoScaling !== false)
-      quality *= 1.0 - getSmoothedFramePressure() * 0.42;
-    return clamp(quality, 0.48, 1.2);
+      quality *= 1.0 - getSmoothedFramePressure() * 0.55;
+    if (guiControls.highResPerformanceMode)
+      quality *= 0.75;
+    return clamp(quality, 0.35, 1.2);
   }
 
   function getRealisticVisualQuality()
@@ -15840,8 +15990,10 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     let quality = guiControls.gpuEffectQuality || 1.0;
     const framePressure = getSmoothedFramePressure();
     if (guiControls.adaptiveLightningQuality !== false)
-      quality *= 1.0 - framePressure * 0.55;
-    return clamp(quality, 0.35, 1.2);
+      quality *= 1.0 - framePressure * 0.65;
+    if (guiControls.highResPerformanceMode)
+      quality *= 0.7;
+    return clamp(quality, 0.28, 1.2);
   }
 
   function getAmbientBlurPasses()
@@ -15854,7 +16006,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   function getAmbientLevelCount()
   {
     // Fixed cap — adaptive level count also pulsed scene brightness with V2 hitch.
-    return Math.min(ambientLightFBOs.length, 5);
+    return Math.min(ambientLightFBOs.length, guiControls.highResPerformanceMode ? 4 : 5);
   }
 
   function getBloomLevelCount()
@@ -15868,12 +16020,14 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       cap = 6;
     if (pixels > 2560 * 1440)
       cap = 5;
-    if (pressure > 0.55)
+    if (getResolutionCostFactor() > 2.0)
       cap = Math.min(cap, 5);
-    else if (pressure > 0.22)
-      cap = Math.min(cap, 6);
-    if (useLiteVisualsMode())
+    if (pressure > 0.45)
       cap = Math.min(cap, 4);
+    else if (pressure > 0.18)
+      cap = Math.min(cap, 5);
+    if (useLiteVisualsMode() || guiControls.highResPerformanceMode)
+      cap = Math.min(cap, 3);
     return Math.min(bloomFBOs.length, cap);
   }
 
@@ -23416,7 +23570,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
             gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
 
             // calc curl
-            if (!guiControls.skipCurlCalculation) {
+            if (shouldRunCurlThisIteration(i)) {
               gl.useProgram(curlProgram);
               gl.activeTexture(gl.TEXTURE0);
               gl.bindTexture(gl.TEXTURE_2D, baseTexture_1);
@@ -23426,7 +23580,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
             }
 
             // calc CAPE
-            if (!guiControls.skipCAPECalculation) {
+            if (shouldRunCapeThisIteration(i)) {
               gl.useProgram(capeProgram);
               gl.activeTexture(gl.TEXTURE0);
               gl.bindTexture(gl.TEXTURE_2D, baseTexture_1);
@@ -23442,8 +23596,11 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
             const chargeToolPainting = guiControls.tool == 'TOOL_CHARGE' && leftMousePressed && inputType === 23;
             const runChargePass = chargeToolPainting
               || (isLightningCpuReady() && isProceduralLightningEnabled() && !guiControls.skipChargeCalculation);
-            const chargeStride = (guiControls.adaptiveLightningQuality !== false && smoothedFrameMs > TARGET_FRAME_MS * 1.12)
-              ? 2 : 1;
+            let chargeStride = 1;
+            if (guiControls.adaptiveLightningQuality !== false && smoothedFrameMs > TARGET_FRAME_MS * 1.12)
+              chargeStride = 2;
+            if (guiControls.highResPerformanceMode || getResolutionCostFactor() > 2.0 || getFramePressure() > 0.45)
+              chargeStride = Math.max(chargeStride, 3);
 
             if (i === numIterations - 1)
               tickProceduralLightningForIteration(i, numIterations);
@@ -23471,7 +23628,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
             }
 
             // calculate vorticity
-            if (!guiControls.skipCurlCalculation) {
+            if (shouldRunCurlThisIteration(i)) {
               gl.useProgram(vorticityProgram);
               gl.activeTexture(gl.TEXTURE0);
               gl.bindTexture(gl.TEXTURE_2D, curlTexture);
@@ -23546,7 +23703,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
             }
 
             // calc light (ping-pong independent of precipitation buffers)
-            if (!guiControls.skipLightingCalculation) {
+            if (shouldRunLightingThisIteration(i, numIterations)) {
               gl.useProgram(lightingProgram);
               gl.activeTexture(gl.TEXTURE0);
               gl.bindTexture(gl.TEXTURE_2D, baseTexture_1);
@@ -24961,10 +25118,14 @@ drawNukeOverlay();
         && !multiplayerHostMode && !multiplayerPeerMode) {
       // Target: keep smoothedFrameMs close to TARGET_FRAME_MS (28 ms = ~35 fps headroom).
       // Reduce aggressively if over budget, grow slowly when comfortable.
+      // High-res grids also clamp the max iterations so physics can't bury the GPU.
+      const maxAutoIters = getMaxAutoIterPerFrame();
+      if (guiControls.IterPerFrame > maxAutoIters)
+        guiControls.IterPerFrame = maxAutoIters;
       const msOverBudget = smoothedFrameMs - TARGET_FRAME_MS;
       if (msOverBudget > 2) {
         adjIterPerFrame(msOverBudget > 8 ? -2 : -1);
-      } else if (msOverBudget < -5 && frameNum % 10 === 0) {
+      } else if (msOverBudget < -5 && frameNum % 10 === 0 && guiControls.IterPerFrame < maxAutoIters) {
         adjIterPerFrame(1);
       }
     }
