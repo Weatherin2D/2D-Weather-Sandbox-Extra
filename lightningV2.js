@@ -265,7 +265,6 @@
       maxActiveBolts: 4,
       maxBranchCount: 20,
       gpuEffectQuality: 0.5,
-      atmosphericLightingResolution: 0.5,
       lightningPerformanceTier: 'Low',
       ltEnableVolumetricCloudFlashing: false,
     },
@@ -1877,7 +1876,6 @@
     perfFolder.add(controls, 'maxIlluminationRadius', 0.2, 2, 0.05).name('Illumination Radius');
     perfFolder.add(controls, 'lightningLODDistance', 0.2, 3, 0.05).name('LOD Distance');
     perfFolder.add(controls, 'gpuEffectQuality', 0.2, 2, 0.05).name('GPU Effect Quality');
-    perfFolder.add(controls, 'atmosphericLightingResolution', 0.25, 1.0, 0.25).name('Atmos Lighting Res');
     perfFolder.add(controls, 'dynamicLOD').name('Dynamic LOD');
     perfFolder.add(controls, 'adaptiveLightningQuality').name('Adaptive Quality');
     perfFolder.add(controls, 'performanceAutoScaling').name('Auto Scaling');
