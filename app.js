@@ -784,6 +784,7 @@ const guiControls_default = {
   lightningIllumBlurStrength : 1.0,
   performanceAutoScaling : true,
   highResPerformanceMode : false, // Aggressive high-res throttling preset (also applied by Performance button)
+  showDebugOverlay : false, // F3-style FPS / sim debug HUD
   reducedWeatherStationUpdates : false,
   skipAdvection : false,
   skipChargeCalculation : false,
@@ -868,6 +869,7 @@ var lightningFrameCpuCache = {
 var lightningEventLog = [];
 var lightningEventIdCounter = 0;
 var lightningDebugCanvas = null;
+var debugOverlayCanvas = null;
 var forcedLightningQueue = [];
 
 var nukeOverlayCanvas = null;
@@ -986,6 +988,10 @@ let lightningSurfFlashBlurFBO = null;
 let lightningBlurTempFBO = null;
 let lightningIllumFrameBuff = null;
 let lightningIllumProgram = null;
+var lightningIllumResScale = 1.0; // 1.0 = full sim res; 0.5 when zoomed out / low atmos lighting res
+var lightningIllumResW = 0;
+var lightningIllumResH = 0;
+var lightningIllumBlurApplied = false;
 
 
 function clamp(num, min, max) { return Math.min(Math.max(num, min), max); }
@@ -2696,13 +2702,21 @@ function createAmbientLightFBOs()
   createLightningIllumFBOs();
 }
 
-function createLightningIllumFBOs()
+function createLightningIllumFBOs(scaleIn)
 {
   if (!sim_res_x || !sim_res_y)
     return;
 
-  const w = sim_res_x;
-  const h = sim_res_y;
+  const scale = clamp(scaleIn != null ? scaleIn : 1.0, 0.25, 1.0);
+  const w = Math.max(2, Math.round(sim_res_x * scale));
+  const h = Math.max(2, Math.round(sim_res_y * scale));
+  if (w === lightningIllumResW && h === lightningIllumResH && lightningOnLightTex && lightningCloudFlashTex && lightningSurfFlashTex)
+    return;
+
+  lightningIllumResScale = scale;
+  lightningIllumResW = w;
+  lightningIllumResH = h;
+
   const setupTex = (tex) => {
     gl.bindTexture(gl.TEXTURE_2D, tex);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, w, h, 0, gl.RGBA, gl.HALF_FLOAT, null);
@@ -2723,6 +2737,7 @@ function createLightningIllumFBOs()
   setupTex(lightningCloudFlashTex);
   setupTex(lightningSurfFlashTex);
 
+  // Recreate blur FBOs at matching resolution (FBO class allocates on construct).
   lightningCloudFlashBlurFBO = new FBO(w, h, gl.RGBA16F, gl.RGBA, gl.HALF_FLOAT, gl.LINEAR);
   lightningSurfFlashBlurFBO = new FBO(w, h, gl.RGBA16F, gl.RGBA, gl.HALF_FLOAT, gl.LINEAR);
   lightningBlurTempFBO = new FBO(w, h, gl.RGBA16F, gl.RGBA, gl.HALF_FLOAT, gl.LINEAR);
@@ -8639,6 +8654,8 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       guiControls.highResPerformanceMode = guiControls_default.highResPerformanceMode;
     if (guiControls.performanceAutoScaling === undefined)
       guiControls.performanceAutoScaling = guiControls_default.performanceAutoScaling;
+    if (guiControls.showDebugOverlay === undefined)
+      guiControls.showDebugOverlay = guiControls_default.showDebugOverlay;
 
     if (typeof LightningV2 !== 'undefined') {
       Object.keys(LightningV2.DEFAULT_SETTINGS).forEach(key => {
@@ -9299,6 +9316,8 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       advanced_folder.add(guiControls, 'performanceAutoScaling').name('Auto Performance Scaling');
     if (guiControls.highResPerformanceMode !== undefined)
       advanced_folder.add(guiControls, 'highResPerformanceMode').name('High-Res Performance Mode').listen();
+    if (guiControls.showDebugOverlay !== undefined)
+      advanced_folder.add(guiControls, 'showDebugOverlay').name('Debug Overlay (F3)').listen();
 
     guiControls.applyPerformancePreset = function() {
       guiControls.highResPerformanceMode = true;
@@ -9312,6 +9331,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       guiControls.skipLightingCalculation = false; // auto-stride handles lighting under load
       guiControls.enableBloom = false;
       guiControls.gpuEffectQuality = 0.45;
+      guiControls.atmosphericLightingResolution = 0.5;
       guiControls.IterPerFrame = Math.min(guiControls.IterPerFrame, getMaxAutoIterPerFrame());
       if (typeof LightningV2 !== 'undefined' && LightningV2.applyPreset)
         LightningV2.applyPreset(guiControls, 'Performance');
@@ -15062,6 +15082,9 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       onDown() { guiControls.auto_IterPerFrame = true; } },
     { id: 'iterPerFrameReset', name: 'Reset iterations per frame to 1', category: 'Performance', defaultCode: 'Home',
       onDown() { guiControls.auto_IterPerFrame = false; guiControls.IterPerFrame = 1; } },
+    { id: 'toggleDebugOverlay', name: 'Toggle debug overlay (FPS / stats)', category: 'Performance', defaultCode: 'F3',
+      preventDefault: true,
+      onDown() { guiControls.showDebugOverlay = !guiControls.showDebugOverlay; } },
     { id: 'toggleGui', name: 'Show / hide settings GUI', category: 'Graph & UI', defaultCode: 'KeyH',
       onDown() {
         if (multiplayerPeerMode && window.WeatherMultiplayer && !window.WeatherMultiplayer.getMyPermissions().settings) {
@@ -15974,7 +15997,14 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     return smoothedAmbientPressure;
   }
 
-  // Sunlight shadow kernel — scales with GPU quality and smoothed frame pressure
+  // Sunlight shadow kernel — scales with GPU quality, frame pressure, and zoom distance
+  function getZoomQualityFactor()
+  {
+    // zoomed out → ~0.35; zoomed in → 1.0 (matches lightning LOD distance feel)
+    const zoomNorm = clamp(cam.curZoom / Math.max(sim_res_x, 1), 0, 1);
+    return 0.35 + 0.65 * clamp(zoomNorm * 2.2, 0, 1);
+  }
+
   function getSunlightVisualQuality()
   {
     let quality = clamp(guiControls.gpuEffectQuality || 1.0, 0.72, 1.2);
@@ -15982,7 +16012,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       quality *= 1.0 - getSmoothedFramePressure() * 0.55;
     if (guiControls.highResPerformanceMode)
       quality *= 0.75;
-    return clamp(quality, 0.35, 1.2);
+    quality *= getZoomQualityFactor();
+    return clamp(quality, 0.28, 1.2);
   }
 
   function getRealisticVisualQuality()
@@ -15993,7 +16024,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       quality *= 1.0 - framePressure * 0.65;
     if (guiControls.highResPerformanceMode)
       quality *= 0.7;
-    return clamp(quality, 0.28, 1.2);
+    quality *= getZoomQualityFactor();
+    return clamp(quality, 0.25, 1.2);
   }
 
   function getAmbientBlurPasses()
@@ -16005,8 +16037,14 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
 
   function getAmbientLevelCount()
   {
-    // Fixed cap — adaptive level count also pulsed scene brightness with V2 hitch.
-    return Math.min(ambientLightFBOs.length, guiControls.highResPerformanceMode ? 4 : 5);
+    // Cap adaptive levels by zoom so far-away views skip fine ambient mips.
+    let cap = guiControls.highResPerformanceMode ? 4 : 5;
+    const zoomNorm = cam.curZoom / Math.max(sim_res_x, 1);
+    if (zoomNorm < 0.002)
+      cap = Math.min(cap, 3);
+    if (zoomNorm < 0.001 || guiControls.highResPerformanceMode && zoomNorm < 0.003)
+      cap = Math.min(cap, 3);
+    return Math.min(ambientLightFBOs.length, cap);
   }
 
   function getBloomLevelCount()
@@ -16015,6 +16053,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       return 0;
     const pressure = getFramePressure();
     const pixels = canvas.width * canvas.height;
+    const zoomNorm = cam.curZoom / Math.max(sim_res_x, 1);
     let cap = 7;
     if (pixels > 1920 * 1080)
       cap = 6;
@@ -16028,6 +16067,11 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       cap = Math.min(cap, 5);
     if (useLiteVisualsMode() || guiControls.highResPerformanceMode)
       cap = Math.min(cap, 3);
+    // Zoomed far out: wide bloom mips are wasteful — soft scene already.
+    if (zoomNorm < 0.002)
+      cap = Math.min(cap, guiControls.highResPerformanceMode ? 2 : 3);
+    if (zoomNorm < 0.001)
+      cap = Math.min(cap, 2);
     return Math.min(bloomFBOs.length, cap);
   }
 
@@ -19597,6 +19641,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   gl.uniform1f(gl.getUniformLocation(skyBackgroundDisplayProgram, 'starVisibility'), guiControls.starVisibility);
   gl.uniform1f(gl.getUniformLocation(skyBackgroundDisplayProgram, 'starLightEmitStrength'), guiControls.starLightEmitStrength);
   gl.uniform1f(gl.getUniformLocation(skyBackgroundDisplayProgram, 'starDensity'), guiControls.starDensity);
+  gl.uniform1f(gl.getUniformLocation(skyBackgroundDisplayProgram, 'visualQuality'), 1.0);
   gl.uniform1i(gl.getUniformLocation(skyBackgroundDisplayProgram, 'lightTex'), 3);
   gl.uniform1i(gl.getUniformLocation(skyBackgroundDisplayProgram, 'ambientLightTex'), 9);
   gl.uniform1i(gl.getUniformLocation(skyBackgroundDisplayProgram, 'precipFeedbackTex'), 7);
@@ -19797,6 +19842,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   const uloc_sky_view                  = gl.getUniformLocation(skyBackgroundDisplayProgram, 'view');
   const uloc_sky_Xmult                 = gl.getUniformLocation(skyBackgroundDisplayProgram, 'Xmult');
   const uloc_sky_iterNum               = gl.getUniformLocation(skyBackgroundDisplayProgram, 'iterNum');
+  const uloc_sky_visualQuality         = gl.getUniformLocation(skyBackgroundDisplayProgram, 'visualQuality');
 
   // realistic display per-frame
   const uloc_real_aspectRatios         = gl.getUniformLocation(realisticDisplayProgram, 'aspectRatios');
@@ -21836,19 +21882,21 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     if (blurStrength <= 0.01)
       return;
 
+    const iw = lightningIllumResW || sim_res_x;
+    const ih = lightningIllumResH || sim_res_y;
     const spread = 0.75 + blurStrength * 2.35;
     gl.useProgram(bloomBlurProgram);
     gl.bindVertexArray(postProcessingVao);
     gl.uniform1i(uloc_bloom_bloomTexture, 0);
-    gl.viewport(0, 0, sim_res_x, sim_res_y);
+    gl.viewport(0, 0, iw, ih);
 
-    gl.uniform2f(uloc_bloom_texelSize, spread / sim_res_x, 0.0);
+    gl.uniform2f(uloc_bloom_texelSize, spread / iw, 0.0);
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, srcTex);
     gl.bindFramebuffer(gl.FRAMEBUFFER, lightningBlurTempFBO.frameBuffer);
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
 
-    gl.uniform2f(uloc_bloom_texelSize, 0.0, spread / sim_res_y);
+    gl.uniform2f(uloc_bloom_texelSize, 0.0, spread / ih);
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, lightningBlurTempFBO.texture);
     gl.bindFramebuffer(gl.FRAMEBUFFER, destFbo.frameBuffer);
@@ -21859,10 +21907,22 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
 
   function getLightningFlashIllumTexture(rawTex, blurFbo)
   {
-    const blurStrength = guiControls.lightningIllumBlurStrength ?? 1.0;
-    if (blurStrength <= 0.01 || !blurFbo || !blurFbo.texture)
+    if (!lightningIllumBlurApplied || !blurFbo || !blurFbo.texture)
       return rawTex;
     return blurFbo.texture;
+  }
+
+  function getLightningIllumResolutionScale(lodVal)
+  {
+    // Wire unused atmosphericLightingResolution; also auto half-res when zoomed out / low LOD.
+    let scale = clamp(guiControls.atmosphericLightingResolution != null
+      ? guiControls.atmosphericLightingResolution : 1.0, 0.25, 1.0);
+    const zoomNorm = cam.curZoom / Math.max(sim_res_x, 1);
+    if (zoomNorm < 0.0025 || (lodVal != null && lodVal < 0.45) || guiControls.highResPerformanceMode)
+      scale = Math.min(scale, 0.5);
+    if (zoomNorm < 0.001 || (lodVal != null && lodVal < 0.3))
+      scale = Math.min(scale, 0.5);
+    return scale;
   }
 
   function updateLightningIlluminationTexture()
@@ -21885,8 +21945,13 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     }
     const lodVal = lod * gpuQuality;
 
+    const illumScale = getLightningIllumResolutionScale(lodVal);
+    createLightningIllumFBOs(illumScale);
+    const iw = lightningIllumResW || sim_res_x;
+    const ih = lightningIllumResH || sim_res_y;
+
     gl.bindFramebuffer(gl.FRAMEBUFFER, lightningIllumFrameBuff);
-    gl.viewport(0, 0, sim_res_x, sim_res_y);
+    gl.viewport(0, 0, iw, ih);
     gl.drawBuffers([ gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1, gl.COLOR_ATTACHMENT2 ]);
     gl.clearColor(0.0, 0.0, 0.0, 0.0);
     gl.clear(gl.COLOR_BUFFER_BIT);
@@ -21930,10 +21995,17 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     gl.bindVertexArray(fluidVao);
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
 
-    const blurStrength = guiControls.lightningIllumBlurStrength ?? 1.0;
+    // Illum is already soft at distance / half-res — skip or weaken blur.
+    let blurStrength = guiControls.lightningIllumBlurStrength ?? 1.0;
+    if (illumScale < 0.75 || lodVal < 0.45)
+      blurStrength *= 0.35;
+    if (illumScale <= 0.5 && lodVal < 0.35)
+      blurStrength = 0;
+    lightningIllumBlurApplied = false;
     if (blurStrength > 0.01) {
       blurLightningIllumTexture(lightningCloudFlashTex, lightningCloudFlashBlurFBO, blurStrength);
       blurLightningIllumTexture(lightningSurfFlashTex, lightningSurfFlashBlurFBO, blurStrength);
+      lightningIllumBlurApplied = true;
     }
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
   }
@@ -22279,6 +22351,152 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       }
     }
     ctx.globalAlpha = 1;
+  }
+
+  function drawDebugOverlay()
+  {
+    if (!guiControls.showDebugOverlay) {
+      if (debugOverlayCanvas)
+        debugOverlayCanvas.style.display = 'none';
+      return;
+    }
+
+    if (!debugOverlayCanvas) {
+      debugOverlayCanvas = document.createElement('canvas');
+      debugOverlayCanvas.id = 'debugOverlayCanvas';
+      debugOverlayCanvas.style.cssText = 'position:fixed;top:0;left:0;pointer-events:none;z-index:5;';
+      document.body.appendChild(debugOverlayCanvas);
+    }
+    if (debugOverlayCanvas.width !== canvas.width || debugOverlayCanvas.height !== canvas.height) {
+      debugOverlayCanvas.width = canvas.width;
+      debugOverlayCanvas.height = canvas.height;
+    }
+    debugOverlayCanvas.style.display = 'block';
+
+    const ctx = debugOverlayCanvas.getContext('2d');
+    ctx.clearRect(0, 0, debugOverlayCanvas.width, debugOverlayCanvas.height);
+
+    const frameMs = smoothedFrameMs || 0;
+    const fpsNow = FPS || 0;
+    const iters = guiControls.IterPerFrame || 0;
+    const itersPerSec = Math.round(fpsNow * iters);
+    const zoomNorm = cam.curZoom / Math.max(sim_res_x, 1);
+    const cellM = (typeof cellHeight === 'number') ? cellHeight : (guiControls.simHeight / Math.max(sim_res_y, 1));
+    const vqSun = (typeof sunlightVisualQuality === 'number') ? sunlightVisualQuality : 1;
+    const vqReal = (typeof realisticVisualQuality === 'number') ? realisticVisualQuality : 1;
+    let pressure = 0;
+    let lite = false;
+    let maxAuto = 50;
+    try {
+      if (typeof getFramePressure === 'function')
+        pressure = getFramePressure();
+      if (typeof useLiteVisualsMode === 'function')
+        lite = useLiteVisualsMode();
+      if (typeof getMaxAutoIterPerFrame === 'function')
+        maxAuto = getMaxAutoIterPerFrame();
+    } catch (e) {}
+
+    const mem = (performance && performance.memory)
+      ? (performance.memory.usedJSHeapSize / 1048576).toFixed(0) + ' / '
+        + (performance.memory.jsHeapSizeLimit / 1048576).toFixed(0) + ' MB'
+      : null;
+
+    const toolName = (guiControls.tool || 'TOOL_NONE').replace(/^TOOL_/, '');
+    const displayName = (guiControls.displayMode || '').replace(/^DISP_/, '');
+    const lightningStyle = guiControls.lightningRenderStyle || 'classic';
+    const boltCount = proceduralLightningState.strikes ? proceduralLightningState.strikes.length : 0;
+    const inactive = Math.round(guiControls.inactiveDroplets || 0);
+
+    const leftLines = [
+      '2D Weather Sandbox (F3 debug)',
+      '',
+      fpsNow + ' fps  (' + frameMs.toFixed(1) + ' ms)  target ' + TARGET_FRAME_MS + ' ms',
+      'Iters: ' + iters + '/frame  ' + itersPerSec + '/sec  auto=' + (guiControls.auto_IterPerFrame ? 'on' : 'off')
+        + '  cap=' + maxAuto,
+      'Frame ' + frameNum + '  Iter ' + iterNum + '  Runtime ' + (typeof simRuntimeFrames === 'number' ? simRuntimeFrames : 0),
+      '',
+      'Sim: ' + sim_res_x + 'x' + sim_res_y + '  cell ' + cellM.toFixed(1) + ' m  height ' + Math.round(guiControls.simHeight) + ' m',
+      'Droplets: ' + NUM_DROPLETS + '  inactive ' + inactive
+        + '  reduced=' + (guiControls.reducedPrecipitation ? 'on' : 'off'),
+      'Cam: xyz ' + cam.curXpos.toFixed(3) + ' / ' + cam.curYpos.toFixed(3) + ' / ' + cam.curZoom.toFixed(3)
+        + '  zoomNorm ' + zoomNorm.toFixed(4),
+      'Cursor: ' + (typeof mouseXinSim === 'number' ? mouseXinSim.toFixed(1) : '?')
+        + ', ' + (typeof mouseYinSim === 'number' ? mouseYinSim.toFixed(1) : '?')
+        + '  tool ' + toolName,
+      '',
+      'Display: ' + displayName + '  HDR x' + (hdrRenderScaleState || 1).toFixed(2)
+        + '  VQ ' + vqSun.toFixed(2) + '/' + vqReal.toFixed(2),
+      'Pressure: ' + pressure.toFixed(2) + '  lite=' + (lite ? 'on' : 'off')
+        + '  hiResPerf=' + (guiControls.highResPerformanceMode ? 'on' : 'off'),
+      'Paused: ' + (guiControls.paused ? 'yes' : 'no')
+        + '  precip=' + (guiControls.enablePrecipitation ? 'on' : 'off')
+        + '  bloom=' + (guiControls.enableBloom ? 'on' : 'off'),
+      'Lightning: ' + boltCount + ' bolts  style=' + lightningStyle
+        + '  LOD=' + (guiControls.dynamicLOD ? 'on' : 'off'),
+      'Sun: ' + (guiControls.sunAngle != null ? guiControls.sunAngle.toFixed(1) : '?') + '°'
+        + '  time ' + (guiControls.timeOfDay != null ? guiControls.timeOfDay.toFixed(2) : '?')
+        + '  month ' + (guiControls.month != null ? guiControls.month.toFixed(1) : '?'),
+    ];
+
+    if (mem)
+      leftLines.push('Mem: ' + mem);
+    leftLines.push('Canvas: ' + canvas.width + 'x' + canvas.height);
+
+    const rightLines = [
+      'xyz: ' + cam.curXpos.toFixed(3) + ' / ' + cam.curYpos.toFixed(3) + ' / ' + cam.curZoom.toFixed(3),
+      'Facing: sim X ' + (cam.curXpos * sim_res_x).toFixed(0)
+        + '  Y ' + (cam.curYpos * sim_res_y).toFixed(0),
+      '',
+      'Auto scale: ' + (guiControls.performanceAutoScaling !== false ? 'on' : 'off'),
+      'Skip curl/cape/light: '
+        + (guiControls.skipCurlCalculation ? 'Y' : 'n') + '/'
+        + (guiControls.skipCAPECalculation ? 'Y' : 'n') + '/'
+        + (guiControls.skipLightingCalculation ? 'Y' : 'n'),
+      'Illum res: x' + (lightningIllumResScale || 1).toFixed(2)
+        + '  (' + (lightningIllumResW || sim_res_x) + 'x' + (lightningIllumResH || sim_res_y) + ')',
+      '',
+      'Stations: ' + (weatherStations ? weatherStations.length : 0)
+        + '  Radars: ' + (radars ? radars.length : 0)
+        + '  Balloons: ' + (weatherBalloons ? weatherBalloons.length : 0),
+      'MP: ' + (typeof multiplayerHostMode !== 'undefined' && multiplayerHostMode ? 'host'
+        : (typeof multiplayerPeerMode !== 'undefined' && multiplayerPeerMode ? 'peer' : 'off')),
+    ];
+
+    const lineH = 14;
+    const pad = 8;
+    const font = '12px Consolas, "Courier New", monospace';
+
+    function drawColumn(lines, x, alignRight)
+    {
+      ctx.font = font;
+      let maxW = 0;
+      for (let i = 0; i < lines.length; i++)
+        maxW = Math.max(maxW, ctx.measureText(lines[i] || ' ').width);
+      const boxW = maxW + pad * 2;
+      const boxH = lines.length * lineH + pad * 2;
+      const boxX = alignRight ? (debugOverlayCanvas.width - boxW - 10) : x;
+      const boxY = 10;
+
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.45)';
+      ctx.fillRect(boxX, boxY, boxW, boxH);
+
+      ctx.textBaseline = 'top';
+      for (let i = 0; i < lines.length; i++) {
+        const text = lines[i];
+        if (!text)
+          continue;
+        const ty = boxY + pad + i * lineH;
+        const tx = boxX + pad;
+        // Soft shadow for readability over bright clouds
+        ctx.fillStyle = 'rgba(0,0,0,0.85)';
+        ctx.fillText(text, tx + 1, ty + 1);
+        ctx.fillStyle = i === 0 ? '#ffe08a' : '#e8e8e8';
+        ctx.fillText(text, tx, ty);
+      }
+    }
+
+    drawColumn(leftLines, 10, false);
+    drawColumn(rightLines, 0, true);
   }
 
   function drawLightningDebugOverlay()
@@ -24041,6 +24259,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       gl.uniform3f(uloc_sky_view, cam.curXpos, cam.curYpos, cam.curZoom);
       gl.uniform1f(uloc_sky_Xmult, horizontalDisplayMult);
       gl.uniform1f(uloc_sky_iterNum, iterNum);
+      if (uloc_sky_visualQuality !== null)
+        gl.uniform1f(uloc_sky_visualQuality, Math.min(sunlightVisualQuality, realisticVisualQuality));
       uploadSkyUniforms();
 
       gl.drawBuffers([ gl.COLOR_ATTACHMENT0 ]);
@@ -25035,6 +25255,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   }
 
   drawLightningDebugOverlay();
+  drawDebugOverlay();
   drawRadarLightningOverlay();
 
   if (displayWeatherStations) {

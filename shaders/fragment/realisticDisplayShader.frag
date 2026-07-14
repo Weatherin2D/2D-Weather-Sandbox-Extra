@@ -435,9 +435,16 @@ float rand(float n) { return fract(sin(n) * 43758.5453123); }
 void main()
 {
   vec2 bndFragCoord = vec2(fragCoord.x, clamp(fragCoord.y, 0., resolution.y)); // bound y within range
-  base = bilerpWallVis(baseTex, wallTex, bndFragCoord);
+  // Extreme zoom-out: one sim cell spans many pixels — bilinear wall-aware samples are wasted.
+  bool farZoom = view[2] / resolution.x <= 0.0025;
+  if (farZoom || visualQuality < 0.45) {
+    base = texture(baseTex, bndFragCoord * texelSize);
+    water = texture(waterTex, bndFragCoord * texelSize);
+  } else {
+    base = bilerpWallVis(baseTex, wallTex, bndFragCoord);
+    water = bilerpWallVis(waterTex, wallTex, bndFragCoord);
+  }
   wall = texture(wallTex, bndFragCoord * texelSize);                           // texCoord
-  water = bilerpWallVis(waterTex, wallTex, bndFragCoord);
   lightIntensity = normalizedSunlightAt(bndFragCoord * texelSize);
 
   ivec4 wallX0Ym = texture(wallTex, texCoordX0Ym);
@@ -562,7 +569,9 @@ void main()
         vec2 airFC = fragCoord + vec2(0., 0.5);
         vec2 airUV = airFC * texelSize;
         vec2 airBnd = vec2(airFC.x, clamp(airFC.y, 0., resolution.y));
-        vec4 airWater = bilerpWallVis(waterTex, wallTex, airBnd);
+        vec4 airWater = (farZoom || visualQuality < 0.45)
+          ? texture(waterTex, airBnd * texelSize)
+          : bilerpWallVis(waterTex, wallTex, airBnd);
         float airCloud = airWater[CLOUD];
         float airPrecip = airWater[PRECIPITATION];
         vec4 airColor = computeCloudSmokeColor(airCloud, airPrecip, airWater[SMOKE], normalizedSunlightAt(airUV));
@@ -610,7 +619,7 @@ void main()
       icccEmit, icccCloud, icccSurf, precipBoltShafts);
 
 
-    if (enableRainbows != 0) {
+    if (enableRainbows != 0 && visualQuality >= 0.55 && view[2] / resolution.x > 0.0025) {
     vec2 rainbowCenter = vec2(0.0, -1.5 + abs(localSunAngle) * 0.60);
 
     float centerDist = length(onScreenUV - rainbowCenter) * 1.3;
@@ -639,8 +648,10 @@ void main()
 #define maxTreeHeight 40.       // height in meters when vegetation max = 127
 #define maxBuildingHeight 400.  // height in meters upto wich the urban texture reaches
 
+      // Surface facade detail is sub-pixel when zoomed out — skip expensive texture paths.
+      bool showSurfaceDetail = visualQuality > 0.55 && view[2] / resolution.x > 0.0025;
 
-      if (wallX0Ym[TYPE] == WALLTYPE_URBAN) {
+      if (showSurfaceDetail && wallX0Ym[TYPE] == WALLTYPE_URBAN) {
 
         float heightAboveGround = localY + float(wall[VERT_DISTANCE] - 1);
 
@@ -668,7 +679,7 @@ void main()
           color = texCol.rgb;
           opacity = texCol.a;
         }
-      } else if (wallX0Ym[TYPE] == WALLTYPE_INDUSTRIAL) {
+      } else if (showSurfaceDetail && wallX0Ym[TYPE] == WALLTYPE_INDUSTRIAL) {
 
         float heightAboveGround = localY + float(wall[VERT_DISTANCE] - 1);
 
@@ -719,7 +730,7 @@ void main()
       }
 
 
-      if (wall[VERT_DISTANCE] == 1) {                                                 // 1 above surface
+      if (showSurfaceDetail && wall[VERT_DISTANCE] == 1) {                                                 // 1 above surface
                                                                                       //  if (wallX0Ym[VERT_DISTANCE] == 0) {
 
         float treeTexHeightNorm = maxTreeHeight / cellHeight;                         // example: 40 / 120 = 0.333
@@ -766,7 +777,9 @@ void main()
 
           opacity = 1. - (1. - opacity) * (1. - texCol.a); // alpha blending
         }
+      }
 
+      if (wall[VERT_DISTANCE] == 1) {
         // draw 45° slopes
         ivec4 wallXmY0 = texture(wallTex, texCoordXmY0);
         ivec4 wallXpY0 = texture(wallTex, texCoordXpY0);
