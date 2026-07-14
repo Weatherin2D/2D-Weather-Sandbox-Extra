@@ -285,21 +285,21 @@ void main()
   // Warm gold at horizon → twilight bands → black zenith (never leave warm color at the top).
   vec3 horizonWarm = mix(skyTwilightHorizon, skyHorizonGold, clamp(scatter * 0.95, 0.0, 1.0)) * 0.78;
   vec3 twilightSky = mix(horizonWarm, skyTwilightLow * 0.82, smoothstep(0.0, 0.14, skyHeight));
-  twilightSky = mix(twilightSky, skyTwilightMid * 0.90, smoothstep(0.10, 0.32, skyHeight));
-  twilightSky = mix(twilightSky, skyTwilightUpper * 0.75, smoothstep(0.26, 0.52, skyHeight));
-  twilightSky = mix(twilightSky, skyTwilightTop * 0.55, smoothstep(0.42, 0.72, skyHeight));
-  twilightSky = mix(twilightSky, vec3(0.0), smoothstep(0.58, 1.0, skyHeight));
+  twilightSky = mix(twilightSky, skyTwilightMid * 0.90, smoothstep(0.10, 0.36, skyHeight));
+  twilightSky = mix(twilightSky, skyTwilightUpper * 0.75, smoothstep(0.28, 0.62, skyHeight));
+  twilightSky = mix(twilightSky, skyTwilightTop * 0.55, smoothstep(0.52, 0.86, skyHeight));
+  twilightSky = mix(twilightSky, vec3(0.0), smoothstep(0.80, 1.0, skyHeight));
 
   vec2 relSun = texCoord - vec2(sunHoriz, horizonLine + 0.04);
   relSun.x *= aspectRatios.x;
   float sunWarmth = exp(-length(relSun) * 2.2) * (0.35 + scatter * 0.30);
   // Keep sun warmth near the horizon so it cannot tint the zenith.
-  sunWarmth *= 1.0 - smoothstep(0.32, 0.72, skyHeight);
+  sunWarmth *= 1.0 - smoothstep(0.48, 0.88, skyHeight);
   twilightSky = mix(twilightSky, vec3(0.88, 0.62, 0.24), sunWarmth * twilightAmt * 0.55);
 
   vec3 mixedCol = mix(daySky, twilightSky, smoothstep(0.0, 0.82, twilightAmt));
   // Day and twilight both must finish black at the top of the skybox.
-  float zenithBlack = smoothstep(0.62, 1.0, skyHeight);
+  float zenithBlack = smoothstep(0.82, 1.0, skyHeight);
   mixedCol = mix(mixedCol, vec3(0.0), zenithBlack);
 
   // Star field - only visible at night (sun below horizon)
