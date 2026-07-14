@@ -16,6 +16,7 @@ uniform sampler2D planeTex;
 uniform sampler2D planeGearTex;
 
 uniform sampler2D ambientLightTex;
+uniform sampler2D sunColumnTex;
 
 uniform float minShadowLight;
 uniform float starVisibility;
@@ -246,18 +247,22 @@ void main()
 
   float horizonLine = skyHorizonLine;
 
-  float hourAngleRad = (timeOfDay - 12.0) * 15.0 * deg2rad;
-  float sunElevRad = PI * 0.5 - sunAngle;
+  vec4 sunCol = sampleSunColumn(sunColumnTex, texCoord.x);
+  float localSunAngle = sunCol.g;
+  float localSunAzimuth = sunCol.b;
+
+  float hourAngleRad = localSunAzimuth;
+  float sunElevRad = PI * 0.5 - localSunAngle;
   float sunHoriz = 0.5 + skySunHorizAmplitude * sin(hourAngleRad);
   float sunVert = horizonLine + skySunVertScale * sin(clamp(sunElevRad, -PI * 0.5, PI * 0.5));
   vec2 sunCenter = vec2(sunHoriz, sunVert);
-  float scatter = clamp(map_range(sunAngle, 75.0 * deg2rad, 90.0 * deg2rad, 0.0, 1.0), 0.0, 1.0);
+  float scatter = clamp(map_range(localSunAngle, 75.0 * deg2rad, 90.0 * deg2rad, 0.0, 1.0), 0.0, 1.0);
   float sunRiseAmount = sunVert - horizonLine;
-  float sunAngleRad = abs(sunAngle);
+  float sunAngleRad = abs(localSunAngle);
   const float SUN_DISC_RADIUS = 0.036;
   float sunDiscVis = smoothstep(-SUN_DISC_RADIUS * 1.12, SUN_DISC_RADIUS * 0.10, sunRiseAmount);
   float sunVisibility = (1.0 - smoothstep(1.30, 1.55, sunAngleRad)) * sunDiscVis;
-  bool isMorning = timeOfDay < 12.0;
+  bool isMorning = hourAngleRad < 0.0;
 
   float sat = map_rangeC(texCoord.y, 0., 2.5, skyDaySatLow, skyDaySatHigh);
   float val = pow(map_rangeC(texCoord.y, 0., 3.2, skyDayValLow, skyDayValHigh), skyDayValPow);
@@ -269,10 +274,10 @@ void main()
   if (isMorning) {
     twilightAmt = max(
       smoothstep(0.03, 0.16, sunRiseAmount) * (1.0 - smoothstep(0.16, 0.38, sunRiseAmount)),
-      smoothstep(1.32, 1.50, abs(sunAngle)) * smoothstep(0.02, 0.10, sunRiseAmount) * 0.85);
+      smoothstep(1.32, 1.50, abs(localSunAngle)) * smoothstep(0.02, 0.10, sunRiseAmount) * 0.85);
   } else {
     twilightAmt = smoothstep(0.05, 0.48, scatter) * (1.0 - smoothstep(0.04, 0.30, sunRiseAmount));
-    twilightAmt = max(twilightAmt, smoothstep(1.22, 1.50, abs(sunAngle)) * smoothstep(0.02, 0.14, sunRiseAmount));
+    twilightAmt = max(twilightAmt, smoothstep(1.22, 1.50, abs(localSunAngle)) * smoothstep(0.02, 0.14, sunRiseAmount));
   }
   twilightAmt = clamp(twilightAmt, 0.0, 1.0);
 
@@ -365,7 +370,7 @@ void main()
     mixedCol += starColor;
   }
 
-  float moonElevRad = clamp(sunAngle - PI * 0.5, 0.0, PI * 0.5);
+  float moonElevRad = clamp(localSunAngle - PI * 0.5, 0.0, PI * 0.5);
   float moonHoriz = 0.5 + skySunHorizAmplitude * sin(hourAngleRad + PI);
   float moonVert = horizonLine + skySunVertScale * sin(moonElevRad);
   vec2 moonCenter = vec2(moonHoriz, moonVert);

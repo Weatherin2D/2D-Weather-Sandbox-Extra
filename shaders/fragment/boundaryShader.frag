@@ -18,6 +18,7 @@ uniform isampler2D wallTex;
 uniform sampler2D lightTex;
 uniform sampler2D precipFeedbackTex;
 uniform sampler2D precipDepositionTex;
+uniform sampler2D sunColumnTex;
 
 uniform float dryLapse;
 uniform float evapHeat;
@@ -34,6 +35,7 @@ float getInitialT(int y) { return initial_Tv[y / 4][y % 4]; }
 
 uniform float sunAngle;
 uniform float sunAzimuth;
+uniform int latitudeBasedTemperature;
 
 uniform float iterNum; // used as seed for random function
 
@@ -79,6 +81,9 @@ void main()
 
   vec4 precipFeedback = texture(precipFeedbackTex, texCoord);
 
+  vec4 sunCol = sampleSunColumn(sunColumnTex, texCoord.x);
+  float colSunAngle = sunCol.g;
+  float climateTempC = sunCol.a;
 
   float realTemp = potentialToRealT(base[TEMPERATURE]);
 
@@ -100,6 +105,12 @@ void main()
 
     if (!isLiquidWaterType(wall[TYPE]) && wall[TYPE] != WALLTYPE_ICE)
       base[TEMPERATURE] += light[NET_HEATING]; // IR heating/cooling effect
+
+    // Latitude-based climate soft-forcing for near-surface air
+    if (latitudeBasedTemperature != 0 && wall[VERT_DISTANCE] <= 3) {
+      float climateRealC = climateTempC + map_range(texCoord.y, 0.0, 1.0, 0.0, -85.0);
+      base[TEMPERATURE] += (realToPotentialT(CtoK(climateRealC)) - base[TEMPERATURE]) * 0.00003;
+    }
 
     base[TEMPERATURE] += precipFeedback[HEAT]; // rain cools air and riming heats air
 
@@ -211,7 +222,7 @@ void main()
     if (nextToWall) {
       if (!isAnyWaterType(wall[TYPE])) { // any land
         // Uniform horizontal-surface irradiance (same as water); not screen-space sun direction.
-        float lightPower = max(light[SUNLIGHT] * cos(sunAngle), 0.0);
+        float lightPower = max(light[SUNLIGHT] * cos(colSunAngle), 0.0);
 
         float albedoTotal = 1.0;
 
@@ -235,6 +246,12 @@ void main()
         lightPower *= (1. - albedoTotal);
         lightPower *= lightHeatingConst;
         base[TEMPERATURE] += lightPower; // sun heating land
+
+        // Mild climate tendency toward latitude-based sea-level temperature
+        if (latitudeBasedTemperature != 0) {
+          float climatePotential = CtoK(climateTempC);
+          base[TEMPERATURE] += (climatePotential - base[TEMPERATURE]) * 0.00008;
+        }
       }
     }
 
@@ -578,11 +595,13 @@ void main()
             netWaterHeating += (airTemperature - base[TEMPERATURE]) * waterHeatExchangeRate;
             netWaterHeating -= max((maxWater(base[TEMPERATURE]) - waterX0Yp[TOTAL]) * waterEvaporation, 0.) * evapHeat * 0.5;
 
-            float lightPower = max(lightAboveSurface[SUNLIGHT] * cos(sunAngle), 0.0);
+            float lightPower = max(lightAboveSurface[SUNLIGHT] * cos(colSunAngle), 0.0);
             lightPower *= (1. - ALBEDO_WATER);
             lightPower *= lightHeatingConst;
             netWaterHeating += lightPower;
             netWaterHeating += lightAboveSurface[NET_HEATING];
+            if (latitudeBasedTemperature != 0)
+              netWaterHeating += (CtoK(climateTempC) - base[TEMPERATURE]) * 0.0004;
             base[TEMPERATURE] += netWaterHeating / waterHeatCapacity * waterTempUpdateInterval;
           }
 
@@ -637,12 +656,14 @@ void main()
 
             float airTemperature = potentialToRealT(texture(baseTex, texCoordX0Yp)[TEMPERATURE], texCoordX0Yp.y);
             float netIceHeating = (airTemperature - base[TEMPERATURE]) * waterHeatExchangeRate * 0.5;
-            float lightPower = max(lightAboveSurface[SUNLIGHT] * cos(sunAngle), 0.0);
+            float lightPower = max(lightAboveSurface[SUNLIGHT] * cos(colSunAngle), 0.0);
             float iceAlbedo = map_rangeC(iceThickness, 0.0, fullWhiteSnowHeight, ALBEDO_WATER, ALBEDO_ICE);
             lightPower *= (1. - iceAlbedo);
             lightPower *= lightHeatingConst;
             netIceHeating += lightPower;
             netIceHeating += lightAboveSurface[NET_HEATING] * 0.5;
+            if (latitudeBasedTemperature != 0)
+              netIceHeating += (CtoK(min(climateTempC, 0.0)) - base[TEMPERATURE]) * 0.0002;
             base[TEMPERATURE] += netIceHeating / waterHeatCapacity * waterTempUpdateInterval;
           }
 

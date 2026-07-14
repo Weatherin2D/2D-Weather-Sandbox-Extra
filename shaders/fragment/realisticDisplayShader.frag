@@ -27,6 +27,7 @@ uniform sampler2D ambientLightTex;
 uniform sampler2D lightningOnLightTex;
 uniform sampler2D lightningCloudFlashTex;
 uniform sampler2D lightningSurfFlashTex;
+uniform sampler2D sunColumnTex;
 
 uniform int ltUseIllumTexture;
 
@@ -422,6 +423,8 @@ void applyAirLightning(vec2 uv, float cloudwater, float precip, float cloudDensi
       onLight += vec3(lightningOnLight);
     }
   } else if (ltNumStrikes > 0 && ltEventAge >= 0.0) {
+    // Bolts only — same idea as legacy. No multi-strike scene fill lights:
+    // those + bloom washed the whole HDR frame for each event.
     vec3 ltBolts;
     vec3 ltBoltsBehind;
     vec3 ltIllumUnused;
@@ -442,8 +445,9 @@ void applyAirLightning(vec2 uv, float cloudwater, float precip, float cloudDensi
       emittedLight += flashEmit;
     }
 
-    emittedLight += ltBolts * ltCloudPierce;
-    emittedLight += ltBoltsBehind;
+    float pierce = min(ltCloudPierce, 1.6);
+    emittedLight += ltBolts * pierce;
+    emittedLight += ltBoltsBehind * 0.45;
   }
 }
 
@@ -462,14 +466,15 @@ void main()
 
   float realTemp = potentialToRealT(base[TEMPERATURE]);
 
-  bool nightTime = abs(sunAngle) > 85.0 * deg2rad; // false = day time
+  float localSunAngle = sampleSunColumn(sunColumnTex, texCoord.x).g;
+  bool nightTime = abs(localSunAngle) > 85.0 * deg2rad; // false = day time
 
   shadowLight = minShadowLight;
 
   // fragmentColor = vec4(vec3(light),1); return; // View light texture for debugging
 
   float cloudwater = water[CLOUD];
-  float nightFactor = clamp(map_range(abs(sunAngle), 60. * deg2rad, 90. * deg2rad, 0., 1.), 0., 1.);
+  float nightFactor = clamp(map_range(abs(localSunAngle), 60. * deg2rad, 90. * deg2rad, 0., 1.), 0., 1.);
   vec3 icccEmit = vec3(0.0);
   vec3 icccCloud = vec3(0.0);
   vec3 icccSurf = vec3(0.0);
@@ -627,7 +632,7 @@ void main()
       icccEmit, icccCloud, icccSurf, precipBoltShafts);
 
 
-    vec2 rainbowCenter = vec2(0.0, -1.5 + abs(sunAngle) * 0.60);
+    vec2 rainbowCenter = vec2(0.0, -1.5 + abs(localSunAngle) * 0.60);
 
     float centerDist = length(onScreenUV - rainbowCenter) * 1.3;
 
@@ -818,8 +823,7 @@ void main()
   }
 
 
-  float scatering = clamp(map_range(abs(sunAngle), 75. * deg2rad, 90. * deg2rad, 0., 1.), 0., 1.); // how red the sunlight is
-  float precipF = clamp(water[PRECIPITATION], 0.0, 1.0);
+  float scatering = clamp(map_range(abs(localSunAngle), 75. * deg2rad, 90. * deg2rad, 0., 1.), 0., 1.); // how red the sunlight is
 
   vec3 finalLight = sunColor(scatering) * lightIntensity;
 
@@ -838,10 +842,14 @@ void main()
 
   finalLight += sunColor(scatering) * shadowLight + onLight;
 
+  // Illum-texture / flash spill: keep localized; avoid clear-air domain wash.
+  float precipF = clamp(water[PRECIPITATION], 0.0, 1.0);
+  float surfFlashInAir = smoothstep(0.02, 0.20, precipF) * 0.85
+    + smoothstep(0.05, 0.35, clamp(water[CLOUD], 0.0, 1.0)) * 0.15;
   if (wall[DISTANCE] == 0)
     finalLight += icccSurf + precipBoltShafts;
   else if (texCoord.y > 0.0 && texCoord.y <= 1.0)
-    finalLight += icccCloud + icccSurf * max(precipF, 0.22);
+    finalLight += icccCloud + icccSurf * surfFlashInAir;
   else if (texCoord.y < 0.0)
     finalLight += icccSurf + precipBoltShafts;
 

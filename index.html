@@ -1497,7 +1497,8 @@
                             12000 m are not optimized and may be buggy!</i></td>
                 </tr>
             </table>
-            <input type="button" value="Create New Simulation" onclick="loadData()" />
+            <input type="button" id="mpCreateSimBtn" value="Create New Simulation" onclick="loadData()" />
+            <p id="mpPeerWaitHint" style="display:none; color:#a8dadc; margin-top:8px;">Joined as peer — waiting for host simulation…</p>
             <div class="intro-hints-option">
                 <label for="introShowHints">
                     <input type="checkbox" id="introShowHints" checked />

@@ -156,6 +156,17 @@ vec2 sunlightDirection(float sunZenithAngle, float sunAzimuth)
   return vec2(sin(sunZenithAngle) * sin(sunAzimuth), cos(sunZenithAngle));
 }
 
+// sunColumnTex RGBA: R=top sun intensity, G=zenith rad, B=azimuth rad, A=climate sea-level °C
+vec4 sampleSunColumn(sampler2D sunColumnTex, float texX)
+{
+  return texture(sunColumnTex, vec2(texX, 0.5));
+}
+
+float climateTempCFromLatitude(float lat)
+{
+  return 30.0 - 55.0 * pow(abs(lat) / 90.0, 1.15);
+}
+
 const float SUN_HORIZON_LINE = 0.028;
 
 vec2 sunScreenPosition(float sunZenithAngle, float sunAzimuth)

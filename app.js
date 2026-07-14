@@ -411,9 +411,40 @@ var multiplayerSnapshotLoadInProgress = false;
 var multiplayerLoadPhase = 'idle';
 var pendingSnapshotBuffer = null;
 var multiplayerHooksRegistered = false;
+var mainScriptActive = false;
+
+function isMultiplayerPeer()
+{
+  const mp = window.WeatherMultiplayer;
+  return multiplayerPeerMode || (mp && mp.connected && mp.isPeer());
+}
+
+function isMultiplayerHost()
+{
+  const mp = window.WeatherMultiplayer;
+  return multiplayerHostMode || (mp && mp.connected && mp.isHost());
+}
+
+window.syncMultiplayerModeFlags = function()
+{
+  const mp = window.WeatherMultiplayer;
+  if (!mp || !mp.connected) {
+    multiplayerHostMode = false;
+    multiplayerPeerMode = false;
+    return;
+  }
+  if (mp.isHost()) {
+    multiplayerHostMode = true;
+    multiplayerPeerMode = false;
+  } else if (mp.isPeer()) {
+    multiplayerHostMode = false;
+    multiplayerPeerMode = true;
+  }
+};
 var mpGuiControllerMap = new Map();
 var mpGuiApplyDepth = 0;
 var seenPlacementEventIds = new Set();
+var seenNukeEventIds = new Set();
 
 function asSaveBytes(decompressed)
 {
@@ -467,6 +498,8 @@ async function markMultiplayerLoadReady()
   if (mp && mp.isPeer()) {
     mp.notifyPeerLoading(false);
   }
+  if (window.WeatherMultiplayerUI && window.WeatherMultiplayerUI.updateIntroForPeerMode)
+    window.WeatherMultiplayerUI.updateIntroForPeerMode();
   if (pendingSnapshotBuffer) {
     const buf = pendingSnapshotBuffer;
     pendingSnapshotBuffer = null;
@@ -624,6 +657,12 @@ const guiControls_default = {
   enhancedLooks : false,
   timeOfDay : 12.0,
   latitude : 45.0,
+  multiLatitudeMode : false,
+  latitudeLeft : 50.0,
+  latitudeRight : 45.0,
+  longitudeLeft : 0.0,
+  longitudeRight : 0.0,
+  latitudeBasedTemperature : false,
   month : 6.65, // Northern hemisphere summer solstice
   sunAngle : 90.0,
   dayNightCycle : true,
@@ -3001,7 +3040,10 @@ class Weatherstation
     this.#netIRpow = lightTextureValues[2] - lightTextureValues[3]; // IR_DOWN - IR_UP
     // this.#netIRpow = lightTextureValues[1] / 0.000002; // or calculate from NET_HEATING
 
-    let directSunlight = Math.max(lightTextureValues[0] * Math.sin(guiControls.sunAngle * degToRad), 0.0);
+    let sunElevDeg = guiControls.sunAngle;
+    if (guiControls.multiLatitudeMode && window.sunColumnElevationDeg && this.#x >= 0 && this.#x < window.sunColumnElevationDeg.length)
+      sunElevDeg = window.sunColumnElevationDeg[this.#x];
+    let directSunlight = Math.max(lightTextureValues[0] * Math.sin(sunElevDeg * degToRad), 0.0);
 
     this.#solarPower = directSunlight;
 
@@ -5728,6 +5770,22 @@ window.loadSnapshotFromNetwork = async function(arrayBuffer)
 {
   const mp = window.WeatherMultiplayer;
 
+  if (mainScriptActive && isMultiplayerPeer() && window.__applySnapshotInPlace) {
+    try {
+      await applySnapshotFromBuffer(arrayBuffer, window.__applySnapshotInPlace);
+      if (window.refreshMultiplayerEntityOverlays)
+        window.refreshMultiplayerEntityOverlays();
+      if (window.WeatherMultiplayerUI)
+        window.WeatherMultiplayerUI.setStatus('Snapshot synced');
+      if (mp) mp.markSnapshotReceived();
+    } catch (e) {
+      console.error('Failed to apply in-place network snapshot', e);
+      if (window.WeatherMultiplayerUI)
+        window.WeatherMultiplayerUI.setStatus('Snapshot sync failed: ' + e.message, true);
+    }
+    return;
+  }
+
   if (multiplayerLoadPhase === 'parsing' || multiplayerLoadPhase === 'initializing') {
     pendingSnapshotBuffer = arrayBuffer;
     return;
@@ -5803,8 +5861,45 @@ window.loadSnapshotFromNetwork = async function(arrayBuffer)
 };
 
 
+function deliverSnapshotFromNetwork(buf)
+{
+  if (!buf || !window.loadSnapshotFromNetwork) return Promise.resolve();
+  if (window.WeatherMultiplayerUI)
+    window.WeatherMultiplayerUI.setStatus('Receiving host world…');
+  return window.loadSnapshotFromNetwork(buf).catch((e) => {
+    console.error('loadSnapshotFromNetwork failed', e);
+    if (window.WeatherMultiplayerUI)
+      window.WeatherMultiplayerUI.setStatus('Snapshot load failed: ' + (e.message || e), true);
+  });
+}
+
+(function registerEarlyMultiplayerSnapshotHook() {
+  if (!window.WeatherMultiplayer) return;
+  window.WeatherMultiplayer.setHooks({
+    onSnapshotBinary(buf) {
+      deliverSnapshotFromNetwork(buf);
+    },
+  });
+})();
+
+
 window.loadData = async function()
 {
+  const mpSession = window.WeatherMultiplayer;
+  if (mpSession && mpSession.connected && mpSession.isPeer() && !multiplayerSnapshotLoadInProgress) {
+    const fileInput = document.getElementById('fileInput');
+    const hasFile = fileInput && fileInput.files && fileInput.files[0];
+    if (window.WeatherMultiplayerUI) {
+      window.WeatherMultiplayerUI.setStatus(
+        hasFile
+          ? 'Cannot load a local save while connected as a peer'
+          : 'Waiting for host world — stay on this page after joining',
+        true);
+    }
+    if (fileInput) fileInput.value = '';
+    return;
+  }
+
   if (multiplayerPeerMode && multiplayerLoadPhase !== 'idle' && multiplayerLoadPhase !== 'ready') {
     if (window.WeatherMultiplayerUI)
       window.WeatherMultiplayerUI.setStatus('Still loading host world — please wait', true);
@@ -6384,9 +6479,10 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   // Declared before requestAnimationFrame(draw): draw() can run while later awaits
   // are pending, so these must not sit in the temporal dead zone after the first rAF.
   const remoteActiveBrushes = new Map();
+  let hostBrushSyncPending = false;
   const HOST_FULL_SNAPSHOT_INTERVAL_MS = 60000;
   const HOST_SYNC_META_INTERVAL_MS = 200;
-  const HOST_TEXTURE_SYNC_ITER_DELTA = 24;
+  const HOST_TEXTURE_SYNC_ITER_DELTA = 6;
 
   if (!loadingBar)
     await setLoadingBar();
@@ -8713,7 +8809,52 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
     radiation_folder.add(guiControls, 'accelerateNight').name('Accelerate Night').listen();
 
-    radiation_folder.add(guiControls, 'latitude', -90.0, 90.0, 0.1).onChange(function() { updateSunlight(); }).name('Latitude').listen();
+    var ctrlLatitude = radiation_folder.add(guiControls, 'latitude', -90.0, 90.0, 0.1).onChange(function() { updateSunlight(); }).name('Latitude').listen();
+
+    var ctrlLatLeft = radiation_folder.add(guiControls, 'latitudeLeft', -90.0, 90.0, 0.1).onChange(function() { guiControls._multiLatEdgesCustomized = true; updateSunlight(); }).name('Latitude Left').listen();
+    var ctrlLatRight = radiation_folder.add(guiControls, 'latitudeRight', -90.0, 90.0, 0.1).onChange(function() { guiControls._multiLatEdgesCustomized = true; updateSunlight(); }).name('Latitude Right').listen();
+    var ctrlLonLeft = radiation_folder.add(guiControls, 'longitudeLeft', -180.0, 180.0, 0.1).onChange(function() { guiControls._multiLatEdgesCustomized = true; updateSunlight(); }).name('Longitude Left').listen();
+    var ctrlLonRight = radiation_folder.add(guiControls, 'longitudeRight', -180.0, 180.0, 0.1).onChange(function() { guiControls._multiLatEdgesCustomized = true; updateSunlight(); }).name('Longitude Right').listen();
+
+    function syncMultiLatitudeGuiVisibility()
+    {
+      var multi = !!guiControls.multiLatitudeMode;
+      if (ctrlLatitude && ctrlLatitude.domElement && ctrlLatitude.domElement.parentElement)
+        ctrlLatitude.domElement.parentElement.style.display = multi ? 'none' : '';
+      var edgeCtrls = [ ctrlLatLeft, ctrlLatRight, ctrlLonLeft, ctrlLonRight ];
+      for (var ei = 0; ei < edgeCtrls.length; ei++) {
+        if (edgeCtrls[ei] && edgeCtrls[ei].domElement && edgeCtrls[ei].domElement.parentElement)
+          edgeCtrls[ei].domElement.parentElement.style.display = multi ? '' : 'none';
+      }
+    }
+
+    radiation_folder.add(guiControls, 'multiLatitudeMode')
+      .onChange(function() {
+        if (guiControls.multiLatitudeMode && !guiControls._multiLatEdgesCustomized) {
+          guiControls.latitudeLeft = guiControls.latitude;
+          guiControls.latitudeRight = guiControls.latitude;
+          guiControls.longitudeLeft = 0.0;
+          guiControls.longitudeRight = 0.0;
+          guiControls._multiLatEdgesCustomized = true;
+        }
+        syncMultiLatitudeGuiVisibility();
+        updateSunlight();
+        if (typeof uploadClimateUniforms === 'function')
+          uploadClimateUniforms();
+      })
+      .name('Multi Latitude')
+      .listen();
+
+    radiation_folder.add(guiControls, 'latitudeBasedTemperature')
+      .onChange(function() {
+        updateSunlight();
+        if (typeof uploadClimateUniforms === 'function')
+          uploadClimateUniforms();
+      })
+      .name('Latitude-based Temperatures')
+      .listen();
+
+    syncMultiLatitudeGuiVisibility();
 
     radiation_folder.add(guiControls, 'month', 1.0, 12.99, 0.01).onChange(onUpdateMonthSlider).name('Month').listen();
 
@@ -9366,6 +9507,13 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       sunAngle: guiControls.sunAngle,
       simDateTimeMs: simDateTime ? simDateTime.getTime() : 0,
       dayNightCycle: guiControls.dayNightCycle,
+      multiLatitudeMode: !!guiControls.multiLatitudeMode,
+      latitude: guiControls.latitude,
+      latitudeLeft: guiControls.latitudeLeft,
+      latitudeRight: guiControls.latitudeRight,
+      longitudeLeft: guiControls.longitudeLeft,
+      longitudeRight: guiControls.longitudeRight,
+      latitudeBasedTemperature: !!guiControls.latitudeBasedTemperature,
     };
   }
 
@@ -9427,10 +9575,11 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       enableRealtimeMode();
 
     window.enforceMultiplayerGuardrails();
-    if (multiplayerHostMode && window.WeatherMultiplayer && window.WeatherMultiplayer.isHost()) {
+    if (isMultiplayerHost() && window.WeatherMultiplayer && window.WeatherMultiplayer.isHost()) {
       const mp = window.WeatherMultiplayer;
       hostIterAtLastTextureSync = iterNum;
       mp.broadcastSyncMeta(buildHostSyncMeta(true));
+      mp.flushPendingSnapshots();
       setTimeout(() => mp.broadcastSnapshotToAll(), 100);
     }
   }
@@ -15639,10 +15788,12 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
 
   function needsAmbientLightBlur()
   {
+    // Cheap, stable bounce light: rebuild every other frame while running.
+    // Never gate on lightning (that used to clear ambient and pulse the scene),
+    // and never run every frame (too expensive).
     if (guiControls.paused)
       return false;
-    const visualAge = getLightningVisualAge();
-    return visualAge >= 0 && proceduralLightningState.strikes.length > 0;
+    return (frameNum & 1) === 0;
   }
 
   function shouldRunPrecipitationThisIteration(iterIndex)
@@ -15690,24 +15841,15 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
 
   function getAmbientBlurPasses()
   {
-    const pressure = getSmoothedFramePressure();
-    if (pressure > 0.32)
-      ambientBlurPassState = 1;
-    else if (pressure < 0.16)
-      ambientBlurPassState = 2;
-    return ambientBlurPassState;
+    // Fixed at 1 — oscillating 1↔2 with frame pressure doubled ambient brightness
+    // whenever V2 lightning spiked the GPU (whole-sim bright/dim pulse).
+    return 1;
   }
 
   function getAmbientLevelCount()
   {
-    // Cap at 6 mip levels — levels beyond 6 are tiny (< 10 px) and contribute
-    // negligible light while each extra level costs a downsample + upsample pass.
-    const pressure = getSmoothedFramePressure();
-    if (pressure > 0.58)
-      ambientLevelCapState = 4;
-    else if (pressure < 0.48)
-      ambientLevelCapState = pressure > 0.26 ? 5 : 6;
-    return Math.min(ambientLightFBOs.length, ambientLevelCapState);
+    // Fixed cap — adaptive level count also pulsed scene brightness with V2 hitch.
+    return Math.min(ambientLightFBOs.length, 5);
   }
 
   function getBloomLevelCount()
@@ -16074,8 +16216,29 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   }
 
   if (skipLightningV2Realistic) {
+    // Previous sessions may have sticky-failed V2 link with an outdated strip regex.
+    // Always retry full V2 first so a fixed shader can recover.
+    sessionStorage.removeItem('wse-realistic-no-lightning-v2');
+  }
+  try {
+    realisticDisplayProgram = await linkProgramAsync(realDispVertexShader, realisticDisplayShader, null, 'realistic display');
+    sessionStorage.removeItem('wse-realistic-no-lightning-v2');
+  } catch (e) {
+    if (gl.isContextLost && gl.isContextLost()) {
+      await loadingBar.showError('WebGL context lost while linking shaders.\nRefresh the page (Ctrl+F5). If this keeps happening, try a smaller simulation resolution.');
+      throw e;
+    }
+    console.warn('Realistic display link failed with Lightning V2:', e.message, '— retrying without procedural lightning');
+    try { gl.deleteShader(realisticDisplayShader); } catch (_) {}
+    realisticDisplayShader = null;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    if (gl.isContextLost && gl.isContextLost()) {
+      await loadingBar.showError('WebGL context lost while linking shaders.\nRefresh the page (Ctrl+F5) and try again.');
+      throw e;
+    }
+    await loadingBar.set(84, 'Linking realistic display (fallback)...');
     try {
-      realisticDisplayProgram = await linkRealisticDisplayNoLt(' [cached]');
+      realisticDisplayProgram = await linkRealisticDisplayNoLt('');
     } catch (e2) {
       if (gl.isContextLost && gl.isContextLost()) {
         await loadingBar.showError('WebGL context lost while linking shaders.\nRefresh the page (Ctrl+F5) and try again.');
@@ -16083,35 +16246,6 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         await loadingBar.showError('ERROR linking realistic display shader:\n' + e2.message);
       }
       throw e2;
-    }
-  } else {
-    try {
-      realisticDisplayProgram = await linkProgramAsync(realDispVertexShader, realisticDisplayShader, null, 'realistic display');
-      sessionStorage.removeItem('wse-realistic-no-lightning-v2');
-    } catch (e) {
-      if (gl.isContextLost && gl.isContextLost()) {
-        await loadingBar.showError('WebGL context lost while linking shaders.\nRefresh the page (Ctrl+F5). If this keeps happening, try a smaller simulation resolution.');
-        throw e;
-      }
-      console.warn('Realistic display link failed with Lightning V2:', e.message, '— retrying without procedural lightning');
-      try { gl.deleteShader(realisticDisplayShader); } catch (_) {}
-      realisticDisplayShader = null;
-      await new Promise((resolve) => setTimeout(resolve, 100));
-      if (gl.isContextLost && gl.isContextLost()) {
-        await loadingBar.showError('WebGL context lost while linking shaders.\nRefresh the page (Ctrl+F5) and try again.');
-        throw e;
-      }
-      await loadingBar.set(84, 'Linking realistic display (fallback)...');
-      try {
-        realisticDisplayProgram = await linkRealisticDisplayNoLt('');
-      } catch (e2) {
-        if (gl.isContextLost && gl.isContextLost()) {
-          await loadingBar.showError('WebGL context lost while linking shaders.\nRefresh the page (Ctrl+F5) and try again.');
-        } else {
-          await loadingBar.showError('ERROR linking realistic display shader:\n' + e2.message);
-        }
-        throw e2;
-      }
     }
   }
   gl.deleteShader(realDispVertexShader);
@@ -16557,6 +16691,9 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   const lightTexture_1 = gl.createTexture();
   let latestLightTexture = lightTexture_0;
   let latestChargeTexture = chargeTexture_0;
+  const sunColumnTexture = gl.createTexture();
+  let sunColumnData = null; // RGBA32F: R=topSun intensity, G=zenith rad, B=azimuth rad, A=climate °C
+  let sunColumnElevationDeg = null; // per-column elevation degrees for weather stations
   const precipitationFeedbackTexture = gl.createTexture();
   const precipitationDepositionTexture = gl.createTexture();
   const lightningDataTexture = gl.createTexture();
@@ -16772,6 +16909,16 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   gl.bindFramebuffer(gl.FRAMEBUFFER, lightFrameBuff_1);
   gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, lightTexture_1, 0);
   gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT1, gl.TEXTURE_2D, emittedLightFBO.texture, 0);
+
+  sunColumnData = new Float32Array(sim_res_x * 4);
+  sunColumnElevationDeg = new Float32Array(sim_res_x);
+  window.sunColumnElevationDeg = sunColumnElevationDeg;
+  gl.bindTexture(gl.TEXTURE_2D, sunColumnTexture);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, sim_res_x, 1, 0, gl.RGBA, gl.FLOAT, sunColumnData);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
 
 
   gl.bindTexture(gl.TEXTURE_2D, precipitationFeedbackTexture);
@@ -18795,7 +18942,21 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       if (typeof updateSunlight === 'function') updateSunlight();
     });
     addGuiSlider(secTime, 'Month', 'Affects moon phase', 'month', 1, 12, 0.01);
-    addGuiSlider(secTime, 'Latitude (°)', 'Day/night cycle latitude', 'latitude', -90, 90, 0.1);
+    addGuiSlider(secTime, 'Latitude (°)', 'Day/night cycle latitude', 'latitude', -90, 90, 0.1, () => {
+      if (typeof updateSunlight === 'function') updateSunlight();
+    });
+    addGuiSlider(secTime, 'Latitude left (°)', 'Multi Latitude left edge', 'latitudeLeft', -90, 90, 0.1, () => {
+      if (typeof updateSunlight === 'function') updateSunlight();
+    });
+    addGuiSlider(secTime, 'Latitude right (°)', 'Multi Latitude right edge', 'latitudeRight', -90, 90, 0.1, () => {
+      if (typeof updateSunlight === 'function') updateSunlight();
+    });
+    addGuiSlider(secTime, 'Longitude left (°)', 'Local time shift left', 'longitudeLeft', -180, 180, 0.1, () => {
+      if (typeof updateSunlight === 'function') updateSunlight();
+    });
+    addGuiSlider(secTime, 'Longitude right (°)', 'Local time shift right', 'longitudeRight', -180, 180, 0.1, () => {
+      if (typeof updateSunlight === 'function') updateSunlight();
+    });
     addGuiSlider(secTime, 'Sun intensity', 'Radiation strength', 'sunIntensity', 0, 3, 0.01, () => {
       if (typeof updateSunlight === 'function') updateSunlight();
     });
@@ -18803,6 +18964,36 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       (v) => { skySettings.sunHorizAmplitude = v; }, 0, 0.8, 0.01);
     addSlider(secTime, 'Sun vertical scale', 'Height above horizon', () => skySettings.sunVertScale,
       (v) => { skySettings.sunVertScale = v; }, 0, 1.5, 0.01);
+
+    const multiLatChk = document.createElement('label');
+    multiLatChk.className = 'ske-chk';
+    multiLatChk.innerHTML = '<input type="checkbox"> Multi Latitude mode';
+    multiLatChk.querySelector('input').checked = guiControls.multiLatitudeMode;
+    multiLatChk.querySelector('input').onchange = (e) => {
+      guiControls.multiLatitudeMode = e.target.checked;
+      if (guiControls.multiLatitudeMode && !guiControls._multiLatEdgesCustomized) {
+        guiControls.latitudeLeft = guiControls.latitude;
+        guiControls.latitudeRight = guiControls.latitude;
+        guiControls.longitudeLeft = 0.0;
+        guiControls.longitudeRight = 0.0;
+        guiControls._multiLatEdgesCustomized = true;
+      }
+      if (typeof updateSunlight === 'function') updateSunlight();
+      if (typeof uploadClimateUniforms === 'function') uploadClimateUniforms();
+      refreshSkyEditor();
+    };
+    secTime.appendChild(multiLatChk);
+
+    const latTempChk = document.createElement('label');
+    latTempChk.className = 'ske-chk';
+    latTempChk.innerHTML = '<input type="checkbox"> Latitude-based temperatures';
+    latTempChk.querySelector('input').checked = guiControls.latitudeBasedTemperature;
+    latTempChk.querySelector('input').onchange = (e) => {
+      guiControls.latitudeBasedTemperature = e.target.checked;
+      if (typeof updateSunlight === 'function') updateSunlight();
+      if (typeof uploadClimateUniforms === 'function') uploadClimateUniforms();
+    };
+    secTime.appendChild(latTempChk);
 
     const dayNightChk = document.createElement('label');
     dayNightChk.className = 'ske-chk';
@@ -18919,6 +19110,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       dayNightChk.querySelector('input').checked = guiControls.dayNightCycle;
       realtimeChk.querySelector('input').checked = guiControls.realtimeMode;
       accelChk.querySelector('input').checked = guiControls.accelerateNight;
+      multiLatChk.querySelector('input').checked = guiControls.multiLatitudeMode;
+      latTempChk.querySelector('input').checked = guiControls.latitudeBasedTemperature;
       autoShadowChk.querySelector('input').checked = guiControls.autoMinShadowLight;
       updatePreview();
     };
@@ -18929,6 +19122,12 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         sunAngle : guiControls.sunAngle,
         month : guiControls.month,
         latitude : guiControls.latitude,
+        multiLatitudeMode : guiControls.multiLatitudeMode,
+        latitudeLeft : guiControls.latitudeLeft,
+        latitudeRight : guiControls.latitudeRight,
+        longitudeLeft : guiControls.longitudeLeft,
+        longitudeRight : guiControls.longitudeRight,
+        latitudeBasedTemperature : guiControls.latitudeBasedTemperature,
         sunIntensity : guiControls.sunIntensity,
         dayNightCycle : guiControls.dayNightCycle,
         realtimeMode : guiControls.realtimeMode,
@@ -18946,8 +19145,9 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       try {
         const parsed = JSON.parse(panel.querySelector('#ske-io').value);
         skySettings = Object.assign(cloneSkySettings(SKY_SETTINGS_DEFAULTS), parsed);
-        const guiKeys = [ 'timeOfDay', 'sunAngle', 'month', 'latitude', 'sunIntensity',
-          'dayNightCycle', 'realtimeMode', 'accelerateNight', 'starVisibility',
+        const guiKeys = [ 'timeOfDay', 'sunAngle', 'month', 'latitude', 'multiLatitudeMode',
+          'latitudeLeft', 'latitudeRight', 'longitudeLeft', 'longitudeRight', 'latitudeBasedTemperature',
+          'sunIntensity', 'dayNightCycle', 'realtimeMode', 'accelerateNight', 'starVisibility',
           'starLightEmitStrength', 'starDensity', 'minShadowLight', 'autoMinShadowLight' ];
         for (const k of guiKeys) {
           if (parsed[k] !== undefined)
@@ -19046,6 +19246,11 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   gl.uniform2f(gl.getUniformLocation(setupProgram, 'resolution'), sim_res_x, sim_res_y);
   gl.uniform1f(gl.getUniformLocation(setupProgram, 'dryLapse'), dryLapse);
   gl.uniform1f(gl.getUniformLocation(setupProgram, 'simHeight'), guiControls.simHeight);
+  gl.uniform1i(gl.getUniformLocation(setupProgram, 'latitudeBasedTemperature'), guiControls.latitudeBasedTemperature ? 1 : 0);
+  gl.uniform1i(gl.getUniformLocation(setupProgram, 'multiLatitudeMode'), guiControls.multiLatitudeMode ? 1 : 0);
+  gl.uniform1f(gl.getUniformLocation(setupProgram, 'latitude'), guiControls.latitude);
+  gl.uniform1f(gl.getUniformLocation(setupProgram, 'latitudeLeft'), guiControls.latitudeLeft);
+  gl.uniform1f(gl.getUniformLocation(setupProgram, 'latitudeRight'), guiControls.latitudeRight);
 
   gl.uniform4fv(gl.getUniformLocation(setupProgram, 'initial_Tv'), initial_T);
 
@@ -19091,6 +19296,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   gl.uniform1i(gl.getUniformLocation(boundaryProgram, 'lightTex'), 4);
   gl.uniform1i(gl.getUniformLocation(boundaryProgram, 'precipFeedbackTex'), 5);
   gl.uniform1i(gl.getUniformLocation(boundaryProgram, 'precipDepositionTex'), 6);
+  gl.uniform1i(gl.getUniformLocation(boundaryProgram, 'sunColumnTex'), 7);
   gl.uniform2f(gl.getUniformLocation(boundaryProgram, 'resolution'), sim_res_x, sim_res_y);
   gl.uniform2f(gl.getUniformLocation(boundaryProgram, 'texelSize'), texelSizeX, texelSizeY);
   gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'vorticity'),
@@ -19103,6 +19309,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   gl.uniform1i(gl.getUniformLocation(boundaryProgram, 'allowCaves'), guiControls.allowCaves ? 1 : 0);
   gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'meltingHeat'), guiControls.meltingHeat);
   gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'dynamicWaterTemperature'), guiControls.dynamicWaterTemperature ? 1.0 : 0.0);
+  gl.uniform1i(gl.getUniformLocation(boundaryProgram, 'latitudeBasedTemperature'), guiControls.latitudeBasedTemperature ? 1 : 0);
 
   gl.useProgram(curlProgram);
   gl.uniform2f(gl.getUniformLocation(curlProgram, 'texelSize'), texelSizeX, texelSizeY);
@@ -19184,6 +19391,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   gl.uniform1i(gl.getUniformLocation(lightingProgram, 'waterTex'), 1);
   gl.uniform1i(gl.getUniformLocation(lightingProgram, 'wallTex'), 2);
   gl.uniform1i(gl.getUniformLocation(lightingProgram, 'lightTex'), 3);
+  gl.uniform1i(gl.getUniformLocation(lightingProgram, 'sunColumnTex'), 7);
   gl.uniform1f(gl.getUniformLocation(lightingProgram, 'dryLapse'), dryLapse);
 
   // Display programs:
@@ -19244,6 +19452,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   gl.uniform1i(gl.getUniformLocation(skyBackgroundDisplayProgram, 'precipFeedbackTex'), 7);
   gl.uniform1i(gl.getUniformLocation(skyBackgroundDisplayProgram, 'planeTex'), 8);
   gl.uniform1i(gl.getUniformLocation(skyBackgroundDisplayProgram, 'planeGearTex'), 10);
+  gl.uniform1i(gl.getUniformLocation(skyBackgroundDisplayProgram, 'sunColumnTex'), 11);
 
   gl.useProgram(universalDisplayProgram);
   gl.uniform2f(gl.getUniformLocation(universalDisplayProgram, 'resolution'), sim_res_x, sim_res_y);
@@ -19269,6 +19478,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   gl.uniform1i(gl.getUniformLocation(realisticDisplayProgram, 'lightningOnLightTex'), 11);
   gl.uniform1i(gl.getUniformLocation(realisticDisplayProgram, 'lightningCloudFlashTex'), 12);
   gl.uniform1i(gl.getUniformLocation(realisticDisplayProgram, 'lightningSurfFlashTex'), 13);
+  gl.uniform1i(gl.getUniformLocation(realisticDisplayProgram, 'sunColumnTex'), 14);
   gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'dryLapse'), dryLapse);
   gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'cellHeight'), cellHeight);
   gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'visualQuality'), 1.0);
@@ -19363,16 +19573,26 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   // updateSunlight uniforms
   const uloc_boundary_sunAngle         = gl.getUniformLocation(boundaryProgram,            'sunAngle');
   const uloc_boundary_sunAzimuth       = gl.getUniformLocation(boundaryProgram,            'sunAzimuth');
+  const uloc_boundary_sunColumnTex     = gl.getUniformLocation(boundaryProgram,            'sunColumnTex');
+  const uloc_boundary_latitudeBasedTemperature = gl.getUniformLocation(boundaryProgram,   'latitudeBasedTemperature');
   const uloc_lighting_sunIntensity     = gl.getUniformLocation(lightingProgram,             'sunIntensity');
   const uloc_lighting_sunAngle         = gl.getUniformLocation(lightingProgram,             'sunAngle');
   const uloc_lighting_sunAzimuth       = gl.getUniformLocation(lightingProgram,             'sunAzimuth');
+  const uloc_lighting_sunColumnTex     = gl.getUniformLocation(lightingProgram,             'sunColumnTex');
   const uloc_realistic_sunAngle        = gl.getUniformLocation(realisticDisplayProgram,     'sunAngle');
   const uloc_realistic_sunAzimuth      = gl.getUniformLocation(realisticDisplayProgram,     'sunAzimuth');
+  const uloc_realistic_sunColumnTex    = gl.getUniformLocation(realisticDisplayProgram,     'sunColumnTex');
   const uloc_realistic_minShadowLight  = gl.getUniformLocation(realisticDisplayProgram,     'minShadowLight');
   const uloc_sky_minShadowLight        = gl.getUniformLocation(skyBackgroundDisplayProgram, 'minShadowLight');
   const uloc_sky_sunAngle              = gl.getUniformLocation(skyBackgroundDisplayProgram, 'sunAngle');
+  const uloc_sky_sunColumnTex          = gl.getUniformLocation(skyBackgroundDisplayProgram, 'sunColumnTex');
   const uloc_sky_timeOfDay             = gl.getUniformLocation(skyBackgroundDisplayProgram, 'timeOfDay');
   const uloc_sky_month                 = gl.getUniformLocation(skyBackgroundDisplayProgram, 'month');
+  const uloc_setup_latitudeBasedTemperature = gl.getUniformLocation(setupProgram, 'latitudeBasedTemperature');
+  const uloc_setup_multiLatitudeMode   = gl.getUniformLocation(setupProgram, 'multiLatitudeMode');
+  const uloc_setup_latitude            = gl.getUniformLocation(setupProgram, 'latitude');
+  const uloc_setup_latitudeLeft        = gl.getUniformLocation(setupProgram, 'latitudeLeft');
+  const uloc_setup_latitudeRight       = gl.getUniformLocation(setupProgram, 'latitudeRight');
   const uloc_sky_starDensity           = gl.getUniformLocation(skyBackgroundDisplayProgram, 'starDensity');
   const uloc_sky_starVisibility        = gl.getUniformLocation(skyBackgroundDisplayProgram, 'starVisibility');
   const uloc_sky_starLightEmitStrength = gl.getUniformLocation(skyBackgroundDisplayProgram, 'starLightEmitStrength');
@@ -19647,6 +19867,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   const uloc_tempChg_colorScaleColumn  = gl.getUniformLocation(temperatureChangeDisplayProgram, 'colorScaleColumn');
   ulocsReady = true; // all uniform locations cached, updateSunlight can now use them
   uploadSkyUniforms();
+  uploadClimateUniforms();
+  updateSunlight();
 
 
   for (i = 0; i < weatherStations.length; i++) { // initial measurement at weather stations
@@ -19655,6 +19877,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
 
   setInterval(calcFps, 1000); // log fps
   initMultiplayerIntegration();
+  mainScriptActive = true;
   requestAnimationFrame(draw);
   await new Promise((resolve) => {
     requestAnimationFrame(() => requestAnimationFrame(resolve));
@@ -19679,58 +19902,115 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     updateSunlight();
   }
 
+  function climateTempCFromLatitude(lat)
+  {
+    return 30.0 - 55.0 * Math.pow(Math.abs(lat) / 90.0, 1.15);
+  }
+
+  function latitudeAtColumn(x)
+  {
+    if (!guiControls.multiLatitudeMode || sim_res_x <= 1)
+      return guiControls.latitude;
+    let t = x / (sim_res_x - 1);
+    return guiControls.latitudeLeft + (guiControls.latitudeRight - guiControls.latitudeLeft) * t;
+  }
+
+  function longitudeAtColumn(x)
+  {
+    if (!guiControls.multiLatitudeMode || sim_res_x <= 1)
+      return 0.0;
+    let t = x / (sim_res_x - 1);
+    return guiControls.longitudeLeft + (guiControls.longitudeRight - guiControls.longitudeLeft) * t;
+  }
+
+  function solarElevationDegAt(latDeg, localSolarTime, month, declinationOverride)
+  {
+    let dayOfYear = Math.floor((month - 1) * 30.44 + 1);
+    let declination = declinationOverride != null
+      ? declinationOverride
+      : 23.45 * Math.sin(degToRad * (360 / 365 * (dayOfYear - 81)));
+    let hourAngle = (localSolarTime - 12) * 15;
+    let declinationRad = declination * degToRad;
+    let latitudeRad = latDeg * degToRad;
+    let hourAngleRad = hourAngle * degToRad;
+    let sinElevation = Math.sin(latitudeRad) * Math.sin(declinationRad) +
+                       Math.cos(latitudeRad) * Math.cos(declinationRad) * Math.cos(hourAngleRad);
+    return Math.asin(Math.max(-1, Math.min(1, sinElevation))) * radToDeg;
+  }
+
+  function uploadSunColumnTexture()
+  {
+    if (!sunColumnData || !sunColumnTexture)
+      return;
+    gl.bindTexture(gl.TEXTURE_2D, sunColumnTexture);
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, sim_res_x, 1, gl.RGBA, gl.FLOAT, sunColumnData);
+  }
+
+  function uploadClimateUniforms()
+  {
+    if (!ulocsReady)
+      return;
+    gl.useProgram(boundaryProgram);
+    if (uloc_boundary_latitudeBasedTemperature)
+      gl.uniform1i(uloc_boundary_latitudeBasedTemperature, guiControls.latitudeBasedTemperature ? 1 : 0);
+    gl.useProgram(setupProgram);
+    if (uloc_setup_latitudeBasedTemperature)
+      gl.uniform1i(uloc_setup_latitudeBasedTemperature, guiControls.latitudeBasedTemperature ? 1 : 0);
+    if (uloc_setup_multiLatitudeMode)
+      gl.uniform1i(uloc_setup_multiLatitudeMode, guiControls.multiLatitudeMode ? 1 : 0);
+    if (uloc_setup_latitude)
+      gl.uniform1f(uloc_setup_latitude, guiControls.latitude);
+    if (uloc_setup_latitudeLeft)
+      gl.uniform1f(uloc_setup_latitudeLeft, guiControls.latitudeLeft);
+    if (uloc_setup_latitudeRight)
+      gl.uniform1f(uloc_setup_latitudeRight, guiControls.latitudeRight);
+  }
+  window.uploadClimateUniforms = uploadClimateUniforms;
+
   function updateSunlight(deltaT_hours)
   {
-    if (deltaT_hours != 'MANUAL_ANGLE') {
+    let dayOfYear = Math.floor((guiControls.month - 1) * 30.44 + 1);
+    let declination = 23.45 * Math.sin(degToRad * (360 / 365 * (dayOfYear - 81)));
+    let manualAngle = (deltaT_hours === 'MANUAL_ANGLE');
+
+    if (!manualAngle) {
       if (deltaT_hours != null) {                                                   // increment time
         simDateTime = new Date(simDateTime.getTime() + deltaT_hours * 3600 * 1000); // convert hours to ms and add to current date
         guiControls.timeOfDay = simDateTime.getHours() + simDateTime.getMinutes() / 60. + simDateTime.getSeconds() / 3600.;
         guiControls.month = simDateTime.getMonth() + 1 + simDateTime.getDate() / 30.5 + simDateTime.getHours() / 720.;
+        dayOfYear = Math.floor((guiControls.month - 1) * 30.44 + 1);
+        declination = 23.45 * Math.sin(degToRad * (360 / 365 * (dayOfYear - 81)));
       } else {
         for (i = 0; i < weatherStations.length; i++) {
           weatherStations[i].clearChart();
         }
       }
 
-      // More accurate solar position calculation
-      let dayOfYear = Math.floor((guiControls.month - 1) * 30.44 + 1); // Approximate day of year
-      
-      // Solar declination (more accurate formula)
-      let declination = 23.45 * Math.sin(degToRad * (360 / 365 * (dayOfYear - 81)));
-      
-      // Hour angle from time of day (solar noon at 12:00)
-      let hourAngle = (guiControls.timeOfDay - 12) * 15; // degrees, 15 degrees per hour
-      
-      // Convert to radians
-      let declinationRad = declination * degToRad;
-      let latitudeRad = guiControls.latitude * degToRad;
-      let hourAngleRad = hourAngle * degToRad;
-      
-      // Calculate solar elevation angle
-      let sinElevation = Math.sin(latitudeRad) * Math.sin(declinationRad) + 
-                         Math.cos(latitudeRad) * Math.cos(declinationRad) * Math.cos(hourAngleRad);
-      let elevationRad = Math.asin(sinElevation);
-      
-      // Convert to degrees (0 = horizon, 90 = directly overhead)
-      guiControls.sunAngle = elevationRad * radToDeg;
+      // Domain-center solar elevation for GUI / clock / night accel
+      let centerLat = guiControls.multiLatitudeMode
+        ? 0.5 * (guiControls.latitudeLeft + guiControls.latitudeRight)
+        : guiControls.latitude;
+      let centerLon = guiControls.multiLatitudeMode
+        ? 0.5 * (guiControls.longitudeLeft + guiControls.longitudeRight)
+        : 0.0;
+      let centerLocalTime = guiControls.timeOfDay + centerLon / 15.0;
+      guiControls.sunAngle = solarElevationDegAt(centerLat, centerLocalTime, guiControls.month, declination);
     }
+
     let solarZenithAngleDeg = (90 - guiControls.sunAngle);
     let solarZenithAngle = solarZenithAngleDeg * degToRad; // Solar zenith angle centered around 0. (0 = vertical)
-    let sunAzimuth = (guiControls.timeOfDay - 12.0) * 15.0 * degToRad; // hour angle: east morning, west evening
+    let sunAzimuth = (guiControls.timeOfDay - 12.0) * 15.0 * degToRad; // hour angle at lon 0
+    if (guiControls.multiLatitudeMode) {
+      let centerLon = 0.5 * (guiControls.longitudeLeft + guiControls.longitudeRight);
+      sunAzimuth = (guiControls.timeOfDay + centerLon / 15.0 - 12.0) * 15.0 * degToRad;
+    }
     // Calculations visualized: https://www.desmos.com/calculator/kzr76zj5hq
     if (Math.abs(solarZenithAngle) < 85.0 * degToRad) {
       sunIsUp = true;
     } else {
       sunIsUp = false;
     }
-    //          console.log(solarZenithAngle, sunIsUp);
-    //  let sunIntensity = guiControls.sunIntensity *
-    // Math.pow(Math.max(Math.sin((90.0 - Math.abs(guiControls.sunAngle)) *
-    // degToRad) - 0.1, 0.0) * 1.111, 0.4);
     let sunIntensity = guiControls.sunIntensity * Math.pow(Math.max(Math.sin(guiControls.sunAngle * degToRad), 0.0), 0.1) * 1300.0; // max 1300 w/m2 at 12 km
-    // console.log('sunIntensity: ', sunIntensity);
-
-    // minShadowLight = clamp(((90 + 10) - Math.abs(solarZenithAngleDeg)) * 0.006, 0.005, 0.040); // decrease until the sun goes 10 deg below the horizon
 
     if (guiControls.autoMinShadowLight) {
       const targetShadow = map_range_C(Math.abs(solarZenithAngleDeg), 100.0, 85.0, 0.005, 0.040);
@@ -19739,6 +20019,38 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     } else {
       minShadowLight = guiControls.minShadowLight;
       smoothedMinShadowLight = guiControls.minShadowLight;
+    }
+
+    // Fill per-column sun state (always — shaders sample this texture)
+    if (sunColumnData && sunColumnElevationDeg) {
+      let climateOn = !!guiControls.latitudeBasedTemperature;
+      for (let x = 0; x < sim_res_x; x++) {
+        let elevDeg;
+        let aziRad;
+        let intensity;
+        let lat = latitudeAtColumn(x);
+        if (manualAngle) {
+          elevDeg = guiControls.sunAngle;
+          aziRad = sunAzimuth;
+          intensity = sunIntensity;
+        } else {
+          let lon = longitudeAtColumn(x);
+          let localTime = guiControls.timeOfDay + lon / 15.0;
+          elevDeg = solarElevationDegAt(lat, localTime, guiControls.month, declination);
+          aziRad = (localTime - 12.0) * 15.0 * degToRad;
+          intensity = guiControls.sunIntensity * Math.pow(Math.max(Math.sin(elevDeg * degToRad), 0.0), 0.1) * 1300.0;
+        }
+        let zenithRad = (90.0 - elevDeg) * degToRad;
+        let climateC = climateOn ? climateTempCFromLatitude(lat) : 15.0;
+        let i4 = x * 4;
+        sunColumnData[i4] = intensity;
+        sunColumnData[i4 + 1] = zenithRad;
+        sunColumnData[i4 + 2] = aziRad;
+        sunColumnData[i4 + 3] = climateC;
+        sunColumnElevationDeg[x] = elevDeg;
+      }
+      if (ulocsReady)
+        uploadSunColumnTexture();
     }
 
     if (ulocsReady) {
@@ -19760,10 +20072,12 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       gl.uniform1f(uloc_sky_month, guiControls.month);
     }
 
-    if (guiControls.dayNightCycle)
-      clockEl.innerHTML = dateTimeStr(); // update clock
-    else
-      clockEl.innerHTML = '';
+    if (clockEl) {
+      if (guiControls.dayNightCycle)
+        clockEl.innerHTML = dateTimeStr(); // update clock
+      else
+        clockEl.innerHTML = '';
+    }
   }
   window.updateSunlight = updateSunlight;
 
@@ -21275,6 +21589,10 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   var _ltStaticUniformsKey = null;
   var _ltStaticUniformsLod = -1;
   var _lastLightningStrikeState = { count: 0, visualAge: -1, hasPrecipShaftStrikes: 0, skipBoltPass: 0 };
+  // Freeze adaptive LOD / visual quality for the duration of a flash so GPU hitch
+  // from V2 bolts cannot strobe shadow kernels and flash radii every frame.
+  var _ltFlashFrozenLod = -1;
+  var _ltFlashFrozenVisualQ = -1;
 
   function syncLightningStrikeUniformBuffers()
   {
@@ -21514,7 +21832,14 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       const frameLod = clamp(1.0 - (smoothedFrameMs - TARGET_FRAME_MS) / 38.0, 0.35, 1.0);
       lod *= frameLod;
     }
-    const lodVal = lod * gpuQuality;
+    let lodVal = lod * gpuQuality;
+    if (count > 0) {
+      if (_ltFlashFrozenLod < 0)
+        _ltFlashFrozenLod = lodVal;
+      lodVal = _ltFlashFrozenLod;
+    } else {
+      _ltFlashFrozenLod = -1;
+    }
 
     // Build a fast key from settings that change infrequently.
     const newKey = (guiControls.lightningBrightness || 1) + '|' + (guiControls.lightningContrast || 1) + '|' +
@@ -22212,6 +22537,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       moveX: moveX || 0,
       moveY: moveY || 0,
       wrap: !!guiControls.wrapHorizontally,
+      invertTool: !!guiControls.invertTool,
       active: true,
     };
   }
@@ -22238,7 +22564,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       gl.useProgram(chargeProgram);
       gl.uniform4f(uloc_charge_userInputValues, brush.x, brush.y, brush.intensity, brush.brushSize * 0.5);
       gl.uniform1i(uloc_charge_userInputType, brush.inputType);
-      gl.uniform1i(uloc_charge_invertTool, guiControls.invertTool ? 1 : 0);
+      gl.uniform1i(uloc_charge_invertTool, brush.invertTool ? 1 : 0);
       gl.uniform1i(uloc_charge_wrapHorizontally, brush.wrap ? 1 : 0);
       uploadChargeDischargeUniforms();
       gl.activeTexture(gl.TEXTURE0);
@@ -22314,8 +22640,16 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       startYpos = Math.max(0, cursorYpos);
     }
 
-    if (simXpos >= 0 && simXpos < sim_res_x)
+    if (simXpos >= 0 && simXpos < sim_res_x) {
       nukes.push(new Nuke(simXpos, startYpos));
+      if (isMultiplayerHost() && window.WeatherMultiplayer && window.WeatherMultiplayer.isHost()) {
+        window.WeatherMultiplayer.broadcastNukeApply({
+          x: simX,
+          y: simY,
+          nukeId: createPlacementEventId('nuke'),
+        });
+      }
+    }
   }
 
   function createPlacementEventId(prefix)
@@ -22494,22 +22828,16 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
 
   window.applyTextureSyncFromNetwork = function(arrayBuffer)
   {
-    if (multiplayerPeerMode && multiplayerLoadPhase !== 'ready')
+    if (isMultiplayerPeer() && multiplayerLoadPhase !== 'ready')
       return;
-    const apply = () => {
-      let buf = arrayBuffer;
-      if (arrayBuffer instanceof Uint8Array)
-        buf = arrayBuffer.buffer.slice(arrayBuffer.byteOffset, arrayBuffer.byteOffset + arrayBuffer.byteLength);
-      applyTextureSyncFromBuffer(buf);
-      if (window.WeatherMultiplayerUI) {
-        window.WeatherMultiplayerUI.setStatus('Texture synced');
-        window.WeatherMultiplayerUI.updateSyncAgeDisplay();
-      }
-    };
-    if (multiplayerPeerMode && typeof requestIdleCallback === 'function')
-      requestIdleCallback(() => apply());
-    else
-      apply();
+    let buf = arrayBuffer;
+    if (arrayBuffer instanceof Uint8Array)
+      buf = arrayBuffer.buffer.slice(arrayBuffer.byteOffset, arrayBuffer.byteOffset + arrayBuffer.byteLength);
+    applyTextureSyncFromBuffer(buf);
+    if (window.WeatherMultiplayerUI) {
+      window.WeatherMultiplayerUI.setStatus('Texture synced');
+      window.WeatherMultiplayerUI.updateSyncAgeDisplay();
+    }
   };
 
   function serializeLightningStrike(strike)
@@ -22644,8 +22972,24 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         simDateTime = new Date(meta.simDateTimeMs);
       if (meta.dayNightCycle != null)
         applySyncedGuiChange('dayNightCycle', !!meta.dayNightCycle);
+      if (meta.multiLatitudeMode != null)
+        applySyncedGuiChange('multiLatitudeMode', !!meta.multiLatitudeMode);
+      if (meta.latitude != null)
+        applySyncedGuiChange('latitude', meta.latitude);
+      if (meta.latitudeLeft != null)
+        applySyncedGuiChange('latitudeLeft', meta.latitudeLeft);
+      if (meta.latitudeRight != null)
+        applySyncedGuiChange('latitudeRight', meta.latitudeRight);
+      if (meta.longitudeLeft != null)
+        applySyncedGuiChange('longitudeLeft', meta.longitudeLeft);
+      if (meta.longitudeRight != null)
+        applySyncedGuiChange('longitudeRight', meta.longitudeRight);
+      if (meta.latitudeBasedTemperature != null)
+        applySyncedGuiChange('latitudeBasedTemperature', !!meta.latitudeBasedTemperature);
       if (typeof updateSunlight === 'function')
-        updateSunlight('MANUAL_ANGLE');
+        updateSunlight(0); // recompute sun columns from synced time/lat/lon without advancing
+      if (typeof uploadClimateUniforms === 'function')
+        uploadClimateUniforms();
     }
   };
 
@@ -22657,9 +23001,6 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     window.WeatherMultiplayer.setHooks({
       buildSnapshot: buildSnapshotBlob,
       buildTextureSync: buildTextureSyncBuffer,
-      onSnapshotBinary(buf) {
-        window.loadSnapshotFromNetwork(buf);
-      },
       onTextureSyncBinary(buf) {
         if (window.applyTextureSyncFromNetwork)
           window.applyTextureSyncFromNetwork(buf);
@@ -22676,6 +23017,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
           remoteActiveBrushes.set(playerId, msg);
         else
           remoteActiveBrushes.delete(playerId);
+        hostBrushSyncPending = true;
       },
       onRemotePlace(playerId, msg) {
         applyRemotePlacement(msg);
@@ -22699,14 +23041,44 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         if (msg.key != null)
           applySyncedGuiChange(msg.key, msg.value);
       },
+      onGuiBulk(msg) {
+        if (!msg.values) return;
+        for (const key of Object.keys(msg.values)) {
+          if (window.WeatherMpProtocol && window.WeatherMpProtocol.isLocalPeerGuiKey(key))
+            continue;
+          applySyncedGuiChange(key, msg.values[key]);
+        }
+      },
+      onNukeApply(msg) {
+        if (msg.nukeId) {
+          const nukeId = String(msg.nukeId);
+          if (seenNukeEventIds.has(nukeId)) return;
+          seenNukeEventIds.add(nukeId);
+          if (seenNukeEventIds.size > 100) {
+            const first = seenNukeEventIds.values().next();
+            if (!first.done) seenNukeEventIds.delete(first.value);
+          }
+        }
+        if (msg.x == null || msg.y == null) return;
+        const simXpos = Math.floor(msg.x * sim_res_x);
+        const cursorYpos = Math.floor(msg.y * sim_res_y);
+        const surfaceYpos = findSimYposAboveSurfaceAtX(simXpos);
+        let startYpos;
+        if (surfaceYpos !== undefined) {
+          startYpos = Math.min(cursorYpos, surfaceYpos - 5);
+          startYpos = Math.max(0, startYpos);
+        } else {
+          startYpos = Math.max(0, cursorYpos);
+        }
+        if (simXpos >= 0 && simXpos < sim_res_x)
+          nukes.push(new Nuke(simXpos, startYpos));
+      },
       onPlayersChanged(players) {
         if (window.WeatherMultiplayerUI)
           window.WeatherMultiplayerUI.renderPlayerList(players);
       },
       onDisconnected(wasInRoom) {
         remoteActiveBrushes.clear();
-        multiplayerHostMode = false;
-        multiplayerPeerMode = false;
         if (window.WeatherMultiplayerUI && window.WeatherMultiplayerUI.handleDisconnected)
           window.WeatherMultiplayerUI.handleDisconnected(wasInRoom);
       },
@@ -22740,8 +23112,19 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       isSimRunning() {
         return !SETUP_MODE;
       },
+      getGuiState() {
+        if (!guiControls) return null;
+        const proto = window.WeatherMpProtocol;
+        const values = {};
+        for (const key of Object.keys(guiControls)) {
+          if (typeof guiControls[key] === 'function') continue;
+          if (proto && proto.isLocalPeerGuiKey(key)) continue;
+          values[key] = guiControls[key];
+        }
+        return values;
+      },
     });
-    if (multiplayerHostMode) {
+    if (isMultiplayerHost()) {
       multiplayerSimReady = true;
       if (window.WeatherMultiplayer)
         setTimeout(() => window.WeatherMultiplayer.broadcastSnapshotToAll(), 100);
@@ -22960,7 +23343,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         gl.uniform1i(uloc_adv_userInputType, inputType);
 
 
-      if (multiplayerPeerMode && window.WeatherMultiplayer && window.WeatherMultiplayer.isPeer()) {
+      if (isMultiplayerPeer() && window.WeatherMultiplayer && window.WeatherMultiplayer.isPeer()) {
         const brush = computeBrushFromTool(guiControls.tool, mouseXinSim, mouseYinSim,
           mouseXinSim - prevMouseXinSim, mouseYinSim - prevMouseYinSim, leftMousePressed);
         brush.active = leftMousePressed && brush.inputType >= 0;
@@ -22968,16 +23351,15 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         inputType = -1;
       }
 
-      if (multiplayerHostMode && remoteActiveBrushes.size > 0) {
-        for (const brush of remoteActiveBrushes.values())
-          applyBrushInputToGpu(brush);
-      }
+      const hostPaintingLocally = isMultiplayerHost() && leftMousePressed && inputType > 0;
+      if (hostPaintingLocally)
+        hostBrushSyncPending = true;
 
 
       // guiControls.IterPerFrame = 1.0 / timePerIteration * 3600 / 60.0;
 
 
-      if (!guiControls.paused && !multiplayerPeerMode) { // Simulation part
+      if (!guiControls.paused && !isMultiplayerPeer()) { // Simulation part
 
         let balloonSimIters = 0;
 
@@ -23020,6 +23402,10 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
           let particleLightningCheckPending = guiControls.enablePrecipitation && isLegacyLightningStyle();
 
           for (var i = 0; i < numIterations; i++) { // Simulation loop
+            if (isMultiplayerHost() && remoteActiveBrushes.size > 0) {
+              for (const brush of remoteActiveBrushes.values())
+                applyBrushInputToGpu(brush);
+            }
             // calc and apply velocity
             gl.useProgram(velocityProgram);
             gl.activeTexture(gl.TEXTURE0);
@@ -23112,6 +23498,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
             gl.bindTexture(gl.TEXTURE_2D, precipitationFeedbackTexture);
             gl.activeTexture(gl.TEXTURE6);
             gl.bindTexture(gl.TEXTURE_2D, precipitationDepositionTexture);
+            gl.activeTexture(gl.TEXTURE7);
+            gl.bindTexture(gl.TEXTURE_2D, sunColumnTexture);
 
 
             gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_0);
@@ -23175,6 +23563,9 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
 
               gl.bindTexture(gl.TEXTURE_2D, readLightTex);
               gl.bindFramebuffer(gl.FRAMEBUFFER, writeLightFbo);
+
+              gl.activeTexture(gl.TEXTURE7);
+              gl.bindTexture(gl.TEXTURE_2D, sunColumnTexture);
 
               gl.drawBuffers([ gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1 ]); // calc light
               gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
@@ -23286,6 +23677,18 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
 
       } // end of simulation part
 
+      if (isMultiplayerPeer() && !isMultiplayerHost()) {
+        for (let i = nukes.length - 1; i >= 0; i--) {
+          nukes[i].move();
+          if (nukes[i].isExploded())
+            nukes.splice(i, 1);
+        }
+        if (weatherBalloons.length > 0) {
+          for (let i = 0; i < weatherBalloons.length; i++)
+            weatherBalloons[i].step(1);
+        }
+      }
+
       if (guiControls.showGraph) {
         let graphX;
         let graphY;
@@ -23378,8 +23781,10 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
 
       updateLightningIlluminationTexture();
 
-      { // Ambient light from emitted sources (lightning bloom) — skip while paused to preserve last frame
-        if (!guiControls.paused && needsAmbientLightBlur()) {
+      { // Ambient bounce from reflected light — keep last frame while paused
+        if (needsAmbientLightBlur()
+            && ambientLightFBOs && ambientLightFBOs.length > 1
+            && emittedLightFBO && emittedLightFBO.texture) {
         gl.bindVertexArray(postProcessingVao);
 
         gl.bindFramebuffer(gl.FRAMEBUFFER, ambientLightFBOs[0].frameBuffer);
@@ -23436,11 +23841,6 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
           gl.disable(gl.BLEND);
         }
         gl.bindVertexArray(fluidVao);
-        } else if (!guiControls.paused) {
-          gl.bindFramebuffer(gl.FRAMEBUFFER, ambientLightFBOs[0].frameBuffer);
-          gl.viewport(0, 0, ambientLightFBOs[0].width, ambientLightFBOs[0].height);
-          gl.clearColor(0.0, 0.0, 0.0, 1.0);
-          gl.clear(gl.COLOR_BUFFER_BIT);
         }
       }
 
@@ -23477,14 +23877,9 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       gl.bindTexture(gl.TEXTURE_2D, ambientLightFBOs[0].texture);
       gl.activeTexture(gl.TEXTURE10);
       gl.bindTexture(gl.TEXTURE_2D, A380GearTexture);
+      // Sky samples sunColumnTex on unit 11; realistic uses 11–13 for illum + 14 for sunColumn.
       gl.activeTexture(gl.TEXTURE11);
-      gl.bindTexture(gl.TEXTURE_2D, lightningOnLightTex);
-      gl.activeTexture(gl.TEXTURE12);
-      gl.bindTexture(gl.TEXTURE_2D,
-        getLightningFlashIllumTexture(lightningCloudFlashTex, lightningCloudFlashBlurFBO));
-      gl.activeTexture(gl.TEXTURE13);
-      gl.bindTexture(gl.TEXTURE_2D,
-        getLightningFlashIllumTexture(lightningSurfFlashTex, lightningSurfFlashBlurFBO));
+      gl.bindTexture(gl.TEXTURE_2D, sunColumnTexture);
 
       gl.useProgram(skyBackgroundDisplayProgram);
       gl.uniform2f(uloc_sky_aspectRatios, sim_aspect, canvas_aspect);
@@ -23502,14 +23897,36 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
 
 
       // draw clouds and terrain
+      gl.activeTexture(gl.TEXTURE11);
+      gl.bindTexture(gl.TEXTURE_2D, lightningOnLightTex);
+      gl.activeTexture(gl.TEXTURE12);
+      gl.bindTexture(gl.TEXTURE_2D,
+        getLightningFlashIllumTexture(lightningCloudFlashTex, lightningCloudFlashBlurFBO));
+      gl.activeTexture(gl.TEXTURE13);
+      gl.bindTexture(gl.TEXTURE_2D,
+        getLightningFlashIllumTexture(lightningSurfFlashTex, lightningSurfFlashBlurFBO));
+      gl.activeTexture(gl.TEXTURE14);
+      gl.bindTexture(gl.TEXTURE_2D, sunColumnTexture);
+
       gl.useProgram(realisticDisplayProgram);
       gl.uniform2f(uloc_real_aspectRatios, sim_aspect, canvas_aspect);
       gl.uniform3f(uloc_real_view, cam.curXpos, cam.curYpos, cam.curZoom);
       gl.uniform4f(uloc_real_cursor, mouseXinSim, mouseYinSim, guiControls.brushSize * 0.5, cursorType);
       gl.uniform1f(uloc_real_Xmult, horizontalDisplayMult);
       gl.uniform1f(uloc_real_iterNum, iterNum);
-      if (uloc_real_visualQuality !== null)
-        gl.uniform1f(uloc_real_visualQuality, Math.min(sunlightVisualQuality, realisticVisualQuality));
+      if (uloc_real_visualQuality !== null) {
+        let vq = Math.min(sunlightVisualQuality, realisticVisualQuality);
+        // V2 lightning is expensive — adaptive quality was oscillating the sun-shadow
+        // kernel every flash and looked like lighting flicker. Freeze for the event.
+        if (!isLegacyLightningStyle() && getLightningVisualAge() >= 0) {
+          if (_ltFlashFrozenVisualQ < 0)
+            _ltFlashFrozenVisualQ = vq;
+          vq = _ltFlashFrozenVisualQ;
+        } else {
+          _ltFlashFrozenVisualQ = -1;
+        }
+        gl.uniform1f(uloc_real_visualQuality, vq);
+      }
 
       // Don't display vectors when zoomed out because you would just see noise
       if (cam.curZoom / sim_res_x > 0.003) {
@@ -23638,7 +24055,9 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
 
       gl.bindVertexArray(fluidVao);
 
-      if (guiControls.showDrops && !useLiteVisualsMode()) {
+      // Keep droplet overlay visible even under lite/perf scaling — lightning
+      // frame spikes used to flip lite mode and make the drops vanish each flash.
+      if (guiControls.showDrops) {
         gl.enable(gl.BLEND);
         gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
         // draw drops over clouds
@@ -24519,13 +24938,17 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
 drawNukeOverlay();
     drawRemotePlayerCursors();
 
-    if (multiplayerHostMode && window.WeatherMultiplayer && window.WeatherMultiplayer.isHost() && !SETUP_MODE) {
+    if (isMultiplayerHost() && window.WeatherMultiplayer && window.WeatherMultiplayer.isHost() && !SETUP_MODE) {
       const now = performance.now();
       const mp = window.WeatherMultiplayer;
       if (mp.hasReadyPeers()) {
         if (now - lastHostSyncMetaBroadcast > HOST_SYNC_META_INTERVAL_MS) {
           lastHostSyncMetaBroadcast = now;
           mp.broadcastSyncMeta(buildHostSyncMeta(true));
+        }
+        if (hostBrushSyncPending && !mp.hasPeersLoading() && !mp._textureSyncSending) {
+          hostBrushSyncPending = false;
+          mp.broadcastTextureSyncToAll();
         }
         if (iterNum - hostIterAtLastTextureSync >= HOST_TEXTURE_SYNC_ITER_DELTA
             && !mp.hasPeersLoading() && !mp._textureSyncSending) {
@@ -24557,7 +24980,7 @@ drawNukeOverlay();
       }
     }
 
-    if (!SETUP_MODE && !guiControls.paused && !multiplayerPeerMode)
+    if (!SETUP_MODE && !guiControls.paused && !isMultiplayerPeer())
       simRuntimeFrames++;
 
     frameNum++;
@@ -24845,10 +25268,10 @@ drawNukeOverlay();
 
     if (opts && opts.skipLightningV2) {
       shaderSource = shaderSource.replace(/#include "lightningV2.glsl"\r?\n?/, '');
-      shaderSource = shaderSource.replace(/  if \(ltUseLegacyStyle != 0\) \{/, '  {');
+      // Keep legacy bolt path only — match any V2 else-if body (not just the old flashEmit form)
       shaderSource = shaderSource.replace(
-        /  \} else if \(ltNumStrikes > 0 && ltEventAge >= 0\.0\) \{[\s\S]*?    emittedLight \+= flashEmit;\r?\n  \}/,
-        ''
+        /  if \(ltUseLegacyStyle != 0\) \{([\s\S]*?)  \} else if \(ltNumStrikes > 0 && ltEventAge >= 0\.0\) \{[\s\S]*?\r?\n  \}/,
+        '  {$1  }'
       );
       shaderSource = shaderSource.replace(
         /const vec3 lightningCol = ltUseLegacyStyle != 0\r?\n    \? vec3\(0\.70, 0\.57, 1\.0\)\r?\n    : vec3\(0\.94, 0\.82, 1\.0\);\r?\n\r?\n  vec3 outputColor = max\(pixVal \* lightningCol, vec3\(0\)\);\r?\n  if \(ltUseLegacyStyle == 0\) \{[\s\S]*?  \}/,

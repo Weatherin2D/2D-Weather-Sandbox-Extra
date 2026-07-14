@@ -501,23 +501,24 @@ float ltFlashEnvelope(float age) {
   float t = ltPhase(age);
   if (ltStrobeFlicker > 0.5) {
     float gate = smoothstep(0.0, 0.06, t) * (1.0 - smoothstep(0.86, 1.0, t));
-    float flicker = 0.45 + 0.55 * abs(sin(t * 28.0 + sin(t * 15.0) * 0.35));
+    // Milder flicker — hard sin modulation strobed the whole scene lighting
+    float flicker = 0.78 + 0.22 * abs(sin(t * 18.0 + sin(t * 9.0) * 0.35));
     return gate * flicker;
   }
   float rise = smoothstep(0.0, 0.08, t);
   float primary = exp(-t * 4.8) * rise;
-  float secondary = exp(-max(t - 0.16, 0.0) * 7.5) * 0.12 * step(0.12, t);
+  float secondary = exp(-max(t - 0.16, 0.0) * 7.5) * 0.10 * smoothstep(0.10, 0.16, t);
   float envelope = (primary + secondary) * (1.0 - smoothstep(0.82, 1.0, t));
   return clamp(envelope, 0.0, 1.0);
 }
 
-// Soft diffuse falloff — pure wide Gaussian, no hard cutoff band
+// Soft diffuse falloff — localized Gaussians (avoid ultra-wide tails that wash the domain)
 float ltSmoothFlashFalloff(vec2 delta, float radius) {
   float dist2 = dot(delta, delta);
   float r2 = max(radius * radius, 1e-8);
-  return exp(-dist2 / (r2 * 3.0))
-       + exp(-dist2 / (r2 * 12.0)) * 0.35
-       + exp(-dist2 / (r2 * 40.0)) * 0.12;
+  return exp(-dist2 / (r2 * 2.4))
+       + exp(-dist2 / (r2 * 8.0)) * 0.28
+       + exp(-dist2 / (r2 * 18.0)) * 0.08;
 }
 
 float ltDistToSegment(vec2 p, vec2 a, vec2 b) {
@@ -540,19 +541,19 @@ float ltStrikeProxFade(vec2 p, vec2 oA, vec2 dA, float ltType) {
   return exp(-pow(max(d, 0.0) / edge, 2.2) * 1.6);
 }
 
-// Wide multi-scale Gaussian glow along bolt path
+// Wide multi-scale Gaussian glow along bolt path — keep tails short so
+// channel illumination does not strobe distant terrain like a global fill light.
 float ltBoltChannelGlow(vec2 p, vec2 oA, vec2 dA, float prop, float cloud) {
   vec2 tip = mix(oA, dA, clamp(prop, 0.0, 1.0));
   float d = min(ltDistToSegment(p, oA, dA), ltDistToSegment(p, oA, tip));
   float d2 = d * d;
   float span = max(length(dA - oA), 0.025);
-  float sigma = 0.018 + span * 0.13;
+  float sigma = 0.014 + span * 0.09;
   float s2 = sigma * sigma;
   float glow = exp(-d2 / (s2 * 1.4)) * 0.32
-             + exp(-d2 / (s2 * 5.5)) * 0.26
-             + exp(-d2 / (s2 * 18.0)) * 0.17
-             + exp(-d2 / (s2 * 50.0)) * 0.10
-             + exp(-d2 / (s2 * 130.0)) * 0.05;
+             + exp(-d2 / (s2 * 5.0)) * 0.22
+             + exp(-d2 / (s2 * 14.0)) * 0.12
+             + exp(-d2 / (s2 * 32.0)) * 0.05;
   float cloudW = smoothstep(0.0, 0.20, cloud);
   return glow * mix(0.50, 1.0, cloudW);
 }
@@ -581,15 +582,17 @@ float ltCloudBoltCullReach(vec2 origin, vec2 dest) {
 }
 
 float ltFlashInfluenceRadius(float flashSize, bool isSheet) {
-  float r = 0.062 + flashSize * 0.19;
+  float r = 0.055 + flashSize * 0.16;
   if (isSheet)
-    r *= 1.35;
-  return r * (1.15 + (1.0 - clamp(ltLODLevel, 0.0, 1.0)) * 0.25);
+    r *= 1.25;
+  // Lower LOD must not widen the flash — that pulsed the whole scene when
+  // adaptive quality dipped during a strike.
+  return r;
 }
 
 bool ltPixelNearFlash(vec2 uv, float aspect, vec2 center, float radius) {
   vec2 delta = vec2((uv.x - center.x) * aspect, uv.y - center.y);
-  return dot(delta, delta) <= radius * radius * 2.8;
+  return dot(delta, delta) <= radius * radius * 2.2;
 }
 
 bool ltPixelNearPrecipShaft(vec2 uv, float aspect, vec2 origin, vec2 dest, float flashSize) {
@@ -648,7 +651,6 @@ void ltAccumulateBoltsAndIllum(vec2 uv, float aspect, float cloudwater, float pr
     if (i >= ltNumStrikes) break;
     float ltType = ltStrikePos[i].z;
     float metaY = ltStrikeMeta[i].y;
-    bool precipOnly = ltPrecipOnly(metaY);
     bool isFlash = ltStrikeIsFlash(ltType, metaY);
     bool behindCloud = ltPrecipOnlyBehind(metaY);
 
@@ -671,16 +673,7 @@ void ltAccumulateBoltsAndIllum(vec2 uv, float aspect, float cloudwater, float pr
     if (boltsActive) {
       vec3 boltCol = ltRenderProceduralStrike(uv, aspect, origin, dest, lightningTime,
         ltType, intensity, visMult, brightMult, cloudwater, seed, behindCloud);
-
-      float prop = ltPropagate(ltEventAge, ltType);
-      float pathGlow = ltBoltChannelGlow(p, oA, dA, prop, cloudwater) * proxFade;
-      float haloStr = flashPhase * intensity * brightMult * dayNight * strikeNorm * ltGlowStrength;
-      vec3 haloCol = mix(LT_GLOW_COL, LT_CLOUD_WARM, clamp(cloudwater * 9.0, 0.0, 0.75));
-      vec3 halo = haloCol * pathGlow * haloStr * 0.32;
-      if (behindCloud)
-        halo *= ltBehindCloudBoltOcclusion(uv, cloudwater, origin, dest, ltType, seed);
-
-      boltCol += halo;
+      // Keep bolt core only — wide path halo bloomed large HDR regions each strike.
       if (behindCloud)
         boltsBehindCloud += boltCol;
       else
@@ -741,7 +734,11 @@ void ltPrecipShaftLight(vec2 uv, float aspect, vec2 origin, vec2 dest, float fla
 
   float totalShaft = horizFall0 * (streak * vertMask * patchMix + horizFall0 * 0.14);
 
-  int shaftSamples = lod < 0.55 ? 1 : (lod < 0.82 ? 2 : 3);
+  int shaftSamples = 2;
+  if (lod < 0.55)
+    shaftSamples = 1;
+  // Keep sample count stable within a flash — lod is frozen from JS, but still
+  // avoid 3-sample intensity jumps if lod straddles the threshold.
   if (shaftSamples > 1) {
     for (int si = 1; si < 3; si++) {
       if (si >= shaftSamples) break;
@@ -773,7 +770,7 @@ float ltPrecipCurtain(vec2 uv, float aspect, vec2 origin, vec2 dest, float flash
   return shaft + rim * 0.55;
 }
 
-// Diffuse intracloud/sheet flash — cloud & surface lighting only (no emissive disk)
+// Diffuse intracloud/sheet flash — prefer lighting cloud mass; keep terrain local
 void ltApplyDiffuseFlash(vec2 uv, float aspect, vec2 center, float radius,
     float flashPhase, float intensity, float dayNight, float scale,
     float cloudwater, float precip, bool inFront, vec3 flashCol,
@@ -782,23 +779,25 @@ void ltApplyDiffuseFlash(vec2 uv, float aspect, vec2 center, float radius,
   surfaceLight = vec3(0.0);
   vec2 delta = vec2((uv.x - center.x) * aspect, uv.y - center.y);
   float falloff = ltSmoothFlashFalloff(delta, radius);
-  if (falloff < 0.001)
+  if (falloff < 0.004)
     return;
 
   float cloudMask = smoothstep(0.04, 0.28, cloudwater);
   float precipMask = smoothstep(0.03, 0.20, precip);
-  float flash = flashPhase * intensity * dayNight * falloff * scale * 0.36;
+  float flash = flashPhase * intensity * dayNight * falloff * scale * 0.28;
   float dist2 = dot(delta, delta);
   float radius2 = radius * radius;
   float coreMix = 1.0 - smoothstep(radius2 * 0.08, radius2 * 1.8, dist2);
   vec3 col = mix(flashCol, LT_CORE_COL, coreMix * 0.52) * flash;
 
+  // Cloud illumination is the visible flash; surface spill stays near precip/terrain
+  // so clear-air domain wash (legacy-style local lighting) does not return.
   if (inFront) {
-    cloudLight += col * cloudMask * 0.016;
-    surfaceLight += col * (0.012 + precipMask * 0.008);
-  } else {
-    surfaceLight += col * (0.014 + precipMask * 0.010);
     cloudLight += col * cloudMask * 0.014;
+    surfaceLight += col * (precipMask * 0.010 + cloudMask * 0.003);
+  } else {
+    surfaceLight += col * (precipMask * 0.012 + cloudMask * 0.004);
+    cloudLight += col * cloudMask * 0.012;
   }
 }
 

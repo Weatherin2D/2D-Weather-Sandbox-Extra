@@ -480,7 +480,7 @@
       const code = await mp().host(name);
       global.multiplayerHostMode = true;
       global.multiplayerPeerMode = false;
-      window.multiplayerJoinInfo = { roomCode: code, playerName: name };
+      window.multiplayerJoinInfo = { roomCode: code, playerName: name, role: 'host' };
       if (typeof global.SETUP_MODE !== 'undefined' && !global.SETUP_MODE)
         global.multiplayerSimReady = true;
       showRoomCode(code);
@@ -493,6 +493,7 @@
       setHostMenuOpen(true);
       updateHud();
       if (global.enforceMultiplayerGuardrails) global.enforceMultiplayerGuardrails();
+      if (global.syncMultiplayerModeFlags) global.syncMultiplayerModeFlags();
     } catch (err) {
       setStatus(err.message || 'Failed to host', true);
       global.multiplayerHostMode = false;
@@ -515,7 +516,8 @@
       await mp().join(code, name);
       global.multiplayerHostMode = false;
       global.multiplayerPeerMode = true;
-      window.multiplayerJoinInfo = { roomCode: code.toUpperCase().trim(), playerName: name };
+      window.multiplayerJoinInfo = { roomCode: code.toUpperCase().trim(), playerName: name, role: 'peer' };
+      updateIntroForPeerMode();
       showRoomCode(code.toUpperCase());
       setStatus('Joined room ' + code.toUpperCase() + ' — waiting for host simulation…');
       showPanel(true);
@@ -523,6 +525,7 @@
       updateHud();
       startSyncAgeTimer();
       if (global.enforceMultiplayerGuardrails) global.enforceMultiplayerGuardrails();
+      if (global.syncMultiplayerModeFlags) global.syncMultiplayerModeFlags();
     } catch (err) {
       setStatus(err.message || 'Failed to join', true);
       global.multiplayerHostMode = false;
@@ -535,6 +538,7 @@
     global.multiplayerHostMode = false;
     global.multiplayerPeerMode = false;
     window.multiplayerJoinInfo = null;
+    updateIntroForPeerMode();
     showRoomCode('—');
     setHostMenuOpen(false);
     setStatus(getDefaultIdleStatus(), needsPlayOnlineCta() && !getPublicPlayUrl());
@@ -621,18 +625,26 @@
   }
 
   function handleDisconnected(wasInRoom) {
-    if (global.multiplayerPeerMode && window.multiplayerJoinInfo && global.multiplayerSimReady) {
+    const joinInfo = window.multiplayerJoinInfo;
+    const wasPeer = global.multiplayerPeerMode
+      || (joinInfo && joinInfo.role === 'peer');
+    if (wasPeer && joinInfo) {
       setStatus('Reconnecting…');
       mp().reconnectAsPeer().then((ok) => {
         if (ok) {
+          global.multiplayerPeerMode = true;
+          global.multiplayerHostMode = false;
+          if (global.syncMultiplayerModeFlags) global.syncMultiplayerModeFlags();
           setStatus('Reconnected — syncing…');
           mp().requestSnapshot();
           mp().startSnapshotRetry();
+          updateHud();
         } else {
           setStatus('Disconnected — could not reconnect. Refresh the page and try again.', true);
           global.multiplayerHostMode = false;
           global.multiplayerPeerMode = false;
           renderPlayerList([]);
+          updateHudVisibility();
         }
       });
       return;
@@ -644,6 +656,24 @@
     setHostMenuOpen(false);
     renderPlayerList([]);
     updateHudVisibility();
+    updateIntroForPeerMode();
+  }
+
+  function updateIntroForPeerMode() {
+    const createBtn = document.getElementById('mpCreateSimBtn');
+    const hint = document.getElementById('mpPeerWaitHint');
+    const session = mp();
+    const isPeer = global.multiplayerPeerMode && session && session.isPeer();
+    if (createBtn) {
+      createBtn.disabled = !!isPeer;
+      createBtn.style.opacity = isPeer ? '0.45' : '';
+      createBtn.style.cursor = isPeer ? 'not-allowed' : '';
+    }
+    if (hint) {
+      hint.style.display = isPeer ? 'block' : 'none';
+      if (isPeer && session && session.roomCode)
+        hint.textContent = 'Joined room ' + session.roomCode + ' — waiting for host simulation…';
+    }
   }
 
   function initMultiplayerUI() {
@@ -718,12 +748,12 @@
           setStatus('Connected to room ' + msg.roomCode + ' — waiting for host simulation…');
           mp().requestSnapshot();
           mp().startSnapshotRetry();
+          updateIntroForPeerMode();
         }
+        if (global.syncMultiplayerModeFlags) global.syncMultiplayerModeFlags();
         updateHud();
       },
-      onSnapshotBinary(buf) {
-        if (global.loadSnapshotFromNetwork)
-          global.loadSnapshotFromNetwork(buf);
+      onSnapshotBinary() {
         updateSyncAgeDisplay();
       },
       onSyncMeta(meta) {
@@ -770,6 +800,7 @@
     setHostMenuOpen,
     preserveMultiplayerOverlays,
     updateLoadPhaseStatus,
+    updateIntroForPeerMode,
     copyInviteLink,
     copyJoinInstructions,
     openPlayOnline,

@@ -13,6 +13,12 @@ uniform float heightMult;
 
 uniform vec4 initial_Tv[126];
 
+uniform int latitudeBasedTemperature;
+uniform int multiLatitudeMode;
+uniform float latitude;
+uniform float latitudeLeft;
+uniform float latitudeRight;
+
 float getInitialT(int y) { return initial_Tv[y / 4][y % 4]; }
 
 in vec2 texCoord;
@@ -31,6 +37,13 @@ float noise(float p)
   float fl = floor(p);
   float fc = fract(p);
   return mix(rand(fl), rand(fl + 1.), fc) - 0.5;
+}
+
+float columnLatitude()
+{
+  if (multiLatitudeMode != 0)
+    return mix(latitudeLeft, latitudeRight, texCoord.x);
+  return latitude;
 }
 
 void main()
@@ -64,9 +77,10 @@ void main()
 
   if (texCoord.y < texelSize.y || texCoord.y < height) {                                                      // set to wall
     wall[DISTANCE] = 0;                                                                                       // set to wall
+    float climateC = climateTempCFromLatitude(columnLatitude());
     if (height < texelSize.y) {
       wall[TYPE] = WALLTYPE_WATER;                                                                            // set walltype to water
-      base[TEMPERATURE] = CtoK(25.0);                                                                         // set water temperature to 25 C
+      base[TEMPERATURE] = CtoK(latitudeBasedTemperature != 0 ? climateC : 25.0);                              // set water temperature
     } else {
       wall[TYPE] = WALLTYPE_LAND;                                                                             // set walltype to land
       water[SOIL_MOISTURE] = 25.0;                                                                            // soil moisture in mm
@@ -74,10 +88,16 @@ void main()
       wall[VEGETATION] = int(110.0 - fragCoord.y * 2. + noise(fragCoord.x * 0.01 + rand(seed) * 10.) * 150.); // set vegitation
 
       water[SNOW] = max(map_rangeC(height_m, 2000.0, 5000.0, 0.0, 100.0), 0.);                                // set snow
+      if (latitudeBasedTemperature != 0 && climateC < 0.0)
+        water[SNOW] = max(water[SNOW], map_rangeC(climateC, 0.0, -25.0, 0.0, 40.0));
     }
   } else {                                                                                                    // air, not wall
     wall[DISTANCE] = 255;                                                                                     // reset distance to wall
     base[TEMPERATURE] = getInitialT(int(texCoord.y * (1.0 / texelSize.y)));                                   // set temperature
+    if (latitudeBasedTemperature != 0) {
+      float climateC = climateTempCFromLatitude(columnLatitude());
+      base[TEMPERATURE] += (climateC - 15.0); // bias whole column vs default 15°C surface profile
+    }
 
     float realTemp = potentialToRealT(base[TEMPERATURE]);
 

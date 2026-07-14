@@ -286,10 +286,32 @@ function attachMultiplayerRelay(httpServer) {
         return;
       }
 
+      if (msg.type === 'nuke_apply') {
+        if (String(ws._playerId) !== String(room.hostId)) return;
+        broadcastRoom(roomCode, msg, ws);
+        return;
+      }
+
+      if (msg.type === 'gui_bulk') {
+        if (String(ws._playerId) !== String(room.hostId)) return;
+        broadcastRoom(roomCode, msg, ws);
+        return;
+      }
+
       if (msg.type === 'permissions_denied') {
         if (String(ws._playerId) !== String(room.hostId)) return;
         if (msg.targetPlayerId)
           sendToPlayer(room, msg.targetPlayerId, JSON.stringify(msg), false);
+        return;
+      }
+
+      const hostOnlyInputs = new Set([
+        'input_brush', 'input_place', 'input_pause', 'input_nuke', 'input_gui',
+      ]);
+      if (hostOnlyInputs.has(msg.type)) {
+        const host = room.players.get(String(room.hostId));
+        if (host && host.ws.readyState === host.ws.OPEN)
+          sendJson(host.ws, msg);
         return;
       }
 

@@ -15,6 +15,7 @@ uniform sampler2D baseTex;
 uniform sampler2D waterTex;
 uniform isampler2D wallTex;
 uniform sampler2D lightTex;
+uniform sampler2D sunColumnTex;
 
 uniform vec2 resolution;
 uniform vec2 texelSize;
@@ -38,8 +39,13 @@ uniform float dryLapse;
 
 void main()
 {
-  float twilightTop = twilightUnderglowStrength(sunAngle);
-  float topSun = sunIntensity * mix(1.0, 0.42 * twilightTop, step(PI * 0.5, sunAngle));
+  vec4 sunCol = sampleSunColumn(sunColumnTex, texCoord.x);
+  float colSunIntensity = sunCol.r;
+  float colSunAngle = sunCol.g;
+  float colSunAzimuth = sunCol.b;
+
+  float twilightTop = twilightUnderglowStrength(colSunAngle);
+  float topSun = colSunIntensity * mix(1.0, 0.42 * twilightTop, step(PI * 0.5, colSunAngle));
 
   if (fragCoord.y >= resolution.y - 1.)
     light = vec4(topSun, 0, 0, 0); // at top: sun (or brief twilight underglow below horizon)
@@ -48,14 +54,14 @@ void main()
     float cellHeightCompensation = 300. / resolution.y; // 300 cells = 1.0     100 cells = 3.0
 
     // Parallel propagation only (stable; radial line-of-sight caused vertical shadow speckle columns).
-    vec2 sunRay = sunlightSampleOffset(texelSize, sunAngle, sunAzimuth);
+    vec2 sunRay = sunlightSampleOffset(texelSize, colSunAngle, colSunAzimuth);
     float sunlight = texture(lightTex, texCoord + sunRay)[SUNLIGHT];
 
     float realTemp = potentialToRealT(texture(baseTex, texCoord)[TEMPERATURE]);
     vec4 water = texture(waterTex, texCoord);
     ivec4 wall = texture(wallTex, texCoord);
 
-    float scatering = clamp(map_range(abs(sunAngle), 75. * deg2rad, 90. * deg2rad, 0., 1.), 0., 1.); // how red the sunlight is
+    float scatering = clamp(map_range(abs(colSunAngle), 75. * deg2rad, 90. * deg2rad, 0., 1.), 0., 1.); // how red the sunlight is
     vec3 sunlightColor = sunColor(scatering);
 
     if (wall[DISTANCE] != 0) {                                                                          // is not wall
@@ -99,7 +105,7 @@ void main()
         case WALLTYPE_URBAN:
         case WALLTYPE_SUBURBAN:
         case WALLTYPE_INDUSTRIAL:
-          if (abs(sunAngle) > 85. * deg2rad)
+          if (abs(colSunAngle) > 85. * deg2rad)
             reflectedLight.rgb += vec3(1.00, 0.97, 0.57) * 0.03; // Urban area emits light
                                                                  // NOBREAK
         case WALLTYPE_LAND:

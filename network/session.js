@@ -39,8 +39,10 @@
       this._joinInfo = null;
       this._suppressDisconnect = false;
       this._lastSnapshotReceived = 0;
+      this._lastTextureSyncReceived = 0;
       this._snapshotRetryCount = 0;
       this._snapshotRetryTimer = null;
+      this._joinWaiter = null;
       this._hooks = {
         buildSnapshot: null,
         buildTextureSync: null,
@@ -55,6 +57,8 @@
         onRemoteNuke: null,
         onRemoteGuiChange: null,
         onGuiSet: null,
+        onGuiBulk: null,
+        onNukeApply: null,
         onPlayersChanged: null,
         onDisconnected: null,
         onJoinError: null,
@@ -63,6 +67,7 @@
         onPermissionsDenied: null,
         onRoomCodeChanged: null,
         getPresence: null,
+        getGuiState: null,
         isSimRunning: null,
       };
 
@@ -86,6 +91,14 @@
         hooks.onPermissionsChanged = function(perms) {
           prev.call(this, perms);
           next.call(this, perms);
+        };
+      }
+      if (hooks.onSnapshotBinary && this._hooks.onSnapshotBinary) {
+        const prev = this._hooks.onSnapshotBinary;
+        const next = hooks.onSnapshotBinary;
+        hooks.onSnapshotBinary = function(buf, meta) {
+          prev.call(this, buf, meta);
+          next.call(this, buf, meta);
         };
       }
       Object.assign(this._hooks, hooks);
@@ -206,18 +219,47 @@
       }
     }
 
+    _waitForJoinResponse(timeoutMs) {
+      return new Promise((resolve, reject) => {
+        if (this._joinWaiter) {
+          clearTimeout(this._joinWaiter.timeout);
+          this._joinWaiter = null;
+        }
+        const timeout = setTimeout(() => {
+          if (this._joinWaiter) {
+            this._joinWaiter = null;
+            reject(new Error('Join timed out — server may be waking up, try again'));
+          }
+        }, timeoutMs || 30000);
+        this._joinWaiter = { resolve, reject, timeout };
+      });
+    }
+
+    _resolveJoinWaiter(msg, isError) {
+      if (!this._joinWaiter) return;
+      clearTimeout(this._joinWaiter.timeout);
+      const waiter = this._joinWaiter;
+      this._joinWaiter = null;
+      if (isError)
+        waiter.reject(new Error(msg && msg.message ? msg.message : 'Join failed'));
+      else
+        waiter.resolve(msg);
+    }
+
     async host(playerName, roomCode) {
       this.playerName = playerName || 'Host';
       this.roomCode = roomCode || generateRoomCode();
       this._joinInfo = { roomCode: this.roomCode, playerName: this.playerName };
       this._peerPermissions.clear();
       await this.connect();
+      const joined = this._waitForJoinResponse();
       this.transport.sendJson({
         type: MSG.JOIN,
         role: 'host',
         roomCode: this.roomCode,
         playerName: this.playerName,
       });
+      await joined;
       return this.roomCode;
     }
 
@@ -228,12 +270,14 @@
       this._joinInfo = { roomCode: this.roomCode, playerName: this.playerName };
       this._myPermissions = defaultPermissions();
       await this.connect();
+      const joined = this._waitForJoinResponse();
       this.transport.sendJson({
         type: MSG.JOIN,
         role: 'peer',
         roomCode: this.roomCode,
         playerName: this.playerName,
       });
+      await joined;
     }
 
     async reconnectAsPeer() {
@@ -260,6 +304,10 @@
     leave(silent) {
       this._suppressDisconnect = !!silent;
       this._clearSnapshotRetry();
+      if (this._joinWaiter) {
+        clearTimeout(this._joinWaiter.timeout);
+        this._joinWaiter = null;
+      }
       this.transport.disconnect();
       this.role = 'none';
       this.playerId = null;
@@ -343,16 +391,23 @@
 
     async sendSnapshotTo(playerId) {
       if (!this.isHost()) return;
+      const targetId = playerId ? String(playerId) : '';
       if (!this._canSendSnapshot()) {
-        if (playerId) this._pendingSnapshotPeers.add(String(playerId));
+        if (targetId) this._pendingSnapshotPeers.add(targetId);
         return;
       }
-      const buf = await this._buildSnapshotBuffer();
-      if (!buf) {
-        if (playerId) this._pendingSnapshotPeers.add(String(playerId));
-        return;
+      try {
+        const buf = await this._buildSnapshotBuffer();
+        if (!buf) {
+          if (targetId) this._pendingSnapshotPeers.add(targetId);
+          console.warn('Multiplayer: snapshot build returned empty');
+          return;
+        }
+        this._sendSnapshotBuffer(playerId, buf);
+      } catch (e) {
+        console.error('Multiplayer: snapshot send failed', e);
+        if (targetId) this._pendingSnapshotPeers.add(targetId);
       }
-      this._sendSnapshotBuffer(playerId, buf);
     }
 
     async broadcastSnapshotToAll() {
@@ -371,8 +426,14 @@
 
     _flushPendingSnapshots() {
       if (!this.isHost() || this._pendingSnapshotPeers.size === 0) return;
+      const pending = Array.from(this._pendingSnapshotPeers);
       this._pendingSnapshotPeers.clear();
-      this.broadcastSnapshotToAll();
+      for (const peerId of pending)
+        this.sendSnapshotTo(peerId);
+    }
+
+    flushPendingSnapshots() {
+      this._flushPendingSnapshots();
     }
 
     _buildTextureSyncBuffer() {
@@ -439,6 +500,10 @@
       this._clearSnapshotRetry();
     }
 
+    markTextureSyncReceived() {
+      this._lastTextureSyncReceived = performance.now();
+    }
+
     getLastSnapshotAgeSec() {
       if (!this._lastSnapshotReceived) return null;
       return Math.floor((performance.now() - this._lastSnapshotReceived) / 1000);
@@ -457,11 +522,11 @@
       this._snapshotRetryTimer = setTimeout(() => {
         if (!this.isPeer() || !this.connected) return;
         if (this._lastSnapshotReceived > 0) return;
-        if (this._snapshotRetryCount >= 3) return;
+        if (this._snapshotRetryCount >= 12) return;
         this.requestSnapshot();
         this._snapshotRetryCount++;
         this._scheduleSnapshotRetry();
-      }, 5000);
+      }, 3000);
     }
 
     setPlayerPermissions(playerId, perms) {
@@ -588,6 +653,7 @@
         moveX: brush.moveX,
         moveY: brush.moveY,
         wrap: !!brush.wrap,
+        invertTool: !!brush.invertTool,
         active: !!brush.active,
       });
     }
@@ -675,6 +741,13 @@
       }, this._guiDebounceMs));
     }
 
+    broadcastGuiBulk() {
+      if (!this.isHost() || !this.connected || !this._hooks.getGuiState) return;
+      const values = this._hooks.getGuiState();
+      if (!values || typeof values !== 'object') return;
+      this.transport.sendJson({ type: MSG.GUI_BULK, values });
+    }
+
     broadcastPlaceApply(place) {
       if (!this.isHost() || !this.connected || !place) return;
       this.transport.sendJson({
@@ -683,6 +756,16 @@
         x: place.x,
         y: place.y,
         placementId: place.placementId || ('place-' + Date.now() + '-' + Math.floor(Math.random() * 1e9)),
+      });
+    }
+
+    broadcastNukeApply(nuke) {
+      if (!this.isHost() || !this.connected || !nuke) return;
+      this.transport.sendJson({
+        type: MSG.NUKE_APPLY,
+        x: nuke.x,
+        y: nuke.y,
+        nukeId: nuke.nukeId || ('nuke-' + Date.now() + '-' + Math.floor(Math.random() * 1e9)),
       });
     }
 
@@ -749,11 +832,13 @@
           this.players = msg.players || [];
           this._rebuildRemotePlayers();
           this._applyPermissionsFromPlayers();
+          this._resolveJoinWaiter(msg, false);
           if (this._hooks.onPlayersChanged) this._hooks.onPlayersChanged(this.players);
           if (this._hooks.onJoined) this._hooks.onJoined(msg);
           if (this.isPeer()) this.startSnapshotRetry();
           break;
         case MSG.JOIN_ERROR:
+          this._resolveJoinWaiter(msg, true);
           if (this._hooks.onJoinError) this._hooks.onJoinError(msg.message || 'Join failed');
           this.leave(true);
           break;
@@ -761,10 +846,10 @@
           this.players = msg.players || this.players;
           this._rebuildRemotePlayers();
           this._applyPermissionsFromPlayers();
-          if (this.isHost() && msg.playerId !== this.playerId) {
+          if (this.isHost() && String(msg.playerId) !== String(this.playerId)) {
             this._peerPermissions.set(String(msg.playerId), defaultPermissions());
             this._broadcastPermissions();
-            setTimeout(() => this.sendSnapshotTo(msg.playerId), 100);
+            this.sendSnapshotTo(msg.playerId);
           }
           if (this._hooks.onPlayersChanged) this._hooks.onPlayersChanged(this.players);
           break;
@@ -811,6 +896,10 @@
           if (this.isHost() && this._checkNukePermission(msg.playerId) && this._hooks.onRemoteNuke)
             this._hooks.onRemoteNuke(msg.playerId, msg);
           break;
+        case MSG.NUKE_APPLY:
+          if (this.isPeer() && this._hooks.onNukeApply)
+            this._hooks.onNukeApply(msg);
+          break;
         case MSG.INPUT_GUI:
           if (this.isHost() && this._checkGuiPermission(msg.playerId, msg.key)) {
             if (this._hooks.onRemoteGuiChange)
@@ -821,6 +910,10 @@
         case MSG.GUI_SET:
           if (this.isPeer() && msg.key != null && this._hooks.onGuiSet)
             this._hooks.onGuiSet(msg);
+          break;
+        case MSG.GUI_BULK:
+          if (this.isPeer() && msg.values && this._hooks.onGuiBulk)
+            this._hooks.onGuiBulk(msg);
           break;
         case MSG.PRESENCE:
           this._updateRemotePresence(msg.playerId, msg);
@@ -838,13 +931,21 @@
           break;
         case MSG.PEER_LOADING:
           if (this.isHost() && msg.playerId)
-            this._peersLoading.add(msg.playerId);
-          if (msg.players) this.players = msg.players;
+            this._peersLoading.add(String(msg.playerId));
+          if (msg.players) {
+            this.players = msg.players;
+            if (this._hooks.onPlayersChanged) this._hooks.onPlayersChanged(this.players);
+          }
           break;
         case MSG.PEER_READY:
           if (this.isHost() && msg.playerId)
-            this._peersLoading.delete(msg.playerId);
+            this._peersLoading.delete(String(msg.playerId));
           if (msg.players) this.players = msg.players;
+          if (this.isHost()) {
+            this.flushPendingSnapshots();
+            this.broadcastGuiBulk();
+            if (this._hooks.onPlayersChanged) this._hooks.onPlayersChanged(this.players);
+          }
           break;
         case MSG.PLAYER_PERMISSIONS:
           if (msg.players) this.players = msg.players;
@@ -897,7 +998,7 @@
         const payload = bytes.slice(5);
         const slice = payload.buffer.slice(payload.byteOffset, payload.byteOffset + payload.byteLength);
         if (this._hooks.onTextureSyncBinary) {
-          this.markSnapshotReceived();
+          this.markTextureSyncReceived();
           this._hooks.onTextureSyncBinary(slice);
         }
         return;
