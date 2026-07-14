@@ -16727,7 +16727,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       return;
     }
 
-    // log data of all the droplets within the brush
+    // Pick the closest active droplet to the cursor
     let tempDroplets = new Float32Array(valsPerDroplet * NUM_DROPLETS);
     gl.bindBuffer(gl.TRANSFORM_FEEDBACK_BUFFER, even ? precipVertexBuffer_0 : precipVertexBuffer_1); // x, y, water, ice, density
     gl.getBufferSubData(gl.TRANSFORM_FEEDBACK_BUFFER, 0, tempDroplets);
@@ -16737,8 +16737,9 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     console.log('DROPLETS:-----------------------------------------');
     console.log(' ');
 
-    let numInBrush = 0;
-    let duplicates = 0;
+    let closestN = -1;
+    let closestDist = Infinity;
+    let closestX = 0, closestY = 0, closestWater = 0, closestIce = 0, closestDensity = 0;
 
     for (let n = 0; n < NUM_DROPLETS; n++) {
       let i = n * valsPerDroplet;
@@ -16750,46 +16751,42 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       let ice = tempDroplets[i + 3];
       let density = tempDroplets[i + 4];
 
+      if (water < 0) continue; // inactive droplet
+
       let dx = (mouseXinSim - x) * sim_aspect;
       let dy = mouseYinSim - y;
       let dist = Math.sqrt(dx * dx + dy * dy);
 
-      if (dist < guiControls.brushSize / 2.0 / sim_res_y && water >= 0) { // if droplet is within the brush and active
-        console.log('n:', n);
-        console.log('x:', x);
-        console.log('y:', y);
-        console.log('water:', water);
-        console.log('Ice:', ice);
-        console.log('Density:', density);
-        const w = computeDropletWidths(water, ice, density);
-        console.log('Width H:', w.horizStr);
-        console.log('Width V:', w.vertStr);
-        console.log(' ');
-        numInBrush++;
-
-
-        if (numInBrush == 1) { // first droplet found
-          dropletFollowID = n;
-          dropletInfoCanvas.style.display = 'block';
-        }
+      if (dist < closestDist) {
+        closestDist = dist;
+        closestN = n;
+        closestX = x;
+        closestY = y;
+        closestWater = water;
+        closestIce = ice;
+        closestDensity = density;
       }
-      /*
-        // check for duplicates. Very slow!
-        if (n < NUM_DROPLETS - 1) {
-          for (let d = n + 1; d < NUM_DROPLETS; d++) {
-            let j = d * valsPerDroplet;
-            if (X == tempDroplets[j + 0] && Y == tempDroplets[j + 1]) {
-              duplicates++;
-              break;
-            }
-          }
-        }
-      */
     }
-    console.log(NUM_DROPLETS, 'total droplets. ', numInBrush, 'droplets logged. ', duplicates, ' duplicates found');
 
+    if (closestN >= 0) {
+      console.log('n:', closestN);
+      console.log('x:', closestX);
+      console.log('y:', closestY);
+      console.log('water:', closestWater);
+      console.log('Ice:', closestIce);
+      console.log('Density:', closestDensity);
+      const w = computeDropletWidths(closestWater, closestIce, closestDensity);
+      console.log('Width H:', w.horizStr);
+      console.log('Width V:', w.vertStr);
+      console.log('dist:', closestDist);
+      console.log(' ');
 
-    // dropletFollowMode = true;
+      dropletFollowID = closestN;
+      let dropletInfoCanvas = document.getElementById('dropletInfoCanvas');
+      dropletInfoCanvas.style.display = 'block';
+    }
+
+    console.log(NUM_DROPLETS, 'total droplets. Closest droplet:', closestN >= 0 ? closestN : 'none');
   }
 
 
