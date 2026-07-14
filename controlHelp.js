@@ -371,7 +371,10 @@ const ControlHelp = (function() {
       for (const c of folder.__controllers) {
         if (!c || !c.property || typeof controls[c.property] === 'function') continue;
         const row = c.domElement;
-        const label = (c.name && c.name()) || c.property;
+        // dat.GUI's controller.name(str) is a setter only — calling name() with no
+        // args writes the string "undefined" into every control label.
+        const nameEl = row && row.querySelector('.property-name');
+        const label = (nameEl && nameEl.textContent.trim()) || c.property;
         attachRow(row, c.property, label);
       }
     }
