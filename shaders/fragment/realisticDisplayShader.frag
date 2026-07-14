@@ -407,26 +407,32 @@ void applyAirLightning(vec2 uv, float cloudwater, float precip, float cloudDensi
     vec2 lightningPos = lightningData.xy;
     float lightningStartIterNum = lightningData[START_ITERNUM];
     float intensity = lightningData[INTENSITY];
-    float lightningTime = calcLightningTime(lightningStartIterNum);
-    float currentLightningIntensity = lightningIntensityOverTime(lightningTime, lightningPos, intensity);
+    float boltAge = iterNum - lightningStartIterNum;
+    // Drop invalid / domain-top strikes that would draw a full-height rogue CG
+    bool validStrike = intensity > 0.01
+      && lightningPos.y > 0.14 && lightningPos.y < 0.78
+      && boltAge >= 0.0 && boltAge < 36.0
+      && lightningStartIterNum > 0.5;
+    if (validStrike) {
+      float lightningTime = calcLightningTime(lightningStartIterNum);
+      float currentLightningIntensity = lightningIntensityOverTime(lightningTime, lightningPos, intensity);
 
-    // intensity > 1 = CG (full bolt to ground); <= 1 = CC/IC (shorter aloft channel).
-    // Classic master hid CC bolts entirely; Extra shows them so cloud lightning is visible.
-    if (intensity > 0.01) {
-      bool isCG = intensity > 1.0;
+      // intensity > 1 = CG (full bolt to ground); <= 1 = CC/IC (shorter aloft channel).
+      // High origins never draw as CG even if intensity is elevated (anvil / thin cloud).
+      bool isCG = intensity > 1.0 && lightningPos.y < 0.58;
       float boltBottomY = isCG ? 0.0 : max(lightningPos.y - mix(0.18, 0.38, clamp(intensity, 0.0, 1.0)), lightningPos.y * 0.45);
       float boltGain = isCG ? 1.0 : 0.72;
       emittedLight += displayLightning(lightningPos, lightningTime, currentLightningIntensity, boltBottomY) * boltGain;
       // CG punches through cloud; CC stays readable inside storm mass
       emittedLight /= 1. + cloudDensity * (isCG ? 100.0 : 12.0);
-    }
 
-    const float lightningOnLightBrightness = 0.004;
-    vec2 dist = vec2(lightningPos.x - uv.x, max((abs(lightningPos.y / 2. - uv.y) - 0.1), 0.));
-    dist.x *= aspectRatios[0];
-    float lightningOnLight = lightningOnLightBrightness / (pow(length(dist), 2.) + 0.03);
-    lightningOnLight *= currentLightningIntensity;
-    onLight += vec3(lightningOnLight);
+      const float lightningOnLightBrightness = 0.004;
+      vec2 dist = vec2(lightningPos.x - uv.x, max((abs(lightningPos.y / 2. - uv.y) - 0.1), 0.));
+      dist.x *= aspectRatios[0];
+      float lightningOnLight = lightningOnLightBrightness / (pow(length(dist), 2.) + 0.03);
+      lightningOnLight *= currentLightningIntensity;
+      onLight += vec3(lightningOnLight);
+    }
   }
 }
 
@@ -656,7 +662,8 @@ void main()
 #define maxBuildingHeight 400.  // height in meters upto wich the urban texture reaches
 
       // Surface facade detail is sub-pixel when zoomed out — skip expensive texture paths.
-      bool showSurfaceDetail = visualQuality > 0.55 && view[2] / resolution.x > 0.0025;
+      // Zoom-only: throttled visualQuality often stays ≤0.55 at default 3000×300, which hid trees.
+      bool showSurfaceDetail = view[2] / resolution.x > 0.0025;
 
       if (showSurfaceDetail && wallX0Ym[TYPE] == WALLTYPE_URBAN) {
 
@@ -714,7 +721,7 @@ void main()
           color = texCol.rgb;
           opacity = texCol.a;
         }
-      } else if (wallX0Ym[TYPE] == WALLTYPE_SUBURBAN && visualQuality > 0.62 && view[2] / resolution.x > 0.0025) {
+      } else if (wallX0Ym[TYPE] == WALLTYPE_SUBURBAN && showSurfaceDetail) {
 
         float heightAboveGround = localY + float(wall[VERT_DISTANCE] - 1);
         float suburbanTexHeightNorm = maxSuburbanBuildingHeight / cellHeight;

@@ -64,7 +64,8 @@
 
   const DEFAULT_SETTINGS = {
     lightningRenderStyle: 'Legacy',
-    lightningV2Enabled: false,
+    // Charge/type spawn stays on; bolts still use classic prebaked textures.
+    lightningV2Enabled: true,
     lightningPreset: 'Enhanced Realistic',
     useRealisticLightningRatios: true,
 
@@ -1739,11 +1740,12 @@
 
   function buildLightningV2GUI(datGui, controls, callbacks) {
     const folder = datGui.addFolder('Lightning');
-    // Classic particle + prebaked texture bolts only (same as 2D-Weather-Sandbox-master).
+    // Classic prebaked bolt textures for display; charge + type settings still drive spawns.
     folder.add(controls, 'lightningRenderStyle', { 'Classic': 'Legacy' })
       .name('Lightning Style')
       .onChange(() => {
         controls.lightningRenderStyle = 'Legacy';
+        controls.lightningV2Enabled = true;
         if (callbacks.onLightningStyleChanged)
           callbacks.onLightningStyleChanged();
         callbacks.onSettingsChanged();

@@ -8679,9 +8679,9 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       });
       if (guiControls.lightningPreset && guiControls.lightningPreset !== 'Custom')
         LightningV2.applyPreset(guiControls, guiControls.lightningPreset);
-      // Force classic particle + texture lightning (legacy master approach).
+      // Classic texture bolts for display; V2 charge/types still drive when/where/what strikes.
       guiControls.lightningRenderStyle = 'Legacy';
-      guiControls.lightningV2Enabled = false;
+      guiControls.lightningV2Enabled = true;
     }
 
     guiControls.tool = 'TOOL_NONE';
@@ -16311,7 +16311,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
 
   // load shaders
-  const SHADER_ASSET_VERSION = 6; // bump to bust CDN/browser cache after shader edits
+  const SHADER_ASSET_VERSION = 9; // bump to bust CDN/browser cache after shader edits
 
   var commonSource = await loadSourceFile('shaders/common.glsl');
   var commonDisplaySource = await loadSourceFile('shaders/commonDisplay.glsl');
@@ -20503,8 +20503,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
 
   function isLegacyLightningStyle()
   {
-    // Always use classic particle spawn + prebaked bolt textures
-    // (same approach as 2D-Weather-Sandbox-master). Procedural SDF V2 is disabled.
+    // Classic prebaked bolt textures for display (not the expensive SDF path).
     return true;
   }
 
@@ -20531,8 +20530,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
 
   function isProceduralLightningEnabled()
   {
-    if (isLegacyLightningStyle())
-      return false;
+    // Charge-based V2 spawn/types — independent of classic texture rendering.
     if (isForcedLightningActive() || forcedLightningQueue.length > 0)
       return true;
     if (guiControls.lightningV2Enabled === false)
@@ -20606,13 +20604,97 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
 
   function clearLightningDataTexture()
   {
-    gl.bindFramebuffer(gl.FRAMEBUFFER, lightningDataFrameBuff);
-    gl.drawBuffers([ gl.COLOR_ATTACHMENT0 ]);
-    gl.viewport(0, 0, 1, 1);
-    gl.clearColor(0.0, 0.0, 0.0, 0.0);
-    gl.clear(gl.COLOR_BUFFER_BIT);
-    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-    gl.viewport(0, 0, sim_res_x, sim_res_y);
+    // Prefer tex upload so mid-display sync cannot unbind hdrFBO / viewport.
+    lightningDataUploadBuf[0] = 0;
+    lightningDataUploadBuf[1] = 0;
+    lightningDataUploadBuf[2] = 0;
+    lightningDataUploadBuf[3] = 0;
+    gl.bindTexture(gl.TEXTURE_2D, lightningDataTexture);
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 1, 1, gl.RGBA, gl.FLOAT, lightningDataUploadBuf);
+  }
+
+  const lightningDataUploadBuf = new Float32Array(4);
+
+  function writeLightningDataTexture(normX, normY, startIter, intensity)
+  {
+    lightningDataUploadBuf[0] = normX;
+    lightningDataUploadBuf[1] = normY;
+    lightningDataUploadBuf[2] = startIter;
+    lightningDataUploadBuf[3] = intensity;
+    gl.bindTexture(gl.TEXTURE_2D, lightningDataTexture);
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 1, 1, gl.RGBA, gl.FLOAT, lightningDataUploadBuf);
+  }
+
+  /** Map V2 strike → classic intensity: >1 CG bolt, ≤1 flash/short channel. */
+  function legacyIntensityForStrike(strike)
+  {
+    if (!strike)
+      return 0;
+    const mag = Number.isFinite(strike.originMag) ? strike.originMag
+      : (Number.isFinite(strike.brightness) ? strike.brightness : 0.4);
+    const ny = strike.originY / sim_res_y;
+    // Intracloud / sheet / dry / flash-only → short aloft channel or glow
+    if (strike.flashOnly || strike.precipOnly
+        || strike.ltType === 1 || strike.ltType === 3 || strike.ltType === 11) {
+      return clamp(0.35 + mag * 0.55, 0.2, 0.95);
+    }
+    // Cloud-to-cloud / spider / anvil / strobe → visible short bolt, never full CG
+    if (strike.ltType === 2 || strike.ltType === 4 || strike.ltType === 7 || strike.ltType === 8) {
+      return clamp(0.55 + mag * 0.4, 0.45, 0.95);
+    }
+    // CG / upward / bolt-from-blue → full bolt when origin is in mid-storm
+    if (strike.groundStrike || strike.ltType === 5 || strike.ltType === 6
+        || strike.ltType === 9 || strike.ltType === 10) {
+      let strength = clamp(1.25 + mag * 1.6, 1.15, 4.0);
+      if (ny > 0.58)
+        strength = Math.min(strength, 0.95);
+      return strength;
+    }
+    return clamp(0.5 + mag * 0.45, 0.35, 0.95);
+  }
+
+  function pickPrimaryProceduralStrike(strikes)
+  {
+    if (!strikes || strikes.length === 0)
+      return null;
+    let best = strikes[0];
+    let bestScore = -1;
+    for (let i = 0; i < strikes.length; i++) {
+      const s = strikes[i];
+      let score = (s.brightness || s.originMag || 0.3);
+      if (s.groundStrike || s.ltType === 5 || s.ltType === 6) score += 3;
+      else if (s.ltType === 9 || s.ltType === 10) score += 2.5;
+      else if (s.ltType === 7 || s.ltType === 8 || s.ltType === 2) score += 1.5;
+      if (s.flashOnly || s.precipOnly) score *= 0.35;
+      if (score > bestScore) {
+        bestScore = score;
+        best = s;
+      }
+    }
+    return best;
+  }
+
+  /** Drive classic lightningDataTex from V2 charge/type strikes. */
+  function syncProceduralStrikeToLightningDataTexture()
+  {
+    if (!isProceduralLightningEnabled() || !isLightningCpuReady())
+      return;
+
+    const st = proceduralLightningState;
+    if (!st.strikes || st.strikes.length === 0 || st.builtEventId < 0 || st.eventAge < 0) {
+      clearLightningDataTexture();
+      return;
+    }
+
+    const primary = pickPrimaryProceduralStrike(st.strikes);
+    if (!primary) {
+      clearLightningDataTexture();
+      return;
+    }
+
+    const nx = clamp(primary.originX / sim_res_x, 0, 1);
+    const ny = clamp(primary.originY / sim_res_y, 0.14, 0.78);
+    writeLightningDataTexture(nx, ny, st.builtEventId, legacyIntensityForStrike(primary));
   }
 
   function isLightningCpuReady()
@@ -23781,9 +23863,9 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
 
           refreshLightningFieldCache();
           resetLightningFrameCpuCache();
-          if (isProceduralLightningEnabled() && isLightningCpuReady())
-            clearLightningDataTexture();
-          let particleLightningCheckPending = guiControls.enablePrecipitation;
+          // Particle lightning is only a fallback when V2 charge/type spawn is off.
+          let particleLightningCheckPending = guiControls.enablePrecipitation
+            && !isProceduralLightningEnabled();
 
           for (var i = 0; i < numIterations; i++) { // Simulation loop
             if (isMultiplayerHost() && remoteActiveBrushes.size > 0) {
@@ -23825,8 +23907,9 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
             }
 
             const chargeToolPainting = guiControls.tool == 'TOOL_CHARGE' && leftMousePressed && inputType === 23;
+            // Charge field always updates when lightning CPU is ready (Charge view/tool + V2 spawn).
             const runChargePass = chargeToolPainting
-              || (isLightningCpuReady() && isProceduralLightningEnabled() && !guiControls.skipChargeCalculation);
+              || (isLightningCpuReady() && !guiControls.skipChargeCalculation);
             let chargeStride = 1;
             if (guiControls.adaptiveLightningQuality !== false && smoothedFrameMs > TARGET_FRAME_MS * 1.12)
               chargeStride = 2;
@@ -23978,7 +24061,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
               gl.useProgram(precipitationProgram);
               gl.uniform1f(uloc_precip_iterNum, iterNum);
               if (uloc_precip_enableLegacyParticleLightning)
-                gl.uniform1f(uloc_precip_enableLegacyParticleLightning, 1.0);
+                gl.uniform1f(uloc_precip_enableLegacyParticleLightning,
+                  isProceduralLightningEnabled() ? 0.0 : 1.0);
               gl.enable(gl.BLEND);
               gl.blendFunc(gl.ONE, gl.ONE); // add everything together
               gl.activeTexture(gl.TEXTURE0);
@@ -24050,6 +24134,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
           if (isLightningCpuReady()) {
             refreshLightningFieldCache();
             updateProceduralLightningState();
+            syncProceduralStrikeToLightningDataTexture();
           }
           iterNum++;
           airplane.takeUserInput();
@@ -24329,7 +24414,14 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       if (uloc_real_smoothClouds)
         gl.uniform1f(uloc_real_smoothClouds, guiControls.smoothClouds !== false ? 1.0 : 0.0);
 
+      // V2 charge/types write classic lightningDataTex; SDF uniforms stay off in Legacy style.
+      syncProceduralStrikeToLightningDataTexture();
       let lightningTexNum = Math.floor(iterNum / 400) % Math.min(4, numLightningTextures);
+      const primaryStrike = pickPrimaryProceduralStrike(proceduralLightningState.strikes);
+      if (primaryStrike && Number.isFinite(primaryStrike.texIndex) && numLightningTextures > 0) {
+        lightningTexNum = ((Math.floor(primaryStrike.texIndex) % numLightningTextures)
+          + numLightningTextures) % numLightningTextures;
+      }
       gl.activeTexture(gl.TEXTURE7);
       gl.bindTexture(gl.TEXTURE_2D, lightningTextures[lightningTexNum]);
       gl.activeTexture(gl.TEXTURE8);
