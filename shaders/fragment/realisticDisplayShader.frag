@@ -281,7 +281,7 @@ float lightningIntensityOverTime(float Tin, vec2 lightningPos, float intensity)
   return max((1. / (0.05 + pow(T * 2.0, 3.))) - 0.005, 0.) * pow(intensity, 2.0); // fading out curve
 }
 
-vec3 displayLightning(vec2 pos, float lightningTime, float currentLightningIntensity)
+vec3 displayLightning(vec2 pos, float lightningTime, float currentLightningIntensity, float boltBottomY)
 {
   vec2 lightningTexCoord = texCoord;
 
@@ -289,7 +289,9 @@ vec3 displayLightning(vec2 pos, float lightningTime, float currentLightningInten
 
   lightningTexCoord.y -= pos.y;
 
-  float scaleMult = 1. / pos.y; // 1.0 means lightning is as tall as the simheight
+  // boltBottomY = 0 → full CG bolt to ground; higher → shorter aloft CC/IC channel
+  float boltHeight = max(pos.y - boltBottomY, 0.05);
+  float scaleMult = 1. / boltHeight; // 1.0 means lightning spans boltHeight in sim space
 
   lightningTexCoord.x *= scaleMult * aspectRatios[0] / lightningTexAspect;
   lightningTexCoord.y *= -scaleMult;
@@ -402,12 +404,19 @@ void applyAirLightning(vec2 uv, float cloudwater, float precip, float cloudDensi
     vec4 lightningData = texture(lightningDataTex, vec2(0.5));
     vec2 lightningPos = lightningData.xy;
     float lightningStartIterNum = lightningData[START_ITERNUM];
+    float intensity = lightningData[INTENSITY];
     float lightningTime = calcLightningTime(lightningStartIterNum);
-    float currentLightningIntensity = lightningIntensityOverTime(lightningTime, lightningPos, lightningData[INTENSITY]);
+    float currentLightningIntensity = lightningIntensityOverTime(lightningTime, lightningPos, intensity);
 
-    if (lightningData[INTENSITY] > 1.0) { // CG
-      emittedLight += displayLightning(lightningPos, lightningTime, currentLightningIntensity);
-      emittedLight /= 1. + cloudDensity * 100.0;
+    // intensity > 1 = CG (full bolt to ground); <= 1 = CC/IC (shorter aloft channel).
+    // Classic master hid CC bolts entirely; Extra shows them so cloud lightning is visible.
+    if (intensity > 0.01) {
+      bool isCG = intensity > 1.0;
+      float boltBottomY = isCG ? 0.0 : max(lightningPos.y - mix(0.18, 0.38, clamp(intensity, 0.0, 1.0)), lightningPos.y * 0.45);
+      float boltGain = isCG ? 1.0 : 0.72;
+      emittedLight += displayLightning(lightningPos, lightningTime, currentLightningIntensity, boltBottomY) * boltGain;
+      // CG punches through cloud; CC stays readable inside storm mass
+      emittedLight /= 1. + cloudDensity * (isCG ? 100.0 : 12.0);
     }
 
     const float lightningOnLightBrightness = 0.004;
