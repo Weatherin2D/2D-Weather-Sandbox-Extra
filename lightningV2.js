@@ -63,8 +63,8 @@
   };
 
   const DEFAULT_SETTINGS = {
-    lightningRenderStyle: 'Enhanced',
-    lightningV2Enabled: true,
+    lightningRenderStyle: 'Legacy',
+    lightningV2Enabled: false,
     lightningPreset: 'Enhanced Realistic',
     useRealisticLightningRatios: true,
 
@@ -1738,9 +1738,11 @@
 
   function buildLightningV2GUI(datGui, controls, callbacks) {
     const folder = datGui.addFolder('Lightning');
-    folder.add(controls, 'lightningRenderStyle', { 'Enhanced (V2)': 'Enhanced', 'Legacy (Classic)': 'Legacy' })
+    // Classic particle + prebaked texture bolts only (same as 2D-Weather-Sandbox-master).
+    folder.add(controls, 'lightningRenderStyle', { 'Classic': 'Legacy' })
       .name('Lightning Style')
       .onChange(() => {
+        controls.lightningRenderStyle = 'Legacy';
         if (callbacks.onLightningStyleChanged)
           callbacks.onLightningStyleChanged();
         callbacks.onSettingsChanged();

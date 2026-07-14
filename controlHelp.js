@@ -205,7 +205,7 @@ const ControlHelp = (function() {
     radarOpacity: 'Opacity of the radar overlay.',
     nukeBlastRadius: 'Radius of the thermal blast in cells.',
     nukeTemperature: 'Peak temperature added by a nuke detonation.',
-    lightningRenderStyle: 'Enhanced GPU lightning (V2) or legacy particle-based bolts.',
+    lightningRenderStyle: 'Classic particle-based bolts with prebaked textures (same as the original sandbox).',
     globalLightningMultiplier: 'Overall scale for lightning frequency.',
     lightningBrightness: 'Brightness of lightning bolt rendering.',
     flashDuration: 'How long lightning flashes illuminate the scene.',

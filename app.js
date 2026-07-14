@@ -8622,6 +8622,9 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       });
       if (guiControls.lightningPreset && guiControls.lightningPreset !== 'Custom')
         LightningV2.applyPreset(guiControls, guiControls.lightningPreset);
+      // Force classic particle + texture lightning (legacy master approach).
+      guiControls.lightningRenderStyle = 'Legacy';
+      guiControls.lightningV2Enabled = false;
     }
 
     guiControls.tool = 'TOOL_NONE';
@@ -16106,7 +16109,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
 
   // load shaders
-  const SHADER_ASSET_VERSION = 3; // bump to bust CDN/browser cache after shader edits
+  const SHADER_ASSET_VERSION = 4; // bump to bust CDN/browser cache after shader edits
 
   var commonSource = await loadSourceFile('shaders/common.glsl');
   var commonDisplaySource = await loadSourceFile('shaders/commonDisplay.glsl');
@@ -16149,7 +16152,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   const precipDisplayShader = await loadShader('precipDisplayShader.frag');
   const universalDisplayShader = await loadShader('universalDisplayShader.frag');
   const skyBackgroundDisplayShader = await loadShader('skyBackgroundDisplayShader.frag');
-  let realisticDisplayShader = await loadShader('realisticDisplayShader.frag');
+  let realisticDisplayShader = await loadShader('realisticDisplayShader.frag', { skipLightningV2: true });
   const IRtempDisplayShader = await loadShader('IRtempDisplayShader.frag');
 
   const postProcessingShader = await loadShader('postProcessingShader.frag');
@@ -16201,34 +16204,29 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   await loadingBar.set(84, 'Linking realistic display shader');
   await new Promise((resolve) => setTimeout(resolve, 80));
   let realisticDisplayProgram;
-  const skipLightningV2Realistic = sessionStorage.getItem('wse-realistic-no-lightning-v2') === '1';
+  // Classic lightning only — never link procedural SDF Lightning V2 into realistic display.
+  lightningV2InRealisticShader = false;
+  sessionStorage.setItem('wse-realistic-no-lightning-v2', '1');
 
   async function linkRealisticDisplayNoLt(labelSuffix) {
     try { if (realisticDisplayShader) gl.deleteShader(realisticDisplayShader); } catch (_) {}
     realisticDisplayShader = await loadShader('realisticDisplayShader.frag', { skipLightningV2: true });
     const program = await linkProgramAsync(
       realDispVertexShader, realisticDisplayShader, null,
-      'realistic display (no lightning V2)' + (labelSuffix || ''));
+      'realistic display (classic lightning)' + (labelSuffix || ''));
     lightningV2InRealisticShader = false;
     sessionStorage.setItem('wse-realistic-no-lightning-v2', '1');
-    console.warn('Loaded without Lightning V2 in realistic display — legacy lightning still works.');
     return program;
   }
 
-  if (skipLightningV2Realistic) {
-    // Previous sessions may have sticky-failed V2 link with an outdated strip regex.
-    // Always retry full V2 first so a fixed shader can recover.
-    sessionStorage.removeItem('wse-realistic-no-lightning-v2');
-  }
   try {
     realisticDisplayProgram = await linkProgramAsync(realDispVertexShader, realisticDisplayShader, null, 'realistic display');
-    sessionStorage.removeItem('wse-realistic-no-lightning-v2');
   } catch (e) {
     if (gl.isContextLost && gl.isContextLost()) {
       await loadingBar.showError('WebGL context lost while linking shaders.\nRefresh the page (Ctrl+F5). If this keeps happening, try a smaller simulation resolution.');
       throw e;
     }
-    console.warn('Realistic display link failed with Lightning V2:', e.message, '— retrying without procedural lightning');
+    console.warn('Realistic display link failed:', e.message, '— retrying');
     try { gl.deleteShader(realisticDisplayShader); } catch (_) {}
     realisticDisplayShader = null;
     await new Promise((resolve) => setTimeout(resolve, 100));
@@ -16715,8 +16713,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   const colorScalesTexture = gl.createTexture();
 
   const lightningTextures = [];
-  const numLightningTextures = 12;
-  const lightningTextureTypes = ['CG', 'CG', 'POSITIVE', 'POSITIVE', 'CC', 'CC', 'SPIDER', 'SPIDER', 'ANVIL', 'ANVIL', 'IC', 'IC'];
+  const numLightningTextures = 10;
 
   const temperatureChangeHistoryTextures = [
     gl.createTexture(),
@@ -17053,10 +17050,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     lightningGeneratorWorker.onmessage = (imgElement) => {
       generateLightningTexture(texIndex, imgElement.data);
     };
-    lightningGeneratorWorker.postMessage({
-      width: 2500, height: 5000,
-      type: lightningTextureTypes[texIndex] || 'CG',
-    });
+    lightningGeneratorWorker.postMessage({ width: 2500, height: 5000 });
   }
 
 
@@ -20294,7 +20288,9 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
 
   function isLegacyLightningStyle()
   {
-    return guiControls.lightningRenderStyle === 'Legacy';
+    // Always use classic particle spawn + prebaked bolt textures
+    // (same approach as 2D-Weather-Sandbox-master). Procedural SDF V2 is disabled.
+    return true;
   }
 
   function resetProceduralLightningState()
@@ -23399,7 +23395,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
           resetLightningFrameCpuCache();
           if (isProceduralLightningEnabled() && isLightningCpuReady())
             clearLightningDataTexture();
-          let particleLightningCheckPending = guiControls.enablePrecipitation && isLegacyLightningStyle();
+          let particleLightningCheckPending = guiControls.enablePrecipitation;
 
           for (var i = 0; i < numIterations; i++) { // Simulation loop
             if (isMultiplayerHost() && remoteActiveBrushes.size > 0) {
@@ -23585,8 +23581,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
               gl.useProgram(precipitationProgram);
               gl.uniform1f(uloc_precip_iterNum, iterNum);
               if (uloc_precip_enableLegacyParticleLightning)
-                gl.uniform1f(uloc_precip_enableLegacyParticleLightning,
-                  isLegacyLightningStyle() ? 1.0 : 0.0);
+                gl.uniform1f(uloc_precip_enableLegacyParticleLightning, 1.0);
               gl.enable(gl.BLEND);
               gl.blendFunc(gl.ONE, gl.ONE); // add everything together
               gl.activeTexture(gl.TEXTURE0);
@@ -23916,15 +23911,6 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       gl.uniform1f(uloc_real_iterNum, iterNum);
       if (uloc_real_visualQuality !== null) {
         let vq = Math.min(sunlightVisualQuality, realisticVisualQuality);
-        // V2 lightning is expensive — adaptive quality was oscillating the sun-shadow
-        // kernel every flash and looked like lighting flicker. Freeze for the event.
-        if (!isLegacyLightningStyle() && getLightningVisualAge() >= 0) {
-          if (_ltFlashFrozenVisualQ < 0)
-            _ltFlashFrozenVisualQ = vq;
-          vq = _ltFlashFrozenVisualQ;
-        } else {
-          _ltFlashFrozenVisualQ = -1;
-        }
         gl.uniform1f(uloc_real_visualQuality, vq);
       }
 
@@ -23935,9 +23921,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         gl.uniform1f(uloc_real_displayVectorField, 0.0);
       }
 
-      let lightningTexNum = Math.floor(iterNum / 400) % 4;
-      if (proceduralLightningState.strikes.length > 0 && proceduralLightningState.strikes[0].texIndex != null)
-        lightningTexNum = proceduralLightningState.strikes[0].texIndex % 4;
+      let lightningTexNum = Math.floor(iterNum / 400) % Math.min(4, numLightningTextures);
       gl.activeTexture(gl.TEXTURE7);
       gl.bindTexture(gl.TEXTURE_2D, lightningTextures[lightningTexNum]);
       gl.activeTexture(gl.TEXTURE8);

@@ -65,7 +65,7 @@ out vec4 fragmentColor;
 #include "common.glsl"
 
 #include "commonDisplay.glsl"
-#include "lightningV2.glsl"
+// lightningV2.glsl intentionally omitted — classic particle + texture bolts only
 
 vec4 base, water;
 ivec4 wall;
@@ -323,16 +323,10 @@ vec3 displayLightning(vec2 pos, float lightningTime, float currentLightningInten
 
   pixVal *= currentLightningIntensity;
 
-  vec3 lightningCol = ltUseLegacyStyle != 0
-    ? vec3(0.70, 0.57, 1.0)
-    : vec3(0.94, 0.82, 1.0);
+  // Classic bolt color (same as 2D-Weather-Sandbox-master)
+  const vec3 lightningCol = vec3(0.70, 0.57, 1.0);
 
   vec3 outputColor = max(pixVal * lightningCol, vec3(0));
-  if (ltUseLegacyStyle == 0) {
-    float softHalo = max(texture(lightningTex, lightningTexCoord).r - brightnessThreshold * 0.72, 0.0)
-      * currentLightningIntensity * 0.045;
-    outputColor += softHalo * vec3(0.88, 0.74, 1.0);
-  }
 
   return outputColor;
 }
@@ -401,53 +395,27 @@ void applyAirLightning(vec2 uv, float cloudwater, float precip, float cloudDensi
   flashCloud = vec3(0.0);
   flashSurf = vec3(0.0);
   precipShafts = vec3(0.0);
-  float ltCloudPierce = 1.0 + clamp(cloudDensity * 0.22, 0.0, 5.5);
+  // Classic approach (2D-Weather-Sandbox-master): one prebaked bolt texture sample
+  // + inverse-square scene flash. No procedural SDF multi-strike path.
 
   if (ltUseLegacyStyle != 0) {
     vec4 lightningData = texture(lightningDataTex, vec2(0.5));
     vec2 lightningPos = lightningData.xy;
     float lightningStartIterNum = lightningData[START_ITERNUM];
-    float boltAge = iterNum - lightningStartIterNum;
-    const float LEGACY_BOLT_MAX_AGE = 28.0;
     float lightningTime = calcLightningTime(lightningStartIterNum);
     float currentLightningIntensity = lightningIntensityOverTime(lightningTime, lightningPos, lightningData[INTENSITY]);
-    bool legacyBoltActive = lightningData[INTENSITY] > 1.0
-      && boltAge >= 0.0 && boltAge < LEGACY_BOLT_MAX_AGE;
-    if (legacyBoltActive) {
-      emittedLight += displayLightning(lightningPos, lightningTime, currentLightningIntensity) * ltCloudPierce;
-      const float lightningOnLightBrightness = 0.004;
-      vec2 dist = vec2(lightningPos.x - uv.x, max((abs(lightningPos.y / 2. - uv.y) - 0.1), 0.));
-      dist.x *= aspectRatios[0];
-      float lightningOnLight = lightningOnLightBrightness / (pow(length(dist), 2.) + 0.03);
-      lightningOnLight *= currentLightningIntensity;
-      onLight += vec3(lightningOnLight);
-    }
-  } else if (ltNumStrikes > 0 && ltEventAge >= 0.0) {
-    // Bolts only — same idea as legacy. No multi-strike scene fill lights:
-    // those + bloom washed the whole HDR frame for each event.
-    vec3 ltBolts;
-    vec3 ltBoltsBehind;
-    vec3 ltIllumUnused;
 
-    if (ltUseIllumTexture != 0) {
-      onLight += texture(lightningOnLightTex, uv).rgb;
-      flashCloud = texture(lightningCloudFlashTex, uv).rgb;
-      flashSurf = texture(lightningSurfFlashTex, uv).rgb;
-      ltAccumulateBoltsAndIllum(uv, aspectRatios[0], cloudwater, precip, nightFactor,
-        ltBolts, ltBoltsBehind, ltIllumUnused);
-    } else {
-      vec3 ltIllum;
-      ltAccumulateBoltsAndIllum(uv, aspectRatios[0], cloudwater, precip, nightFactor,
-        ltBolts, ltBoltsBehind, ltIllum);
-      onLight += ltIllum;
-      ltAccumulateFlashes(uv, aspectRatios[0], cloudwater, precip, nightFactor,
-        flashEmit, flashCloud, flashSurf, precipShafts);
-      emittedLight += flashEmit;
+    if (lightningData[INTENSITY] > 1.0) { // CG
+      emittedLight += displayLightning(lightningPos, lightningTime, currentLightningIntensity);
+      emittedLight /= 1. + cloudDensity * 100.0;
     }
 
-    float pierce = min(ltCloudPierce, 1.6);
-    emittedLight += ltBolts * pierce;
-    emittedLight += ltBoltsBehind * 0.45;
+    const float lightningOnLightBrightness = 0.004;
+    vec2 dist = vec2(lightningPos.x - uv.x, max((abs(lightningPos.y / 2. - uv.y) - 0.1), 0.));
+    dist.x *= aspectRatios[0];
+    float lightningOnLight = lightningOnLightBrightness / (pow(length(dist), 2.) + 0.03);
+    lightningOnLight *= currentLightningIntensity;
+    onLight += vec3(lightningOnLight);
   }
 }
 
