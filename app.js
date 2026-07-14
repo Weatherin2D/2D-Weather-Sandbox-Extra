@@ -20,11 +20,8 @@ function updateSetupSliders()
 
   document.getElementById('simWorldProperties').innerHTML = 'cellHeight: ' + cellHeight.toFixed(1) + ' m  &nbsp&nbsp&nbsp   Simulation width: ' + (simWidth / 1000).toFixed(1) + ' km';
 
-  document.getElementById('simHeightWarning').style.display = (simHeight == 12000) ? 'none' : 'block';
+  document.getElementById('simHeightWarning').style.display = (simHeight == 15000) ? 'none' : 'block';
   document.getElementById('simResYWarning').style.display = (simResY == 300) ? 'none' : 'block';
-  let simResXWarn = document.getElementById('simResXWarning');
-  if (simResXWarn)
-    simResXWarn.style.display = (simResX > 16000) ? 'block' : 'none';
   document.getElementById('simResShowX').value = simResX;
   document.getElementById('simResShowY').value = simResY
   document.getElementById('simHeightShow').value = simHeight + ' m';
@@ -695,7 +692,6 @@ const guiControls_default = {
   enablePrecipitation : true,
   showDrops : false,
   enableRainbows : true,
-  smoothClouds : true, // Hermite-smoothed cloud edges (original smoother look)
   paused : false,
   IterPerFrame : 10,
   auto_IterPerFrame : true,
@@ -969,12 +965,6 @@ function computeNumDroplets(resX, resY)
     divider = 75;
   if (cells > 4000000)
     divider = 110;
-  if (cells > 8000000)
-    divider = 160;
-  if (cells > 16000000)
-    divider = 250;
-  if (cells > 30000000)
-    divider = 400;
   let n = cells / divider;
   const reduced = guiControls && guiControls.reducedPrecipitation;
   if (reduced)
@@ -5740,7 +5730,7 @@ async function loadSnapshotFromDecompressed(decompressed, version, inPlaceApplyF
   sim_res_x = resArray[0];
   sim_res_y = resArray[1];
 
-  if (!sim_res_x || !sim_res_y || sim_res_x > 50000 || sim_res_y > 1000)
+  if (!sim_res_x || !sim_res_y || sim_res_x > 16000 || sim_res_y > 10000)
     throw new Error('Invalid snapshot resolution');
 
   NUM_DROPLETS = computeNumDroplets(sim_res_x, sim_res_y);
@@ -6003,7 +5993,7 @@ window.loadData = async function()
       sim_res_x = resArray[0];
       sim_res_y = resArray[1];
 
-      if (!sim_res_x || !sim_res_y || sim_res_x > 50000 || sim_res_y > 1000) {
+      if (!sim_res_x || !sim_res_y || sim_res_x > 16000 || sim_res_y > 10000) {
         alert('Save file has invalid resolution (' + sim_res_x + 'x' + sim_res_y + '). File may be corrupted.');
         document.getElementById('fileInput').value = '';
         if (loadingBar) await loadingBar.remove();
@@ -8666,8 +8656,6 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       guiControls.performanceAutoScaling = guiControls_default.performanceAutoScaling;
     if (guiControls.showDebugOverlay === undefined)
       guiControls.showDebugOverlay = guiControls_default.showDebugOverlay;
-    if (guiControls.smoothClouds === undefined)
-      guiControls.smoothClouds = guiControls_default.smoothClouds;
 
     if (typeof LightningV2 !== 'undefined') {
       Object.keys(LightningV2.DEFAULT_SETTINGS).forEach(key => {
@@ -9180,7 +9168,6 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     display_folder.add(guiControls, 'showGraph').onChange(hideOrShowGraph).name('Show Sounding Graph').listen();
     display_folder.add(guiControls, 'showDrops').name('Show Droplets').listen();
     display_folder.add(guiControls, 'enableRainbows').name('Rainbows').listen();
-    display_folder.add(guiControls, 'smoothClouds').name('Smooth Clouds').listen();
     display_folder.add(guiControls, 'realDewPoint').name('Show Real Dew Point');
 
     display_folder.add(guiControls, 'saturation', 0.0, 3.0, 0.01)
@@ -9339,14 +9326,13 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       guiControls.reducedPrecipitation = true;
       guiControls.reducedWeatherStationUpdates = true;
       guiControls.disableTempChangeHistory = true;
-      guiControls.skipCurlCalculation = false; // keep legacy curl/vorticity every iter
+      guiControls.skipCurlCalculation = true;
       guiControls.skipCAPECalculation = true;
-      guiControls.skipLightingCalculation = false; // lighting must run every iter for stable buoyancy
+      guiControls.skipLightingCalculation = false; // auto-stride handles lighting under load
       guiControls.enableBloom = false;
       guiControls.gpuEffectQuality = 0.45;
       guiControls.atmosphericLightingResolution = 0.5;
-      // Start at a usable sim speed; auto_IterPerFrame climbs further when headroom exists.
-      guiControls.IterPerFrame = Math.min(10, getMaxAutoIterPerFrame());
+      guiControls.IterPerFrame = Math.min(guiControls.IterPerFrame, getMaxAutoIterPerFrame());
       if (typeof LightningV2 !== 'undefined' && LightningV2.applyPreset)
         LightningV2.applyPreset(guiControls, 'Performance');
       NUM_DROPLETS = computeNumDroplets();
@@ -15850,9 +15836,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     // High-res grids start under more pressure so expensive passes throttle earlier.
     const resBias = clamp((getResolutionCostFactor() - 1.0) * 0.22, 0, 0.55);
     p = clamp(p + resBias, 0, 1);
-    // Mild bias only — keep pass striding without locking lite-mode when FPS is fine.
     if (guiControls.highResPerformanceMode)
-      p = clamp(p + 0.08, 0, 1);
+      p = clamp(p + 0.18, 0, 1);
     return p;
   }
 
@@ -15865,21 +15850,20 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
 
   function getMaxAutoIterPerFrame()
   {
-    // Prefer filling spare GPU budget with physics so sim stays fast while display LOD keeps FPS smooth.
     const resCost = getResolutionCostFactor();
     if (guiControls.highResPerformanceMode) {
       if (resCost > 2.5)
-        return 10;
+        return 3;
       if (resCost > 1.5)
-        return 14;
-      return 20;
+        return 5;
+      return 7;
     }
     if (resCost > 3.0)
-      return 12;
+      return 4;
     if (resCost > 2.0)
-      return 18;
+      return 6;
     if (resCost > 1.4)
-      return 24;
+      return 8;
     return 50;
   }
 
@@ -15951,6 +15935,21 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     return true;
   }
 
+  function shouldRunCurlThisIteration(iterIndex)
+  {
+    if (guiControls.skipCurlCalculation)
+      return false;
+    if (guiControls.performanceAutoScaling === false)
+      return true;
+    const pressure = getFramePressure();
+    const resCost = getResolutionCostFactor();
+    if (guiControls.highResPerformanceMode || pressure > 0.55 || resCost > 2.4)
+      return iterIndex % 3 === 0;
+    if (pressure > 0.30 || resCost > 1.5)
+      return (iterIndex & 1) === 0;
+    return true;
+  }
+
   function shouldRunCapeThisIteration(iterIndex)
   {
     if (guiControls.skipCAPECalculation)
@@ -15968,18 +15967,18 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
 
   function shouldRunLightingThisIteration(iterIndex, numIterations)
   {
-    // Never stride lighting: NET_HEATING / sun heating are applied every boundary
-    // substep. Skipping lighting while still applying stale rates overdrives buoyancy
-    // (clouds shoot up) when IterPerFrame is high.
     if (guiControls.skipLightingCalculation)
       return false;
+    if (guiControls.performanceAutoScaling === false)
+      return true;
+    const pressure = getFramePressure();
+    const resCost = getResolutionCostFactor();
+    // Lighting is a major full-grid cost — stride hard under load / high res.
+    if (guiControls.highResPerformanceMode || pressure > 0.50 || resCost > 2.5)
+      return iterIndex === numIterations - 1;
+    if (pressure > 0.28 || resCost > 1.5)
+      return (iterIndex & 1) === 0;
     return true;
-  }
-
-  function getLightingEffectScale()
-  {
-    // When lighting is fully skipped, freeze radiative temperature changes too.
-    return guiControls.skipLightingCalculation ? 0.0 : 1.0;
   }
 
   function shouldDrawRadarOverlayThisFrame()
@@ -17262,8 +17261,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     dayValLow : 1.0,
     dayValHigh : 0.05,
     dayValPow : 5.0,
-    twilightTop : [ 0.0, 0.0, 0.0 ],
-    twilightUpper : [ 0.18, 0.05, 0.08 ],
+    twilightTop : [ 0.42, 0.06, 0.10 ],
+    twilightUpper : [ 0.78, 0.14, 0.06 ],
     twilightMid : [ 0.98, 0.38, 0.08 ],
     twilightLow : [ 1.0, 0.62, 0.18 ],
     twilightHorizon : [ 1.0, 0.88, 0.52 ],
@@ -19493,7 +19492,6 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   gl.uniform2f(gl.getUniformLocation(boundaryProgram, 'texelSize'), texelSizeX, texelSizeY);
   gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'vorticity'),
                guiControls.vorticity);              // can be changed by GUI input
-  gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'lightEffectScale'), 1.0);
   gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'waterTemperature'),
                CtoK(guiControls.waterTemperature)); // can be changed by GUI input
   gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'dryLapse'), dryLapse);
@@ -19676,7 +19674,6 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'dryLapse'), dryLapse);
   gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'cellHeight'), cellHeight);
   gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'visualQuality'), 1.0);
-  gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'smoothClouds'), guiControls.smoothClouds !== false ? 1.0 : 0.0);
 
   if (lightningIllumProgram) {
     gl.useProgram(lightningIllumProgram);
@@ -19763,8 +19760,6 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
 
   // preload uniform locations - avoids expensive driver roundtrips every frame
   var uniformLocation_boundaryProgram_iterNum = gl.getUniformLocation(boundaryProgram, 'iterNum');
-  var uniformLocation_boundaryProgram_vorticity = gl.getUniformLocation(boundaryProgram, 'vorticity');
-  var uniformLocation_boundaryProgram_lightEffectScale = gl.getUniformLocation(boundaryProgram, 'lightEffectScale');
   var ulocsReady = false; // flag so updateSunlight skips GPU calls before cache is built
 
   // updateSunlight uniforms
@@ -19854,7 +19849,6 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   const uloc_real_iterNum              = gl.getUniformLocation(realisticDisplayProgram, 'iterNum');
   const uloc_real_displayVectorField   = gl.getUniformLocation(realisticDisplayProgram, 'displayVectorField');
   const uloc_real_enableRainbows       = gl.getUniformLocation(realisticDisplayProgram, 'enableRainbows');
-  const uloc_real_smoothClouds         = gl.getUniformLocation(realisticDisplayProgram, 'smoothClouds');
   const uloc_real_visualQuality        = gl.getUniformLocation(realisticDisplayProgram, 'visualQuality');
   const uloc_real_ltUseLegacyStyle    = gl.getUniformLocation(realisticDisplayProgram, 'ltUseLegacyStyle');
   const uloc_real_ltEventAge           = gl.getUniformLocation(realisticDisplayProgram, 'ltEventAge');
@@ -22416,7 +22410,6 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       fpsNow + ' fps  (' + frameMs.toFixed(1) + ' ms)  target ' + TARGET_FRAME_MS + ' ms',
       'Iters: ' + iters + '/frame  ' + itersPerSec + '/sec  auto=' + (guiControls.auto_IterPerFrame ? 'on' : 'off')
         + '  cap=' + maxAuto,
-      'Sim rate: ~' + (fpsNow * iters * timePerIteration * 3600).toFixed(1) + 'x realtime',
       'Frame ' + frameNum + '  Iter ' + iterNum + '  Runtime ' + (typeof simRuntimeFrames === 'number' ? simRuntimeFrames : 0),
       '',
       'Sim: ' + sim_res_x + 'x' + sim_res_y + '  cell ' + cellM.toFixed(1) + ' m  height ' + Math.round(guiControls.simHeight) + ' m',
@@ -23791,8 +23784,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
             gl.drawBuffers([ gl.COLOR_ATTACHMENT0, gl.NONE, gl.COLOR_ATTACHMENT2 ]);
             gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
 
-            // calc curl (legacy: every iteration)
-            if (!guiControls.skipCurlCalculation) {
+            // calc curl
+            if (shouldRunCurlThisIteration(i)) {
               gl.useProgram(curlProgram);
               gl.activeTexture(gl.TEXTURE0);
               gl.bindTexture(gl.TEXTURE_2D, baseTexture_1);
@@ -23849,8 +23842,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
               latestChargeTexture = even ? chargeTexture_1 : chargeTexture_0;
             }
 
-            // calculate vorticity (legacy: every iteration with curl)
-            if (!guiControls.skipCurlCalculation) {
+            // calculate vorticity
+            if (shouldRunCurlThisIteration(i)) {
               gl.useProgram(vorticityProgram);
               gl.activeTexture(gl.TEXTURE0);
               gl.bindTexture(gl.TEXTURE_2D, curlTexture);
@@ -23862,11 +23855,6 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
             // apply vorticity, boundary conditions and user input
             gl.useProgram(boundaryProgram);
             gl.uniform1f(uniformLocation_boundaryProgram_iterNum, iterNum);
-            if (uniformLocation_boundaryProgram_vorticity)
-              gl.uniform1f(uniformLocation_boundaryProgram_vorticity,
-                guiControls.skipCurlCalculation ? 0.0 : guiControls.vorticity);
-            if (uniformLocation_boundaryProgram_lightEffectScale)
-              gl.uniform1f(uniformLocation_boundaryProgram_lightEffectScale, getLightingEffectScale());
             gl.activeTexture(gl.TEXTURE0);
             gl.bindTexture(gl.TEXTURE_2D, baseTexture_1);
             gl.activeTexture(gl.TEXTURE1);
@@ -24311,8 +24299,6 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       }
       if (uloc_real_enableRainbows)
         gl.uniform1i(uloc_real_enableRainbows, guiControls.enableRainbows !== false ? 1 : 0);
-      if (uloc_real_smoothClouds)
-        gl.uniform1f(uloc_real_smoothClouds, guiControls.smoothClouds !== false ? 1.0 : 0.0);
 
       let lightningTexNum = Math.floor(iterNum / 400) % Math.min(4, numLightningTextures);
       gl.activeTexture(gl.TEXTURE7);
@@ -25349,20 +25335,16 @@ drawNukeOverlay();
         && !airplaneMode && !guiControls.slowMotion && !guiControls.realtimeMode
         && !multiplayerHostMode && !multiplayerPeerMode) {
       // Target: keep smoothedFrameMs close to TARGET_FRAME_MS (28 ms = ~35 fps headroom).
-      // Cut aggressively when over budget; grow quickly when under so spare display LOD
-      // budget becomes simulation throughput (iters/sec).
+      // Reduce aggressively if over budget, grow slowly when comfortable.
+      // High-res grids also clamp the max iterations so physics can't bury the GPU.
       const maxAutoIters = getMaxAutoIterPerFrame();
       if (guiControls.IterPerFrame > maxAutoIters)
         guiControls.IterPerFrame = maxAutoIters;
       const msOverBudget = smoothedFrameMs - TARGET_FRAME_MS;
       if (msOverBudget > 2) {
         adjIterPerFrame(msOverBudget > 8 ? -2 : -1);
-      } else if (guiControls.IterPerFrame < maxAutoIters) {
-        if (msOverBudget < -12) {
-          adjIterPerFrame(2);
-        } else if (msOverBudget < -5 && frameNum % 3 === 0) {
-          adjIterPerFrame(1);
-        }
+      } else if (msOverBudget < -5 && frameNum % 10 === 0 && guiControls.IterPerFrame < maxAutoIters) {
+        adjIterPerFrame(1);
       }
     }
 
