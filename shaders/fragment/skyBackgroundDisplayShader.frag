@@ -25,6 +25,7 @@ uniform float starDensity;
 uniform float sunAngle;
 uniform float timeOfDay;
 uniform float month;
+uniform float visualQuality;
 
 uniform float skyHorizonLine;
 uniform float skyDayHue;
@@ -233,7 +234,7 @@ void main()
 {
   vec2 lightTexCoord = vec2(texCoord.x, min(texCoord.y + texelSize.y * 0.5, 1.0 - texelSize.y)); // limit vertical sample position to top of simulation
 
-  light = smoothSunlightSample(lightTex, lightTexCoord, texelSize, 1.0) / standardSunBrightness;
+  light = smoothSunlightSample(lightTex, lightTexCoord, texelSize, visualQuality) / standardSunBrightness;
   ambientLight = texture(ambientLightTex, texCoord).rgb;
 
   // vec3 topBackgroundCol = vec3(0.0, 0.0, 0.0);      // 0.15 dark blue
