@@ -288,7 +288,7 @@ void main()
   twilightSky = mix(twilightSky, skyTwilightMid * 0.90, smoothstep(0.10, 0.36, skyHeight));
   twilightSky = mix(twilightSky, skyTwilightUpper * 0.75, smoothstep(0.28, 0.62, skyHeight));
   twilightSky = mix(twilightSky, skyTwilightTop * 0.55, smoothstep(0.52, 0.86, skyHeight));
-  twilightSky = mix(twilightSky, vec3(0.0), smoothstep(0.80, 1.0, skyHeight));
+  twilightSky = mix(twilightSky, vec3(0.0), smoothstep(0.62, 2.0, skyHeight));
 
   vec2 relSun = texCoord - vec2(sunHoriz, horizonLine + 0.04);
   relSun.x *= aspectRatios.x;
@@ -299,7 +299,7 @@ void main()
 
   vec3 mixedCol = mix(daySky, twilightSky, smoothstep(0.0, 0.82, twilightAmt));
   // Day and twilight both must finish black at the top of the skybox.
-  float zenithBlack = smoothstep(0.82, 1.0, skyHeight);
+  float zenithBlack = smoothstep(0.62, 2.0, skyHeight);
   mixedCol = mix(mixedCol, vec3(0.0), zenithBlack);
 
   // Star field - only visible at night (sun below horizon)
