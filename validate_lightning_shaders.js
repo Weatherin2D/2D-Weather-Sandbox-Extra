@@ -20,10 +20,6 @@ function compile(name, fragPath, includes) {
   }
 }
 
-compile('lightningIllum', 'shaders/fragment/lightningIlluminationShader.frag', {
-  'common.glsl': 'shaders/common.glsl',
-  'lightningV2.glsl': 'shaders/fragment/lightningV2.glsl',
-});
 compile('lightningSummary', 'shaders/fragment/lightningSummaryShader.frag', {
   'common.glsl': 'shaders/common.glsl',
 });

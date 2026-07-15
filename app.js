@@ -8534,10 +8534,36 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     gl.uniform1f(uloc_charge_generationRate, guiControls.chargeGenerationRate);
     gl.uniform1f(uloc_charge_minCloudDensity, guiControls.chargeMinCloudDensity);
     gl.uniform1f(uloc_charge_stormCoreThreshold, guiControls.chargeStormCoreThreshold);
+    // Transport toggle gates the strength uniform so Behavior settings stay linked.
+    const transport = guiControls.enableChargeTransport === false
+      ? 0.0
+      : (guiControls.chargeTransportStrength || 1.0);
     if (uloc_charge_transportStrength !== null)
-      gl.uniform1f(uloc_charge_transportStrength, guiControls.chargeTransportStrength || 1.0);
+      gl.uniform1f(uloc_charge_transportStrength, transport);
     if (uloc_charge_dissipationRate !== null)
       gl.uniform1f(uloc_charge_dissipationRate, guiControls.chargeDissipationRate || 1.0);
+  }
+
+  function onLightningSettingsChanged()
+  {
+    guiControls.lightningPreset = 'Custom';
+    setChargeGenerationUniforms();
+    // Drop cached spawn odds / channel lists so frequency & behavior sliders apply immediately.
+    if (typeof lightningFrameCpuCache !== 'undefined' && lightningFrameCpuCache) {
+      lightningFrameCpuCache.frame = -1;
+      lightningFrameCpuCache.stormActivity = null;
+      lightningFrameCpuCache.chargeReadiness = null;
+      lightningFrameCpuCache.activeChannels = null;
+      lightningFrameCpuCache.strikeChannels = null;
+      if (lightningFrameCpuCache.channelStrikeChances)
+        lightningFrameCpuCache.channelStrikeChances.clear();
+      if (lightningFrameCpuCache.chargeValidByKey)
+        lightningFrameCpuCache.chargeValidByKey.clear();
+      if (lightningFrameCpuCache.originPickByKey)
+        lightningFrameCpuCache.originPickByKey.clear();
+    }
+    if (typeof _ltStaticUniformsKey !== 'undefined')
+      _ltStaticUniformsKey = null;
   }
 
   function setGuiUniforms()
@@ -8673,15 +8699,15 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       guiControls.smoothClouds = guiControls_default.smoothClouds;
 
     if (typeof LightningV2 !== 'undefined') {
+      // Force June 8 lightning defaults so restored system uses that era's settings.
       Object.keys(LightningV2.DEFAULT_SETTINGS).forEach(key => {
-        if (guiControls[key] === undefined)
-          guiControls[key] = LightningV2.DEFAULT_SETTINGS[key];
+        guiControls[key] = LightningV2.DEFAULT_SETTINGS[key];
       });
+      guiControls.lightningPreset = LightningV2.DEFAULT_SETTINGS.lightningPreset || 'Enhanced Realistic';
       if (guiControls.lightningPreset && guiControls.lightningPreset !== 'Custom')
         LightningV2.applyPreset(guiControls, guiControls.lightningPreset);
-      // Classic texture bolts for display; V2 charge/types still drive when/where/what strikes.
-      guiControls.lightningRenderStyle = 'Legacy';
       guiControls.lightningV2Enabled = true;
+      setChargeGenerationUniforms();
     }
 
     guiControls.tool = 'TOOL_NONE';
@@ -9109,7 +9135,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     if (typeof LightningV2 !== 'undefined') {
       LightningV2.buildLightningV2GUI(datGui, guiControls, {
         setChargeGenerationUniforms,
-        onSettingsChanged() { guiControls.lightningPreset = 'Custom'; },
+        onSettingsChanged: onLightningSettingsChanged,
         onLightningStyleChanged() { resetProceduralLightningState(); },
         forceSpawnLightningType,
         forceSpawnAllLightningTypes,
@@ -16311,7 +16337,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
 
   // load shaders
-  const SHADER_ASSET_VERSION = 9; // bump to bust CDN/browser cache after shader edits
+  const SHADER_ASSET_VERSION = 10; // bump to bust CDN/browser cache after shader edits
 
   var commonSource = await loadSourceFile('shaders/common.glsl');
   var commonDisplaySource = await loadSourceFile('shaders/commonDisplay.glsl');
@@ -16354,7 +16380,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   const precipDisplayShader = await loadShader('precipDisplayShader.frag');
   const universalDisplayShader = await loadShader('universalDisplayShader.frag');
   const skyBackgroundDisplayShader = await loadShader('skyBackgroundDisplayShader.frag');
-  let realisticDisplayShader = await loadShader('realisticDisplayShader.frag', { skipLightningV2: true });
+  let realisticDisplayShader = await loadShader('realisticDisplayShader.frag');
   const IRtempDisplayShader = await loadShader('IRtempDisplayShader.frag');
 
   const postProcessingShader = await loadShader('postProcessingShader.frag');
@@ -16401,21 +16427,19 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   const universalDisplayProgram = createProgram(dispVertexShader, universalDisplayShader);
   const skyBackgroundDisplayProgram = createProgram(realDispVertexShader, skyBackgroundDisplayShader);
 
-  // Link realistic display before post-processing/bloom — fewer linked programs reduces
-  // GPU memory spikes that can trigger context loss on weaker cards.
+  // Link realistic display with Lightning V2 (June 8 path); fall back if link fails.
   await loadingBar.set(84, 'Linking realistic display shader');
   await new Promise((resolve) => setTimeout(resolve, 80));
   let realisticDisplayProgram;
-  // Classic lightning only — never link procedural SDF Lightning V2 into realistic display.
-  lightningV2InRealisticShader = false;
-  sessionStorage.setItem('wse-realistic-no-lightning-v2', '1');
+  lightningV2InRealisticShader = true;
+  sessionStorage.removeItem('wse-realistic-no-lightning-v2');
 
   async function linkRealisticDisplayNoLt(labelSuffix) {
     try { if (realisticDisplayShader) gl.deleteShader(realisticDisplayShader); } catch (_) {}
     realisticDisplayShader = await loadShader('realisticDisplayShader.frag', { skipLightningV2: true });
     const program = await linkProgramAsync(
       realDispVertexShader, realisticDisplayShader, null,
-      'realistic display (classic lightning)' + (labelSuffix || ''));
+      'realistic display (no lightning V2)' + (labelSuffix || ''));
     lightningV2InRealisticShader = false;
     sessionStorage.setItem('wse-realistic-no-lightning-v2', '1');
     return program;
@@ -16428,7 +16452,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       await loadingBar.showError('WebGL context lost while linking shaders.\nRefresh the page (Ctrl+F5). If this keeps happening, try a smaller simulation resolution.');
       throw e;
     }
-    console.warn('Realistic display link failed:', e.message, '— retrying');
+    console.warn('Realistic display link failed with Lightning V2:', e.message, '— retrying without procedural lightning');
     try { gl.deleteShader(realisticDisplayShader); } catch (_) {}
     realisticDisplayShader = null;
     await new Promise((resolve) => setTimeout(resolve, 100));
@@ -16439,6 +16463,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     await loadingBar.set(84, 'Linking realistic display (fallback)...');
     try {
       realisticDisplayProgram = await linkRealisticDisplayNoLt('');
+      console.warn('Loaded without Lightning V2 in realistic display — legacy lightning still works.');
     } catch (e2) {
       if (gl.isContextLost && gl.isContextLost()) {
         await loadingBar.showError('WebGL context lost while linking shaders.\nRefresh the page (Ctrl+F5) and try again.');
@@ -16913,6 +16938,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
 
   const lightningTextures = [];
   const numLightningTextures = 10;
+  const lightningTextureTypes = ['CG', 'CG', 'POSITIVE', 'POSITIVE', 'CC', 'CC', 'SPIDER', 'SPIDER', 'ANVIL', 'ANVIL'];
 
   const temperatureChangeHistoryTextures = [
     gl.createTexture(),
@@ -17249,7 +17275,10 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     lightningGeneratorWorker.onmessage = (imgElement) => {
       generateLightningTexture(texIndex, imgElement.data);
     };
-    lightningGeneratorWorker.postMessage({ width: 2500, height: 5000 });
+    lightningGeneratorWorker.postMessage({
+      width: 2500, height: 5000,
+      type: lightningTextureTypes[texIndex] || 'CG',
+    });
   }
 
 
@@ -20503,8 +20532,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
 
   function isLegacyLightningStyle()
   {
-    // Classic prebaked bolt textures for display (not the expensive SDF path).
-    return true;
+    // June 8 system runs procedural V2 in the realistic shader by default.
+    return false;
   }
 
   function resetProceduralLightningState()
@@ -21891,7 +21920,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   {
     const st = proceduralLightningState;
     const maxShader = typeof LightningV2 !== 'undefined' ? LightningV2.MAX_SHADER_STRIKES : 8;
-    const visualAge = getLightningVisualAge();
+    // June 8 used iteration eventAge (not wall-clock visual age) to keep bolts uploaded.
+    const visualAge = st.eventAge >= 0 ? st.eventAge : -1;
     const count = visualAge >= 0 ? Math.min(st.strikes.length, maxShader) : 0;
 
     let skipBoltPass = 0;
@@ -22106,16 +22136,10 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
 
   function uploadProceduralLightningUniforms()
   {
-    const legacyStyle = isLegacyLightningStyle() || !lightningV2InRealisticShader;
     if (uloc_real_ltUseLegacyStyle)
-      gl.uniform1i(uloc_real_ltUseLegacyStyle, legacyStyle ? 1 : 0);
+      gl.uniform1i(uloc_real_ltUseLegacyStyle, 0);
     if (!lightningV2InRealisticShader || !uloc_real_ltNumStrikes)
       return;
-    if (legacyStyle) {
-      gl.uniform1i(uloc_real_ltNumStrikes, 0);
-      gl.uniform1f(uloc_real_ltEventAge, -1);
-      return;
-    }
     const st = proceduralLightningState;
     const strikeState = syncLightningStrikeUniformBuffers();
     const visualAge = strikeState.visualAge;
@@ -23863,9 +23887,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
 
           refreshLightningFieldCache();
           resetLightningFrameCpuCache();
-          // Particle lightning is only a fallback when V2 charge/type spawn is off.
-          let particleLightningCheckPending = guiControls.enablePrecipitation
-            && !isProceduralLightningEnabled();
+          // June 8: particle lightning runs alongside procedural V2.
+          let particleLightningCheckPending = guiControls.enablePrecipitation;
 
           for (var i = 0; i < numIterations; i++) { // Simulation loop
             if (isMultiplayerHost() && remoteActiveBrushes.size > 0) {
@@ -24060,9 +24083,9 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
 
               gl.useProgram(precipitationProgram);
               gl.uniform1f(uloc_precip_iterNum, iterNum);
+              // Uniform removed in June 8 precip path; keep upload harmless if present.
               if (uloc_precip_enableLegacyParticleLightning)
-                gl.uniform1f(uloc_precip_enableLegacyParticleLightning,
-                  isProceduralLightningEnabled() ? 0.0 : 1.0);
+                gl.uniform1f(uloc_precip_enableLegacyParticleLightning, 1.0);
               gl.enable(gl.BLEND);
               gl.blendFunc(gl.ONE, gl.ONE); // add everything together
               gl.activeTexture(gl.TEXTURE0);

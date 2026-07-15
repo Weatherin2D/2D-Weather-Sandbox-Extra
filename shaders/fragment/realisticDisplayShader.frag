@@ -67,7 +67,7 @@ out vec4 fragmentColor;
 #include "common.glsl"
 
 #include "commonDisplay.glsl"
-// lightningV2.glsl intentionally omitted — classic particle + texture bolts only
+#include "lightningV2.glsl"
 
 vec4 base, water;
 ivec4 wall;
@@ -283,7 +283,7 @@ float lightningIntensityOverTime(float Tin, vec2 lightningPos, float intensity)
   return max((1. / (0.05 + pow(T * 2.0, 3.))) - 0.005, 0.) * pow(intensity, 2.0); // fading out curve
 }
 
-vec3 displayLightning(vec2 pos, float lightningTime, float currentLightningIntensity, float boltBottomY)
+vec3 displayLightning(vec2 pos, float lightningTime, float currentLightningIntensity)
 {
   vec2 lightningTexCoord = texCoord;
 
@@ -291,9 +291,7 @@ vec3 displayLightning(vec2 pos, float lightningTime, float currentLightningInten
 
   lightningTexCoord.y -= pos.y;
 
-  // boltBottomY = 0 → full CG bolt to ground; higher → shorter aloft CC/IC channel
-  float boltHeight = max(pos.y - boltBottomY, 0.05);
-  float scaleMult = 1. / boltHeight; // 1.0 means lightning spans boltHeight in sim space
+  float scaleMult = 1. / pos.y; // 1.0 means lightning is as tall as the simheight
 
   lightningTexCoord.x *= scaleMult * aspectRatios[0] / lightningTexAspect;
   lightningTexCoord.y *= -scaleMult;
@@ -327,8 +325,7 @@ vec3 displayLightning(vec2 pos, float lightningTime, float currentLightningInten
 
   pixVal *= currentLightningIntensity;
 
-  // Classic bolt color (same as 2D-Weather-Sandbox-master)
-  const vec3 lightningCol = vec3(0.70, 0.57, 1.0);
+  const vec3 lightningCol = vec3(0.70, 0.57, 1.0); // 0.584, 0.576, 1.0
 
   vec3 outputColor = max(pixVal * lightningCol, vec3(0));
 
@@ -392,48 +389,34 @@ vec4 computeCloudSmokeColor(float cloudwater, float precip, float smokeAmt, floa
   return vec4(outColor, outOpacity);
 }
 
-void applyAirLightning(vec2 uv, float cloudwater, float precip, float cloudDensity, float nightFactor,
-    out vec3 flashEmit, out vec3 flashCloud, out vec3 flashSurf, out vec3 precipShafts)
+void applyAirLightning(vec2 uv, float cloudwater, float precip, float cloudDensity)
 {
-  flashEmit = vec3(0.0);
-  flashCloud = vec3(0.0);
-  flashSurf = vec3(0.0);
-  precipShafts = vec3(0.0);
-  // Classic approach (2D-Weather-Sandbox-master): one prebaked bolt texture sample
-  // + inverse-square scene flash. No procedural SDF multi-strike path.
+  // June 8 lightning system: classic CG texture bolts + procedural V2 strike bolts/illum.
+  vec4 lightningData = texture(lightningDataTex, vec2(0.5));
+  vec2 lightningPos = lightningData.xy;
+  float lightningStartIterNum = lightningData[START_ITERNUM];
+  float lightningTime = calcLightningTime(lightningStartIterNum);
+  float currentLightningIntensity = lightningIntensityOverTime(lightningTime, lightningPos, lightningData[INTENSITY]);
 
-  if (ltUseLegacyStyle != 0) {
-    vec4 lightningData = texture(lightningDataTex, vec2(0.5));
-    vec2 lightningPos = lightningData.xy;
-    float lightningStartIterNum = lightningData[START_ITERNUM];
-    float intensity = lightningData[INTENSITY];
-    float boltAge = iterNum - lightningStartIterNum;
-    // Drop invalid / domain-top strikes that would draw a full-height rogue CG
-    bool validStrike = intensity > 0.01
-      && lightningPos.y > 0.14 && lightningPos.y < 0.78
-      && boltAge >= 0.0 && boltAge < 36.0
-      && lightningStartIterNum > 0.5;
-    if (validStrike) {
-      float lightningTime = calcLightningTime(lightningStartIterNum);
-      float currentLightningIntensity = lightningIntensityOverTime(lightningTime, lightningPos, intensity);
+  float nightFactor = clamp(map_range(abs(sunAngle), 60. * deg2rad, 90. * deg2rad, 0., 1.), 0., 1.);
+  float ltCloudPierce = 1.0 + clamp(cloudDensity * 0.22, 0.0, 5.5);
 
-      // intensity > 1 = CG (full bolt to ground); <= 1 = CC/IC (shorter aloft channel).
-      // High origins never draw as CG even if intensity is elevated (anvil / thin cloud).
-      bool isCG = intensity > 1.0 && lightningPos.y < 0.58;
-      float boltBottomY = isCG ? 0.0 : max(lightningPos.y - mix(0.18, 0.38, clamp(intensity, 0.0, 1.0)), lightningPos.y * 0.45);
-      float boltGain = isCG ? 1.0 : 0.72;
-      emittedLight += displayLightning(lightningPos, lightningTime, currentLightningIntensity, boltBottomY) * boltGain;
-      // CG punches through cloud; CC stays readable inside storm mass
-      emittedLight /= 1. + cloudDensity * (isCG ? 100.0 : 12.0);
-
-      const float lightningOnLightBrightness = 0.004;
-      vec2 dist = vec2(lightningPos.x - uv.x, max((abs(lightningPos.y / 2. - uv.y) - 0.1), 0.));
-      dist.x *= aspectRatios[0];
-      float lightningOnLight = lightningOnLightBrightness / (pow(length(dist), 2.) + 0.03);
-      lightningOnLight *= currentLightningIntensity;
-      onLight += vec3(lightningOnLight);
-    }
+  if (lightningData[INTENSITY] > 1.0) {
+    emittedLight += displayLightning(lightningPos, lightningTime, currentLightningIntensity) * ltCloudPierce;
   }
+
+  vec3 ltBolts = ltRenderStrikeBolts(uv, aspectRatios[0], cloudwater);
+  emittedLight += ltBolts * ltCloudPierce;
+  vec3 ltIllum = ltComputeStrikeIllumination(uv, aspectRatios[0], cloudwater, precip, nightFactor);
+  onLight += ltIllum;
+
+  const float lightningOnLightBrightness = 0.004;
+
+  vec2 dist = vec2(lightningPos.x - uv.x, max((abs(lightningPos.y / 2. - uv.y) - 0.1), 0.));
+  dist.x *= aspectRatios[0];
+  float lightningOnLight = lightningOnLightBrightness / (pow(length(dist), 2.) + 0.03);
+  lightningOnLight *= currentLightningIntensity;
+  onLight += vec3(lightningOnLight);
 }
 
 
@@ -590,8 +573,7 @@ void main()
         vec4 airColor = computeCloudSmokeColor(airCloud, airPrecip, airWater[SMOKE], normalizedSunlightAt(airUV));
         opacity = airColor.a;
         color = airColor.rgb;
-        applyAirLightning(airUV, airCloud, airPrecip, max(airCloud * 13.6, 0.0), nightFactor,
-          icccEmit, icccCloud, icccSurf, precipBoltShafts);
+        applyAirLightning(airUV, airCloud, airPrecip, max(airCloud * 13.6, 0.0));
       } else {
         if (wall[TYPE] == WALLTYPE_FRESH_WATER)
           color = vec3(0.15, 0.65, 0.95); // fresh water — lighter cyan
@@ -628,8 +610,7 @@ void main()
     vec4 airColor = computeCloudSmokeColor(cloudwater, water[PRECIPITATION], water[SMOKE], lightIntensity);
     opacity = airColor.a;
     color = airColor.rgb;
-    applyAirLightning(texCoord, cloudwater, water[PRECIPITATION], max(cloudwater * 13.6, 0.0), nightFactor,
-      icccEmit, icccCloud, icccSurf, precipBoltShafts);
+    applyAirLightning(texCoord, cloudwater, water[PRECIPITATION], max(cloudwater * 13.6, 0.0));
 
 
     if (enableRainbows != 0 && visualQuality >= 0.55 && view[2] / resolution.x > 0.0025) {

@@ -31,8 +31,6 @@ uniform float dryLapse;
 uniform float iterNum;          // used as seed for random function
 uniform float numDroplets;      // total number of droplets
 uniform float inactiveDroplets; // used to maintain constant spawnrate
-uniform float enableLegacyParticleLightning; // 1 = particle fallback; 0 when V2 charge/type spawn drives bolts
-
 uniform float evapHeat;
 uniform float meltingHeat;
 
@@ -119,6 +117,8 @@ void main()
           feedback[HEAT] += newMass[ICE] * meltingHeat;                  // add heat of freezing
           newDensity = snowDensity;
 
+          vec4 lightningData = texture(lightningDataTex, vec2(0.5)); // data from last lightning bolt
+
           const float lightningCloudDensityThreshold = 2.5;          // 3.0
           const float lightningChanceMultiplier = 0.0033;            // 0.0011
 
@@ -128,27 +128,14 @@ void main()
 
           const float minIterationsSinceLastLightningBolt = 30.; // 50.
 
-          // Reject domain-top / near-surface random samples — those produce full-height
-          // rogue CGs far from the storm core when intensity happens to exceed 1.
-          bool stormAltitude = texCoord.y > 0.18 && texCoord.y < 0.70;
-
-          // Match 2D-Weather-Sandbox-master: cooldown check first, then chance roll.
-          vec4 lightningData = texture(lightningDataTex, vec2(0.5)); // data from last lightning bolt
-          if (enableLegacyParticleLightning > 0.5
-              && stormAltitude
-              && lightningData[START_ITERNUM] < iterNum - minIterationsSinceLastLightningBolt
-              && random2d(vec2(base[TEMPERATURE] * 0.2324, water[TOTAL] * 7.7)) < lightningSpawnChance) { // Spawn lightning
+          if (lightningData[START_ITERNUM] < iterNum - minIterationsSinceLastLightningBolt &&
+              random2d(vec2(base[TEMPERATURE] * 0.2324, water[TOTAL] * 7.7)) < lightningSpawnChance) { // Spawn lightning
             lightningSpawned = true;
             isActive = false;
             gl_PointSize = 1.0;
             feedback.xy = texCoord;
             feedback[START_ITERNUM] = iterNum;
-            float intensity = clamp(cloudPlusPrecipDensity / 10.0 + (random2d(texCoord) - 0.5), 0.01, 4.0);
-            // CG (intensity > 1) only from denser mid-level cores with precip nearby.
-            // High anvil / thin cold cloud stays flash or short in-cloud channel.
-            if (texCoord.y > 0.55 || water[PRECIPITATION] < 0.35 || cloudPlusPrecipDensity < 4.5)
-              intensity = min(intensity, 0.95);
-            feedback[INTENSITY] = intensity;
+            feedback[INTENSITY] = clamp(cloudPlusPrecipDensity / 10.0 + (random2d(texCoord) - 0.5), 0.01, 4.0);
             gl_Position = vec4(vec2(-1. + texelSize.x * 3., -1. + texelSize.y), 0.0, 1.0); // render to bottem left corner (1, 0)
           }
         } else {

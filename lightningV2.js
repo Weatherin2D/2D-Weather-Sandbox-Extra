@@ -49,8 +49,8 @@
   ];
 
   const REALISTIC_RATIOS = {
-    intracloud: 88,
-    cloudToCloud: 18,
+    intracloud: 58,
+    cloudToCloud: 22,
     sheet: 14,
     cg: 5,
     cgPositive: 1.2,
@@ -63,40 +63,43 @@
   };
 
   const DEFAULT_SETTINGS = {
-    lightningRenderStyle: 'Legacy',
-    // Charge/type spawn stays on; bolts still use classic prebaked textures.
     lightningV2Enabled: true,
     lightningPreset: 'Enhanced Realistic',
-    useRealisticLightningRatios: true,
+    useRealisticLightningRatios: false,
 
     globalLightningMultiplier: 1.0,
-    intracloudFrequency: 100,
-    cloudToCloudFrequency: 100,
-    cloudToGroundFrequency: 100,
-    positiveCgFrequency: 100,
-    spiderLightningFrequency: 100,
-    anvilCrawlerFrequency: 100,
-    upwardLightningFrequency: 100,
-    boltFromBlueFrequency: 100,
-    dryLightningFrequency: 100,
-    sheetLightningFrequency: 100,
-    strobeLightningFrequency: 100,
+    intracloudFrequency: 18.0,
+    cloudToCloudFrequency: 8.0,
+    cloudToGroundFrequency: 1.2,
+    positiveCgFrequency: 0.35,
+    spiderLightningFrequency: 1.2,
+    anvilCrawlerFrequency: 0.9,
+    upwardLightningFrequency: 0.08,
+    boltFromBlueFrequency: 0.12,
+    dryLightningFrequency: 0.25,
+    sheetLightningFrequency: 2.5,
+    strobeLightningFrequency: 0.8,
 
-    lightningBrightness: 0.58,
-    lightningContrast: 0.95,
-    channelThickness: 1.08,
-    branchDensity: 1.35,
-    branchLength: 1.2,
-    flashDuration: 0.92,
+    // Charge field knobs (linked into chargeShader via setChargeGenerationUniforms)
+    chargeGenerationRate: 1.0,
+    chargeMinCloudDensity: 0.32,
+    chargeStormCoreThreshold: 0.38,
+
+    lightningBrightness: 0.48,
+    lightningContrast: 0.9,
+    channelThickness: 1.05,
+    branchDensity: 1.25,
+    branchLength: 1.15,
+    flashDuration: 1.0,
     channelGlowDuration: 1.0,
-    bloomStrength: 1.08,
-    glowStrength: 0.62,
-    atmosphericIlluminationStrength: 0.58,
-    cloudIlluminationStrength: 0.52,
-    rainShaftIlluminationStrength: 0.55,
-    terrainIlluminationStrength: 0.48,
-    nighttimeFlashStrength: 0.78,
-    daytimeFlashStrength: 0.28,
+    bloomStrength: 0.7,
+    glowStrength: 0.45,
+    atmosphericIlluminationStrength: 0.45,
+    cloudIlluminationStrength: 0.28,
+    rainShaftIlluminationStrength: 0.5,
+    terrainIlluminationStrength: 0.45,
+    nighttimeFlashStrength: 0.6,
+    daytimeFlashStrength: 0.25,
     ltEnableBloom: true,
     ltEnableAtmosphericLighting: true,
     ltEnableCloudIllumination: true,
@@ -115,9 +118,6 @@
     cloudObscurationStrength: 0.55,
     channelIllumRatio: 0.35,
     precipOnlyLightningChance: 0.38,
-    cgLightningFireEnabled: true,
-    cgLightningFireChance: 0.32,
-    cgPositiveFireChanceMult: 1.65,
 
     leaderSpeed: 1.0,
     returnStrokeProbability: 0.35,
@@ -192,6 +192,9 @@
       cloudIlluminationStrength: 0.75,
       glowStrength: 0.65,
       useRealisticLightningRatios: true,
+      positiveCgFrequency: 0.2,
+      spiderLightningFrequency: 0.15,
+      anvilCrawlerFrequency: 0.12,
       branchDensity: 0.85,
       nighttimeFlashStrength: 0.9,
       daytimeFlashStrength: 0.35,
@@ -199,21 +202,22 @@
     },
     'Enhanced Realistic': {
       globalLightningMultiplier: 1.0,
-      atmosphericIlluminationStrength: 0.55,
-      cloudIlluminationStrength: 0.50,
+      atmosphericIlluminationStrength: 0.5,
+      cloudIlluminationStrength: 0.45,
       lightningBrightness: 0.62,
-      glowStrength: 0.58,
-      bloomStrength: 1.0,
-      nighttimeFlashStrength: 0.78,
-      branchDensity: 1.2,
-      cloudLightningBranchDensity: 1.35,
-      cloudLightningBranchLength: 1.3,
+      glowStrength: 0.48,
+      nighttimeFlashStrength: 0.6,
+      branchDensity: 1.1,
+      cloudLightningBranchDensity: 1.3,
+      cloudLightningBranchLength: 1.25,
       intracloudChannelVisibility: 1.0,
       cloudToCloudChannelVisibility: 1.05,
       spiderChannelVisibility: 1.15,
       anvilChannelVisibility: 1.1,
       channelIllumRatio: 0.5,
       useRealisticLightningRatios: true,
+      positiveCgFrequency: 0.35,
+      spiderLightningFrequency: 0.35,
       lightningPerformanceTier: 'High',
     },
     'Cinematic': {
@@ -225,11 +229,16 @@
       bloomStrength: 1.3,
       branchDensity: 1.25,
       branchLength: 1.2,
+      positiveCgFrequency: 0.6,
+      spiderLightningFrequency: 0.5,
       nighttimeFlashStrength: 1.3,
       lightningPerformanceTier: 'High',
     },
     'Supercell Showcase': {
       globalLightningMultiplier: 1.6,
+      positiveCgFrequency: 1.2,
+      spiderLightningFrequency: 1.0,
+      anvilCrawlerFrequency: 0.9,
       atmosphericIlluminationStrength: 1.6,
       cloudIlluminationStrength: 1.7,
       rainShaftIlluminationStrength: 1.6,
@@ -250,6 +259,9 @@
     },
     'Extreme Lightning': {
       globalLightningMultiplier: 2.5,
+      intracloudFrequency: 25,
+      sheetLightningFrequency: 8,
+      cloudToGroundFrequency: 5,
       atmosphericIlluminationStrength: 1.3,
       cloudIlluminationStrength: 1.4,
       electricalBurstIntensity: 1.8,
@@ -266,7 +278,6 @@
       maxActiveBolts: 4,
       maxBranchCount: 20,
       gpuEffectQuality: 0.5,
-      atmosphericLightingResolution: 0.5,
       lightningPerformanceTier: 'Low',
       ltEnableVolumetricCloudFlashing: false,
     },
@@ -311,15 +322,15 @@
   const FREQ_UI_SCALE = {
     intracloud: 1,
     cloudToCloud: 1,
-    sheet: 1,
+    sheet: 5,
     cg: 1,
-    cgPositive: 1,
-    spider: 1,
-    anvilCrawler: 1,
-    upward: 1,
-    boltFromBlue: 1,
-    dry: 1,
-    strobe: 1,
+    cgPositive: 20,
+    spider: 20,
+    anvilCrawler: 20,
+    upward: 50,
+    boltFromBlue: 50,
+    dry: 20,
+    strobe: 8,
   };
 
   function getEffectiveFrequency(controls, typeKey, stormFactor, profile) {
@@ -327,8 +338,8 @@
     if (controls.useRealisticLightningRatios) {
       const ratio = REALISTIC_RATIOS[typeKey] || 1;
       const total = Object.values(REALISTIC_RATIOS).reduce((a, b) => a + b, 0);
-      const base = (ratio / total) * 22 * controls.globalLightningMultiplier;
-      return base * (0.55 + stormFactor * 0.75) * personality;
+      const base = (ratio / total) * 48 * controls.globalLightningMultiplier;
+      return base * (0.6 + stormFactor * 0.85) * personality;
     }
     const map = {
       intracloud: controls.intracloudFrequency,
@@ -341,7 +352,7 @@
       upward: controls.upwardLightningFrequency,
       boltFromBlue: controls.boltFromBlueFrequency,
       dry: controls.dryLightningFrequency,
-      strobe: controls.strobeLightningFrequency ?? 100,
+      strobe: controls.strobeLightningFrequency ?? 0.8,
     };
     const uiScale = FREQ_UI_SCALE[typeKey] || 1;
     const stormBoost = 0.75 + stormFactor * 0.5;
@@ -370,7 +381,7 @@
           * controls.electricalBurstIntensity);
         state.phase = 'burst';
         state.burstRemaining = burstLen;
-        state.burstIntensity = 0.52 + stormActivity * 0.48;
+        state.burstIntensity = 0.8 + stormActivity * 0.6;
       }
     } else {
       if (state.burstRemaining <= 0) {
@@ -461,10 +472,10 @@
       cloudTh = Math.max(controls.cloudLightningThreshold ?? 0.3, 0.35);
     const scale = controls.lightningSpawnStrictness ?? 1.0;
     return {
-      minCloudGate: (0.30 + cloudTh * 0.50) * scale,
-      minChargeMag: (0.26 + cloudTh * 0.44) * scale,
-      minPotential: (0.38 + cloudTh * 0.58) * scale,
-      minRawCloud: (controls.chargeMinCloudDensity ?? 0.32) * (0.85 + cloudTh * 0.45) * scale,
+      minCloudGate: (0.34 + cloudTh * 0.56) * scale,
+      minChargeMag: (0.32 + cloudTh * 0.52) * scale,
+      minPotential: (0.30 + cloudTh * 0.40) * scale,
+      minRawCloud: (controls.chargeMinCloudDensity ?? 0.32) * (0.88 + cloudTh * 0.48) * scale,
     };
   }
 
@@ -523,10 +534,7 @@
       return false;
     if (chargeMag < t.minChargeMag)
       return false;
-    if (chargeMag * cg < t.minChargeMag * t.minCloudGate * 0.88)
-      return false;
-    const potential = pick.potential ?? readPotential(cache, ox, oy);
-    if (potential < t.minPotential * 0.82)
+    if (chargeMag * cg < t.minChargeMag * t.minCloudGate * 0.90)
       return false;
 
     if (ltType != null)
@@ -546,7 +554,7 @@
     const cloud = readCloud(cache, simX, simY);
     const potential = readPotential(cache, simX, simY);
     const cg = cloudGate(cloud);
-    return potential * 0.62 + Math.abs(charge) * cg * 0.42 + cloud * cg * 0.12;
+    return potential * 0.55 + Math.abs(charge) * cg * 0.35 + cloud * cg * 0.1;
   }
 
   function pickOriginFromPotential(cache, eventId, slot, numSlots, simResX, simResY, channelId, controls) {
@@ -577,7 +585,7 @@
         if (!isOriginEligibleForStrike(cache, candidate, controls, channelId, null, simResX, simResY))
           continue;
         let score = computeLightningPotentialAt(cache, ox, vy);
-        score += Math.abs(charge) * 0.22 + cg * 0.16 + potential * 0.28;
+        score += Math.abs(charge) * 0.25 + cg * 0.18 + potential * 0.12;
         if (anvilBias) score *= 0.55 + cloud * 1.1 + (vy > simResY * 0.42 ? 0.35 : 0.0);
         if (cloud < thresholds.minRawCloud) score *= 0.35;
         const noise = 0.55 + shaderRand(eventId * 5.03 + cs + v * 17) * 0.9;
@@ -676,25 +684,22 @@
     return { lenScale, heightScale, branchScale };
   }
 
-  /** Roll per-strike illumination mode: precip-shaft-only vs broad area flash. */
   function rollPrecipOnlyStrike(seed, ltType, controls) {
     const base = controls.precipOnlyLightningChance ?? 0.38;
     let p = base;
     if (ltType === LT.INTRACLOUD || ltType === LT.CLOUD_TO_CLOUD || ltType === LT.SHEET)
-      p = Math.min(0.65, base + 0.14);
+      p = Math.min(0.62, base + 0.12);
     else if (ltType === LT.SPIDER || ltType === LT.ANVIL_CRAWLER)
-      p = Math.min(0.58, base + 0.10);
-    else if (ltType === LT.CG || ltType === LT.CG_POSITIVE)
-      p = Math.min(0.52, base + 0.06);
-    else if (ltType === LT.STROBE)
       p = Math.min(0.55, base + 0.08);
+    else if (ltType === LT.CG || ltType === LT.CG_POSITIVE)
+      p = base * 0.45;
     return shaderRand(seed + 727) < p;
   }
 
   function encodeStrikeMetaY(strike) {
     if (strike.precipOnly) {
       if (strike.flashOnly)
-        return 0.05;
+        return strike.flashInFront ? 1.05 : 0.05;
       return 1.15;
     }
     if (strike.flashOnly)
@@ -966,10 +971,9 @@
       };
     }
     const angle = Math.atan2(dy || -0.12, dx || 0.1);
-    const vertScale = spanOpts.vertFrac ?? 0.35;
     return {
       destX: clamp(ox + Math.cos(angle) * minLen, 0, simResX - 1),
-      destY: clamp(oy + Math.sin(angle) * minLen * vertScale, simResY * 0.06, simResY * 0.92),
+      destY: clamp(oy + Math.sin(angle) * minLen * 0.35, simResY * 0.06, simResY * 0.92),
     };
   }
 
@@ -1119,6 +1123,8 @@
   }
 
   function isFlashOnlyType(ltType, strobeBurst) {
+    if (ltType === LT.INTRACLOUD || ltType === LT.CLOUD_TO_CLOUD)
+      return true;
     if (strobeBurst && ltType === LT.SHEET)
       return true;
     return false;
@@ -1248,13 +1254,7 @@
       const dest = pickGroundTarget(cache, pick, eventId, slot, simResX, simResY, controls);
       destX = dest.x;
       destY = dest.y;
-      const path = findChargedPath(cache, ox, oy, destX, destY, eventId, slot, simResX, simResY, {
-        steps: 22 + Math.floor(shaderRand(seed + 44) * 8),
-        originCharge,
-      });
-      routePoints = path.points;
-      destX = path.destX;
-      destY = path.destY;
+      routePoints = [{ x: ox, y: oy }, { x: destX, y: destY }];
     } else if (ltType === LT.SPIDER || ltType === LT.ANVIL_CRAWLER) {
       horizontal = true;
       const isSpider = ltType === LT.SPIDER;
@@ -1302,37 +1302,29 @@
         viaMidpoint = true;
       }
     } else if (ltType === LT.CLOUD_TO_CLOUD) {
-      branchCount = 5;
-      const destCell = findOpposingChargeCell(cache, pick, eventId, slot, simResX, simResY, 0.10);
+      branchCount = 4;
+      const destCell = findOpposingChargeCell(cache, pick, eventId, slot, simResX, simResY, 0.08);
       destX = destCell.x;
       destY = destCell.y;
-      const span = ensureMinimumSpan(ox, oy, destX, destY, simResX, simResY, 0.14, false, {
-        vertFrac: 0.18 + shaderRand(seed + 63) * 0.35,
-        slopeSign: destY >= oy ? 1 : -1,
-        lenScale: boltProfile.lenScale,
-      });
+      const span = ensureMinimumSpan(ox, oy, destX, destY, simResX, simResY, 0.12, false);
       destX = span.destX;
       destY = span.destY;
       const path = findChargedPath(cache, ox, oy, destX, destY, eventId, slot, simResX, simResY, {
-        steps: 20, originCharge,
+        steps: 14, originCharge,
       });
       routePoints = path.points;
       destX = path.destX;
       destY = path.destY;
     } else if (ltType === LT.INTRACLOUD) {
-      branchCount = 4;
-      const destCell = findOpposingChargeCell(cache, pick, eventId, slot, simResX, simResY, 0.07);
+      branchCount = 3;
+      const destCell = findOpposingChargeCell(cache, pick, eventId, slot, simResX, simResY, 0.05);
       destX = destCell.x;
       destY = destCell.y;
-      const span = ensureMinimumSpan(ox, oy, destX, destY, simResX, simResY, 0.08, false, {
-        vertFrac: 0.22 + shaderRand(seed + 67) * 0.42,
-        slopeSign: destY >= oy ? 1 : -1,
-        lenScale: boltProfile.lenScale,
-      });
+      const span = ensureMinimumSpan(ox, oy, destX, destY, simResX, simResY, 0.06, false);
       destX = span.destX;
       destY = span.destY;
       const path = findChargedPath(cache, ox, oy, destX, destY, eventId, slot, simResX, simResY, {
-        steps: 18, originCharge,
+        steps: 12, originCharge,
       });
       routePoints = path.points;
       destX = path.destX;
@@ -1480,7 +1472,7 @@
       case 'sheet': return LT.SHEET;
       case 'strobe': return selectTypeForStrobeBurst(eventId, slot, charge, controls);
       case 'cg':
-        if (charge >= 0.18 && isHigh && r < 0.12 * (controls.positiveCgFrequency / 20 + 0.1))
+        if (charge >= 0.18 && isHigh && r < 0.12 * (controls.positiveCgFrequency + 0.1))
           return LT.CG_POSITIVE;
         if (charge > -0.12)
           return null;
@@ -1560,43 +1552,6 @@
       || ltType === LT.UPWARD || ltType === LT.BOLT_FROM_BLUE;
   }
 
-  function isCgStrikeType(ltType) {
-    return ltType === LT.CG || ltType === LT.CG_POSITIVE;
-  }
-
-  const MIN_LIGHTNING_FIRE_INTENSITY = 0.002;
-
-  function vegetationInfluenceJS(veg) {
-    const grass = Math.min(veg, 50);
-    const forest = Math.max(veg - 50, 0);
-    return grass * 0.38 + forest + 0.08;
-  }
-
-  function calcFireIntensityJS(veg, soilMoist, precip) {
-    return Math.max(
-      vegetationInfluenceJS(veg) * 0.00032 - soilMoist * 0.00020 - precip * 0.02,
-      0);
-  }
-
-  function canSurfaceSupportFire(wallType, veg, soilMoist, precip) {
-    if (wallType === 3)
-      return false;
-    if (wallType !== 1 && wallType !== 7)
-      return false;
-    return calcFireIntensityJS(veg, soilMoist, precip) >= MIN_LIGHTNING_FIRE_INTENSITY;
-  }
-
-  function rollCgLightningFireChance(ltType, fireIntensity, seed, controls) {
-    if (!controls.cgLightningFireEnabled)
-      return false;
-    const base = clamp(controls.cgLightningFireChance ?? 0.32, 0, 1);
-    const posMult = ltType === LT.CG_POSITIVE
-      ? clamp(controls.cgPositiveFireChanceMult ?? 1.65, 1, 3) : 1;
-    const condMult = clamp(fireIntensity / MIN_LIGHTNING_FIRE_INTENSITY, 0, 6);
-    const chance = Math.min(0.92, base * posMult * (0.35 + condMult * 0.22));
-    return shaderRand(seed + 947.3) < chance;
-  }
-
   /** V2.6 — all types render with the CG bolt texture asset. */
   function boltTextureIndexForType(ltType, seed) {
     if (ltType === LT.CG_POSITIVE) return Math.floor(shaderRand(seed + 5) * 2);
@@ -1621,79 +1576,11 @@
 
   function strikeChance(freq, burstIntensity, clustering) {
     const norm = clamp(freq / 100, 0, 1);
-    let chance = norm * 0.052 + norm * norm * 0.032 + 0.00035;
-    chance = Math.min(0.90, chance);
-    chance *= clamp(burstIntensity, 0.24, 1.1);
-    if (clustering > 0.5) chance *= 1.0 + (clustering - 0.5) * 0.25;
+    let chance = norm * 0.14 + norm * norm * 0.11 + 0.001;
+    chance = Math.min(0.58, chance);
+    chance *= Math.max(0.08, burstIntensity);
+    if (clustering > 0.5) chance *= 1.0 + (clustering - 0.5) * 0.45;
     return chance;
-  }
-
-  /** Storm-wide charge readiness — gates spawn rate on organized electrification. */
-  function computeStormChargeReadiness(cache, simResX, simResY) {
-    if (!cache || !cache.data) return 0.2;
-    let peakPotential = 0;
-    let peakCharge = 0;
-    let eligible = 0;
-    let cells = 0;
-    const step = Math.max(1, Math.floor(cache.cacheW / 12));
-    for (let py = 0; py < cache.cacheH; py += step) {
-      for (let px = 0; px < cache.cacheW; px += step) {
-        const i = (py * cache.cacheW + px) * 4;
-        const charge = Math.abs(cache.data[i]);
-        const cloud = cache.data[i + 1];
-        const potential = cache.data[i + 2];
-        const cg = cloudGate(cloud);
-        cells++;
-        if (cloud > 0.07 && cg > 0.18) {
-          eligible++;
-          peakPotential = Math.max(peakPotential, potential);
-          peakCharge = Math.max(peakCharge, charge * cg);
-        }
-      }
-    }
-    const coverage = eligible / Math.max(cells, 1);
-    const mag = peakPotential * 0.64 + peakCharge * 0.36;
-    return clamp(mag * 0.58 + coverage * 0.42, 0, 1);
-  }
-
-  /** One global spawn roll + weighted channel pick (realistic flash budget). */
-  function rollLightningSpawn(channels, getStrikeChance, stormActivity, chargeReadiness, iterNum, validateChannel, globalMult) {
-    if (!channels || channels.length === 0) return null;
-    const readiness = clamp(chargeReadiness, 0, 1);
-    if (readiness < 0.18) return null;
-
-    const mult = clamp(globalMult ?? 1, 0, 100);
-
-    let aggChance = 0;
-    const weights = [];
-    for (const ch of channels) {
-      let w = getStrikeChance(ch);
-      if (ch.id === 'intracloud') w *= 2.8;
-      else if (ch.id === 'cc') w *= 1.35;
-      weights.push(w);
-      aggChance += w;
-    }
-    if (aggChance <= 0) return null;
-
-    const stormGate = clamp(stormActivity * 0.85 + 0.12, 0.1, 1.0);
-    const spawnCap = Math.min(0.95, 0.12 * mult);
-    const globalChance = Math.min(spawnCap, aggChance * 0.26) * readiness * stormGate;
-    if (shaderRand(iterNum * 1.37 + 911.0) >= globalChance) return null;
-
-    const sum = weights.reduce((a, b) => a + b, 0);
-    for (let attempt = 0; attempt < 5; attempt++) {
-      let r = shaderRand(iterNum * 7.31 + 613.0 + attempt * 83.0) * sum;
-      let pick = channels[channels.length - 1];
-      for (let i = 0; i < channels.length; i++) {
-        r -= weights[i];
-        if (r <= 0) {
-          pick = channels[i];
-          break;
-        }
-      }
-      if (validateChannel(iterNum, pick)) return pick;
-    }
-    return null;
   }
 
   function createEventRecord(strike, eventId, iterNum) {
@@ -1740,16 +1627,6 @@
 
   function buildLightningV2GUI(datGui, controls, callbacks) {
     const folder = datGui.addFolder('Lightning');
-    // Classic prebaked bolt textures for display; charge + type settings still drive spawns.
-    folder.add(controls, 'lightningRenderStyle', { 'Classic': 'Legacy' })
-      .name('Lightning Style')
-      .onChange(() => {
-        controls.lightningRenderStyle = 'Legacy';
-        controls.lightningV2Enabled = true;
-        if (callbacks.onLightningStyleChanged)
-          callbacks.onLightningStyleChanged();
-        callbacks.onSettingsChanged();
-      });
     const presetCtrl = folder.add(controls, 'lightningPreset', Object.keys(PRESETS))
       .name('Preset').onChange(name => {
         if (name !== 'Custom') {
@@ -1767,44 +1644,49 @@
     const addFreqSlider = (obj, prop, min, max, step, label) => {
       freqFolder.add(obj, prop, min, max, step).name(label).onChange(onFreqChanged);
     };
-    freqFolder.add(controls, 'globalLightningMultiplier', 0, 100, 0.5).name('Global Multiplier')
+    freqFolder.add(controls, 'globalLightningMultiplier', 0, 3, 0.05).name('Global Multiplier')
       .onChange(() => { controls.lightningPreset = 'Custom'; callbacks.onSettingsChanged(); });
     freqFolder.add(controls, 'useRealisticLightningRatios').name('Realistic Ratios')
       .onChange(() => { controls.lightningPreset = 'Custom'; callbacks.onSettingsChanged(); });
     addFreqSlider(controls, 'intracloudFrequency', 0, 100, 0.5, 'Intracloud');
     addFreqSlider(controls, 'cloudToCloudFrequency', 0, 100, 0.5, 'Cloud-to-Cloud');
     addFreqSlider(controls, 'cloudToGroundFrequency', 0, 100, 0.5, 'Cloud-to-Ground');
-    addFreqSlider(controls, 'positiveCgFrequency', 0, 100, 0.5, 'Positive CG');
-    addFreqSlider(controls, 'spiderLightningFrequency', 0, 100, 0.5, 'Spider');
-    addFreqSlider(controls, 'anvilCrawlerFrequency', 0, 100, 0.5, 'Anvil Crawler');
-    addFreqSlider(controls, 'upwardLightningFrequency', 0, 100, 0.5, 'Upward');
-    addFreqSlider(controls, 'boltFromBlueFrequency', 0, 100, 0.5, 'Bolt From Blue');
-    addFreqSlider(controls, 'dryLightningFrequency', 0, 100, 0.5, 'Dry Lightning');
-    addFreqSlider(controls, 'sheetLightningFrequency', 0, 100, 0.5, 'Sheet');
+    addFreqSlider(controls, 'positiveCgFrequency', 0, 5, 0.05, 'Positive CG');
+    addFreqSlider(controls, 'spiderLightningFrequency', 0, 5, 0.05, 'Spider');
+    addFreqSlider(controls, 'anvilCrawlerFrequency', 0, 5, 0.05, 'Anvil Crawler');
+    addFreqSlider(controls, 'upwardLightningFrequency', 0, 2, 0.02, 'Upward');
+    addFreqSlider(controls, 'boltFromBlueFrequency', 0, 2, 0.02, 'Bolt From Blue');
+    addFreqSlider(controls, 'dryLightningFrequency', 0, 5, 0.05, 'Dry Lightning');
+    addFreqSlider(controls, 'sheetLightningFrequency', 0, 20, 0.1, 'Sheet');
+    addFreqSlider(controls, 'strobeLightningFrequency', 0, 20, 0.1, 'Strobe');
 
     const visualFolder = folder.addFolder('Visual');
-    visualFolder.add(controls, 'lightningBrightness', 0.1, 3, 0.05).name('Brightness');
-    visualFolder.add(controls, 'lightningContrast', 0.1, 3, 0.05).name('Contrast');
-    visualFolder.add(controls, 'channelThickness', 0.25, 4, 0.05).name('Channel Thickness');
-    visualFolder.add(controls, 'branchDensity', 0.1, 3, 0.05).name('Branch Density');
-    visualFolder.add(controls, 'branchLength', 0.1, 3, 0.05).name('Branch Length');
-    visualFolder.add(controls, 'flashDuration', 0.2, 3, 0.05).name('Flash Duration');
-    visualFolder.add(controls, 'channelGlowDuration', 0.1, 3, 0.05).name('Channel Glow');
-    visualFolder.add(controls, 'bloomStrength', 0, 3, 0.05).name('Bloom Strength');
-    visualFolder.add(controls, 'glowStrength', 0, 3, 0.05).name('Glow Strength');
-    visualFolder.add(controls, 'atmosphericIlluminationStrength', 0, 3, 0.05).name('Atmospheric');
-    visualFolder.add(controls, 'cloudIlluminationStrength', 0, 3, 0.05).name('Cloud');
-    visualFolder.add(controls, 'rainShaftIlluminationStrength', 0, 3, 0.05).name('Rain Shaft');
-    visualFolder.add(controls, 'terrainIlluminationStrength', 0, 3, 0.05).name('Terrain');
-    visualFolder.add(controls, 'nighttimeFlashStrength', 0, 3, 0.05).name('Night Flash');
-    visualFolder.add(controls, 'daytimeFlashStrength', 0, 2, 0.05).name('Day Flash');
-    visualFolder.add(controls, 'ltEnableBloom').name('Enable Bloom');
-    visualFolder.add(controls, 'ltEnableAtmosphericLighting').name('Atmospheric Lighting');
-    visualFolder.add(controls, 'ltEnableCloudIllumination').name('Cloud Illumination');
-    visualFolder.add(controls, 'ltEnableRainShaftIllumination').name('Rain Shaft Illumination');
-    visualFolder.add(controls, 'ltEnableTerrainIllumination').name('Terrain Illumination');
-    visualFolder.add(controls, 'ltEnablePersistentChannelGlow').name('Persistent Channel Glow');
-    visualFolder.add(controls, 'ltEnableVolumetricCloudFlashing').name('Volumetric Cloud Flash');
+    const onVisualChanged = () => {
+      controls.lightningPreset = 'Custom';
+      callbacks.onSettingsChanged();
+    };
+    visualFolder.add(controls, 'lightningBrightness', 0.1, 3, 0.05).name('Brightness').onChange(onVisualChanged);
+    visualFolder.add(controls, 'lightningContrast', 0.1, 3, 0.05).name('Contrast').onChange(onVisualChanged);
+    visualFolder.add(controls, 'channelThickness', 0.25, 4, 0.05).name('Channel Thickness').onChange(onVisualChanged);
+    visualFolder.add(controls, 'branchDensity', 0.1, 3, 0.05).name('Branch Density').onChange(onVisualChanged);
+    visualFolder.add(controls, 'branchLength', 0.1, 3, 0.05).name('Branch Length').onChange(onVisualChanged);
+    visualFolder.add(controls, 'flashDuration', 0.2, 3, 0.05).name('Flash Duration').onChange(onVisualChanged);
+    visualFolder.add(controls, 'channelGlowDuration', 0.1, 3, 0.05).name('Channel Glow').onChange(onVisualChanged);
+    visualFolder.add(controls, 'bloomStrength', 0, 3, 0.05).name('Bloom Strength').onChange(onVisualChanged);
+    visualFolder.add(controls, 'glowStrength', 0, 3, 0.05).name('Glow Strength').onChange(onVisualChanged);
+    visualFolder.add(controls, 'atmosphericIlluminationStrength', 0, 3, 0.05).name('Atmospheric').onChange(onVisualChanged);
+    visualFolder.add(controls, 'cloudIlluminationStrength', 0, 3, 0.05).name('Cloud').onChange(onVisualChanged);
+    visualFolder.add(controls, 'rainShaftIlluminationStrength', 0, 3, 0.05).name('Rain Shaft').onChange(onVisualChanged);
+    visualFolder.add(controls, 'terrainIlluminationStrength', 0, 3, 0.05).name('Terrain').onChange(onVisualChanged);
+    visualFolder.add(controls, 'nighttimeFlashStrength', 0, 3, 0.05).name('Night Flash').onChange(onVisualChanged);
+    visualFolder.add(controls, 'daytimeFlashStrength', 0, 2, 0.05).name('Day Flash').onChange(onVisualChanged);
+    visualFolder.add(controls, 'ltEnableBloom').name('Enable Bloom').onChange(onVisualChanged);
+    visualFolder.add(controls, 'ltEnableAtmosphericLighting').name('Atmospheric Lighting').onChange(onVisualChanged);
+    visualFolder.add(controls, 'ltEnableCloudIllumination').name('Cloud Illumination').onChange(onVisualChanged);
+    visualFolder.add(controls, 'ltEnableRainShaftIllumination').name('Rain Shaft Illumination').onChange(onVisualChanged);
+    visualFolder.add(controls, 'ltEnableTerrainIllumination').name('Terrain Illumination').onChange(onVisualChanged);
+    visualFolder.add(controls, 'ltEnablePersistentChannelGlow').name('Persistent Channel Glow').onChange(onVisualChanged);
+    visualFolder.add(controls, 'ltEnableVolumetricCloudFlashing').name('Volumetric Cloud Flash').onChange(onVisualChanged);
 
     const cloudChFolder = folder.addFolder('Cloud Channels');
     const onCloudChChanged = () => { controls.lightningPreset = 'Custom'; callbacks.onSettingsChanged(); };
@@ -1826,35 +1708,47 @@
       .onChange(onCloudChChanged);
     cloudChFolder.add(controls, 'channelIllumRatio', 0.1, 1.5, 0.05).name('Channel/Illum Balance')
       .onChange(onCloudChChanged);
-    cloudChFolder.add(controls, 'precipOnlyLightningChance', 0, 1, 0.02).name('Rain-Shaft-Only Chance')
+    cloudChFolder.add(controls, 'precipOnlyLightningChance', 0, 1, 0.02).name('Precip-Only Chance')
       .onChange(onCloudChChanged);
 
     const behaviorFolder = folder.addFolder('Behavior');
+    const onChargeChanged = () => {
+      if (callbacks.setChargeGenerationUniforms)
+        callbacks.setChargeGenerationUniforms();
+      controls.lightningPreset = 'Custom';
+      callbacks.onSettingsChanged();
+    };
+    const onBehaviorChanged = () => {
+      controls.lightningPreset = 'Custom';
+      callbacks.onSettingsChanged();
+    };
     behaviorFolder.add(controls, 'chargeGenerationRate', 0, 5, 0.05).name('Charge Generation')
-      .onChange(callbacks.setChargeGenerationUniforms);
+      .onChange(onChargeChanged);
     behaviorFolder.add(controls, 'chargeMinCloudDensity', 0.05, 0.7, 0.01).name('Min Cloud Density')
-      .onChange(callbacks.setChargeGenerationUniforms);
+      .onChange(onChargeChanged);
     behaviorFolder.add(controls, 'chargeStormCoreThreshold', 0.1, 0.8, 0.01).name('Storm Core Threshold')
-      .onChange(callbacks.setChargeGenerationUniforms);
-    behaviorFolder.add(controls, 'leaderSpeed', 0.2, 3, 0.05).name('Leader Speed');
-    behaviorFolder.add(controls, 'returnStrokeProbability', 0, 1, 0.05).name('Return Stroke Prob');
-    behaviorFolder.add(controls, 'maxReturnStrokes', 1, 8, 1).name('Max Return Strokes');
-    behaviorFolder.add(controls, 'electricalBurstFrequency', 0, 2, 0.05).name('Burst Frequency');
-    behaviorFolder.add(controls, 'electricalBurstIntensity', 0.2, 3, 0.05).name('Burst Intensity');
-    behaviorFolder.add(controls, 'chargeDissipationRate', 0.2, 3, 0.05).name('Charge Dissipation');
-    behaviorFolder.add(controls, 'chargeTransportStrength', 0, 3, 0.05).name('Charge Transport');
-    behaviorFolder.add(controls, 'groundConductivityInfluence', 0, 3, 0.05).name('Conductivity Influence');
-    behaviorFolder.add(controls, 'terrainInfluence', 0, 3, 0.05).name('Terrain Influence');
-    behaviorFolder.add(controls, 'stormOrganizationInfluence', 0, 3, 0.05).name('Storm Organization');
-    behaviorFolder.add(controls, 'lightningClusteringStrength', 0, 1, 0.05).name('Clustering Strength');
+      .onChange(onChargeChanged);
+    behaviorFolder.add(controls, 'leaderSpeed', 0.2, 3, 0.05).name('Leader Speed').onChange(onBehaviorChanged);
+    behaviorFolder.add(controls, 'returnStrokeProbability', 0, 1, 0.05).name('Return Stroke Prob').onChange(onBehaviorChanged);
+    behaviorFolder.add(controls, 'maxReturnStrokes', 1, 8, 1).name('Max Return Strokes').onChange(onBehaviorChanged);
+    behaviorFolder.add(controls, 'electricalBurstFrequency', 0, 2, 0.05).name('Burst Frequency').onChange(onBehaviorChanged);
+    behaviorFolder.add(controls, 'electricalBurstIntensity', 0.2, 3, 0.05).name('Burst Intensity').onChange(onBehaviorChanged);
+    behaviorFolder.add(controls, 'chargeDissipationRate', 0.2, 3, 0.05).name('Charge Dissipation')
+      .onChange(onChargeChanged);
+    behaviorFolder.add(controls, 'chargeTransportStrength', 0, 3, 0.05).name('Charge Transport')
+      .onChange(onChargeChanged);
+    behaviorFolder.add(controls, 'groundConductivityInfluence', 0, 3, 0.05).name('Conductivity Influence').onChange(onBehaviorChanged);
+    behaviorFolder.add(controls, 'terrainInfluence', 0, 3, 0.05).name('Terrain Influence').onChange(onBehaviorChanged);
+    behaviorFolder.add(controls, 'stormOrganizationInfluence', 0, 3, 0.05).name('Storm Organization').onChange(onBehaviorChanged);
+    behaviorFolder.add(controls, 'lightningClusteringStrength', 0, 1, 0.05).name('Clustering Strength').onChange(onBehaviorChanged);
     behaviorFolder.add(controls, 'lightningSpawnStrictness', 0.6, 2.0, 0.05).name('Spawn Strictness')
-      .onChange(() => { controls.lightningPreset = 'Custom'; callbacks.onSettingsChanged(); });
-    behaviorFolder.add(controls, 'enableChargeTransport').name('Charge Transport');
-    behaviorFolder.add(controls, 'enableGroundConductivity').name('Ground Conductivity');
-    behaviorFolder.add(controls, 'enableElectricalBurstCycles').name('Electrical Bursts');
-    behaviorFolder.add(controls, 'enableLightningClustering').name('Lightning Clustering');
-    behaviorFolder.add(controls, 'enableTerrainTargeting').name('Terrain Targeting');
-    behaviorFolder.add(controls, 'enableDynamicStormElectricalEvolution').name('Dynamic Evolution');
+      .onChange(onBehaviorChanged);
+    behaviorFolder.add(controls, 'enableChargeTransport').name('Charge Transport').onChange(onChargeChanged);
+    behaviorFolder.add(controls, 'enableGroundConductivity').name('Ground Conductivity').onChange(onBehaviorChanged);
+    behaviorFolder.add(controls, 'enableElectricalBurstCycles').name('Electrical Bursts').onChange(onBehaviorChanged);
+    behaviorFolder.add(controls, 'enableLightningClustering').name('Lightning Clustering').onChange(onBehaviorChanged);
+    behaviorFolder.add(controls, 'enableTerrainTargeting').name('Terrain Targeting').onChange(onBehaviorChanged);
+    behaviorFolder.add(controls, 'enableDynamicStormElectricalEvolution').name('Dynamic Evolution').onChange(onBehaviorChanged);
 
     const thunderFolder = folder.addFolder('Thunder');
     thunderFolder.add(controls, 'enableThunder').name('Enable Thunder');
@@ -1879,7 +1773,6 @@
     perfFolder.add(controls, 'maxIlluminationRadius', 0.2, 2, 0.05).name('Illumination Radius');
     perfFolder.add(controls, 'lightningLODDistance', 0.2, 3, 0.05).name('LOD Distance');
     perfFolder.add(controls, 'gpuEffectQuality', 0.2, 2, 0.05).name('GPU Effect Quality');
-    perfFolder.add(controls, 'atmosphericLightingResolution', 0.25, 1.0, 0.25).name('Atmos Lighting Res');
     perfFolder.add(controls, 'dynamicLOD').name('Dynamic LOD');
     perfFolder.add(controls, 'adaptiveLightningQuality').name('Adaptive Quality');
     perfFolder.add(controls, 'performanceAutoScaling').name('Auto Scaling');
@@ -1914,6 +1807,109 @@
     folder.open();
     return { folder, presetCtrl };
   }
+
+  const MIN_LIGHTNING_FIRE_INTENSITY = 0.002;
+
+  function vegetationInfluenceJS(veg) {
+      const grass = Math.min(veg, 50);
+      const forest = Math.max(veg - 50, 0);
+      return grass * 0.38 + forest + 0.08;
+    }
+
+  function computeStormChargeReadiness(cache, simResX, simResY) {
+      if (!cache || !cache.data) return 0.2;
+      let peakPotential = 0;
+      let peakCharge = 0;
+      let eligible = 0;
+      let cells = 0;
+      const step = Math.max(1, Math.floor(cache.cacheW / 12));
+      for (let py = 0; py < cache.cacheH; py += step) {
+        for (let px = 0; px < cache.cacheW; px += step) {
+          const i = (py * cache.cacheW + px) * 4;
+          const charge = Math.abs(cache.data[i]);
+          const cloud = cache.data[i + 1];
+          const potential = cache.data[i + 2];
+          const cg = cloudGate(cloud);
+          cells++;
+          if (cloud > 0.07 && cg > 0.18) {
+            eligible++;
+            peakPotential = Math.max(peakPotential, potential);
+            peakCharge = Math.max(peakCharge, charge * cg);
+          }
+        }
+      }
+      const coverage = eligible / Math.max(cells, 1);
+      const mag = peakPotential * 0.64 + peakCharge * 0.36;
+      return clamp(mag * 0.58 + coverage * 0.42, 0, 1);
+    }
+
+  function rollLightningSpawn(channels, getStrikeChance, stormActivity, chargeReadiness, iterNum, validateChannel, globalMult) {
+      if (!channels || channels.length === 0) return null;
+      const readiness = clamp(chargeReadiness, 0, 1);
+      if (readiness < 0.18) return null;
+  
+      const mult = clamp(globalMult ?? 1, 0, 100);
+  
+      let aggChance = 0;
+      const weights = [];
+      for (const ch of channels) {
+        let w = getStrikeChance(ch);
+        if (ch.id === 'intracloud') w *= 2.8;
+        else if (ch.id === 'cc') w *= 1.35;
+        weights.push(w);
+        aggChance += w;
+      }
+      if (aggChance <= 0) return null;
+  
+      const stormGate = clamp(stormActivity * 0.85 + 0.12, 0.1, 1.0);
+      const spawnCap = Math.min(0.95, 0.12 * mult);
+      const globalChance = Math.min(spawnCap, aggChance * 0.26) * readiness * stormGate;
+      if (shaderRand(iterNum * 1.37 + 911.0) >= globalChance) return null;
+  
+      const sum = weights.reduce((a, b) => a + b, 0);
+      for (let attempt = 0; attempt < 5; attempt++) {
+        let r = shaderRand(iterNum * 7.31 + 613.0 + attempt * 83.0) * sum;
+        let pick = channels[channels.length - 1];
+        for (let i = 0; i < channels.length; i++) {
+          r -= weights[i];
+          if (r <= 0) {
+            pick = channels[i];
+            break;
+          }
+        }
+        if (validateChannel(iterNum, pick)) return pick;
+      }
+      return null;
+    }
+
+  function isCgStrikeType(ltType) {
+      return ltType === LT.CG || ltType === LT.CG_POSITIVE;
+    }
+
+  function calcFireIntensityJS(veg, soilMoist, precip) {
+      return Math.max(
+        vegetationInfluenceJS(veg) * 0.00032 - soilMoist * 0.00020 - precip * 0.02,
+        0);
+    }
+
+  function canSurfaceSupportFire(wallType, veg, soilMoist, precip) {
+      if (wallType === 3)
+        return false;
+      if (wallType !== 1 && wallType !== 7)
+        return false;
+      return calcFireIntensityJS(veg, soilMoist, precip) >= MIN_LIGHTNING_FIRE_INTENSITY;
+    }
+
+  function rollCgLightningFireChance(ltType, fireIntensity, seed, controls) {
+      if (!controls.cgLightningFireEnabled)
+        return false;
+      const base = clamp(controls.cgLightningFireChance ?? 0.32, 0, 1);
+      const posMult = ltType === LT.CG_POSITIVE
+        ? clamp(controls.cgPositiveFireChanceMult ?? 1.65, 1, 3) : 1;
+      const condMult = clamp(fireIntensity / MIN_LIGHTNING_FIRE_INTENSITY, 0, 6);
+      const chance = Math.min(0.92, base * posMult * (0.35 + condMult * 0.22));
+      return shaderRand(seed + 947.3) < chance;
+    }
 
   global.LightningV2 = {
     LT,
@@ -1971,16 +1967,15 @@
     isDryLightningType,
     placementForDryStrike,
     isGroundStrike,
-    isCgStrikeType,
-    calcFireIntensityJS,
-    canSurfaceSupportFire,
-    rollCgLightningFireChance,
-    MIN_LIGHTNING_FIRE_INTENSITY,
     boltTextureIndexForType,
     getChannels,
-    strikeChance,
-    computeStormChargeReadiness,
+    rollCgLightningFireChance,
+    canSurfaceSupportFire,
+    calcFireIntensityJS,
+    isCgStrikeType,
     rollLightningSpawn,
+    computeStormChargeReadiness,
+    strikeChance,
     createEventRecord,
     buildLightningV2GUI,
     shaderRand,
