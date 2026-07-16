@@ -1,4 +1,6 @@
 #version 300 es
+// Stub FBO illum pass — June 8 lightning illuminates inside realisticDisplayShader.
+// Kept so older cached app.js builds that still load this file can compile.
 precision highp float;
 precision highp sampler2D;
 
@@ -6,16 +8,10 @@ in vec2 texCoord;
 in vec2 fragCoord;
 
 uniform sampler2D waterTex;
-uniform sampler2D lightningTex; // required by lightningV2.glsl CG bolt path
 uniform float sunAngle;
 uniform vec2 aspectRatios;
 uniform vec2 texelSize;
 uniform vec2 resolution;
-
-const float dryLapse = 0.; // required by common.glsl (illum pass does not use temperature lapse)
-
-#include "common.glsl"
-#include "lightningV2.glsl"
 
 layout(location = 0) out vec4 onLightOut;
 layout(location = 1) out vec4 cloudFlashOut;
@@ -23,25 +19,7 @@ layout(location = 2) out vec4 surfFlashOut;
 
 void main()
 {
-  vec2 uv = texCoord;
-  vec4 water = texture(waterTex, uv);
-  float cloudwater = water[CLOUD];
-  float precip = water[PRECIPITATION];
-  float nightFactor = clamp(map_range(abs(sunAngle), 60. * deg2rad, 90. * deg2rad, 0., 1.), 0., 1.);
-
-  // June 8 lightningV2.glsl API (not the later ltAccumulate* helpers).
-  vec3 flashEmit;
-  vec3 flashCloud;
-  vec3 flashSurf;
-  ltGetICCCFlash(uv, aspectRatios[0], cloudwater, precip, nightFactor,
-    flashEmit, flashCloud, flashSurf);
-
-  vec3 precipShafts;
-  ltGetPrecipBoltShafts(uv, aspectRatios[0], precip, nightFactor, precipShafts);
-
-  vec3 illum = ltComputeStrikeIllumination(uv, aspectRatios[0], cloudwater, precip, nightFactor);
-
-  onLightOut = vec4(illum, 1.0);
-  cloudFlashOut = vec4(flashCloud + flashEmit * 0.35, 1.0);
-  surfFlashOut = vec4(flashSurf + precipShafts, 1.0);
+  onLightOut = vec4(0.0);
+  cloudFlashOut = vec4(0.0);
+  surfFlashOut = vec4(0.0);
 }

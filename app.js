@@ -16340,7 +16340,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
 
   // load shaders
-  const SHADER_ASSET_VERSION = 11; // bump to bust CDN/browser cache after shader edits
+  const SHADER_ASSET_VERSION = 12; // bump to bust CDN/browser cache after shader edits
 
   var commonSource = await loadSourceFile('shaders/common.glsl');
   var commonDisplaySource = await loadSourceFile('shaders/commonDisplay.glsl');
@@ -16370,13 +16370,9 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
 
   const lightingShader = await loadShader('lightingShader.frag');
 
+  // June 8: skip FBO illum shader entirely — bolts/illum run in realistic display.
+  // Loading it only risks stale-cache compile failures against the restored lightningV2.glsl.
   let lightningIllumShader = null;
-  try {
-    lightningIllumShader = await loadShader('lightningIlluminationShader.frag', { optional: true });
-  } catch (e) {
-    console.warn('Lightning illumination shader compile failed (continuing without FBO illum):', e.message);
-    lightningIllumShader = null;
-  }
 
   const lightningLocationShader = await loadShader('lightningLocationShader.frag');
 
@@ -16411,17 +16407,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   const vorticityProgram = createProgram(simVertexShader, vorticityShader);
   const boundaryProgram = createProgram(simVertexShader, boundaryShader);
   const lightingProgram = createProgram(simVertexShader, lightingShader);
-  let lightningIllumProgramLocal = null;
-  if (lightningIllumShader) {
-    try {
-      lightningIllumProgramLocal = createProgram(simVertexShader, lightningIllumShader);
-    } catch (e) {
-      // Optional FBO illum path — June 8 still illuminates inside realistic display.
-      console.warn('Lightning illumination program unavailable:', e.message);
-      lightningIllumProgramLocal = null;
-    }
-  }
-  lightningIllumProgram = lightningIllumProgramLocal;
+  lightningIllumProgram = null;
   const lightningLocationProgram = createProgram(simVertexShader, lightningLocationShader);
   const setupProgram = createProgram(simVertexShader, setupShader);
   gl.deleteShader(simVertexShader);
