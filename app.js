@@ -8702,13 +8702,12 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       guiControls.smoothClouds = guiControls_default.smoothClouds;
 
     if (typeof LightningV2 !== 'undefined') {
-      // Force June 8 lightning defaults so restored system uses that era's settings.
+      // Apply June 8 defaults + Enhanced Realistic preset (same cold-start as 23613cd).
       Object.keys(LightningV2.DEFAULT_SETTINGS).forEach(key => {
         guiControls[key] = LightningV2.DEFAULT_SETTINGS[key];
       });
-      guiControls.lightningPreset = LightningV2.DEFAULT_SETTINGS.lightningPreset || 'Enhanced Realistic';
-      if (guiControls.lightningPreset && guiControls.lightningPreset !== 'Custom')
-        LightningV2.applyPreset(guiControls, guiControls.lightningPreset);
+      guiControls.lightningPreset = 'Enhanced Realistic';
+      LightningV2.applyPreset(guiControls, 'Enhanced Realistic');
       guiControls.lightningV2Enabled = true;
       // Charge uniforms are applied later once chargeProgram is linked.
     }
@@ -16340,7 +16339,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
 
   // load shaders
-  const SHADER_ASSET_VERSION = 12; // bump to bust CDN/browser cache after shader edits
+  const SHADER_ASSET_VERSION = 13; // bump to bust CDN/browser cache after shader edits
 
   var commonSource = await loadSourceFile('shaders/common.glsl');
   var commonDisplaySource = await loadSourceFile('shaders/commonDisplay.glsl');
@@ -20703,27 +20702,10 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     return best;
   }
 
-  /** Drive classic lightningDataTex from V2 charge/type strikes. */
+  /** June 8: classic lightningDataTex is owned by precip particles — do not overwrite. */
   function syncProceduralStrikeToLightningDataTexture()
   {
-    if (!isProceduralLightningEnabled() || !isLightningCpuReady())
-      return;
-
-    const st = proceduralLightningState;
-    if (!st.strikes || st.strikes.length === 0 || st.builtEventId < 0 || st.eventAge < 0) {
-      clearLightningDataTexture();
-      return;
-    }
-
-    const primary = pickPrimaryProceduralStrike(st.strikes);
-    if (!primary) {
-      clearLightningDataTexture();
-      return;
-    }
-
-    const nx = clamp(primary.originX / sim_res_x, 0, 1);
-    const ny = clamp(primary.originY / sim_res_y, 0.14, 0.78);
-    writeLightningDataTexture(nx, ny, st.builtEventId, legacyIntensityForStrike(primary));
+    return;
   }
 
   function isLightningCpuReady()
@@ -21006,6 +20988,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
 
   function findActiveLightningEventJS(frameIter)
   {
+    // June 8 path: 11-iteration lookback with independent per-channel rolls.
     if (!lightningFieldCache)
       return { eventAge: -1, eventId: 0, channel: null };
 
@@ -21013,40 +20996,27 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     if (channels.length === 0)
       return { eventAge: -1, eventId: 0, channel: null };
 
-    // Only detect strikes on the current iteration — lookback re-triggers the same event and causes rapid flicker
-    const startIter = frameIter;
-    if (startIter === proceduralLightningState.lastCompletedEventId)
-      return { eventAge: -1, eventId: 0, channel: null };
+    const maxLook = 11;
+    for (let k = 0; k < maxLook; k++) {
+      const startIter = frameIter - k;
+      if (startIter < 0)
+        break;
 
-    const hits = [];
-    if (typeof LightningV2 !== 'undefined') {
-      const stormActivity = getCachedStormActivity();
-      const readiness = getCachedStormChargeReadiness();
-      const channel = LightningV2.rollLightningSpawn(
-        channels,
-        ch => getCachedChannelStrikeChance(ch),
-        stormActivity,
-        readiness,
-        startIter,
-        (eventId, ch) => isStrikeStartChargeValidForChannel(eventId, ch),
-        guiControls.globalLightningMultiplier);
-      if (channel)
-        return { eventAge: 0, eventId: startIter, channel };
-      return { eventAge: -1, eventId: 0, channel: null };
-    }
-    for (const ch of channels) {
-      const strikeChance = getCachedChannelStrikeChance(ch);
-      if (strikeChance <= 0)
-        continue;
-      if (shaderRand(startIter * 1.37 + ch.salt) >= strikeChance)
-        continue;
-      if (!isStrikeStartChargeValidForChannel(startIter, ch))
-        continue;
-      hits.push(ch);
-    }
-    if (hits.length > 0) {
-      const pick = hits[Math.floor(shaderRand(startIter * 7.31 + 613.0) * hits.length)];
-      return { eventAge: 0, eventId: startIter, channel: pick };
+      const hits = [];
+      for (const ch of channels) {
+        const strikeChance = getCachedChannelStrikeChance(ch);
+        if (strikeChance <= 0)
+          continue;
+        if (shaderRand(startIter * 1.37 + ch.salt) >= strikeChance)
+          continue;
+        if (!isStrikeStartChargeValidForChannel(startIter, ch))
+          continue;
+        hits.push(ch);
+      }
+      if (hits.length > 0) {
+        const pick = hits[Math.floor(shaderRand(startIter * 7.31 + 613.0) * hits.length)];
+        return { eventAge: k, eventId: startIter, channel: pick };
+      }
     }
     return { eventAge: -1, eventId: 0, channel: null };
   }
@@ -21745,19 +21715,16 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     const isDry = typeof LightningV2 !== 'undefined' && LightningV2.isDryChannel(channel.id);
     const dryMode = isDry && typeof LightningV2 !== 'undefined'
       ? LightningV2.dryBurstMode(eventId) : null;
-    const mult = clamp(guiControls.globalLightningMultiplier ?? 1, 0, 100);
-    const strikeCap = Math.min(maxBolts, 4 + Math.floor(mult * 0.06));
+    // June 8 strike-count formula (no 100x multiplier strikeCap).
     let numStrikes = isStrobe && typeof LightningV2 !== 'undefined'
       ? LightningV2.strobeBurstStrikeCount(eventId, channel, maxBolts, guiControls)
       : isDry && typeof LightningV2 !== 'undefined'
         ? LightningV2.dryBurstStrikeCount(eventId, channel, maxBolts, guiControls, dryMode)
         : 1 + Math.floor(shaderRand(eventId * 29 + 401 + channel.salt)
-          * Math.min(Math.max(freq * 0.04 + 0.5, 1), strikeCap));
+          * Math.min(Math.max(freq * 0.04 + 0.5, 1), 4));
     if (!isStrobe && !isDry && lightningBurstState.phase === 'burst')
       numStrikes = Math.min(maxBolts, numStrikes + Math.floor(lightningBurstState.burstIntensity * 2));
     numStrikes = Math.min(numStrikes, maxBolts);
-    if (channel.id === 'intracloud' || channel.id === 'cc')
-      numStrikes = Math.min(numStrikes, channel.id === 'intracloud' ? 4 : 3);
     const strikes = [];
     let anchorPick = null;
     for (let s = 0; s < numStrikes; s++) {
@@ -21813,6 +21780,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
 
   function updateProceduralLightningState()
   {
+    // June 8 flash hold + lookback spawn (keeps multiplayer broadcast / CG fire hooks).
     if (isForcedLightningActive())
       return;
     if (!isProceduralLightningEnabled()) {
@@ -21822,33 +21790,20 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       proceduralLightningState.channelId = null;
       proceduralLightningState.trackedEventId = -1;
       proceduralLightningState.trackedChannel = null;
-      proceduralLightningState.lastCompletedEventId = -1;
       return;
     }
 
-    const flashDur = getLightningFlashDuration();
-
-    // Hold the current strike set for the full flash window — prevents mid-flash swaps and pop-off
-    if (proceduralLightningState.builtEventId >= 0) {
-      const holdAge = iterNum - proceduralLightningState.builtEventId;
-      const holdDur = getLightningFlashHoldDuration(proceduralLightningState.channelId);
-      if (holdAge >= 0 && holdAge < holdDur) {
-        proceduralLightningState.eventAge = holdAge;
-        proceduralLightningState.eventId = proceduralLightningState.builtEventId;
+    // Fast path: skip expensive lookback while an active flash is playing out
+    if (proceduralLightningState.trackedEventId >= 0 && proceduralLightningState.trackedChannel) {
+      const age = iterNum - proceduralLightningState.trackedEventId;
+      if (age >= 0 && age < getLightningFlashDuration()) {
+        proceduralLightningState.eventAge = age;
+        proceduralLightningState.eventId = proceduralLightningState.trackedEventId;
+        proceduralLightningState.channelId = proceduralLightningState.trackedChannel.id;
         return;
       }
-      if (holdAge >= holdDur) {
-        proceduralLightningState.lastCompletedEventId = proceduralLightningState.builtEventId;
-        proceduralLightningState.strikes = [];
-        proceduralLightningState.builtEventId = -1;
-        proceduralLightningState.trackedEventId = -1;
-        proceduralLightningState.trackedChannel = null;
-        proceduralLightningState.eventAge = -1;
-        proceduralLightningState.eventId = -1;
-        proceduralLightningState.channelId = null;
-        proceduralLightningState.flashStartMs = 0;
-        proceduralLightningState.frozenVisualAge = null;
-      }
+      proceduralLightningState.trackedEventId = -1;
+      proceduralLightningState.trackedChannel = null;
     }
 
     if (getCachedLightningStrikeChannels().length === 0) {
@@ -21878,8 +21833,6 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         || proceduralLightningState.channelId !== active.channel.id) {
       proceduralLightningState.builtEventId = active.eventId;
       proceduralLightningState.strikes = buildProceduralStrikesForEvent(active.eventId, active.channel);
-      proceduralLightningState.flashStartMs = performance.now();
-      proceduralLightningState.frozenVisualAge = null;
       broadcastHostLightningFlash(active.eventId, active.channel, proceduralLightningState.strikes);
 
       for (let s = 0; s < proceduralLightningState.strikes.length; s++) {
@@ -24159,7 +24112,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
           if (isLightningCpuReady()) {
             refreshLightningFieldCache();
             updateProceduralLightningState();
-            syncProceduralStrikeToLightningDataTexture();
+            // June 8: precip particles own lightningDataTex (no V2 hybrid overwrite).
           }
           iterNum++;
           airplane.takeUserInput();
@@ -24439,14 +24392,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       if (uloc_real_smoothClouds)
         gl.uniform1f(uloc_real_smoothClouds, guiControls.smoothClouds !== false ? 1.0 : 0.0);
 
-      // V2 charge/types write classic lightningDataTex; SDF uniforms stay off in Legacy style.
-      syncProceduralStrikeToLightningDataTexture();
+      // June 8: classic bolt texture cycles; V2 bolts come from strike uniforms.
       let lightningTexNum = Math.floor(iterNum / 400) % Math.min(4, numLightningTextures);
-      const primaryStrike = pickPrimaryProceduralStrike(proceduralLightningState.strikes);
-      if (primaryStrike && Number.isFinite(primaryStrike.texIndex) && numLightningTextures > 0) {
-        lightningTexNum = ((Math.floor(primaryStrike.texIndex) % numLightningTextures)
-          + numLightningTextures) % numLightningTextures;
-      }
       gl.activeTexture(gl.TEXTURE7);
       gl.bindTexture(gl.TEXTURE_2D, lightningTextures[lightningTexNum]);
       gl.activeTexture(gl.TEXTURE8);

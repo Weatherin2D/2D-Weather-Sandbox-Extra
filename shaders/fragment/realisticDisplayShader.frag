@@ -454,10 +454,17 @@ void main()
 
   float cloudwater = water[CLOUD];
   float nightFactor = clamp(map_range(abs(localSunAngle), 60. * deg2rad, 90. * deg2rad, 0., 1.), 0., 1.);
+  float precipF = clamp(water[PRECIPITATION], 0.0, 1.0);
   vec3 icccEmit = vec3(0.0);
   vec3 icccCloud = vec3(0.0);
   vec3 icccSurf = vec3(0.0);
   vec3 precipBoltShafts = vec3(0.0);
+  // June 8: IC/CC/sheet cloud flashes + precip shafts from lightningV2.glsl
+  if (texCoord.y >= 0.0 && texCoord.y <= 1.0) {
+    ltGetICCCFlash(texCoord, aspectRatios[0], cloudwater, precipF, nightFactor, icccEmit, icccCloud, icccSurf);
+    ltGetPrecipBoltShafts(texCoord, aspectRatios[0], precipF, nightFactor, precipBoltShafts);
+    emittedLight += icccEmit;
+  }
 
   if (texCoord.y < 0.) {                                     // < texelSize.y below simulation area
 
@@ -830,22 +837,20 @@ void main()
 
   finalLight += sunColor(scatering) * shadowLight + onLight;
 
-  // Illum-texture / flash spill: keep localized; avoid clear-air domain wash.
-  float precipF = clamp(water[PRECIPITATION], 0.0, 1.0);
-  float surfFlashInAir = smoothstep(0.02, 0.20, precipF) * 0.85
-    + smoothstep(0.05, 0.35, clamp(water[CLOUD], 0.0, 1.0)) * 0.15;
+  // June 8 flash spill compositing
   if (wall[DISTANCE] == 0)
     finalLight += icccSurf + precipBoltShafts;
   else if (texCoord.y > 0.0 && texCoord.y <= 1.0)
-    finalLight += icccCloud + icccSurf * surfFlashInAir;
+    finalLight += icccCloud + icccSurf * max(precipF, 0.22);
   else if (texCoord.y < 0.0)
     finalLight += icccSurf + precipBoltShafts;
 
-  opacity += length(emittedLight) * length(emittedLight) * 0.035 / (1.0 + length(emittedLight) * 0.9);
+  opacity += min(length(emittedLight) * 0.1, 0.2);
   opacity = clamp(opacity, 0.0, 1.0);
   vec3 litBase = max(color * finalLight, 0.);
-  vec3 softEmit = emittedLight / (vec3(0.02) + emittedLight * 0.38 + emittedLight * emittedLight * 0.06);
-  vec3 finalColor = litBase + softEmit;
+  vec3 safeEmitted = emittedLight / (vec3(1.0) + emittedLight * 0.2);
+  float boltAmt = clamp(length(safeEmitted) * 2.8, 0.0, 1.0);
+  vec3 finalColor = mix(litBase + safeEmitted, max(litBase, safeEmitted * 1.4), boltAmt * 0.82);
   fragmentColor = vec4(finalColor, opacity);
 
   drawCursor(cursor, view); // over everything else
