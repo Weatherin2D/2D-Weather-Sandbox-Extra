@@ -8528,7 +8528,8 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
   function setChargeGenerationUniforms()
   {
-    if (!chargeProgram || uloc_charge_generationRate === null)
+    // Only uloc_* are safe to check early — chargeProgram is a later const (TDZ).
+    if (uloc_charge_generationRate === null)
       return;
     gl.useProgram(chargeProgram);
     gl.uniform1f(uloc_charge_generationRate, guiControls.chargeGenerationRate);
