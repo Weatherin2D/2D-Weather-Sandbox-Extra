@@ -8526,10 +8526,12 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   var postProc_contrast_loc = null;
   var postProc_bloomStrength_loc = null;
 
+  var chargeUniformsReady = false;
+
   function setChargeGenerationUniforms()
   {
-    // Only uloc_* are safe to check early — chargeProgram is a later const (TDZ).
-    if (uloc_charge_generationRate === null)
+    // setupDatGui runs before chargeProgram exists — never touch that const until ready.
+    if (!chargeUniformsReady)
       return;
     gl.useProgram(chargeProgram);
     gl.uniform1f(uloc_charge_generationRate, guiControls.chargeGenerationRate);
@@ -8539,9 +8541,9 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     const transport = guiControls.enableChargeTransport === false
       ? 0.0
       : (guiControls.chargeTransportStrength || 1.0);
-    if (uloc_charge_transportStrength !== null)
+    if (uloc_charge_transportStrength != null)
       gl.uniform1f(uloc_charge_transportStrength, transport);
-    if (uloc_charge_dissipationRate !== null)
+    if (uloc_charge_dissipationRate != null)
       gl.uniform1f(uloc_charge_dissipationRate, guiControls.chargeDissipationRate || 1.0);
   }
 
@@ -8708,7 +8710,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       if (guiControls.lightningPreset && guiControls.lightningPreset !== 'Custom')
         LightningV2.applyPreset(guiControls, guiControls.lightningPreset);
       guiControls.lightningV2Enabled = true;
-      setChargeGenerationUniforms();
+      // Charge uniforms are applied later once chargeProgram is linked.
     }
 
     guiControls.tool = 'TOOL_NONE';
@@ -19562,6 +19564,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   uloc_charge_stormCoreThreshold = gl.getUniformLocation(chargeProgram, 'chargeStormCoreThreshold');
   uloc_charge_transportStrength = gl.getUniformLocation(chargeProgram, 'chargeTransportStrength');
   uloc_charge_dissipationRate = gl.getUniformLocation(chargeProgram, 'chargeDissipationRate');
+  chargeUniformsReady = true;
   setChargeGenerationUniforms();
   const uloc_charge_ltDischargeCount = gl.getUniformLocation(chargeProgram, 'ltDischargeCount');
   const uloc_charge_ltDischarge      = gl.getUniformLocation(chargeProgram, 'ltDischarge');
