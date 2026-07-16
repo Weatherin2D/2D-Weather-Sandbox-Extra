@@ -78,12 +78,6 @@
     boltFromBlueFrequency: 0.12,
     dryLightningFrequency: 0.25,
     sheetLightningFrequency: 2.5,
-    strobeLightningFrequency: 0.8,
-
-    // Charge field knobs (linked into chargeShader via setChargeGenerationUniforms)
-    chargeGenerationRate: 1.0,
-    chargeMinCloudDensity: 0.32,
-    chargeStormCoreThreshold: 0.38,
 
     lightningBrightness: 0.48,
     lightningContrast: 0.9,
@@ -1658,35 +1652,30 @@
     addFreqSlider(controls, 'boltFromBlueFrequency', 0, 2, 0.02, 'Bolt From Blue');
     addFreqSlider(controls, 'dryLightningFrequency', 0, 5, 0.05, 'Dry Lightning');
     addFreqSlider(controls, 'sheetLightningFrequency', 0, 20, 0.1, 'Sheet');
-    addFreqSlider(controls, 'strobeLightningFrequency', 0, 20, 0.1, 'Strobe');
 
     const visualFolder = folder.addFolder('Visual');
-    const onVisualChanged = () => {
-      controls.lightningPreset = 'Custom';
-      callbacks.onSettingsChanged();
-    };
-    visualFolder.add(controls, 'lightningBrightness', 0.1, 3, 0.05).name('Brightness').onChange(onVisualChanged);
-    visualFolder.add(controls, 'lightningContrast', 0.1, 3, 0.05).name('Contrast').onChange(onVisualChanged);
-    visualFolder.add(controls, 'channelThickness', 0.25, 4, 0.05).name('Channel Thickness').onChange(onVisualChanged);
-    visualFolder.add(controls, 'branchDensity', 0.1, 3, 0.05).name('Branch Density').onChange(onVisualChanged);
-    visualFolder.add(controls, 'branchLength', 0.1, 3, 0.05).name('Branch Length').onChange(onVisualChanged);
-    visualFolder.add(controls, 'flashDuration', 0.2, 3, 0.05).name('Flash Duration').onChange(onVisualChanged);
-    visualFolder.add(controls, 'channelGlowDuration', 0.1, 3, 0.05).name('Channel Glow').onChange(onVisualChanged);
-    visualFolder.add(controls, 'bloomStrength', 0, 3, 0.05).name('Bloom Strength').onChange(onVisualChanged);
-    visualFolder.add(controls, 'glowStrength', 0, 3, 0.05).name('Glow Strength').onChange(onVisualChanged);
-    visualFolder.add(controls, 'atmosphericIlluminationStrength', 0, 3, 0.05).name('Atmospheric').onChange(onVisualChanged);
-    visualFolder.add(controls, 'cloudIlluminationStrength', 0, 3, 0.05).name('Cloud').onChange(onVisualChanged);
-    visualFolder.add(controls, 'rainShaftIlluminationStrength', 0, 3, 0.05).name('Rain Shaft').onChange(onVisualChanged);
-    visualFolder.add(controls, 'terrainIlluminationStrength', 0, 3, 0.05).name('Terrain').onChange(onVisualChanged);
-    visualFolder.add(controls, 'nighttimeFlashStrength', 0, 3, 0.05).name('Night Flash').onChange(onVisualChanged);
-    visualFolder.add(controls, 'daytimeFlashStrength', 0, 2, 0.05).name('Day Flash').onChange(onVisualChanged);
-    visualFolder.add(controls, 'ltEnableBloom').name('Enable Bloom').onChange(onVisualChanged);
-    visualFolder.add(controls, 'ltEnableAtmosphericLighting').name('Atmospheric Lighting').onChange(onVisualChanged);
-    visualFolder.add(controls, 'ltEnableCloudIllumination').name('Cloud Illumination').onChange(onVisualChanged);
-    visualFolder.add(controls, 'ltEnableRainShaftIllumination').name('Rain Shaft Illumination').onChange(onVisualChanged);
-    visualFolder.add(controls, 'ltEnableTerrainIllumination').name('Terrain Illumination').onChange(onVisualChanged);
-    visualFolder.add(controls, 'ltEnablePersistentChannelGlow').name('Persistent Channel Glow').onChange(onVisualChanged);
-    visualFolder.add(controls, 'ltEnableVolumetricCloudFlashing').name('Volumetric Cloud Flash').onChange(onVisualChanged);
+    visualFolder.add(controls, 'lightningBrightness', 0.1, 3, 0.05).name('Brightness');
+    visualFolder.add(controls, 'lightningContrast', 0.1, 3, 0.05).name('Contrast');
+    visualFolder.add(controls, 'channelThickness', 0.25, 4, 0.05).name('Channel Thickness');
+    visualFolder.add(controls, 'branchDensity', 0.1, 3, 0.05).name('Branch Density');
+    visualFolder.add(controls, 'branchLength', 0.1, 3, 0.05).name('Branch Length');
+    visualFolder.add(controls, 'flashDuration', 0.2, 3, 0.05).name('Flash Duration');
+    visualFolder.add(controls, 'channelGlowDuration', 0.1, 3, 0.05).name('Channel Glow');
+    visualFolder.add(controls, 'bloomStrength', 0, 3, 0.05).name('Bloom Strength');
+    visualFolder.add(controls, 'glowStrength', 0, 3, 0.05).name('Glow Strength');
+    visualFolder.add(controls, 'atmosphericIlluminationStrength', 0, 3, 0.05).name('Atmospheric');
+    visualFolder.add(controls, 'cloudIlluminationStrength', 0, 3, 0.05).name('Cloud');
+    visualFolder.add(controls, 'rainShaftIlluminationStrength', 0, 3, 0.05).name('Rain Shaft');
+    visualFolder.add(controls, 'terrainIlluminationStrength', 0, 3, 0.05).name('Terrain');
+    visualFolder.add(controls, 'nighttimeFlashStrength', 0, 3, 0.05).name('Night Flash');
+    visualFolder.add(controls, 'daytimeFlashStrength', 0, 2, 0.05).name('Day Flash');
+    visualFolder.add(controls, 'ltEnableBloom').name('Enable Bloom');
+    visualFolder.add(controls, 'ltEnableAtmosphericLighting').name('Atmospheric Lighting');
+    visualFolder.add(controls, 'ltEnableCloudIllumination').name('Cloud Illumination');
+    visualFolder.add(controls, 'ltEnableRainShaftIllumination').name('Rain Shaft Illumination');
+    visualFolder.add(controls, 'ltEnableTerrainIllumination').name('Terrain Illumination');
+    visualFolder.add(controls, 'ltEnablePersistentChannelGlow').name('Persistent Channel Glow');
+    visualFolder.add(controls, 'ltEnableVolumetricCloudFlashing').name('Volumetric Cloud Flash');
 
     const cloudChFolder = folder.addFolder('Cloud Channels');
     const onCloudChChanged = () => { controls.lightningPreset = 'Custom'; callbacks.onSettingsChanged(); };
@@ -1712,43 +1701,31 @@
       .onChange(onCloudChChanged);
 
     const behaviorFolder = folder.addFolder('Behavior');
-    const onChargeChanged = () => {
-      if (callbacks.setChargeGenerationUniforms)
-        callbacks.setChargeGenerationUniforms();
-      controls.lightningPreset = 'Custom';
-      callbacks.onSettingsChanged();
-    };
-    const onBehaviorChanged = () => {
-      controls.lightningPreset = 'Custom';
-      callbacks.onSettingsChanged();
-    };
     behaviorFolder.add(controls, 'chargeGenerationRate', 0, 5, 0.05).name('Charge Generation')
-      .onChange(onChargeChanged);
+      .onChange(callbacks.setChargeGenerationUniforms);
     behaviorFolder.add(controls, 'chargeMinCloudDensity', 0.05, 0.7, 0.01).name('Min Cloud Density')
-      .onChange(onChargeChanged);
+      .onChange(callbacks.setChargeGenerationUniforms);
     behaviorFolder.add(controls, 'chargeStormCoreThreshold', 0.1, 0.8, 0.01).name('Storm Core Threshold')
-      .onChange(onChargeChanged);
-    behaviorFolder.add(controls, 'leaderSpeed', 0.2, 3, 0.05).name('Leader Speed').onChange(onBehaviorChanged);
-    behaviorFolder.add(controls, 'returnStrokeProbability', 0, 1, 0.05).name('Return Stroke Prob').onChange(onBehaviorChanged);
-    behaviorFolder.add(controls, 'maxReturnStrokes', 1, 8, 1).name('Max Return Strokes').onChange(onBehaviorChanged);
-    behaviorFolder.add(controls, 'electricalBurstFrequency', 0, 2, 0.05).name('Burst Frequency').onChange(onBehaviorChanged);
-    behaviorFolder.add(controls, 'electricalBurstIntensity', 0.2, 3, 0.05).name('Burst Intensity').onChange(onBehaviorChanged);
-    behaviorFolder.add(controls, 'chargeDissipationRate', 0.2, 3, 0.05).name('Charge Dissipation')
-      .onChange(onChargeChanged);
-    behaviorFolder.add(controls, 'chargeTransportStrength', 0, 3, 0.05).name('Charge Transport')
-      .onChange(onChargeChanged);
-    behaviorFolder.add(controls, 'groundConductivityInfluence', 0, 3, 0.05).name('Conductivity Influence').onChange(onBehaviorChanged);
-    behaviorFolder.add(controls, 'terrainInfluence', 0, 3, 0.05).name('Terrain Influence').onChange(onBehaviorChanged);
-    behaviorFolder.add(controls, 'stormOrganizationInfluence', 0, 3, 0.05).name('Storm Organization').onChange(onBehaviorChanged);
-    behaviorFolder.add(controls, 'lightningClusteringStrength', 0, 1, 0.05).name('Clustering Strength').onChange(onBehaviorChanged);
+      .onChange(callbacks.setChargeGenerationUniforms);
+    behaviorFolder.add(controls, 'leaderSpeed', 0.2, 3, 0.05).name('Leader Speed');
+    behaviorFolder.add(controls, 'returnStrokeProbability', 0, 1, 0.05).name('Return Stroke Prob');
+    behaviorFolder.add(controls, 'maxReturnStrokes', 1, 8, 1).name('Max Return Strokes');
+    behaviorFolder.add(controls, 'electricalBurstFrequency', 0, 2, 0.05).name('Burst Frequency');
+    behaviorFolder.add(controls, 'electricalBurstIntensity', 0.2, 3, 0.05).name('Burst Intensity');
+    behaviorFolder.add(controls, 'chargeDissipationRate', 0.2, 3, 0.05).name('Charge Dissipation');
+    behaviorFolder.add(controls, 'chargeTransportStrength', 0, 3, 0.05).name('Charge Transport');
+    behaviorFolder.add(controls, 'groundConductivityInfluence', 0, 3, 0.05).name('Conductivity Influence');
+    behaviorFolder.add(controls, 'terrainInfluence', 0, 3, 0.05).name('Terrain Influence');
+    behaviorFolder.add(controls, 'stormOrganizationInfluence', 0, 3, 0.05).name('Storm Organization');
+    behaviorFolder.add(controls, 'lightningClusteringStrength', 0, 1, 0.05).name('Clustering Strength');
     behaviorFolder.add(controls, 'lightningSpawnStrictness', 0.6, 2.0, 0.05).name('Spawn Strictness')
-      .onChange(onBehaviorChanged);
-    behaviorFolder.add(controls, 'enableChargeTransport').name('Charge Transport').onChange(onChargeChanged);
-    behaviorFolder.add(controls, 'enableGroundConductivity').name('Ground Conductivity').onChange(onBehaviorChanged);
-    behaviorFolder.add(controls, 'enableElectricalBurstCycles').name('Electrical Bursts').onChange(onBehaviorChanged);
-    behaviorFolder.add(controls, 'enableLightningClustering').name('Lightning Clustering').onChange(onBehaviorChanged);
-    behaviorFolder.add(controls, 'enableTerrainTargeting').name('Terrain Targeting').onChange(onBehaviorChanged);
-    behaviorFolder.add(controls, 'enableDynamicStormElectricalEvolution').name('Dynamic Evolution').onChange(onBehaviorChanged);
+      .onChange(() => { controls.lightningPreset = 'Custom'; callbacks.onSettingsChanged(); });
+    behaviorFolder.add(controls, 'enableChargeTransport').name('Charge Transport');
+    behaviorFolder.add(controls, 'enableGroundConductivity').name('Ground Conductivity');
+    behaviorFolder.add(controls, 'enableElectricalBurstCycles').name('Electrical Bursts');
+    behaviorFolder.add(controls, 'enableLightningClustering').name('Lightning Clustering');
+    behaviorFolder.add(controls, 'enableTerrainTargeting').name('Terrain Targeting');
+    behaviorFolder.add(controls, 'enableDynamicStormElectricalEvolution').name('Dynamic Evolution');
 
     const thunderFolder = folder.addFolder('Thunder');
     thunderFolder.add(controls, 'enableThunder').name('Enable Thunder');
