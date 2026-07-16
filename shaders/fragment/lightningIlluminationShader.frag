@@ -6,6 +6,7 @@ in vec2 texCoord;
 in vec2 fragCoord;
 
 uniform sampler2D waterTex;
+uniform sampler2D lightningTex; // required by lightningV2.glsl CG bolt path
 uniform float sunAngle;
 uniform vec2 aspectRatios;
 uniform vec2 texelSize;
@@ -28,20 +29,19 @@ void main()
   float precip = water[PRECIPITATION];
   float nightFactor = clamp(map_range(abs(sunAngle), 60. * deg2rad, 90. * deg2rad, 0., 1.), 0., 1.);
 
+  // June 8 lightningV2.glsl API (not the later ltAccumulate* helpers).
   vec3 flashEmit;
   vec3 flashCloud;
   vec3 flashSurf;
-  vec3 precipShafts;
-  ltAccumulateFlashes(uv, aspectRatios[0], cloudwater, precip, nightFactor,
-    flashEmit, flashCloud, flashSurf, precipShafts);
+  ltGetICCCFlash(uv, aspectRatios[0], cloudwater, precip, nightFactor,
+    flashEmit, flashCloud, flashSurf);
 
-  vec3 boltsUnused;
-  vec3 behindUnused;
-  vec3 illum;
-  ltAccumulateBoltsAndIllum(uv, aspectRatios[0], cloudwater, precip, nightFactor,
-    boltsUnused, behindUnused, illum);
+  vec3 precipShafts;
+  ltGetPrecipBoltShafts(uv, aspectRatios[0], precip, nightFactor, precipShafts);
+
+  vec3 illum = ltComputeStrikeIllumination(uv, aspectRatios[0], cloudwater, precip, nightFactor);
 
   onLightOut = vec4(illum, 1.0);
-  cloudFlashOut = vec4(flashCloud, 1.0);
+  cloudFlashOut = vec4(flashCloud + flashEmit * 0.35, 1.0);
   surfFlashOut = vec4(flashSurf + precipShafts, 1.0);
 }

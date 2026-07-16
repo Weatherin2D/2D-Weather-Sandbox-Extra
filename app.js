@@ -16340,7 +16340,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
 
   // load shaders
-  const SHADER_ASSET_VERSION = 10; // bump to bust CDN/browser cache after shader edits
+  const SHADER_ASSET_VERSION = 11; // bump to bust CDN/browser cache after shader edits
 
   var commonSource = await loadSourceFile('shaders/common.glsl');
   var commonDisplaySource = await loadSourceFile('shaders/commonDisplay.glsl');
@@ -16370,7 +16370,13 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
 
   const lightingShader = await loadShader('lightingShader.frag');
 
-  const lightningIllumShader = await loadShader('lightningIlluminationShader.frag');
+  let lightningIllumShader = null;
+  try {
+    lightningIllumShader = await loadShader('lightningIlluminationShader.frag', { optional: true });
+  } catch (e) {
+    console.warn('Lightning illumination shader compile failed (continuing without FBO illum):', e.message);
+    lightningIllumShader = null;
+  }
 
   const lightningLocationShader = await loadShader('lightningLocationShader.frag');
 
@@ -16405,12 +16411,15 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   const vorticityProgram = createProgram(simVertexShader, vorticityShader);
   const boundaryProgram = createProgram(simVertexShader, boundaryShader);
   const lightingProgram = createProgram(simVertexShader, lightingShader);
-  let lightningIllumProgramLocal;
-  try {
-    lightningIllumProgramLocal = createProgram(simVertexShader, lightningIllumShader);
-  } catch (e) {
-    loadingBar.showError('Lightning illumination link error: ' + e.message);
-    throw e;
+  let lightningIllumProgramLocal = null;
+  if (lightningIllumShader) {
+    try {
+      lightningIllumProgramLocal = createProgram(simVertexShader, lightningIllumShader);
+    } catch (e) {
+      // Optional FBO illum path — June 8 still illuminates inside realistic display.
+      console.warn('Lightning illumination program unavailable:', e.message);
+      lightningIllumProgramLocal = null;
+    }
   }
   lightningIllumProgram = lightningIllumProgramLocal;
   const lightningLocationProgram = createProgram(simVertexShader, lightningLocationShader);
@@ -19715,6 +19724,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   if (lightningIllumProgram) {
     gl.useProgram(lightningIllumProgram);
     gl.uniform1i(gl.getUniformLocation(lightningIllumProgram, 'waterTex'), 0);
+    gl.uniform1i(gl.getUniformLocation(lightningIllumProgram, 'lightningTex'), 1);
     gl.uniform2f(gl.getUniformLocation(lightningIllumProgram, 'resolution'), sim_res_x, sim_res_y);
     gl.uniform2f(gl.getUniformLocation(lightningIllumProgram, 'texelSize'), texelSizeX, texelSizeY);
     gl.uniform2f(gl.getUniformLocation(lightningIllumProgram, 'aspectRatios'), sim_aspect, canvas.width / Math.max(canvas.height, 1));
@@ -22087,6 +22097,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     gl.useProgram(lightningIllumProgram);
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, waterTexture_1);
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, lightningTextures[0]);
     if (uloc_illum_sunAngle)
       gl.uniform1f(uloc_illum_sunAngle, (90 - guiControls.sunAngle) * degToRad);
     if (uloc_illum_aspectRatios)
@@ -25809,9 +25821,10 @@ drawNukeOverlay();
 
     if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
       const infoLog = gl.getShaderInfoLog(shader);
-      await loadingBar.showError('ERROR compiling shader: ' + nameIn + '\n' + infoLog);
       console.error('Shader compile error:', nameIn, infoLog);
       gl.deleteShader(shader);
+      if (!(opts && opts.optional))
+        await loadingBar.showError('ERROR compiling shader: ' + nameIn + '\n' + infoLog);
       throw new Error(filename + ' COMPILATION ' + infoLog);
     }
 
