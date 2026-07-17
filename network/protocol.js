@@ -99,22 +99,50 @@
     return JSON.parse(text);
   }
 
+  function isCustomToolId(tool) {
+    return !!(tool && String(tool).startsWith('CUSTOM_'));
+  }
+
+  function getCustomToolDef(tool) {
+    if (!isCustomToolId(tool)) return null;
+    const reg = global.UserInteraction && global.UserInteraction.registry;
+    return reg ? reg.getTool(tool) : null;
+  }
+
   function isBrushTool(tool) {
     if (!tool) return false;
     if (tool === 'TOOL_NONE') return true;
     if (tool === 'TOOL_NUKE' || tool === 'TOOL_AIRPLANE') return false;
+    if (isCustomToolId(tool)) {
+      const def = getCustomToolDef(tool);
+      return !def || def.mode !== 'place';
+    }
     return tool.startsWith('TOOL_') && ![
       'TOOL_STATION', 'TOOL_BALLOON', 'TOOL_RADAR', 'TOOL_AIRMASS', 'TOOL_SYNOPTIC_LOW', 'TOOL_SYNOPTIC_HIGH', 'TOOL_MARKER', 'TOOL_NUKE',
     ].includes(tool);
   }
 
   function isPlacementTool(tool) {
+    if (isCustomToolId(tool)) {
+      const def = getCustomToolDef(tool);
+      return !!(def && def.mode === 'place');
+    }
     return [
       'TOOL_STATION', 'TOOL_BALLOON', 'TOOL_RADAR', 'TOOL_AIRMASS', 'TOOL_SYNOPTIC_LOW', 'TOOL_SYNOPTIC_HIGH', 'TOOL_MARKER',
+      'TOOL_AIRPORT', 'TOOL_FLIGHT_ROUTE',
     ].includes(tool);
   }
 
   function toolToInputType(tool) {
+    if (isCustomToolId(tool)) {
+      const def = getCustomToolDef(tool);
+      if (def && def.mode === 'terrain') {
+        if (def.terrainRole === 'overlay') return 30;
+        return 29;
+      }
+      // Custom brushes use multi-pass payloads; primary type is resolved at apply time.
+      return isBrushTool(tool) ? 1 : -1;
+    }
     switch (tool) {
       case 'TOOL_NONE': return 0;
       case 'TOOL_TEMPERATURE': return 1;
@@ -155,6 +183,7 @@
     isPaintTool,
     isPlacementTool,
     isNukeTool,
+    isCustomToolId,
     isLocalPeerGuiKey,
     LOCAL_PEER_GUI_KEYS,
     toolToInputType,

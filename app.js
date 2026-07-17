@@ -550,6 +550,9 @@ window.setGuiTool = function(tool)
   guiControls.tool = tool;
   if (typeof ControlHelp !== 'undefined')
     ControlHelp.onToolChanged(tool);
+  if (window.UserInteraction && window.UserInteraction.menu &&
+      typeof window.UserInteraction.menu.refreshUserInteractionMenu === 'function')
+    window.UserInteraction.menu.refreshUserInteractionMenu();
   return true;
 };
 
@@ -776,6 +779,7 @@ const guiControls_default = {
   displayRadars : true,
   displayAirmassGenerators : true,
   airplaneMode : false,
+  soundingMode : false,
   slowMotion : false,
   readoutCursor : false,
   fullscreenResolution : 'Default',
@@ -809,6 +813,11 @@ const guiControls_default = {
   weatherBalloonAscentMps : 8.0,
   weatherBalloonSampleIntervalM : 50.0,
   displayWeatherBalloons : true,
+  airTrafficEnabled : true,
+  airTrafficMaxPlanes : 24,
+  airTrafficFreqMult : 1.0,
+  airTrafficShowRoutes : true,
+  displayAirports : true,
 };
 
 var horizontalDisplayMult = 3.0; // 3.0 to cover srceen while zoomed out
@@ -4622,9 +4631,27 @@ let skewTTrackedBalloon = null; // balloon feeding the Skew-T when in weather-ba
 let radars = []; // array holding all radars
 let markers = []; // array holding all markers
 let airmassGenerators = []; // array holding all airmass generators
+let customToolEntities = []; // placeable custom scripted tools
 let synopticSystems = [];   // High / Low placeable pressure systems
 var displaySynopticSystems = true;
 let nukes = []; // array holding all nukes
+
+const CUSTOM_WALLTYPE_FROM_INPUT = {
+  11: 1,  // LAND
+  12: 8,  // FRESH_WATER
+  24: 2,  // WATER (sea)
+  25: 9,  // ICE
+  26: 9,  // ICE
+  13: 3,  // FIRE
+  14: 4,  // URBAN
+  17: 7,  // SUBURBAN
+  15: 5,  // RUNWAY
+  16: 6,  // INDUSTRIAL
+  29: 10, // CUSTOM_BASE
+  30: 11, // CUSTOM_OVERLAY
+};
+const CUSTOM_GRASS_VEG_MAX = 50;
+const CUSTOM_FOREST_VEG_MAX = 127;
 
 class Marker
 {
@@ -5520,6 +5547,461 @@ class AirmassGenerator
   }
 }
 
+function applyCustomToolEntitiesCpu()
+{
+  if (!customToolEntities.length || typeof gl === 'undefined')
+    return;
+  if (!window.UserInteraction || !window.UserInteraction.runtime)
+    return;
+
+  const runtime = window.UserInteraction.runtime;
+  const aspect = sim_res_y / sim_res_x;
+  const wrapX = guiControls.wrapHorizontally;
+
+  gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_1);
+
+  for (let g = 0; g < customToolEntities.length; g++) {
+    const ent = customToolEntities[g];
+    const tool = ent.getToolDef();
+    if (!tool || !tool.script) continue;
+
+    const cx = ent.getXpos();
+    const cy = ent.getYpos();
+    const radius = ent.getRadius();
+    const paramValues = ent.getParamValues();
+
+    const x0 = Math.max(0, Math.floor(cx - radius));
+    const x1 = Math.min(sim_res_x - 1, Math.ceil(cx + radius));
+    const y0 = Math.max(0, Math.floor(cy - radius));
+    const y1 = Math.min(sim_res_y - 1, Math.ceil(cy + radius));
+    const w = x1 - x0 + 1;
+    const h = y1 - y0 + 1;
+    if (w <= 0 || h <= 0) continue;
+
+    const baseData = new Float32Array(w * h * 4);
+    const waterData = new Float32Array(w * h * 4);
+    const wallData = new Int8Array(w * h * 4);
+
+    gl.readBuffer(gl.COLOR_ATTACHMENT0);
+    gl.readPixels(x0, y0, w, h, gl.RGBA, gl.FLOAT, baseData);
+    gl.readBuffer(gl.COLOR_ATTACHMENT1);
+    gl.readPixels(x0, y0, w, h, gl.RGBA, gl.FLOAT, waterData);
+    gl.readBuffer(gl.COLOR_ATTACHMENT2);
+    gl.readPixels(x0, y0, w, h, gl.RGBA_INTEGER, gl.BYTE, wallData);
+
+    let changed = false;
+    const intensity = guiControls.brushIntensity || 0.01;
+
+    for (let ly = 0; ly < h; ly++) {
+      const y = y0 + ly;
+      for (let lx = 0; lx < w; lx++) {
+        const x = x0 + lx;
+        const idx = (ly * w + lx) * 4;
+
+        let dx = x - cx;
+        if (wrapX) {
+          dx = Math.abs(dx);
+          dx = Math.min(dx, sim_res_x - dx);
+        } else {
+          dx = Math.abs(dx);
+        }
+        const dy = y - cy;
+        const dist = Math.sqrt((dx * aspect) * (dx * aspect) + dy * dy);
+        if (dist > radius) continue;
+
+        const wallType = wallData[idx];
+        const veg = wallData[idx + 3];
+        const isAir = wallData[idx + 1] !== 0;
+        const ctx = {
+          temp: baseData[idx + 3],
+          vapor: waterData[idx],
+          smoke: waterData[idx + 3],
+          windX: baseData[idx],
+          windY: baseData[idx + 1],
+          charge: 0,
+          isLand: wallType === 1 || wallType === 4 || wallType === 5 || wallType === 6 || wallType === 7 ? 1 : 0,
+          isWater: wallType === 2 || wallType === 8 ? 1 : 0,
+          isFresh: wallType === 8 ? 1 : 0,
+          isIce: wallType === 9 ? 1 : 0,
+          isUrban: wallType === 4 || wallType === 7 ? 1 : 0,
+          soilMoisture: waterData[idx + 2],
+          snow: 0,
+          veg: veg,
+          vegGrass: Math.min(veg, CUSTOM_GRASS_VEG_MAX),
+          vegForest: Math.max(veg - CUSTOM_GRASS_VEG_MAX, 0),
+          onFire: wallType === 3 ? 1 : 0,
+          intensity: intensity,
+          brushRadius: radius,
+          invert: 0,
+          dt: 1,
+          x: x / sim_res_x,
+          y: y / sim_res_y,
+          dist: dist,
+          param: paramValues,
+        };
+
+        const evaluated = runtime.evaluateEffects(tool, ctx);
+        if (!evaluated.ok || evaluated.skipped || !evaluated.effects) continue;
+
+        const effects = evaluated.effects;
+        if (isAir) {
+          const td = +effects.temperature;
+          if (Number.isFinite(td) && td !== 0) {
+            baseData[idx + 3] += td;
+            changed = true;
+          }
+          const vd = +effects.vapor;
+          if (Number.isFinite(vd) && vd !== 0) {
+            waterData[idx] = Math.max(0, waterData[idx] + vd);
+            changed = true;
+          }
+          const sd = +effects.smoke;
+          if (Number.isFinite(sd) && sd !== 0) {
+            waterData[idx + 3] = Math.max(0, Math.min(2, waterData[idx + 3] + sd));
+            changed = true;
+          }
+          const wx = +effects.windX;
+          const wy = +effects.windY;
+          if ((Number.isFinite(wx) && wx !== 0) || (Number.isFinite(wy) && wy !== 0)) {
+            baseData[idx] += (wx || 0) * 0.05;
+            baseData[idx + 1] += (wy || 0) * 0.05;
+            changed = true;
+          }
+        }
+
+        const terrainInput = runtime.terrainToInputType(effects.terrain);
+        if (terrainInput != null && CUSTOM_WALLTYPE_FROM_INPUT[terrainInput] != null) {
+          wallData[idx] = CUSTOM_WALLTYPE_FROM_INPUT[terrainInput];
+          if (wallData[idx + 1] === 0) wallData[idx + 1] = 1;
+          changed = true;
+        }
+
+        const grass = +effects.grass || 0;
+        const forest = +effects.forest || 0;
+        const friction = +effects.friction || 0;
+        if (grass || forest || friction) {
+          let vegVal = wallData[idx + 3];
+          if (forest > 0 || friction >= 0.45) {
+            const add = Math.round((forest || friction) * 20);
+            vegVal = Math.min(CUSTOM_FOREST_VEG_MAX, Math.max(CUSTOM_GRASS_VEG_MAX + 1, vegVal + add));
+          } else if (grass > 0 || friction > 0) {
+            const add = Math.round((grass || friction) * 15);
+            vegVal = Math.min(CUSTOM_GRASS_VEG_MAX, Math.max(0, vegVal + add));
+          }
+          if (vegVal !== wallData[idx + 3]) {
+            wallData[idx + 3] = vegVal;
+            changed = true;
+          }
+        }
+
+        const moist = +effects.soilMoisture;
+        if (Number.isFinite(moist) && moist !== 0) {
+          waterData[idx + 2] = Math.max(0, waterData[idx + 2] + moist * 10);
+          changed = true;
+        }
+      }
+    }
+
+    if (!changed) continue;
+
+    [baseTexture_0, baseTexture_1].forEach(tex => {
+      gl.bindTexture(gl.TEXTURE_2D, tex);
+      gl.texSubImage2D(gl.TEXTURE_2D, 0, x0, y0, w, h, gl.RGBA, gl.FLOAT, baseData);
+    });
+    [waterTexture_0, waterTexture_1].forEach(tex => {
+      gl.bindTexture(gl.TEXTURE_2D, tex);
+      gl.texSubImage2D(gl.TEXTURE_2D, 0, x0, y0, w, h, gl.RGBA, gl.FLOAT, waterData);
+    });
+    [wallTexture_0, wallTexture_1].forEach(tex => {
+      gl.bindTexture(gl.TEXTURE_2D, tex);
+      gl.texSubImage2D(gl.TEXTURE_2D, 0, x0, y0, w, h, gl.RGBA_INTEGER, gl.BYTE, wallData);
+    });
+  }
+
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+}
+
+class CustomToolEntity
+{
+  #width = 64;
+  #height = 64;
+  #mainDiv;
+  #canvas;
+  #c;
+  #x;
+  #y;
+  #toolDef;
+  #paramValues = {};
+  #radius = 120;
+  #menuDiv;
+  #hdrTextEl = null;
+
+  constructor(xIn, yIn, toolDef, paramValues)
+  {
+    this.#x = Math.floor(xIn);
+    this.#y = Math.floor(yIn);
+    this.#toolDef = toolDef ? JSON.parse(JSON.stringify(toolDef)) : null;
+    const reg = window.UserInteraction && window.UserInteraction.registry;
+    this.#paramValues = paramValues
+      ? Object.assign({}, paramValues)
+      : (reg && this.#toolDef ? reg.getParamValues(this.#toolDef) : {});
+    if (this.#toolDef && this.#toolDef.script && Array.isArray(this.#toolDef.script.params)) {
+      const rp = this.#toolDef.script.params.find(p => p.key === 'radius');
+      if (rp && Number.isFinite(+this.#paramValues.radius))
+        this.#radius = +this.#paramValues.radius;
+      else if (rp && Number.isFinite(+rp.default))
+        this.#radius = +rp.default;
+    }
+
+    this.#mainDiv = document.createElement('div');
+    this.#canvas = document.createElement('canvas');
+    this.#mainDiv.appendChild(this.#canvas);
+    document.body.appendChild(this.#mainDiv);
+    this.#canvas.height = this.#height;
+    this.#canvas.width = this.#width;
+    this.#mainDiv.style.position = 'absolute';
+    this.#mainDiv.style.width = '0px';
+    this.#mainDiv.style.height = '0px';
+    this.#c = this.#canvas.getContext('2d');
+    this.#canvas.style.position = 'absolute';
+    this.#canvas.style.zIndex = 1;
+
+    const thisObj = this;
+    this.#canvas.addEventListener('mousedown', function(event) {
+      if (event.button != 0) return;
+      const toolId = thisObj.#toolDef && thisObj.#toolDef.id;
+      if (toolId && guiControls.tool === toolId) {
+        thisObj.destroy();
+      } else {
+        thisObj.toggleMenu();
+      }
+      event.stopPropagation();
+    });
+
+    this.createMenu();
+    this.updateCanvas();
+  }
+
+  createMenu()
+  {
+    this.#menuDiv = document.createElement('div');
+    this.#menuDiv.style.cssText =
+      'position:absolute;display:none;z-index:1000;background:#13131f;border:1px solid #252540;' +
+      'border-radius:12px;padding:0;color:white;font-family:Arial,sans-serif;font-size:13px;' +
+      'min-width:260px;box-shadow:0 8px 32px rgba(0,0,0,0.75);overflow:hidden;';
+
+    const thisObj = this;
+    const hdr = document.createElement('div');
+    hdr.style.cssText =
+      'display:flex;justify-content:space-between;align-items:center;padding:11px 14px;' +
+      'background:linear-gradient(135deg,#191930,#0e0e22);border-bottom:1px solid #252540;' +
+      'cursor:move;user-select:none;gap:8px;';
+
+    let dragOffX = 0, dragOffY = 0, dragging = false;
+    const closeBtn = document.createElement('button');
+    hdr.addEventListener('mousedown', (e) => {
+      if (e.target === closeBtn) return;
+      dragging = true;
+      dragOffX = e.clientX - thisObj.#menuDiv.getBoundingClientRect().left;
+      dragOffY = e.clientY - thisObj.#menuDiv.getBoundingClientRect().top;
+      e.preventDefault();
+    });
+    document.addEventListener('mousemove', (e) => {
+      if (!dragging) return;
+      thisObj.#menuDiv.style.left = (e.clientX - dragOffX) + 'px';
+      thisObj.#menuDiv.style.top = (e.clientY - dragOffY) + 'px';
+    });
+    document.addEventListener('mouseup', () => { dragging = false; });
+
+    const hdrTitle = document.createElement('span');
+    hdrTitle.style.cssText = 'font-weight:700;font-size:13px;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
+    hdrTitle.textContent = (this.#toolDef && this.#toolDef.name) || 'Custom Tool';
+    this.#hdrTextEl = hdrTitle;
+
+    closeBtn.innerHTML = '&#x2715;';
+    closeBtn.style.cssText =
+      'background:rgba(255,255,255,0.07);border:none;color:#777;font-size:12px;cursor:pointer;' +
+      'padding:3px 8px;border-radius:5px;line-height:1;flex-shrink:0;';
+    closeBtn.addEventListener('click', () => { thisObj.#menuDiv.style.display = 'none'; });
+    hdr.appendChild(hdrTitle);
+    hdr.appendChild(closeBtn);
+    this.#menuDiv.appendChild(hdr);
+
+    const body = document.createElement('div');
+    body.style.cssText = 'padding:14px 15px 16px;';
+
+    const params = (this.#toolDef && this.#toolDef.script && this.#toolDef.script.params) || [];
+    for (let i = 0; i < params.length; i++) {
+      const p = params[i];
+      const wrap = document.createElement('div');
+      wrap.style.cssText = 'margin-top:10px;';
+      const lab = document.createElement('div');
+      lab.style.cssText = 'display:flex;justify-content:space-between;margin-bottom:4px;';
+      const name = document.createElement('span');
+      name.textContent = p.label || p.key;
+      name.style.cssText = 'color:#4a5060;font-size:10px;text-transform:uppercase;letter-spacing:1px;font-weight:600;';
+      const badge = document.createElement('span');
+      const cur = this.#paramValues[p.key] != null ? this.#paramValues[p.key] : p.default;
+      badge.textContent = Number(cur).toFixed(2);
+      badge.style.cssText = 'color:#4a90e2;font-size:11px;font-weight:700;';
+      lab.appendChild(name);
+      lab.appendChild(badge);
+      const sl = document.createElement('input');
+      sl.type = 'range';
+      sl.min = p.min;
+      sl.max = p.max;
+      sl.step = p.step;
+      sl.value = cur;
+      sl.style.cssText = 'width:100%;accent-color:#4a90e2;';
+      sl.addEventListener('input', function() {
+        const v = parseFloat(this.value);
+        thisObj.#paramValues[p.key] = v;
+        badge.textContent = v.toFixed(2);
+        if (p.key === 'radius') thisObj.#radius = v;
+      });
+      wrap.appendChild(lab);
+      wrap.appendChild(sl);
+      body.appendChild(wrap);
+    }
+
+    const removeBtn = document.createElement('button');
+    removeBtn.textContent = 'Remove';
+    removeBtn.style.cssText =
+      'margin-top:14px;width:100%;padding:8px;border:none;border-radius:6px;cursor:pointer;' +
+      'background:#401828;color:#fff;font-weight:700;font-size:12px;';
+    removeBtn.onclick = () => thisObj.destroy();
+    body.appendChild(removeBtn);
+
+    this.#menuDiv.appendChild(body);
+    document.body.appendChild(this.#menuDiv);
+    if (typeof ControlHelp !== 'undefined' && ControlHelp.registerEntityMenu)
+      ControlHelp.registerEntityMenu(this.#menuDiv);
+  }
+
+  toggleMenu()
+  {
+    if (this.#menuDiv.style.display === 'none') {
+      for (let i = 0; i < customToolEntities.length; i++) {
+        if (customToolEntities[i] !== this)
+          customToolEntities[i].hideMenu();
+      }
+      this.#menuDiv.style.display = 'block';
+      const screenX = typeof simToScreenX === 'function' ? simToScreenX(this.#x) : this.#x;
+      const screenY = typeof simToScreenY === 'function' ? simToScreenY(this.#y) : this.#y;
+      this.#menuDiv.style.left = (screenX + 40) + 'px';
+      this.#menuDiv.style.top = Math.max(10, screenY - 40) + 'px';
+    } else {
+      this.#menuDiv.style.display = 'none';
+    }
+  }
+
+  hideMenu()
+  {
+    if (this.#menuDiv) this.#menuDiv.style.display = 'none';
+  }
+
+  updateCanvas()
+  {
+    const ctx = this.#c;
+    ctx.clearRect(0, 0, this.#width, this.#height);
+    ctx.fillStyle = 'rgba(30, 48, 128, 0.85)';
+    ctx.beginPath();
+    ctx.arc(this.#width / 2, this.#height / 2, 22, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = '#a0c0ff';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    ctx.fillStyle = '#fff';
+    ctx.font = 'bold 11px Arial';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    const label = (this.#toolDef && this.#toolDef.name) ? this.#toolDef.name.slice(0, 6) : 'CUST';
+    ctx.fillText(label, this.#width / 2, this.#height / 2);
+
+    if (typeof simToScreenX === 'function') {
+      this.#canvas.style.left = (simToScreenX(this.#x) - this.#width / 2) + 'px';
+      this.#canvas.style.top = (simToScreenY(this.#y) - this.#height / 2) + 'px';
+    }
+  }
+
+  destroy()
+  {
+    if (this.#menuDiv && this.#menuDiv.parentNode)
+      this.#menuDiv.parentNode.removeChild(this.#menuDiv);
+    if (this.#mainDiv && this.#mainDiv.parentNode)
+      this.#mainDiv.parentNode.removeChild(this.#mainDiv);
+    const idx = customToolEntities.indexOf(this);
+    if (idx >= 0) customToolEntities.splice(idx, 1);
+  }
+
+  getXpos() { return this.#x; }
+  getYpos() { return this.#y; }
+  getRadius() { return this.#radius; }
+  getToolDef() { return this.#toolDef; }
+  getParamValues() { return Object.assign({}, this.#paramValues); }
+
+  getSettings()
+  {
+    return {
+      toolDef: this.#toolDef,
+      paramValues: this.getParamValues(),
+      radius: this.#radius,
+    };
+  }
+
+  setSettings(settings)
+  {
+    if (!settings) return;
+    if (settings.toolDef) this.#toolDef = settings.toolDef;
+    if (settings.paramValues) this.#paramValues = Object.assign({}, settings.paramValues);
+    if (settings.radius != null) this.#radius = settings.radius;
+    if (this.#hdrTextEl && this.#toolDef)
+      this.#hdrTextEl.textContent = this.#toolDef.name || 'Custom Tool';
+  }
+}
+
+function buildSavedCustomToolEntitiesForGuiControls()
+{
+  if (customToolEntities.length === 0) return null;
+  return customToolEntities.map(ent => ({
+    x: ent.getXpos(),
+    y: ent.getYpos(),
+    ...ent.getSettings(),
+  }));
+}
+
+function restoreSavedCustomToolDefinitionsFromGuiControls()
+{
+  const saved = guiControls && guiControls.__savedCustomToolDefinitions;
+  if (!Array.isArray(saved) || saved.length === 0) return;
+  if (window.UserInteraction && window.UserInteraction.registry)
+    window.UserInteraction.registry.restoreCustomToolsFromSave(saved);
+  delete guiControls.__savedCustomToolDefinitions;
+}
+
+function restoreSavedCustomToolEntitiesFromGuiControls()
+{
+  const saved = guiControls && guiControls.__savedCustomToolEntities;
+  if (!Array.isArray(saved) || saved.length === 0) return;
+  while (customToolEntities.length)
+    customToolEntities[0].destroy();
+  for (let i = 0; i < saved.length; i++) {
+    const entry = saved[i];
+    if (!entry || !Number.isFinite(entry.x) || !Number.isFinite(entry.y) || !entry.toolDef)
+      continue;
+    // Ensure definition is in the registry so the tool stays selectable
+    if (window.UserInteraction && window.UserInteraction.registry && entry.toolDef) {
+      try {
+        window.UserInteraction.registry.upsertCustomTool(entry.toolDef);
+      } catch (e) { /* slot limit */ }
+    }
+    const ent = new CustomToolEntity(entry.x, entry.y, entry.toolDef, entry.paramValues);
+    if (entry.radius != null) ent.setSettings({ radius: entry.radius, paramValues: entry.paramValues, toolDef: entry.toolDef });
+    customToolEntities.push(ent);
+  }
+  delete guiControls.__savedCustomToolEntities;
+}
+
 const SYNOPTIC_TYPE_LOW = 0;
 const SYNOPTIC_TYPE_HIGH = 1;
 
@@ -6290,17 +6772,43 @@ async function loadRadarSettingsFromSaveBlob(settingsArrayBlob, offsetInBlob)
 
 function finalizeLoadedRadars()
 {
-  if (radars.length === 0)
-    return;
-
   if (guiControls && guiControls.displayRadars !== undefined)
     displayRadars = guiControls.displayRadars;
+
+  if (radars.length === 0)
+    return;
 
   for (let i = 0; i < radars.length; i++) {
     radars[i].updateCanvas();
     radars[i].setHidden(!displayRadars);
   }
   refreshRadarOverlaySourceDropdown();
+}
+
+/** Sync module-level display flags from loaded guiControls (onChange alone does not run on load). */
+function syncDisplayFlagsFromGuiControls()
+{
+  if (!guiControls)
+    return;
+
+  if (guiControls.displayWeatherStations !== undefined) {
+    displayWeatherStations = guiControls.displayWeatherStations;
+    for (let i = 0; i < weatherStations.length; i++)
+      weatherStations[i].setHidden(!displayWeatherStations);
+  }
+  if (guiControls.displayWeatherBalloons !== undefined) {
+    displayWeatherBalloons = guiControls.displayWeatherBalloons;
+    for (let i = 0; i < weatherBalloons.length; i++)
+      weatherBalloons[i].setHidden(!displayWeatherBalloons);
+  }
+  if (guiControls.displayRadars !== undefined)
+    displayRadars = guiControls.displayRadars;
+  if (guiControls.displayAirmassGenerators !== undefined)
+    displayAirmassGenerators = guiControls.displayAirmassGenerators;
+  if (guiControls.displaySynopticSystems !== undefined)
+    displaySynopticSystems = guiControls.displaySynopticSystems;
+  if (guiControls.airplaneMode !== undefined)
+    airplaneMode = !!guiControls.airplaneMode;
 }
 
 function buildSavedRadarTowersForGuiControls()
@@ -6495,6 +7003,8 @@ async function loadSnapshotFromDecompressed(decompressed, version, inPlaceApplyF
   airmassGenerators = [];
   while (synopticSystems.length)
     synopticSystems[0].destroy();
+  if (window.AviationTraffic)
+    window.AviationTraffic.clearAll();
 
   if (version == saveFileVersionID || version == 263574037) {
     sliceStart = sliceEnd;
@@ -6687,6 +7197,8 @@ window.loadData = async function()
     airmassGenerators = [];
     while (synopticSystems.length)
       synopticSystems[0].destroy();
+    if (window.AviationTraffic)
+      window.AviationTraffic.clearAll();
 
     await setLoadingBar();
     if (loadingBar)
@@ -9238,10 +9750,33 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     guiControls.displaySynopticSystems = guiControls_default.displaySynopticSystems;
   if (guiControls.floodVizStrength === undefined)
     guiControls.floodVizStrength = guiControls_default.floodVizStrength;
+  if (guiControls.airTrafficEnabled === undefined)
+    guiControls.airTrafficEnabled = guiControls_default.airTrafficEnabled;
+  if (guiControls.airTrafficMaxPlanes === undefined)
+    guiControls.airTrafficMaxPlanes = guiControls_default.airTrafficMaxPlanes;
+  if (guiControls.airTrafficFreqMult === undefined)
+    guiControls.airTrafficFreqMult = guiControls_default.airTrafficFreqMult;
+  if (guiControls.airTrafficShowRoutes === undefined)
+    guiControls.airTrafficShowRoutes = guiControls_default.airTrafficShowRoutes;
+  if (guiControls.displayAirports === undefined)
+    guiControls.displayAirports = guiControls_default.displayAirports;
 
   restoreSavedRadarTowersFromGuiControls();
   restoreSavedAirmassGeneratorsFromGuiControls();
+  restoreSavedCustomToolDefinitionsFromGuiControls();
+  restoreSavedCustomToolEntitiesFromGuiControls();
   restoreSavedSynopticSystemsFromGuiControls();
+  if (window.AviationTraffic) {
+    window.AviationTraffic.restoreFromGuiControls();
+    if (guiControls.__trafficPlaneState && Array.isArray(guiControls.__trafficPlaneState)) {
+      window.AviationTraffic.applyTrafficStateFromSync(guiControls.__trafficPlaneState);
+      delete guiControls.__trafficPlaneState;
+    }
+    if (guiControls.displayAirports !== undefined)
+      window.AviationTraffic.setDisplayAirports(guiControls.displayAirports);
+    if (guiControls.airTrafficShowRoutes !== undefined)
+      window.AviationTraffic.setDisplayFlightRoutes(guiControls.airTrafficShowRoutes);
+  }
 
   var uloc_charge_generationRate = null;
   var uloc_charge_minCloudDensity = null;
@@ -9306,7 +9841,8 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'evapHeat'), guiControls.evapHeat);
     gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'waterWeight'), guiControls.waterWeight);
     gl.useProgram(velocityProgram);
-    gl.uniform1f(gl.getUniformLocation(velocityProgram, 'dragMultiplier'), guiControls.dragMultiplier);
+    gl.uniform1f(gl.getUniformLocation(velocityProgram, 'dragMultiplier'),
+      guiControls.soundingMode ? 999.0 : guiControls.dragMultiplier);
     gl.uniform1f(gl.getUniformLocation(velocityProgram, 'wind'), guiControls.wind);
     gl.uniform1f(gl.getUniformLocation(velocityProgram, 'coriolisStrength'),
                  Number(guiControls.coriolisStrength) || 0.0);
@@ -9423,31 +9959,30 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       guiControls.weatherBalloonSampleIntervalM = guiControls_default.weatherBalloonSampleIntervalM;
     else
       guiControls.weatherBalloonSampleIntervalM = clamp(guiControls.weatherBalloonSampleIntervalM, 2, 100);
-    if (guiControls.highResPerformanceMode === undefined)
-      guiControls.highResPerformanceMode = guiControls_default.highResPerformanceMode;
-    if (guiControls.performanceAutoScaling === undefined)
-      guiControls.performanceAutoScaling = guiControls_default.performanceAutoScaling;
-    if (guiControls.coriolisStrength === undefined)
-      guiControls.coriolisStrength = guiControls_default.coriolisStrength;
-    if (guiControls.enableSynopticSystems === undefined)
-      guiControls.enableSynopticSystems = guiControls_default.enableSynopticSystems;
-    if (guiControls.displaySynopticSystems === undefined)
-      guiControls.displaySynopticSystems = guiControls_default.displaySynopticSystems;
-    if (guiControls.floodVizStrength === undefined)
-      guiControls.floodVizStrength = guiControls_default.floodVizStrength;
-    if (guiControls.showDebugOverlay === undefined)
-      guiControls.showDebugOverlay = guiControls_default.showDebugOverlay;
-    if (guiControls.smoothClouds === undefined)
-      guiControls.smoothClouds = guiControls_default.smoothClouds;
+    // Fill any keys missing from older save files (JSON omits undefined; functions are reattached below).
+    for (const key of Object.keys(guiControls_default)) {
+      if (guiControls[key] === undefined)
+        guiControls[key] = guiControls_default[key];
+    }
 
+    // Cold-start / reset only: apply Lightning V2 Enhanced Realistic.
+    // When loading a save, keep serialized lightning (+ shared keys like performanceAutoScaling).
+    const loadingFromSave = guiControlsFromSaveFile != null
+      && strGuiControls === guiControlsFromSaveFile;
     if (typeof LightningV2 !== 'undefined') {
-      // Apply June 8 defaults + Enhanced Realistic preset (same cold-start as 23613cd).
-      Object.keys(LightningV2.DEFAULT_SETTINGS).forEach(key => {
-        guiControls[key] = LightningV2.DEFAULT_SETTINGS[key];
-      });
-      guiControls.lightningPreset = 'Enhanced Realistic';
-      LightningV2.applyPreset(guiControls, 'Enhanced Realistic');
-      guiControls.lightningV2Enabled = true;
+      if (!loadingFromSave) {
+        Object.keys(LightningV2.DEFAULT_SETTINGS).forEach(key => {
+          guiControls[key] = LightningV2.DEFAULT_SETTINGS[key];
+        });
+        guiControls.lightningPreset = 'Enhanced Realistic';
+        LightningV2.applyPreset(guiControls, 'Enhanced Realistic');
+        guiControls.lightningV2Enabled = true;
+      } else {
+        Object.keys(LightningV2.DEFAULT_SETTINGS).forEach(key => {
+          if (guiControls[key] === undefined)
+            guiControls[key] = LightningV2.DEFAULT_SETTINGS[key];
+        });
+      }
       // Charge uniforms are applied later once chargeProgram is linked.
     }
 
@@ -9493,6 +10028,20 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         if (typeof refreshSkyEditor === 'function')
           refreshSkyEditor();
       }
+    };
+
+    guiControls.openUserInteraction = function() {
+      if (window.UserInteraction && window.UserInteraction.menu)
+        window.UserInteraction.menu.openUserInteractionMenu();
+      else if (typeof openUserInteractionMenu === 'function')
+        openUserInteractionMenu();
+    };
+
+    guiControls.openCustomToolCreator = function() {
+      if (window.UserInteraction && window.UserInteraction.menu)
+        window.UserInteraction.menu.openCustomToolCreator();
+      else if (typeof openCustomToolCreator === 'function')
+        openCustomToolCreator();
     };
 
     guiControls.openAllRadarMenus = function() {
@@ -9615,6 +10164,8 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         'Synoptic Low' : 'TOOL_SYNOPTIC_LOW',
         'Synoptic High' : 'TOOL_SYNOPTIC_HIGH',
         'Marker' : 'TOOL_MARKER',
+        'Airport' : 'TOOL_AIRPORT',
+        'Flight Route' : 'TOOL_FLIGHT_ROUTE',
         'Nuke' : 'TOOL_NUKE',
       })
       .name('Tool')
@@ -9630,11 +10181,36 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       })
       .name('Allow Caves');
 
+    var airTraffic_folder = datGui.addFolder('Air Traffic');
+    airTraffic_folder.add(guiControls, 'airTrafficEnabled').name('Enable Air Traffic').listen();
+    airTraffic_folder.add(guiControls, 'displayAirports')
+      .onChange(function(v) {
+        if (window.AviationTraffic) window.AviationTraffic.setDisplayAirports(v);
+      })
+      .name('Show Airports')
+      .listen();
+    airTraffic_folder.add(guiControls, 'airTrafficShowRoutes')
+      .onChange(function(v) {
+        if (window.AviationTraffic) window.AviationTraffic.setDisplayFlightRoutes(v);
+      })
+      .name('Show Routes')
+      .listen();
+    airTraffic_folder.add(guiControls, 'airTrafficMaxPlanes', 1, 40, 1).name('Max Planes').listen();
+    airTraffic_folder.add(guiControls, 'airTrafficFreqMult', 0, 5, 0.1).name('Frequency Mult').listen();
+
     var radiation_folder = datGui.addFolder('Radiation');
 
     radiation_folder.add(guiControls, 'timeOfDay', 0.0, 23.96, 0.01).onChange(onUpdateTimeOfDaySlider).name('Time of day').listen();
 
     radiation_folder.add(guiControls, 'dayNightCycle').name('Day/Night Cycle').listen();
+
+    radiation_folder.add(guiControls, 'realtimeMode')
+      .onChange(function(on) {
+        if (on) enableRealtimeMode();
+        else resetRealtimeClockState();
+      })
+      .name('Realtime Mode')
+      .listen();
 
     radiation_folder.add(guiControls, 'accelerateNight').name('Accelerate Night').listen();
 
@@ -9927,27 +10503,10 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       .add(guiControls, 'displayMode', displayModeOptions)
       .name('Display Mode')
       .listen();
-    display_folder.add(guiControls, 'soundingOverlayBarWidth', 0.25, 20, 0.25)
-      .name('Sounding/Risk Bar Width')
-      .onChange(function() {
-        overlayScan.active = false;
-        overlayScan.lastFinishIter = -9999;
-        riskData = [];
-        soundingOverlayData = [];
-      });
-    display_folder.add(guiControls, 'riskUpdateFrequency', 5, 120, 1)
-      .name('Risk/Sounding Update Freq');
-    display_folder.add(guiControls, 'exposure', 0.25, 5.0, 0.01)
-      .onChange(function() {
-        gl.useProgram(postProcessingProgram);
-        gl.uniform1f(gl.getUniformLocation(postProcessingProgram, 'exposure'), guiControls.exposure);
-      })
-      .name('Exposure');
 
-    display_folder.add(guiControls, 'camSpeed', 0.001, 0.050, 0.001).name('Camera Pan Speed');
-
-
-    display_folder.add(guiControls, 'wrapHorizontally')
+    var displayCamera = display_folder.addFolder('Camera');
+    displayCamera.add(guiControls, 'camSpeed', 0.001, 0.050, 0.001).name('Camera Pan Speed');
+    displayCamera.add(guiControls, 'wrapHorizontally')
       .onChange(function() {
         cam.wrapHorizontally = guiControls.wrapHorizontally;
         cam.center();
@@ -9957,52 +10516,32 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
           horizontalDisplayMult = 1.0;
       })
       .name('Wrap Horizontally');
+    displayCamera.add(guiControls, 'SmoothCam').onChange(function() { cam.smooth = guiControls.SmoothCam; }).name('Smooth Camera');
 
-    display_folder.add(guiControls, 'SmoothCam').onChange(function() { cam.smooth = guiControls.SmoothCam; }).name('Smooth Camera');
-
-    display_folder.add(guiControls, 'showGraph').onChange(hideOrShowGraph).name('Show Sounding Graph').listen();
-    display_folder.add(guiControls, 'showDrops').name('Show Droplets').listen();
-    display_folder.add(guiControls, 'enableRainbows').name('Rainbows').listen();
-    display_folder.add(guiControls, 'smoothClouds').name('Smooth Clouds').listen();
-    display_folder.add(guiControls, 'realDewPoint').name('Show Real Dew Point');
-
-    display_folder.add(guiControls, 'saturation', 0.0, 3.0, 0.01)
+    var displayAppearance = display_folder.addFolder('Appearance');
+    displayAppearance.add(guiControls, 'exposure', 0.25, 5.0, 0.01)
+      .onChange(function() {
+        gl.useProgram(postProcessingProgram);
+        gl.uniform1f(gl.getUniformLocation(postProcessingProgram, 'exposure'), guiControls.exposure);
+      })
+      .name('Exposure');
+    displayAppearance.add(guiControls, 'saturation', 0.0, 3.0, 0.01)
       .onChange(function() {
         gl.useProgram(postProcessingProgram);
         gl.uniform1f(gl.getUniformLocation(postProcessingProgram, 'saturation'), guiControls.saturation);
       })
       .name('Saturation');
-
-    display_folder.add(guiControls, 'contrast', 0.5, 3.0, 0.01)
+    displayAppearance.add(guiControls, 'contrast', 0.5, 3.0, 0.01)
       .onChange(function() {
         gl.useProgram(postProcessingProgram);
         gl.uniform1f(gl.getUniformLocation(postProcessingProgram, 'contrast'), guiControls.contrast);
       })
       .name('Contrast');
-
-    display_folder.add(guiControls, 'starVisibility', 0.0, 1.0, 0.01)
-      .onChange(function() { uploadSkyUniforms(); })
-      .name('Star Visibility');
-
-    display_folder.add(guiControls, 'starLightEmitStrength', 0.0, 0.5, 0.01)
-      .onChange(function() { uploadSkyUniforms(); })
-      .name('Star Light Emit Strength');
-
-    display_folder.add(guiControls, 'starDensity', 0.0, 1.0, 0.01)
-      .onChange(function() { uploadSkyUniforms(); })
-      .name('Star Density');
-
-    display_folder.add(guiControls, 'showControlHelp')
-      .name('Show Control Help')
-      .onChange(function() {
-        if (typeof ControlHelp !== 'undefined') {
-          ControlHelp.applyShowControlHelp(!!guiControls.showControlHelp);
-        }
-      });
-
-    display_folder.add(guiControls, 'autoMinShadowLight').name('Auto Shadow Light');
-
-    display_folder.add(guiControls, 'minShadowLight', 0.0, 0.2, 0.001)
+    displayAppearance.add(guiControls, 'showDrops').name('Show Droplets').listen();
+    displayAppearance.add(guiControls, 'enableRainbows').name('Rainbows').listen();
+    displayAppearance.add(guiControls, 'smoothClouds').name('Smooth Clouds').listen();
+    displayAppearance.add(guiControls, 'autoMinShadowLight').name('Auto Shadow Light');
+    displayAppearance.add(guiControls, 'minShadowLight', 0.0, 0.2, 0.001)
       .onChange(function() {
         if (!guiControls.autoMinShadowLight) {
           gl.useProgram(realisticDisplayProgram);
@@ -10013,9 +10552,41 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       })
       .name('Min Shadow Light (0=darkest)');
 
-    display_folder.add(guiControls, 'twelveHourClock').name('12-hour clock');
+    var displayStars = display_folder.addFolder('Stars');
+    displayStars.add(guiControls, 'starVisibility', 0.0, 1.0, 0.01)
+      .onChange(function() { uploadSkyUniforms(); })
+      .name('Star Visibility');
+    displayStars.add(guiControls, 'starLightEmitStrength', 0.0, 0.5, 0.01)
+      .onChange(function() { uploadSkyUniforms(); })
+      .name('Star Light Emit Strength');
+    displayStars.add(guiControls, 'starDensity', 0.0, 1.0, 0.01)
+      .onChange(function() { uploadSkyUniforms(); })
+      .name('Star Density');
 
-    display_folder
+    var displayOverlays = display_folder.addFolder('Overlays');
+    displayOverlays.add(guiControls, 'soundingOverlayBarWidth', 0.25, 20, 0.25)
+      .name('Sounding/Risk Bar Width')
+      .onChange(function() {
+        overlayScan.active = false;
+        overlayScan.lastFinishIter = -9999;
+        riskData = [];
+        soundingOverlayData = [];
+      });
+    displayOverlays.add(guiControls, 'riskUpdateFrequency', 5, 120, 1)
+      .name('Risk/Sounding Update Freq');
+    displayOverlays.add(guiControls, 'showGraph').onChange(hideOrShowGraph).name('Show Sounding Graph').listen();
+    displayOverlays.add(guiControls, 'realDewPoint').name('Show Real Dew Point');
+    displayOverlays.add(guiControls, 'showControlHelp')
+      .name('Show Control Help')
+      .onChange(function() {
+        if (typeof ControlHelp !== 'undefined') {
+          ControlHelp.applyShowControlHelp(!!guiControls.showControlHelp);
+        }
+      });
+
+    var displayUnits = display_folder.addFolder('Units');
+    displayUnits.add(guiControls, 'twelveHourClock').name('12-hour clock');
+    displayUnits
       .add(guiControls, 'lengthUnit', {
         'km / meters / cm / mm' : 'LENGTH_UNIT_METRIC',
         'miles / ft / inch' : 'LENGTH_UNIT_IMPERIAL',
@@ -10026,8 +10597,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
           weatherStations[i].clearChart();
         }
       });
-
-    display_folder
+    displayUnits
       .add(guiControls, 'speedUnit', {
         'km/h' : 'SPEED_UNIT_KMH',
         'm/s' : 'SPEED_UNIT_MS',
@@ -10040,8 +10610,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
           weatherStations[i].clearChart();
         }
       });
-
-    display_folder
+    displayUnits
       .add(guiControls, 'shearUnit', {
         'km/h' : 'SPEED_UNIT_KMH',
         'm/s' : 'SPEED_UNIT_MS',
@@ -10049,16 +10618,14 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         'kt' : 'SPEED_UNIT_KT',
       })
       .name('Shear Unit');
-
-    display_folder
+    displayUnits
       .add(guiControls, 'lapseUnit', {
         '°C/km' : 'LAPSE_UNIT_C_KM',
         '°C/kft' : 'LAPSE_UNIT_C_KFT',
         '°F/kft' : 'LAPSE_UNIT_F_KFT',
       })
       .name('Lapse Unit');
-
-    display_folder
+    displayUnits
       .add(guiControls, 'tempUnit', {
         '°C' : 'TEMP_UNIT_C',
         '°F' : 'TEMP_UNIT_F',
@@ -10098,7 +10665,8 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     };
     advanced_folder.add(guiControls, 'resetAtmosphereKeepTerrain').name('Reset Atmosphere (Keep Terrain)');
 
-    advanced_folder.add(guiControls, 'coriolisStrength', 0.0, 0.02, 0.0005)
+    var advancedSimulation = advanced_folder.addFolder('Simulation');
+    advancedSimulation.add(guiControls, 'coriolisStrength', 0.0, 0.02, 0.0005)
       .onChange(function() {
         const v = Number(guiControls.coriolisStrength);
         guiControls.coriolisStrength = (Number.isFinite(v) && v > 1e-8) ? v : 0.0;
@@ -10106,29 +10674,81 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         gl.uniform1f(gl.getUniformLocation(velocityProgram, 'coriolisStrength'), guiControls.coriolisStrength);
       })
       .name('Coriolis Strength');
-    advanced_folder.add(guiControls, 'enableSynopticSystems').name('Enable Synoptic Systems');
-    advanced_folder.add(guiControls, 'displaySynopticSystems')
+    advancedSimulation.add(guiControls, 'enableSynopticSystems').name('Enable Synoptic Systems');
+    advancedSimulation.add(guiControls, 'IterPerFrame', 1, 50, 1)
+      .onChange(function() { guiControls.auto_IterPerFrame = false; })
+      .name('Iterations / Frame').listen();
+    advancedSimulation.add(guiControls, 'auto_IterPerFrame').name('Auto Adjust').listen();
+    advancedSimulation.add(guiControls, 'slowMotion')
+      .name('Realtime');
+    advancedSimulation.add(guiControls, 'soundingMode')
+      .onChange(function() {
+        gl.useProgram(velocityProgram);
+        gl.uniform1f(gl.getUniformLocation(velocityProgram, 'dragMultiplier'),
+          guiControls.soundingMode ? 999.0 : guiControls.dragMultiplier);
+      })
+      .name('Sounding Mode');
+
+    var advancedOverlays = advanced_folder.addFolder('Overlays');
+    advancedOverlays.add(guiControls, 'displaySynopticSystems')
       .onChange(function() {
         displaySynopticSystems = guiControls.displaySynopticSystems;
         for (let i = 0; i < synopticSystems.length; i++)
           synopticSystems[i].setHidden(!displaySynopticSystems);
       })
       .name('Show Synoptic Systems');
-    advanced_folder.add(guiControls, 'floodVizStrength', 0.0, 2.0, 0.05)
+    advancedOverlays.add(guiControls, 'floodVizStrength', 0.0, 2.0, 0.05)
       .onChange(function() {
         gl.useProgram(realisticDisplayProgram);
         gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'floodVizStrength'), guiControls.floodVizStrength);
       })
       .name('Flood Viz Strength');
+    advancedOverlays.add(guiControls, 'enableVectorField').name('Vector Field');
+    advancedOverlays.add(guiControls, 'displayWeatherStations')
+      .onChange(function() {
+        displayWeatherStations = guiControls.displayWeatherStations;
+        for (i = 0; i < weatherStations.length; i++) {
+          weatherStations[i].setHidden(!displayWeatherStations);
+        }
+      })
+      .name('Weather Stations');
+    advancedOverlays.add(guiControls, 'displayRadars')
+      .onChange(function() {
+        displayRadars = guiControls.displayRadars;
+        for (i = 0; i < radars.length; i++) {
+          radars[i].setHidden(!displayRadars);
+        }
+      })
+      .name('Radars');
+    advancedOverlays.add(guiControls, 'displayAirmassGenerators')
+      .onChange(function() {
+        displayAirmassGenerators = guiControls.displayAirmassGenerators;
+        for (i = 0; i < airmassGenerators.length; i++) {
+          airmassGenerators[i].setHidden(!displayAirmassGenerators);
+        }
+      })
+      .name('Airmass Generators');
+    advancedOverlays.add(guiControls, 'displayWeatherBalloons')
+      .onChange(function() {
+        displayWeatherBalloons = guiControls.displayWeatherBalloons;
+        for (i = 0; i < weatherBalloons.length; i++) {
+          weatherBalloons[i].setHidden(!displayWeatherBalloons);
+        }
+      })
+      .name('Weather Balloons');
+    advancedOverlays.add(guiControls, 'airplaneMode')
+      .onChange(function() {
+        airplaneMode = guiControls.airplaneMode;
+        if (airplaneMode) {
+          airplane.enableAirplaneMode(false);
+        } else {
+          airplane.disableAirplaneMode();
+        }
+      })
+      .name('Airplane Mode');
 
-    advanced_folder.add(guiControls, 'IterPerFrame', 1, 50, 1)
-      .onChange(function() { guiControls.auto_IterPerFrame = false; })
-      .name('Iterations / Frame').listen();
-
-    advanced_folder.add(guiControls, 'auto_IterPerFrame').name('Auto Adjust').listen();
-
-
-    advanced_folder.add(guiControls, 'sound').name('Enable Sound').onChange(function() {
+    var advancedAudio = advanced_folder.addFolder('Audio & Effects');
+    advancedAudio.add(guiControls, 'sound').name('Enable Sound').onChange(function() {
       if (guiControls.sound) {
         if (soundSystem == null) {
           soundSystem = new SoundSystem();
@@ -10137,14 +10757,13 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         soundSystem?.mute();
       }
     });
+    advancedAudio.add(guiControls, 'enableBloom').name('Enable Bloom');
 
-    advanced_folder.add(guiControls, 'enableBloom').name('Enable Bloom');
+    var advancedPerformance = advanced_folder.addFolder('Performance');
     if (guiControls.performanceAutoScaling !== undefined)
-      advanced_folder.add(guiControls, 'performanceAutoScaling').name('Auto Performance Scaling');
+      advancedPerformance.add(guiControls, 'performanceAutoScaling').name('Auto Performance Scaling');
     if (guiControls.highResPerformanceMode !== undefined)
-      advanced_folder.add(guiControls, 'highResPerformanceMode').name('High-Res Performance Mode').listen();
-    if (guiControls.showDebugOverlay !== undefined)
-      advanced_folder.add(guiControls, 'showDebugOverlay').name('Debug Overlay (F3)').listen();
+      advancedPerformance.add(guiControls, 'highResPerformanceMode').name('High-Res Performance Mode').listen();
 
     guiControls.applyPerformancePreset = function() {
       guiControls.highResPerformanceMode = true;
@@ -10171,77 +10790,19 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         setGuiUniforms();
       console.log('Performance preset applied — aggressive high-res throttling enabled. Droplets:', NUM_DROPLETS);
     };
-    advanced_folder.add(guiControls, 'applyPerformancePreset').name('Apply Performance Preset');
-
-    advanced_folder.add(guiControls, 'enableVectorField').name('Vector Field');
-    advanced_folder.add(guiControls, 'displayWeatherStations')
-      .onChange(function() {
-        displayWeatherStations = guiControls.displayWeatherStations;
-        for (i = 0; i < weatherStations.length; i++) {
-          weatherStations[i].setHidden(!displayWeatherStations);
-        }
-      })
-      .name('Weather Stations');
-    advanced_folder.add(guiControls, 'displayRadars')
-      .onChange(function() {
-        displayRadars = guiControls.displayRadars;
-        for (i = 0; i < radars.length; i++) {
-          radars[i].setHidden(!displayRadars);
-        }
-      })
-      .name('Radars');
-    advanced_folder.add(guiControls, 'displayAirmassGenerators')
-      .onChange(function() {
-        displayAirmassGenerators = guiControls.displayAirmassGenerators;
-        for (i = 0; i < airmassGenerators.length; i++) {
-          airmassGenerators[i].setHidden(!displayAirmassGenerators);
-        }
-      })
-      .name('Airmass Generators');
-    advanced_folder.add(guiControls, 'displayWeatherBalloons')
-      .onChange(function() {
-        displayWeatherBalloons = guiControls.displayWeatherBalloons;
-        for (i = 0; i < weatherBalloons.length; i++) {
-          weatherBalloons[i].setHidden(!displayWeatherBalloons);
-        }
-      })
-      .name('Weather Balloons');
-    advanced_folder.add(guiControls, 'airplaneMode')
-      .onChange(function() {
-        airplaneMode = guiControls.airplaneMode;
-        if (airplaneMode) {
-          airplane.enableAirplaneMode(false);
-        } else {
-          airplane.disableAirplaneMode();
-        }
-      })
-      .name('Airplane Mode');
-    advanced_folder.add(guiControls, 'slowMotion')
-      .name('Realtime (Slow Motion)');
-    advanced_folder.add(guiControls, 'realDewPoint').name('Real Dew Point');
-    advanced_folder.add(guiControls, 'soundingMode')
-      .onChange(function() {
-        gl.useProgram(velocityProgram);
-        gl.uniform1f(gl.getUniformLocation(velocityProgram, 'dragMultiplier'),
-          guiControls.soundingMode ? 999.0 : guiControls.dragMultiplier);
-      })
-      .name('Sounding Mode');
-    advanced_folder.add(guiControls, 'fullscreenResolution', 
-      ['Default', '640x480', '800x600', '1024x768', '1280x720', '1280x1024', '1366x768', '1600x900', '1920x1080', '2560x1440', '3840x2160'])
-      .onChange(changeFullscreenResolution)
-      .name('Fullscreen Res');
-    advanced_folder.add(guiControls, 'skipCurlCalculation').name('Skip Curl (Faster)');
-    advanced_folder.add(guiControls, 'skipCAPECalculation').name('Skip CAPE (Faster)');
-    advanced_folder.add(guiControls, 'skipLightingCalculation').name('Skip Lighting (Major boost)');
+    advancedPerformance.add(guiControls, 'applyPerformancePreset').name('Apply Performance Preset');
+    advancedPerformance.add(guiControls, 'skipCurlCalculation').name('Skip Curl (Faster)');
+    advancedPerformance.add(guiControls, 'skipCAPECalculation').name('Skip CAPE (Faster)');
+    advancedPerformance.add(guiControls, 'skipLightingCalculation').name('Skip Lighting (Major boost)');
     if (guiControls.lightningIllumTexture !== undefined)
-      advanced_folder.add(guiControls, 'lightningIllumTexture').name('Lightning Illum Texture');
+      advancedPerformance.add(guiControls, 'lightningIllumTexture').name('Lightning Illum Texture');
     if (guiControls.lightningIllumBlurStrength !== undefined)
-      advanced_folder.add(guiControls, 'lightningIllumBlurStrength', 0, 2.5, 0.05)
+      advancedPerformance.add(guiControls, 'lightningIllumBlurStrength', 0, 2.5, 0.05)
         .name('Lightning Illum Blur');
-    advanced_folder.add(guiControls, 'skipAdvection').name('Skip Advection (No fluid)');
-    advanced_folder.add(guiControls, 'skipChargeCalculation').name('Skip Charge (Faster)');
-    advanced_folder.add(guiControls, 'reducedWeatherStationUpdates').name('Reduce Station Updates');
-    advanced_folder.add(guiControls, 'reducedPrecipitation')
+    advancedPerformance.add(guiControls, 'skipAdvection').name('Skip Advection (No fluid)');
+    advancedPerformance.add(guiControls, 'skipChargeCalculation').name('Skip Charge (Faster)');
+    advancedPerformance.add(guiControls, 'reducedWeatherStationUpdates').name('Reduce Station Updates');
+    advancedPerformance.add(guiControls, 'reducedPrecipitation')
       .onChange(function() {
         NUM_DROPLETS = computeNumDroplets();
         initRainDrops();
@@ -10254,7 +10815,15 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       })
       .listen()
       .name('Reduce Precipitation');
-    advanced_folder.add(guiControls, 'disableTempChangeHistory').name('Disable Temp History');
+    advancedPerformance.add(guiControls, 'disableTempChangeHistory').name('Disable Temp History');
+
+    var advancedResolution = advanced_folder.addFolder('Resolution & Debug');
+    advancedResolution.add(guiControls, 'fullscreenResolution',
+      ['Default', '640x480', '800x600', '1024x768', '1280x720', '1280x1024', '1366x768', '1600x900', '1920x1080', '2560x1440', '3840x2160'])
+      .onChange(changeFullscreenResolution)
+      .name('Fullscreen Res');
+    if (guiControls.showDebugOverlay !== undefined)
+      advancedResolution.add(guiControls, 'showDebugOverlay').name('Debug Overlay (F3)').listen();
 
     advanced_folder.add(guiControls, 'resetSettings').name('Reset all settings');
 
@@ -10275,6 +10844,8 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     datGui.add(guiControls, 'openColorScaleEditor').name('Open Color Scale Editor');
     datGui.add(guiControls, 'openKeybindEditor').name('Open Keybind Editor');
     datGui.add(guiControls, 'openSkyEditor').name('Open Sky Editor');
+    datGui.add(guiControls, 'openUserInteraction').name('Open User Interaction');
+    datGui.add(guiControls, 'openCustomToolCreator').name('Open Custom Tool Creator');
 
     var skewT_folder = datGui.addFolder('Skew-T');
     skewT_folder.add(guiControls, 'skewTSourceMode', {
@@ -10409,7 +10980,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
   function buildHostSyncMeta(simStarted)
   {
-    return {
+    const meta = {
       simStarted: !!simStarted,
       iterNum,
       paused: guiControls.paused,
@@ -10426,6 +10997,11 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       longitudeRight: guiControls.longitudeRight,
       latitudeBasedTemperature: !!guiControls.latitudeBasedTemperature,
     };
+    if (window.AviationTraffic) {
+      meta.aviation = window.AviationTraffic.buildSavedForGuiControls();
+      meta.trafficPlanes = window.AviationTraffic.buildTrafficStateForSync();
+    }
+    return meta;
   }
 
   window.startSimulation = function()
@@ -15404,6 +15980,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     }, // end of draw()
   };
   soundingGraph.init();
+  hideOrShowGraph(); // apply showGraph from save / defaults (onChange does not fire on load)
 
   await loadingBar.set(6, 'Setting up eventlisteners');
   // END OF GRAPH
@@ -16390,11 +16967,20 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         startSimulation();
       } else if (multiplayerPeerMode && window.WeatherMpProtocol && window.WeatherMpProtocol.isPlacementTool(guiControls.tool)) {
         if (window.WeatherMultiplayer) {
-          window.WeatherMultiplayer.emitPlace({
+          const placeMsg = {
             tool: guiControls.tool,
             x: mouseXinSim,
             y: mouseYinSim,
-          });
+          };
+          if (window.WeatherMpProtocol.isCustomToolId && window.WeatherMpProtocol.isCustomToolId(guiControls.tool)) {
+            const reg = window.UserInteraction && window.UserInteraction.registry;
+            const def = reg ? reg.getTool(guiControls.tool) : null;
+            if (def) {
+              placeMsg.toolDef = def;
+              placeMsg.paramValues = reg.getParamValues(def);
+            }
+          }
+          window.WeatherMultiplayer.emitPlace(placeMsg);
         }
       } else if (multiplayerHostMode && window.WeatherMpProtocol && window.WeatherMpProtocol.isPlacementTool(guiControls.tool)) {
         const placementMsg = {
@@ -16403,9 +16989,26 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
           y: mouseYinSim,
           placementId: createPlacementEventId('host-place'),
         };
+        if (window.WeatherMpProtocol.isCustomToolId && window.WeatherMpProtocol.isCustomToolId(guiControls.tool)) {
+          const reg = window.UserInteraction && window.UserInteraction.registry;
+          const def = reg ? reg.getTool(guiControls.tool) : null;
+          if (def) {
+            placementMsg.toolDef = def;
+            placementMsg.paramValues = reg.getParamValues(def);
+          }
+        }
         applyRemotePlacement(placementMsg);
         if (window.WeatherMultiplayer && window.WeatherMultiplayer.isHost())
           window.WeatherMultiplayer.broadcastPlaceApply(placementMsg);
+      } else if (window.WeatherMpProtocol && window.WeatherMpProtocol.isCustomToolId &&
+                 window.WeatherMpProtocol.isCustomToolId(guiControls.tool) &&
+                 window.WeatherMpProtocol.isPlacementTool(guiControls.tool)) {
+        let simXpos = Math.floor(mouseXinSim * sim_res_x);
+        let simYpos = findSimYposAboveSurfaceAtMouseX();
+        const reg = window.UserInteraction && window.UserInteraction.registry;
+        const def = reg ? reg.getTool(guiControls.tool) : null;
+        if (def && simXpos >= 0 && simXpos < sim_res_x && simYpos !== undefined)
+          customToolEntities.push(new CustomToolEntity(simXpos, simYpos, def, reg.getParamValues(def)));
       } else if (guiControls.tool == 'TOOL_STATION') {
         let simXpos = Math.floor(mouseXinSim * sim_res_x);
         let simYpos = findSimYposAboveSurfaceAtMouseX();
@@ -16453,6 +17056,16 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
 
         if (simXpos >= 0 && simXpos < sim_res_x)
           markers.push(new Marker(simXpos, simYpos)); // add marker
+      } else if (guiControls.tool == 'TOOL_AIRPORT') {
+        let simXpos = Math.floor(mouseXinSim * sim_res_x);
+        let simYpos = findSimYposAboveSurfaceAtMouseX();
+        if (simXpos >= 0 && simXpos < sim_res_x && simYpos !== undefined && window.AviationTraffic)
+          window.AviationTraffic.placeAirport(simXpos, simYpos);
+      } else if (guiControls.tool == 'TOOL_FLIGHT_ROUTE') {
+        let simXpos = Math.floor(mouseXinSim * sim_res_x);
+        let simYpos = mouseYinSim * sim_res_y;
+        if (window.AviationTraffic)
+          window.AviationTraffic.handleToolClick('TOOL_FLIGHT_ROUTE', simXpos, simYpos);
       } else if (guiControls.tool == 'TOOL_NUKE') {
         if (multiplayerPeerMode) {
           if (window.WeatherMultiplayer)
@@ -16923,6 +17536,11 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       return false;
     if (el.closest && el.closest('#keybindPanel')) {
       if (el.tagName === 'INPUT' && el.id === 'kbe-search')
+        return true;
+      return false;
+    }
+    if (el.closest && (el.closest('#userInteractionPanel') || el.closest('#uieCreatorPanel'))) {
+      if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT')
         return true;
       return false;
     }
@@ -17629,6 +18247,16 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   const A380_R_Texture = gl.createTexture();
   const A380GearTexture = gl.createTexture();
   const surfaceTextureMap = gl.createTexture();
+  const customSurfaceAtlas = gl.createTexture();
+  // Placeholder 1×1 so sampler is valid before any custom tools load
+  gl.bindTexture(gl.TEXTURE_2D, customSurfaceAtlas);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([0, 0, 0, 0]));
+  if (window.UserInteraction && window.UserInteraction.atlas)
+    window.UserInteraction.atlas.setGL(gl, customSurfaceAtlas);
   const colorScalesTexture = gl.createTexture();
 
   const lightningTextures = [];
@@ -17661,6 +18289,11 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   const lightningDataFrameBuff = gl.createFramebuffer();
   const radarFrameBuff = gl.createFramebuffer();
   window.frameBuff_1 = frameBuff_1;
+  window.chargeFrameBuff_0 = chargeFrameBuff_0;
+  window.chargeFrameBuff_1 = chargeFrameBuff_1;
+  window.chargeTexture_0 = chargeTexture_0;
+  window.chargeTexture_1 = chargeTexture_1;
+  window.latestChargeTexture = latestChargeTexture;
 
   // Set up Textures
   async function setupTextures()
@@ -17802,6 +18435,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
 
   // Initialize radar cache FBOs
   radars.forEach(radar => radar.initCacheFBO());
+  syncDisplayFlagsFromGuiControls();
   finalizeLoadedRadars();
   finalizeLoadedAirmassGenerators();
   finalizeLoadedSynopticSystems();
@@ -18033,6 +18667,10 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);        // horizontal
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE); // vertical
 
+  if (window.UserInteraction && window.UserInteraction.atlas) {
+    window.UserInteraction.atlas.setGL(gl, customSurfaceAtlas);
+    window.UserInteraction.atlas.scheduleRebuild();
+  }
 
   function generateLightningTexture(i, imgData)
   {
@@ -20477,6 +21115,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   gl.uniform1i(gl.getUniformLocation(realisticDisplayProgram, 'lightTex'), 3);
   gl.uniform1i(gl.getUniformLocation(realisticDisplayProgram, 'noiseTex'), 4);
   gl.uniform1i(gl.getUniformLocation(realisticDisplayProgram, 'surfaceTextureMap'), 5);
+  gl.uniform1i(gl.getUniformLocation(realisticDisplayProgram, 'customSurfaceAtlas'), 15);
   gl.uniform1i(gl.getUniformLocation(realisticDisplayProgram, 'curlTex'), 6);
   gl.uniform1i(gl.getUniformLocation(realisticDisplayProgram, 'lightningTex'), 7);
   gl.uniform1i(gl.getUniformLocation(realisticDisplayProgram, 'lightningDataTex'), 8);
@@ -20534,6 +21173,10 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   buildColorScaleEditor();
   buildKeybindEditor();
   buildSkyEditor();
+  if (typeof buildUserInteractionMenu === 'function')
+    buildUserInteractionMenu();
+  else if (window.UserInteraction && window.UserInteraction.menu)
+    window.UserInteraction.menu.buildUserInteractionMenu();
   if (typeof ControlHelp !== 'undefined')
     ControlHelp.attachCustomPanels();
 
@@ -20638,6 +21281,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   const uloc_adv_userInputMove         = gl.getUniformLocation(advectionProgram, 'userInputMove');
   const uloc_adv_wrapHorizontally      = gl.getUniformLocation(advectionProgram, 'wrapHorizontally');
   const uloc_adv_userInputType         = gl.getUniformLocation(advectionProgram, 'userInputType');
+  const uloc_adv_userInputCustomSlot   = gl.getUniformLocation(advectionProgram, 'userInputCustomSlot');
+  const uloc_adv_userInputSurfaceKind  = gl.getUniformLocation(advectionProgram, 'userInputSurfaceKind');
   const uloc_adv_iterNum               = gl.getUniformLocation(advectionProgram, 'iterNum');
   const uloc_adv_brushOnlyMode         = gl.getUniformLocation(advectionProgram, 'brushOnlyMode');
   const uloc_vel_coriolisStrength      = gl.getUniformLocation(velocityProgram, 'coriolisStrength');
@@ -21213,9 +21858,12 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   function getBrushCursorType(inputType)
   {
     let cursorType = 1.0;
+    const customBrushSelected = window.WeatherMpProtocol && window.WeatherMpProtocol.isCustomToolId &&
+      window.WeatherMpProtocol.isCustomToolId(guiControls.tool) &&
+      window.WeatherMpProtocol.isBrushTool(guiControls.tool);
     if (guiControls.wholeWidth) {
       cursorType = 2.0;
-    } else if (SETUP_MODE || (inputType <= 0 && !bPressed && (guiControls.tool == 'TOOL_NONE' || guiControls.tool == 'TOOL_STATION' || guiControls.tool == 'TOOL_BALLOON' || guiControls.tool == 'TOOL_RADAR' || guiControls.tool == 'TOOL_AIRMASS' || guiControls.tool == 'TOOL_SYNOPTIC_LOW' || guiControls.tool == 'TOOL_SYNOPTIC_HIGH' || guiControls.tool == 'TOOL_MARKER'))) {
+    } else if (SETUP_MODE || (inputType <= 0 && !bPressed && !customBrushSelected && (guiControls.tool == 'TOOL_NONE' || guiControls.tool == 'TOOL_STATION' || guiControls.tool == 'TOOL_BALLOON' || guiControls.tool == 'TOOL_RADAR' || guiControls.tool == 'TOOL_AIRMASS' || guiControls.tool == 'TOOL_SYNOPTIC_LOW' || guiControls.tool == 'TOOL_SYNOPTIC_HIGH' || guiControls.tool == 'TOOL_MARKER' || guiControls.tool == 'TOOL_AIRPORT' || guiControls.tool == 'TOOL_FLIGHT_ROUTE' || (window.WeatherMpProtocol && window.WeatherMpProtocol.isCustomToolId && window.WeatherMpProtocol.isCustomToolId(guiControls.tool) && window.WeatherMpProtocol.isPlacementTool(guiControls.tool))))) {
       cursorType = 0;
     }
     if (inputType === 0)
@@ -23750,6 +24398,24 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   function computeBrushFromTool(tool, simX, simY, moveX, moveY, painting)
   {
     if (!painting) return { inputType: -1, active: false };
+
+    if (window.WeatherMpProtocol && window.WeatherMpProtocol.isCustomToolId &&
+        window.WeatherMpProtocol.isCustomToolId(tool)) {
+      const reg = window.UserInteraction && window.UserInteraction.registry;
+      const runtime = window.UserInteraction && window.UserInteraction.runtime;
+      const def = reg ? reg.getTool(tool) : null;
+      if (!def || def.mode === 'place' || !runtime)
+        return { inputType: -1, active: false };
+      const guiSnap = {
+        brushIntensity: guiControls.brushIntensity * (ctrlPressed ? -1 : 1),
+        brushSize: guiControls.brushSize,
+        wholeWidth: guiControls.wholeWidth,
+        wrapHorizontally: guiControls.wrapHorizontally,
+        invertTool: guiControls.invertTool,
+      };
+      return runtime.computeCustomBrush(def, simX, simY, moveX, moveY, painting, guiSnap);
+    }
+
     const inputType = toolNameToInputType(tool);
     if (inputType < 0) return { inputType: -1, active: false };
     let intensity = guiControls.brushIntensity;
@@ -23785,7 +24451,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     window.WeatherMultiplayer.emitBrush(brush);
   };
 
-  function applyBrushInputToGpu(brush)
+  function applySingleBrushPassToGpu(brush)
   {
     if (!brush || brush.inputType < 0) return;
     gl.useProgram(advectionProgram);
@@ -23793,6 +24459,10 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     gl.uniform4f(uloc_adv_userInputValues, brush.x, brush.y, brush.intensity, brush.brushSize * 0.5);
     gl.uniform2f(uloc_adv_userInputMove, brush.moveX || 0, brush.moveY || 0);
     gl.uniform1i(uloc_adv_wrapHorizontally, brush.wrap ? 1 : 0);
+    if (uloc_adv_userInputCustomSlot)
+      gl.uniform1i(uloc_adv_userInputCustomSlot, brush.customSlot != null ? brush.customSlot : 0);
+    if (uloc_adv_userInputSurfaceKind)
+      gl.uniform1i(uloc_adv_userInputSurfaceKind, brush.surfaceKind != null ? brush.surfaceKind : 0);
     if (brush.inputType === 23) {
       gl.useProgram(chargeProgram);
       gl.uniform4f(uloc_charge_userInputValues, brush.x, brush.y, brush.intensity, brush.brushSize * 0.5);
@@ -23813,6 +24483,18 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
     }
     applyUserBrushPass();
+  }
+
+  function applyBrushInputToGpu(brush)
+  {
+    if (!brush) return;
+    if (Array.isArray(brush.passes) && brush.passes.length) {
+      for (let i = 0; i < brush.passes.length; i++)
+        applySingleBrushPassToGpu(brush.passes[i]);
+      return;
+    }
+    if (brush.inputType < 0) return;
+    applySingleBrushPassToGpu(brush);
   }
 
   function applyRemotePlacement(msg)
@@ -23863,8 +24545,29 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       case 'TOOL_MARKER':
         markers.push(new Marker(simX, findSimYposAboveSurfaceAtX(simX)));
         break;
-      default:
+      case 'TOOL_AIRPORT': {
+        const y = findSimYposAboveSurfaceAtX(simX);
+        if (y !== undefined && window.AviationTraffic)
+          window.AviationTraffic.placeAirport(simX, y);
         break;
+      }
+      case 'TOOL_FLIGHT_ROUTE': {
+        if (window.AviationTraffic)
+          window.AviationTraffic.handleToolClick('TOOL_FLIGHT_ROUTE', simX, simY);
+        break;
+      }
+      default: {
+        if (window.WeatherMpProtocol && window.WeatherMpProtocol.isCustomToolId &&
+            window.WeatherMpProtocol.isCustomToolId(msg.tool)) {
+          const y = findSimYposAboveSurfaceAtX(simX);
+          let def = msg.toolDef;
+          if (!def && window.UserInteraction && window.UserInteraction.registry)
+            def = window.UserInteraction.registry.getTool(msg.tool);
+          if (def && y !== undefined)
+            customToolEntities.push(new CustomToolEntity(simX, y, def, msg.paramValues));
+        }
+        break;
+      }
     }
   }
 
@@ -23958,6 +24661,20 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     const embeddedSynoptic = buildSavedSynopticSystemsForGuiControls();
     if (embeddedSynoptic)
       guiControlsForSave.__savedSynopticSystems = embeddedSynoptic;
+    const embeddedCustomTools = buildSavedCustomToolEntitiesForGuiControls();
+    if (embeddedCustomTools)
+      guiControlsForSave.__savedCustomToolEntities = embeddedCustomTools;
+    if (window.AviationTraffic) {
+      const embeddedAviation = window.AviationTraffic.buildSavedForGuiControls();
+      if (embeddedAviation)
+        guiControlsForSave.__savedAviationTraffic = embeddedAviation;
+      guiControlsForSave.__trafficPlaneState = window.AviationTraffic.buildTrafficStateForSync();
+    }
+    if (window.UserInteraction && window.UserInteraction.registry) {
+      const defs = window.UserInteraction.registry.getCustomToolsForSave();
+      if (defs && defs.length)
+        guiControlsForSave.__savedCustomToolDefinitions = defs;
+    }
 
     let strGuiControls = JSON.stringify(guiControlsForSave);
     let strRadarSettings = JSON.stringify(radarsSettings);
@@ -24235,6 +24952,12 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         updateSunlight(0); // recompute sun columns from synced time/lat/lon without advancing
       if (typeof uploadClimateUniforms === 'function')
         uploadClimateUniforms();
+      if (window.AviationTraffic) {
+        if (meta.aviation)
+          window.AviationTraffic.syncInfrastructure(meta.aviation);
+        if (meta.trafficPlanes)
+          window.AviationTraffic.applyTrafficStateFromSync(meta.trafficPlanes);
+      }
     }
   };
 
@@ -24438,39 +25161,73 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
   }
 
+  function isPaintingCustomBrushTool()
+  {
+    return !!(leftMousePressed && window.WeatherMpProtocol &&
+      window.WeatherMpProtocol.isCustomToolId &&
+      window.WeatherMpProtocol.isCustomToolId(guiControls.tool) &&
+      window.WeatherMpProtocol.isBrushTool(guiControls.tool));
+  }
+
+  function getLocalCustomBrushPayload()
+  {
+    return computeBrushFromTool(
+      guiControls.tool, mouseXinSim, mouseYinSim,
+      mouseXinSim - prevMouseXinSim, mouseYinSim - prevMouseYinSim, true);
+  }
+
   // Pause-edit: apply brush without advancing weather, then resync ping-pong buffers.
-  function applyPausedBrushEdit()
+  function applyPausedBrushEdit(optionalBrush)
   {
     gl.viewport(0, 0, sim_res_x, sim_res_y);
 
-    // Advection in brush-only mode: copies fields and applies the tool, no gravity/flow.
-    gl.useProgram(advectionProgram);
-    if (uloc_adv_brushOnlyMode)
-      gl.uniform1i(uloc_adv_brushOnlyMode, 1);
-    gl.uniform1f(uloc_adv_iterNum, iterNum);
-    gl.activeTexture(gl.TEXTURE0);
-    gl.bindTexture(gl.TEXTURE_2D, baseTexture_0);
-    gl.activeTexture(gl.TEXTURE1);
-    gl.bindTexture(gl.TEXTURE_2D, waterTexture_0);
-    gl.activeTexture(gl.TEXTURE2);
-    gl.bindTexture(gl.TEXTURE_2D, wallTexture_0);
-    gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_1);
-    gl.drawBuffers([ gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1, gl.COLOR_ATTACHMENT2 ]);
-    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
-    if (uloc_adv_brushOnlyMode)
-      gl.uniform1i(uloc_adv_brushOnlyMode, 0);
+    const passes = (optionalBrush && Array.isArray(optionalBrush.passes) && optionalBrush.passes.length)
+      ? optionalBrush.passes
+      : [ null ];
 
-    // Sync _1 → _0 so display and the next unpause iter both see the edit
-    gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_1);
-    gl.readBuffer(gl.COLOR_ATTACHMENT0);
-    gl.bindTexture(gl.TEXTURE_2D, baseTexture_0);
-    gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, sim_res_x, sim_res_y);
-    gl.readBuffer(gl.COLOR_ATTACHMENT1);
-    gl.bindTexture(gl.TEXTURE_2D, waterTexture_0);
-    gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, sim_res_x, sim_res_y);
-    gl.readBuffer(gl.COLOR_ATTACHMENT2);
-    gl.bindTexture(gl.TEXTURE_2D, wallTexture_0);
-    gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, sim_res_x, sim_res_y);
+    for (let p = 0; p < passes.length; p++) {
+      const pass = passes[p];
+      gl.useProgram(advectionProgram);
+      if (pass) {
+        gl.uniform1i(uloc_adv_userInputType, pass.inputType);
+        gl.uniform4f(uloc_adv_userInputValues, pass.x, pass.y, pass.intensity, pass.brushSize * 0.5);
+        gl.uniform2f(uloc_adv_userInputMove, pass.moveX || 0, pass.moveY || 0);
+        gl.uniform1i(uloc_adv_wrapHorizontally, pass.wrap ? 1 : 0);
+        if (uloc_adv_userInputCustomSlot)
+          gl.uniform1i(uloc_adv_userInputCustomSlot, pass.customSlot != null ? pass.customSlot : 0);
+        if (uloc_adv_userInputSurfaceKind)
+          gl.uniform1i(uloc_adv_userInputSurfaceKind, pass.surfaceKind != null ? pass.surfaceKind : 0);
+      }
+      if (uloc_adv_brushOnlyMode)
+        gl.uniform1i(uloc_adv_brushOnlyMode, 1);
+      gl.uniform1f(uloc_adv_iterNum, iterNum);
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, baseTexture_0);
+      gl.activeTexture(gl.TEXTURE1);
+      gl.bindTexture(gl.TEXTURE_2D, waterTexture_0);
+      gl.activeTexture(gl.TEXTURE2);
+      gl.bindTexture(gl.TEXTURE_2D, wallTexture_0);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_1);
+      gl.drawBuffers([ gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1, gl.COLOR_ATTACHMENT2 ]);
+      gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+
+      // Ping-pong so the next pass reads the previous result
+      gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_1);
+      gl.readBuffer(gl.COLOR_ATTACHMENT0);
+      gl.bindTexture(gl.TEXTURE_2D, baseTexture_0);
+      gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, sim_res_x, sim_res_y);
+      gl.readBuffer(gl.COLOR_ATTACHMENT1);
+      gl.bindTexture(gl.TEXTURE_2D, waterTexture_0);
+      gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, sim_res_x, sim_res_y);
+      gl.readBuffer(gl.COLOR_ATTACHMENT2);
+      gl.bindTexture(gl.TEXTURE_2D, wallTexture_0);
+      gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, sim_res_x, sim_res_y);
+    }
+
+    if (uloc_adv_brushOnlyMode) {
+      gl.useProgram(advectionProgram);
+      gl.uniform1i(uloc_adv_brushOnlyMode, 0);
+    }
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
   }
 
@@ -24594,6 +25351,12 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
           inputType = 28;
         else if (guiControls.tool == 'TOOL_CHARGE')
           inputType = 23;
+        else if (window.WeatherMpProtocol && window.WeatherMpProtocol.isCustomToolId &&
+                 window.WeatherMpProtocol.isCustomToolId(guiControls.tool) &&
+                 window.WeatherMpProtocol.isBrushTool(guiControls.tool)) {
+          // Custom brushes are applied via multi-pass below; keep advection input idle here.
+          inputType = -1;
+        }
 
         var intensity = guiControls.brushIntensity;
 
@@ -24627,12 +25390,14 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       if (isMultiplayerPeer() && window.WeatherMultiplayer && window.WeatherMultiplayer.isPeer()) {
         const brush = computeBrushFromTool(guiControls.tool, mouseXinSim, mouseYinSim,
           mouseXinSim - prevMouseXinSim, mouseYinSim - prevMouseYinSim, leftMousePressed);
-        brush.active = leftMousePressed && brush.inputType >= 0;
+        const hasPasses = Array.isArray(brush.passes) && brush.passes.length > 0;
+        brush.active = leftMousePressed && (brush.inputType >= 0 || hasPasses);
         window.WeatherMultiplayer.emitBrush(brush);
         inputType = -1;
       }
 
-      const hostPaintingLocally = isMultiplayerHost() && leftMousePressed && inputType > 0;
+      const hostPaintingLocally = isMultiplayerHost() && leftMousePressed &&
+        (inputType > 0 || isPaintingCustomBrushTool());
       if (hostPaintingLocally)
         hostBrushSyncPending = true;
 
@@ -24685,6 +25450,11 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
             if (isMultiplayerHost() && remoteActiveBrushes.size > 0) {
               for (const brush of remoteActiveBrushes.values())
                 applyBrushInputToGpu(brush);
+            }
+            if (isPaintingCustomBrushTool() && !isMultiplayerPeer()) {
+              const customBrush = getLocalCustomBrushPayload();
+              if (customBrush && customBrush.active)
+                applyBrushInputToGpu(customBrush);
             }
             // calc and apply velocity
             gl.useProgram(velocityProgram);
@@ -24755,6 +25525,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
               gl.drawBuffers([ gl.COLOR_ATTACHMENT0 ]);
               gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
               latestChargeTexture = even ? chargeTexture_1 : chargeTexture_0;
+              window.latestChargeTexture = latestChargeTexture;
             }
 
             // calculate vorticity (legacy: every iteration with curl)
@@ -24813,6 +25584,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
               gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
 
               applyAirmassGeneratorsCpu();
+              applyCustomToolEntitiesCpu();
               applySynopticSystemsCpu();
 
               // calc and apply pressure (divergence correction)
@@ -24946,6 +25718,10 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
           }
         } else if (leftMousePressed && inputType > 0) {
           applyUserBrushPass();
+        } else if (isPaintingCustomBrushTool() && !isMultiplayerPeer()) {
+          const customBrush = getLocalCustomBrushPayload();
+          if (customBrush && customBrush.active)
+            applyBrushInputToGpu(customBrush);
         }
 
         if (airplaneMode) {
@@ -24975,10 +25751,20 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
             weatherBalloons[i].step(balloonSimIters);
         }
 
+        if (window.AviationTraffic) {
+          const trafficIters = balloonSimIters > 0 ? balloonSimIters : (airplaneMode ? 1 : 0);
+          if (trafficIters > 0)
+            window.AviationTraffic.step(trafficIters);
+        }
+
       } // end of simulation part
-      else if (guiControls.paused && !isMultiplayerPeer() && leftMousePressed && inputType > 0) {
+      else if (guiControls.paused && !isMultiplayerPeer() && leftMousePressed &&
+               (inputType > 0 || isPaintingCustomBrushTool())) {
         // Edit while paused: apply brush without advancing weather
-        applyPausedBrushEdit();
+        if (isPaintingCustomBrushTool())
+          applyPausedBrushEdit(getLocalCustomBrushPayload());
+        else
+          applyPausedBrushEdit();
       }
 
       if (isMultiplayerPeer() && !isMultiplayerHost()) {
@@ -25244,6 +26030,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       gl.bindTexture(gl.TEXTURE_2D, lightningDataTexture);
       gl.activeTexture(gl.TEXTURE9);
       gl.bindTexture(gl.TEXTURE_2D, ambientLightFBOs[0].texture);
+      gl.activeTexture(gl.TEXTURE15);
+      gl.bindTexture(gl.TEXTURE_2D, customSurfaceAtlas);
 
       uploadProceduralLightningUniforms();
       gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4); // draw to hdr framebuffer
@@ -26120,6 +26908,13 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     }
   }
 
+  for (i = 0; i < customToolEntities.length; i++) {
+    const sx = simToScreenX(customToolEntities[i].getXpos());
+    const sy = simToScreenY(customToolEntities[i].getYpos());
+    if (sx > -400 && sx < canvas.width + 400 && sy > -400 && sy < canvas.height + 400)
+      customToolEntities[i].updateCanvas();
+  }
+
   if (displaySynopticSystems) {
     for (i = 0; i < synopticSystems.length; i++) {
       const sx = simToScreenX(synopticSystems[i].getXpos());
@@ -26137,6 +26932,9 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         weatherBalloons[i].updateCanvas();
     }
   }
+
+  if (window.AviationTraffic)
+    window.AviationTraffic.updateOverlays();
 
 drawNukeOverlay();
     drawRemotePlayerCursors();
@@ -26319,6 +27117,20 @@ drawNukeOverlay();
         const embeddedSynoptic = buildSavedSynopticSystemsForGuiControls();
         if (embeddedSynoptic)
           guiControlsForSave.__savedSynopticSystems = embeddedSynoptic;
+        const embeddedCustomTools = buildSavedCustomToolEntitiesForGuiControls();
+        if (embeddedCustomTools)
+          guiControlsForSave.__savedCustomToolEntities = embeddedCustomTools;
+        if (window.AviationTraffic) {
+          const embeddedAviation = window.AviationTraffic.buildSavedForGuiControls();
+          if (embeddedAviation)
+            guiControlsForSave.__savedAviationTraffic = embeddedAviation;
+          guiControlsForSave.__trafficPlaneState = window.AviationTraffic.buildTrafficStateForSync();
+        }
+        if (window.UserInteraction && window.UserInteraction.registry) {
+          const defs = window.UserInteraction.registry.getCustomToolsForSave();
+          if (defs && defs.length)
+            guiControlsForSave.__savedCustomToolDefinitions = defs;
+        }
 
         let strGuiControls = JSON.stringify(guiControlsForSave);
         let strRadarSettings = JSON.stringify(radarsSettings);

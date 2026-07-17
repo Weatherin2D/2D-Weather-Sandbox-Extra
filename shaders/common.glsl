@@ -94,10 +94,13 @@ precision highp isampler2D;
 #define WALLTYPE_SUBURBAN 7
 #define WALLTYPE_FRESH_WATER 8 // lakes / rivers
 #define WALLTYPE_ICE 9         // frozen water, ice sheets, ice caps
+#define WALLTYPE_CUSTOM_BASE 10    // custom base terrain; VEGETATION holds atlas slot 0–7
+#define WALLTYPE_CUSTOM_OVERLAY 11 // custom overlay on land; VEGETATION holds atlas slot 0–7
 
 #define DISTANCE 1      // manhattan distance to nearest wall                   0 to 127
 #define VERT_DISTANCE 2 // height above/below ground. Surface = 0               -127 to 127
 #define VEGETATION 3    // vegetation 0–127: grass/shrub 0–50, forest 51–127 (mutually exclusive bands)
+                        // for WALLTYPE_CUSTOM_*: atlas slot index 0–7
 
 #define GRASS_VEG_MAX 50
 #define FOREST_VEG_MIN 51

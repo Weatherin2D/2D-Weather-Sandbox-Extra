@@ -227,14 +227,16 @@ void main()
 
         float albedoTotal = 1.0;
 
-        if (wall[TYPE] == WALLTYPE_LAND || wall[TYPE] == WALLTYPE_FIRE) {
+        if (wall[TYPE] == WALLTYPE_LAND || wall[TYPE] == WALLTYPE_FIRE || wall[TYPE] == WALLTYPE_CUSTOM_BASE) {
           float albedoSoil = map_rangeC(soilMoisture, 0., 20., ALBEDO_DRYSOIL, ALBEDO_WETSOIL);
           albedoSoil = map_rangeC(snowCover, 0.0, fullWhiteSnowHeight, albedoSoil, ALBEDO_SNOW);                         // add snow albedo
           float fullVegetationAlbedo = map_range(snowCover, 0., fullWhiteSnowHeight, ALBEDO_FOREST, ALBEDO_SNOW_FOREST); // the albedo of full tree height with snow taken into account
-          float vegCover = max(grassBiomass(wallX0Ym[VEGETATION]) / float(GRASS_VEG_MAX) * 0.42,
-            forestBiomass(wallX0Ym[VEGETATION]) / float(FOREST_VEG_MAX - GRASS_VEG_MAX));
+          // Custom base stores atlas slot in VEGETATION — treat as bare/low veg for albedo
+          float vegSample = (wall[TYPE] == WALLTYPE_CUSTOM_BASE) ? 0.0 : float(wallX0Ym[VEGETATION]);
+          float vegCover = max(grassBiomass(int(vegSample)) / float(GRASS_VEG_MAX) * 0.42,
+            forestBiomass(int(vegSample)) / float(FOREST_VEG_MAX - GRASS_VEG_MAX));
           albedoTotal = mix(albedoSoil, fullVegetationAlbedo, clamp(vegCover, 0.0, 1.0));
-        } else if (wall[TYPE] == WALLTYPE_URBAN) {
+        } else if (wall[TYPE] == WALLTYPE_URBAN || wall[TYPE] == WALLTYPE_CUSTOM_OVERLAY) {
           albedoTotal = ALBEDO_URBAN;
         } else if (wall[TYPE] == WALLTYPE_SUBURBAN) {
           albedoTotal = ALBEDO_SUBURBAN;
@@ -288,10 +290,12 @@ void main()
 
       if (wall[VERT_DISTANCE] == 1) {
         float surfaceDrag = 0.0015; // water or runway
-        if (wall[TYPE] == WALLTYPE_URBAN)
+        if (wall[TYPE] == WALLTYPE_URBAN || wall[TYPE] == WALLTYPE_CUSTOM_OVERLAY)
           surfaceDrag = 0.040;
         else if (wall[TYPE] == WALLTYPE_SUBURBAN)
           surfaceDrag = 0.012;
+        else if (wall[TYPE] == WALLTYPE_CUSTOM_BASE)
+          surfaceDrag = 0.018;
         else if (wall[TYPE] == WALLTYPE_LAND || wall[TYPE] == WALLTYPE_FIRE) {
           float gBio = grassBiomass(wall[VEGETATION]);
           float fBio = forestBiomass(wall[VEGETATION]);

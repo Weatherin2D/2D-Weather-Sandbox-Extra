@@ -643,7 +643,7 @@
       const now = performance.now();
       if (brush.active && now - this._lastBrushSend < this._brushIntervalMs) return;
       this._lastBrushSend = now;
-      this.transport.sendJson({
+      const payload = {
         type: MSG.INPUT_BRUSH,
         inputType: brush.inputType,
         x: brush.x,
@@ -655,7 +655,16 @@
         wrap: !!brush.wrap,
         invertTool: !!brush.invertTool,
         active: !!brush.active,
-      });
+      };
+      if (brush.customToolId)
+        payload.customToolId = brush.customToolId;
+      if (Array.isArray(brush.passes) && brush.passes.length)
+        payload.passes = brush.passes;
+      if (brush.customSlot != null)
+        payload.customSlot = brush.customSlot;
+      if (brush.surfaceKind != null)
+        payload.surfaceKind = brush.surfaceKind;
+      this.transport.sendJson(payload);
     }
 
     emitPlace(place) {
@@ -664,12 +673,17 @@
         this._denyLocal('Placing objects is disabled for your account');
         return;
       }
-      this.transport.sendJson({
+      const placePayload = {
         type: MSG.INPUT_PLACE,
         tool: place.tool,
         x: place.x,
         y: place.y,
-      });
+      };
+      if (place.toolDef)
+        placePayload.toolDef = place.toolDef;
+      if (place.paramValues)
+        placePayload.paramValues = place.paramValues;
+      this.transport.sendJson(placePayload);
     }
 
     emitPause(paused) {
@@ -750,13 +764,16 @@
 
     broadcastPlaceApply(place) {
       if (!this.isHost() || !this.connected || !place) return;
-      this.transport.sendJson({
+      const msg = {
         type: MSG.PLACE_APPLY,
         tool: place.tool,
         x: place.x,
         y: place.y,
         placementId: place.placementId || ('place-' + Date.now() + '-' + Math.floor(Math.random() * 1e9)),
-      });
+      };
+      if (place.toolDef) msg.toolDef = place.toolDef;
+      if (place.paramValues) msg.paramValues = place.paramValues;
+      this.transport.sendJson(msg);
     }
 
     broadcastNukeApply(nuke) {
@@ -875,6 +892,8 @@
               y: msg.y,
               placementId: msg.placementId || ('peer-place-' + msg.playerId + '-' + Date.now() + '-' + Math.floor(Math.random() * 1e6)),
             };
+            if (msg.toolDef) applyMsg.toolDef = msg.toolDef;
+            if (msg.paramValues) applyMsg.paramValues = msg.paramValues;
             if (this._hooks.onRemotePlace)
               this._hooks.onRemotePlace(msg.playerId, applyMsg);
             this.broadcastPlaceApply(applyMsg);

@@ -140,6 +140,16 @@ const ControlHelp = (function() {
       body: 'Drop a map marker for reference. Does not affect the simulation physics.',
       keys: 'M (then click)',
     },
+    TOOL_AIRPORT: {
+      title: 'Airport',
+      body: 'Place an airport on land. Paints real runway tiles plus urban terminal/tower and industrial hangar on the surface. A small marker stays for selection/settings. Click again with this tool to remove the marker (terrain remains). Pair with Flight Route for traffic.',
+      keys: 'Tool menu → Airport',
+    },
+    TOOL_FLIGHT_ROUTE: {
+      title: 'Flight Route',
+      body: 'Click origin airport, click the sky to place numbered path nodes, then click destination. Click the dashed path to insert more nodes, drag handles to reshape, right-click a node to delete. Route menu sets flights/min and lists every node.',
+      keys: 'Tool menu → Flight Route',
+    },
     TOOL_NUKE: {
       title: 'Nuke',
       body: 'Detonate a nuclear-scale heat and smoke burst. Adjust blast radius, temperature, and smoke in the Nukes settings folder.',
@@ -162,6 +172,13 @@ const ControlHelp = (function() {
     brushIntensity: 'Strength of each paint stroke. Higher values change fields faster.',
     invertTool: 'Reverses the tool effect — e.g. cool instead of heat, remove instead of add.',
     allowCaves: 'Allow terrain to have overhangs and enclosed air pockets underground.',
+    airTrafficEnabled: 'Enable NPC planes flying between airports on flight routes.',
+    airTrafficMaxPlanes: 'Maximum number of AI aircraft allowed in the simulation at once.',
+    airTrafficFreqMult: 'Global multiplier on airport departure rates.',
+    airTrafficShowRoutes: 'Draw dashed flight-route corridors between airports.',
+    displayAirports: 'Show airport icons on the map.',
+    openUserInteraction: 'Open the searchable User Interaction menu — browse tools by category, create custom scripted tools, and import/export them.',
+    openCustomToolCreator: 'Open the Custom Tool Creator directly — make brush, place, or terrain tools with scripts, textures, and parameters.',
     timeOfDay: 'Time in hours (0–24). Noon is 12:00. Drives sun position when day/night cycle is on.',
     dayNightCycle: 'Automatically advance time and move the sun. Turn off to set sun angle manually.',
     accelerateNight: 'Speed through nighttime faster than daytime for shorter nights.',
@@ -237,22 +254,32 @@ const ControlHelp = (function() {
     chargeGenerationRate: 'How quickly storms build electrical charge naturally.',
     gpuEffectQuality: 'Quality of GPU lightning and shadow smoothing effects. Also scales with zoom distance.',
     atmosphericLightingResolution: 'Resolution scale for lightning scene illumination (1 = full, 0.5 = half). Auto-halves further when zoomed out.',
-    realtimeMode: 'Run simulation time 1:1 with your system clock.',
+    realtimeMode: '1:1 with real time — one in-game hour equals one real hour (physics and clock).',
     airplaneMode: 'Fly an aircraft through the clouds in first-person style.',
+    slowMotion: 'Force one simulation step per frame for a slower, more watchable pace (not true 1:1 Realtime Mode).',
     lightningIllumTexture: 'Pre-render lightning scene illumination to textures for stable flashes. Bolts stay procedural.',
     lightningIllumBlurStrength: 'Softens lightning flash lighting in the scene. 0 = sharp; higher = smoother, more stable illumination.',
   };
 
   const FOLDER_HELP = {
     Fluid: 'Core atmosphere dynamics — wind stirring, drag, and global nudging.',
-    'User Interaction': 'Tools for painting the atmosphere and terrain, plus brush options.',
+    'User Interaction': 'Tools for painting the atmosphere and terrain, plus brush options. Open User Interaction for search, categories, and custom scripted tools.',
     Radiation: 'Sun, time of day, and greenhouse-gas radiation settings.',
     Water: 'Evaporation, condensation, and water body temperatures.',
     Precipitation: 'Rain, snow, and hail formation thresholds and behavior.',
     Radar: 'On-map radar overlay, world radar, and lightning icons.',
     Lightning: 'Lightning appearance, frequency, and storm electrification.',
     Display: 'Visual modes, camera, color grading, and units.',
+    Camera: 'Pan speed, horizontal wrapping, and smooth camera motion.',
+    Appearance: 'Exposure, color grading, clouds, droplets, and shadow lighting.',
+    Stars: 'Night-sky star visibility, density, and light contribution.',
+    Overlays: 'On-screen overlays — soundings, stations, radars, and markers.',
+    Units: 'Clock format and measurement units for distance, speed, and temperature.',
     Advanced: 'Performance toggles, precipitation, and simulation speed.',
+    Simulation: 'Coriolis, synoptic systems, iteration speed, and sounding mode.',
+    'Audio & Effects': 'Sound and bloom post-processing.',
+    Performance: 'Speed and quality tradeoffs — presets, skip toggles, and resource limits.',
+    'Resolution & Debug': 'Fullscreen resolution and debug overlay.',
     Nukes: 'Parameters for the nuke placement tool.',
     'Skew-T': 'Weather balloon ascent and sounding graph options.',
   };
@@ -330,7 +357,19 @@ const ControlHelp = (function() {
       return;
     }
     if (hoverKey) return;
-    const info = TOOL_HELP[tool];
+    let info = TOOL_HELP[tool];
+    if (!info && tool && String(tool).startsWith('CUSTOM_') &&
+        typeof UserInteraction !== 'undefined' && UserInteraction.registry) {
+      const def = UserInteraction.registry.getTool(tool);
+      if (def) {
+        info = {
+          title: def.name,
+          body: 'Custom ' + (def.mode || 'brush') +
+            ' tool. Effects come from your script expressions and parameters. Open User Interaction to edit.',
+          keys: '',
+        };
+      }
+    }
     if (!info) {
       setContent('', '', '');
       refreshVisibility();
@@ -478,6 +517,14 @@ const ControlHelp = (function() {
       title: 'Keybind Editor',
       body: KEYBIND_HELP.panel,
     },
+    '#userInteractionPanel': {
+      title: 'User Interaction',
+      body: 'Browse and select tools by category or search. Create custom brush, place, or terrain tools (Base vs Overlay) with optional facade textures, expression scripts, and parameters. Import and export as JSON (textures included).',
+    },
+    '#uieCreatorPanel': {
+      title: 'Custom Tool Creator',
+      body: 'Modes: Brush, Place, or Terrain. Terrain tools pick Base (replaces surface like land/ocean/ice) or Overlay (paints on land like urban). Download the facade template, edit it, upload a PNG (max 8 textured tools), and tune freezing temp / snow / moisture / heat / friction. Advanced script section is optional.',
+    },
   };
 
   let panelIntroEl = null;
@@ -549,8 +596,13 @@ const ControlHelp = (function() {
     const intro = PANEL_INTRO[panelSelector];
     const panel = document.querySelector(panelSelector);
     if (!intro || !panel) return;
-    const hdr = panel.querySelector('[class*="-hdr"], .cse-hdr, .kbe-hdr, .ske-hdr');
+    const hdr = panel.querySelector('[class*="-hdr"], .cse-hdr, .kbe-hdr, .ske-hdr, .uie-hdr');
     if (hdr) attachElement(hdr, intro.title, intro.body);
+  }
+
+  function attachUserInteractionEditor() {
+    attachPanelIntro('#userInteractionPanel');
+    attachPanelIntro('#uieCreatorPanel');
   }
 
   function attachSkyEditor() {
@@ -818,6 +870,7 @@ const ControlHelp = (function() {
     attachSkyEditor();
     attachColorScaleEditor();
     attachKeybindEditor();
+    attachUserInteractionEditor();
     attachSoundingDashboard();
     attachMultiplayerPanels();
   }
@@ -835,7 +888,11 @@ const ControlHelp = (function() {
   function init(guiControlsRef) {
     controls = guiControlsRef;
     ensurePanel();
-    applyShowControlHelp(loadShowControlHelpPreference());
+    // Prefer the value from guiControls (includes save-file restores); fall back to localStorage.
+    const showHelp = (controls && controls.showControlHelp !== undefined)
+      ? !!controls.showControlHelp
+      : loadShowControlHelpPreference();
+    applyShowControlHelp(showHelp);
     if (controls.tool)
       lastTool = controls.tool;
     showTool(controls.tool || 'TOOL_NONE');

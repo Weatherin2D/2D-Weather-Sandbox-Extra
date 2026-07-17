@@ -25,6 +25,8 @@ uniform vec4 userInputValues; // xpos    Ypos     intensity     Brush Size
 
 uniform vec2 userInputMove;  // moveX  moveY
 uniform int userInputType;   // 0 = nothing 	1 = temp ...
+uniform int userInputCustomSlot;   // atlas slot 0–7 for custom terrain brushes
+uniform int userInputSurfaceKind;  // 0 land/custom 1 fresh 2 sea 3 iceSheet 4 iceCap
 
 uniform vec4 airplaneValues; // xpos   Ypos   throttle   fire
 
@@ -417,6 +419,23 @@ void main()
               wall[VEGETATION] = min(wall[VEGETATION] + 1, FOREST_VEG_MAX);
           }
           break;
+        case 29: { // custom base terrain
+          int slot = clamp(userInputCustomSlot, 0, 7);
+          wall[TYPE] = WALLTYPE_CUSTOM_BASE;
+          wall[VEGETATION] = slot;
+          setWall = true;
+          break;
+        }
+        case 30: // custom overlay on land (urban-like gate)
+          if (wall[DISTANCE] == 0 &&
+              (wall[TYPE] == WALLTYPE_LAND || wall[TYPE] == WALLTYPE_CUSTOM_BASE ||
+               wall[TYPE] == WALLTYPE_RUNWAY || wall[TYPE] == WALLTYPE_INDUSTRIAL ||
+               wall[TYPE] == WALLTYPE_CUSTOM_OVERLAY) &&
+              texture(wallTex, texCoordX0Yp)[DISTANCE] != 0) {
+            wall[TYPE] = WALLTYPE_CUSTOM_OVERLAY;
+            wall[VEGETATION] = clamp(userInputCustomSlot, 0, 7);
+          }
+          break;
         }
 
         if (setWall) {
@@ -440,6 +459,30 @@ void main()
             base[TEMPERATURE] = CtoK(-5.0);
             if (water[SNOW] < 1.0)
               water[SNOW] = 10.0;
+          } else if (wall[TYPE] == WALLTYPE_CUSTOM_BASE) {
+            // Physics class from surfaceKind while keeping custom atlas slot in VEGETATION
+            int slot = wall[VEGETATION];
+            if (userInputSurfaceKind == 1) { // fresh
+              base[TEMPERATURE] = waterTemperature;
+              water[SALINITY] = 0.0;
+              water[SNOW] = 0.0;
+            } else if (userInputSurfaceKind == 2) { // sea
+              base[TEMPERATURE] = waterTemperature;
+              water[SALINITY] = oceanSalinityPpt;
+              water[SNOW] = 0.0;
+            } else if (userInputSurfaceKind == 3) { // ice sheet
+              base[TEMPERATURE] = CtoK(-5.0);
+              water[SALINITY] = oceanSalinityPpt;
+              water[SNOW] = max(water[SNOW], 5.0 + userInputValues[BRUSH_INTENSITY] * 20.0);
+            } else if (userInputSurfaceKind == 4) { // ice cap
+              base[TEMPERATURE] = CtoK(-5.0);
+              water[SALINITY] = 0.0;
+              water[SNOW] = max(water[SNOW], 50.0 + userInputValues[BRUSH_INTENSITY] * 200.0);
+            } else {
+              water[SOIL_MOISTURE] = 25.0;
+              water[SUSTAINED_MOISTURE] = 25.0;
+            }
+            wall[VEGETATION] = slot;
           }
         }
       } else {
@@ -459,6 +502,9 @@ void main()
               wall[TYPE] = WALLTYPE_LAND;
           } else if (userInputType == 17) {
             if (wall[TYPE] == WALLTYPE_SUBURBAN) // remove suburban
+              wall[TYPE] = WALLTYPE_LAND;
+          } else if (userInputType == 30) {
+            if (wall[TYPE] == WALLTYPE_CUSTOM_OVERLAY)
               wall[TYPE] = WALLTYPE_LAND;
           } else if (userInputType == 20) {        // remove moisture
             float moistureBrush = userInputValues[BRUSH_INTENSITY] * 10.0;

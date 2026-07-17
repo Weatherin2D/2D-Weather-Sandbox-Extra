@@ -19,6 +19,7 @@ uniform isampler2D wallTex;
 uniform sampler2D lightTex;
 uniform sampler2D noiseTex;
 uniform sampler2D surfaceTextureMap;
+uniform sampler2D customSurfaceAtlas;
 uniform sampler2D curlTex;
 uniform sampler2D lightningTex;
 uniform sampler2D lightningDataTex;
@@ -98,6 +99,19 @@ vec4 surfaceTexture(int index, vec2 pos)
   pos /= numTextures;
   pos.y += float(index) * texRelHeight;
   return texture(surfaceTextureMap, pos);
+}
+
+// customSurfaceAtlas: 8 vertical strips (slot 0..7), same UV convention as surfaceTexture
+vec4 customSurfaceTexture(int slot, vec2 pos)
+{
+#define numCustomTextures 8.
+  const float texRelHeight = 1. / numCustomTextures;
+  slot = clamp(slot, 0, 7);
+  pos.x = fract(pos.x);
+  pos.y = clamp(pos.y, 0.01, 0.99);
+  pos /= numCustomTextures;
+  pos.y += float(slot) * texRelHeight;
+  return texture(customSurfaceAtlas, pos);
 }
 
 
@@ -522,6 +536,8 @@ void main()
     case WALLTYPE_FIRE:
     case WALLTYPE_LAND:
     case WALLTYPE_SUBURBAN:
+    case WALLTYPE_CUSTOM_BASE:
+    case WALLTYPE_CUSTOM_OVERLAY:
 
       // horizontally interpolate depth value
       float interpDepth = mix(mix(float(-wallXmY0[VERT_DISTANCE]), float(-wall[VERT_DISTANCE]), clamp(fract(fragCoord.x) + 0.5, 0.5, 1.)), float(-wallXpY0[VERT_DISTANCE]), clamp(fract(fragCoord.x) - 0.5, 0., 0.5));
@@ -531,6 +547,13 @@ void main()
         color = getSuburbanGroundColor(suburbanWorldX(fragCoord.x));
         color *= texture(noiseTex, vec2(texCoord.x * resolution.x, texCoord.y * resolution.y) * 0.2).rgb;
         color = mix(color, vec3(1.0), clamp(min(water[SNOW], fullWhiteSnowHeight) / fullWhiteSnowHeight - max(depth * 0.3, 0.), 0.0, 1.0));
+      } else if ((wall[TYPE] == WALLTYPE_CUSTOM_BASE || wall[TYPE] == WALLTYPE_CUSTOM_OVERLAY) && wall[VERT_DISTANCE] == 0) {
+        // Ground: land-like soil with a tint sample from the custom strip bottom
+        color = getWallColor(depth);
+        int cslot = clamp(wall[VEGETATION], 0, 7);
+        vec4 groundSample = customSurfaceTexture(cslot, vec2(mod(fragCoord.x, resolution.x) * 0.02, 0.92));
+        if (groundSample.a > 0.2)
+          color = mix(color, groundSample.rgb, 0.55);
       } else {
         color = getWallColor(depth);
       }
@@ -662,7 +685,24 @@ void main()
       // Zoom-only: throttled visualQuality often stays ≤0.55 at default 3000×300, which hid trees.
       bool showSurfaceDetail = view[2] / resolution.x > 0.0025;
 
-      if (showSurfaceDetail && wallX0Ym[TYPE] == WALLTYPE_URBAN) {
+      if (showSurfaceDetail && (wallX0Ym[TYPE] == WALLTYPE_CUSTOM_BASE || wallX0Ym[TYPE] == WALLTYPE_CUSTOM_OVERLAY)) {
+        float heightAboveGround = localY + float(wall[VERT_DISTANCE] - 1);
+        float urbanTexHeightNorm = maxBuildingHeight / cellHeight;
+        float urbanTexCoordX = mod(fragCoord.x, resolution.x) * texAspect / urbanTexHeightNorm;
+        float urbanTexCoordY = 1.0 - (heightAboveGround / urbanTexHeightNorm);
+        int cslot = clamp(wallX0Ym[VEGETATION], 0, 7);
+        vec4 texCol = customSurfaceTexture(cslot, vec2(urbanTexCoordX, urbanTexCoordY));
+        if (texCol.a > 0.5) {
+          if (nightTime) {
+            shadowLight = 1.0;
+            texCol.rgb *= vec3(1.0, 0.85, 0.6);
+          } else if (length(texCol.rgb) < 0.08) {
+            texCol.rgb = texture(noiseTex, fragCoord * 0.3).rgb * 0.3;
+          }
+          color = texCol.rgb;
+          opacity = texCol.a;
+        }
+      } else if (showSurfaceDetail && wallX0Ym[TYPE] == WALLTYPE_URBAN) {
 
         float heightAboveGround = localY + float(wall[VERT_DISTANCE] - 1);
 
