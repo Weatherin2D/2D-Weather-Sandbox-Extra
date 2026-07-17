@@ -24325,10 +24325,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
 
   function enableRealtimeMode()
   {
-    simDateTime = new Date();
-    guiControls.timeOfDay = simDateTime.getHours() + simDateTime.getMinutes() / 60. + simDateTime.getSeconds() / 3600.;
-    guiControls.month = simDateTime.getMonth() + 1 + simDateTime.getDate() / 30.5 + simDateTime.getHours() / 720.;
-    updateSunlight();
+    // Pace only: keep the current sim clock; sync wall-clock accumulator so speed is 1:1.
     resetRealtimeClockState();
     realtimeLastWallClockMs = performance.now();
   }
