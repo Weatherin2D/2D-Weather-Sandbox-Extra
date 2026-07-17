@@ -17569,7 +17569,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         lightningIconsPauseClockMs = 0;
       }
       if (proceduralLightningState.frozenVisualAge != null && proceduralLightningState.frozenVisualAge >= 0) {
-        const t = proceduralLightningState.frozenVisualAge / getLightningFlashDuration();
+        const t = proceduralLightningState.frozenVisualAge / getLightningVisualAgeSpan();
         proceduralLightningState.flashStartMs = performance.now() - t * getLightningVisualFlashMs();
         proceduralLightningState.frozenVisualAge = null;
       }
@@ -22160,9 +22160,6 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
 
   function getLightningIterScale()
   {
-    // Realtime runs ~0–1 iters/frame; don't stretch flash hold/animation by the GUI IterPerFrame.
-    if (guiControls.realtimeMode)
-      return 1;
     return Math.max(1, guiControls.IterPerFrame || 1);
   }
 
@@ -22172,9 +22169,16 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     return base * getLightningIterScale();
   }
 
+  function getLightningVisualAgeSpan()
+  {
+    // Always use GUI IterPerFrame so wall-clock flash stages match non-realtime / airplane.
+    const base = Math.max(6, Math.round(11 * (guiControls.flashDuration || 1.0)));
+    return base * Math.max(1, guiControls.IterPerFrame || 1);
+  }
+
   function getEffectiveLtFlashDuration()
   {
-    return (guiControls.flashDuration || 1.0) * getLightningIterScale();
+    return (guiControls.flashDuration || 1.0) * Math.max(1, guiControls.IterPerFrame || 1);
   }
 
   const LIGHTNING_VISUAL_FLASH_MS_BASE = 480;
@@ -22197,7 +22201,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     const t = (performance.now() - st.flashStartMs) / getLightningVisualFlashMs();
     if (t >= 1.0)
       return -1;
-    return t * getLightningFlashDuration();
+    return t * getLightningVisualAgeSpan();
   }
 
   function getCurrentLightTexture()
@@ -25972,7 +25976,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
                 weatherStations[i].measure();
               }
             }
-            if (!airplaneMode) {
+            if (!airplaneMode && !guiControls.realtimeMode) {
               iterNum++;
             }
           }
@@ -25998,6 +26002,14 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
           iterNum++;
           airplane.takeUserInput();
           airplane.move();
+        } else if (guiControls.realtimeMode && !guiControls.paused) {
+          // Match airplane: advance lightning / classic bolt clock every display frame.
+          // Physics iteration count stays wall-clock paced via getRealtimeIterationsThisFrame().
+          if (isLightningCpuReady()) {
+            refreshLightningFieldCache();
+            updateProceduralLightningState();
+          }
+          iterNum++;
         }
 
         // Update nukes
