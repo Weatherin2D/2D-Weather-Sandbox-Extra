@@ -4714,8 +4714,8 @@ const CUSTOM_WALLTYPE_FROM_INPUT = {
   17: 7,  // SUBURBAN
   15: 5,  // RUNWAY
   16: 6,  // INDUSTRIAL
-  29: 10, // CUSTOM_BASE
-  30: 11, // CUSTOM_OVERLAY
+  29: 10, // CUSTOM_BASE slot 0
+  30: 18, // CUSTOM_OVERLAY slot 0
 };
 const CUSTOM_GRASS_VEG_MAX = 50;
 const CUSTOM_FOREST_VEG_MAX = 127;
@@ -25539,7 +25539,6 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       var inputType = -1;
       var brushPosXinSim = -2.0;
       var brushIntensity = 0.0;
-      var pendingCustomBrushExtraPasses = null;
       if (leftMousePressed) {
         if (guiControls.tool == 'TOOL_NONE')
           inputType = 0; // only flashlight on
@@ -25588,7 +25587,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         else if (window.WeatherMpProtocol && window.WeatherMpProtocol.isCustomToolId &&
                  window.WeatherMpProtocol.isCustomToolId(guiControls.tool) &&
                  window.WeatherMpProtocol.isBrushTool(guiControls.tool)) {
-          // Primary pass rides the main advection; extras applied after advection.
+          // All custom passes are applied after boundary via brushOnly — keep advection idle.
           inputType = -1;
         }
 
@@ -25617,37 +25616,6 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         gl.uniform4f(uloc_adv_userInputValues, posXinSim, mouseYinSim, intensity, guiControls.brushSize * 0.5);
         gl.uniform2f(uloc_adv_userInputMove, moveX, moveY);
         gl.uniform1i(uloc_adv_wrapHorizontally, guiControls.wrapHorizontally);
-
-        // Resolve custom brush primary pass into advection uniforms
-        if (window.WeatherMpProtocol && window.WeatherMpProtocol.isCustomToolId &&
-            window.WeatherMpProtocol.isCustomToolId(guiControls.tool) &&
-            window.WeatherMpProtocol.isBrushTool(guiControls.tool)) {
-          const customBrush = computeBrushFromTool(
-            guiControls.tool, mouseXinSim, mouseYinSim, moveX, moveY, true);
-          const primary = customBrush && Array.isArray(customBrush.passes) && customBrush.passes.length
-            ? customBrush.passes[0]
-            : (customBrush && customBrush.inputType >= 0 ? customBrush : null);
-          if (primary && primary.inputType >= 0) {
-            inputType = primary.inputType;
-            brushPosXinSim = primary.x;
-            brushIntensity = primary.intensity;
-            gl.uniform4f(uloc_adv_userInputValues, primary.x, primary.y, primary.intensity, primary.brushSize * 0.5);
-            gl.uniform2f(uloc_adv_userInputMove, primary.moveX || 0, primary.moveY || 0);
-            gl.uniform1i(uloc_adv_wrapHorizontally, primary.wrap ? 1 : 0);
-            if (uloc_adv_userInputCustomSlot)
-              gl.uniform1i(uloc_adv_userInputCustomSlot, primary.customSlot != null ? primary.customSlot : 0);
-            if (uloc_adv_userInputSurfaceKind)
-              gl.uniform1i(uloc_adv_userInputSurfaceKind, primary.surfaceKind != null ? primary.surfaceKind : 0);
-            pendingCustomBrushExtraPasses = customBrush.passes.slice(1);
-          } else {
-            inputType = -1;
-            pendingCustomBrushExtraPasses = null;
-          }
-        } else {
-          pendingCustomBrushExtraPasses = null;
-        }
-      } else {
-        pendingCustomBrushExtraPasses = null;
       }
         gl.uniform1i(uloc_adv_userInputType, inputType);
 
@@ -25712,12 +25680,6 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
           let particleLightningCheckPending = guiControls.enablePrecipitation;
 
           for (var i = 0; i < numIterations; i++) { // Simulation loop
-            // Remote brushes: apply with brush-only so they persist (after boundary would be ideal;
-            // brush-only on *_0 is safe before velocity because velocity reads *_0).
-            if (isMultiplayerHost() && remoteActiveBrushes.size > 0) {
-              for (const brush of remoteActiveBrushes.values())
-                applyBrushInputToGpu(brush);
-            }
             // calc and apply velocity
             gl.useProgram(velocityProgram);
             if (uloc_vel_coriolisStrength)
@@ -25830,14 +25792,27 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
             gl.drawBuffers([ gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1, gl.COLOR_ATTACHMENT2 ]);
             gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
 
+            // Custom terrain/brush tools: paint with brushOnly onto *_0 (boundary output)
+            // so advection preserves mountains / forests instead of wiping them.
+            if (isPaintingCustomBrushTool() && !isMultiplayerPeer()) {
+              const customBrush = getLocalCustomBrushPayload();
+              if (customBrush && customBrush.active)
+                applyBrushInputToGpu(customBrush);
+            }
+            if (isMultiplayerHost() && remoteActiveBrushes.size > 0) {
+              for (const brush of remoteActiveBrushes.values())
+                applyBrushInputToGpu(brush);
+            }
+
             // calc and apply advection (always run when painting so tools work)
-            if (!guiControls.skipAdvection || (leftMousePressed && inputType > 0)) {
+            if (!guiControls.skipAdvection || (leftMousePressed && inputType > 0) || isPaintingCustomBrushTool()) {
               gl.useProgram(advectionProgram);
               gl.uniform1f(uloc_adv_iterNum, iterNum);
               gl.uniform1i(uloc_adv_wrapHorizontally, guiControls.wrapHorizontally);
-              // Re-assert primary brush type each iter (other programs may have rebound advection)
               if (leftMousePressed && inputType > 0)
                 gl.uniform1i(uloc_adv_userInputType, inputType);
+              else
+                gl.uniform1i(uloc_adv_userInputType, -1);
               gl.activeTexture(gl.TEXTURE0);
               gl.bindTexture(gl.TEXTURE_2D, baseTexture_0);
               gl.activeTexture(gl.TEXTURE1);
@@ -25847,10 +25822,6 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
               gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_1);
               gl.drawBuffers([ gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1, gl.COLOR_ATTACHMENT2 ]);
               gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
-
-              // Secondary custom-tool effect passes (moisture, veg, etc.) on advection output
-              if (pendingCustomBrushExtraPasses && pendingCustomBrushExtraPasses.length)
-                applyBrushPassesAfterAdvection(pendingCustomBrushExtraPasses);
 
               applyAirmassGeneratorsCpu();
               applyCustomToolEntitiesCpu();

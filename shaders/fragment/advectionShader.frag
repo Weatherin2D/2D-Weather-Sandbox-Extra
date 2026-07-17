@@ -402,7 +402,7 @@ void main()
           break;
         case 22:                                               // grass / shrub (legacy vegetation tool id)
         case 27:                                               // grass / shrub
-          if (wall[DISTANCE] == 0 && (wall[TYPE] == WALLTYPE_LAND || wall[TYPE] == WALLTYPE_FIRE || wall[TYPE] == WALLTYPE_URBAN || wall[TYPE] == WALLTYPE_SUBURBAN || wall[TYPE] == WALLTYPE_INDUSTRIAL) &&
+          if (wall[DISTANCE] == 0 && (wall[TYPE] == WALLTYPE_LAND || wall[TYPE] == WALLTYPE_FIRE || wall[TYPE] == WALLTYPE_URBAN || wall[TYPE] == WALLTYPE_SUBURBAN || wall[TYPE] == WALLTYPE_INDUSTRIAL || isCustomBase(wall[TYPE])) &&
               texture(wallTex, texCoordX0Yp)[DISTANCE] != 0) {
             if (wall[VEGETATION] > GRASS_VEG_MAX)
               wall[VEGETATION] = max(wall[VEGETATION] - 1, FOREST_VEG_MIN);
@@ -411,7 +411,7 @@ void main()
           }
           break;
         case 28:                                               // forest
-          if (wall[DISTANCE] == 0 && (wall[TYPE] == WALLTYPE_LAND || wall[TYPE] == WALLTYPE_FIRE || wall[TYPE] == WALLTYPE_URBAN || wall[TYPE] == WALLTYPE_SUBURBAN) &&
+          if (wall[DISTANCE] == 0 && (wall[TYPE] == WALLTYPE_LAND || wall[TYPE] == WALLTYPE_FIRE || wall[TYPE] == WALLTYPE_URBAN || wall[TYPE] == WALLTYPE_SUBURBAN || isCustomBase(wall[TYPE])) &&
               texture(wallTex, texCoordX0Yp)[DISTANCE] != 0) {
             if (wall[VEGETATION] <= GRASS_VEG_MAX)
               wall[VEGETATION] = FOREST_VEG_MIN;
@@ -419,21 +419,19 @@ void main()
               wall[VEGETATION] = min(wall[VEGETATION] + 1, FOREST_VEG_MAX);
           }
           break;
-        case 29: { // custom base terrain
+        case 29: { // custom base terrain (mountains / land replacement)
           int slot = clamp(userInputCustomSlot, 0, 7);
-          wall[TYPE] = WALLTYPE_CUSTOM_BASE;
-          wall[VEGETATION] = slot;
+          wall[TYPE] = makeCustomBaseType(slot);
           setWall = true;
           break;
         }
         case 30: // custom overlay on land (urban-like gate)
           if (wall[DISTANCE] == 0 &&
-              (wall[TYPE] == WALLTYPE_LAND || wall[TYPE] == WALLTYPE_CUSTOM_BASE ||
+              (wall[TYPE] == WALLTYPE_LAND || isCustomBase(wall[TYPE]) ||
                wall[TYPE] == WALLTYPE_RUNWAY || wall[TYPE] == WALLTYPE_INDUSTRIAL ||
-               wall[TYPE] == WALLTYPE_CUSTOM_OVERLAY) &&
+               isCustomOverlay(wall[TYPE])) &&
               texture(wallTex, texCoordX0Yp)[DISTANCE] != 0) {
-            wall[TYPE] = WALLTYPE_CUSTOM_OVERLAY;
-            wall[VEGETATION] = clamp(userInputCustomSlot, 0, 7);
+            wall[TYPE] = makeCustomOverlayType(clamp(userInputCustomSlot, 0, 7));
           }
           break;
         }
@@ -459,9 +457,8 @@ void main()
             base[TEMPERATURE] = CtoK(-5.0);
             if (water[SNOW] < 1.0)
               water[SNOW] = 10.0;
-          } else if (wall[TYPE] == WALLTYPE_CUSTOM_BASE) {
-            // Physics class from surfaceKind while keeping custom atlas slot in VEGETATION
-            int slot = wall[VEGETATION];
+          } else if (isCustomBase(wall[TYPE])) {
+            // Physics class from surfaceKind; atlas slot lives in TYPE (VEGETATION free for forests)
             if (userInputSurfaceKind == 1) { // fresh
               base[TEMPERATURE] = waterTemperature;
               water[SALINITY] = 0.0;
@@ -482,7 +479,6 @@ void main()
               water[SOIL_MOISTURE] = 25.0;
               water[SUSTAINED_MOISTURE] = 25.0;
             }
-            wall[VEGETATION] = slot;
           }
         }
       } else {
@@ -504,7 +500,7 @@ void main()
             if (wall[TYPE] == WALLTYPE_SUBURBAN) // remove suburban
               wall[TYPE] = WALLTYPE_LAND;
           } else if (userInputType == 30) {
-            if (wall[TYPE] == WALLTYPE_CUSTOM_OVERLAY)
+            if (isCustomOverlay(wall[TYPE]))
               wall[TYPE] = WALLTYPE_LAND;
           } else if (userInputType == 20) {        // remove moisture
             float moistureBrush = userInputValues[BRUSH_INTENSITY] * 10.0;

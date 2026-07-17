@@ -200,7 +200,8 @@ void main()
     if (wallX0Yp[DISTANCE] == 0) {                                                  // above is wall
       nextToWall = true;
       if (texCoord.y < 0.99 && (!allowCaves || isAnyWaterType(wallX0Yp[TYPE]))) { // Fill in land below
-        wall[TYPE] = WALLTYPE_LAND;
+        // Preserve custom terrain types when filling mountain interiors
+        wall[TYPE] = isCustomTerrain(wallX0Yp[TYPE]) ? wallX0Yp[TYPE] : WALLTYPE_LAND;
         wall[DISTANCE] = 0;                                                         //  set this to wall
       } else {
         wall[DISTANCE] = 1;
@@ -227,16 +228,15 @@ void main()
 
         float albedoTotal = 1.0;
 
-        if (wall[TYPE] == WALLTYPE_LAND || wall[TYPE] == WALLTYPE_FIRE || wall[TYPE] == WALLTYPE_CUSTOM_BASE) {
+        if (wall[TYPE] == WALLTYPE_LAND || wall[TYPE] == WALLTYPE_FIRE || isCustomBase(wall[TYPE])) {
           float albedoSoil = map_rangeC(soilMoisture, 0., 20., ALBEDO_DRYSOIL, ALBEDO_WETSOIL);
           albedoSoil = map_rangeC(snowCover, 0.0, fullWhiteSnowHeight, albedoSoil, ALBEDO_SNOW);                         // add snow albedo
           float fullVegetationAlbedo = map_range(snowCover, 0., fullWhiteSnowHeight, ALBEDO_FOREST, ALBEDO_SNOW_FOREST); // the albedo of full tree height with snow taken into account
-          // Custom base stores atlas slot in VEGETATION — treat as bare/low veg for albedo
-          float vegSample = (wall[TYPE] == WALLTYPE_CUSTOM_BASE) ? 0.0 : float(wallX0Ym[VEGETATION]);
+          float vegSample = float(wallX0Ym[VEGETATION]);
           float vegCover = max(grassBiomass(int(vegSample)) / float(GRASS_VEG_MAX) * 0.42,
             forestBiomass(int(vegSample)) / float(FOREST_VEG_MAX - GRASS_VEG_MAX));
           albedoTotal = mix(albedoSoil, fullVegetationAlbedo, clamp(vegCover, 0.0, 1.0));
-        } else if (wall[TYPE] == WALLTYPE_URBAN || wall[TYPE] == WALLTYPE_CUSTOM_OVERLAY) {
+        } else if (wall[TYPE] == WALLTYPE_URBAN || isCustomOverlay(wall[TYPE])) {
           albedoTotal = ALBEDO_URBAN;
         } else if (wall[TYPE] == WALLTYPE_SUBURBAN) {
           albedoTotal = ALBEDO_SUBURBAN;
@@ -290,12 +290,15 @@ void main()
 
       if (wall[VERT_DISTANCE] == 1) {
         float surfaceDrag = 0.0015; // water or runway
-        if (wall[TYPE] == WALLTYPE_URBAN || wall[TYPE] == WALLTYPE_CUSTOM_OVERLAY)
+        if (wall[TYPE] == WALLTYPE_URBAN || isCustomOverlay(wall[TYPE]))
           surfaceDrag = 0.040;
         else if (wall[TYPE] == WALLTYPE_SUBURBAN)
           surfaceDrag = 0.012;
-        else if (wall[TYPE] == WALLTYPE_CUSTOM_BASE)
-          surfaceDrag = 0.018;
+        else if (isCustomBase(wall[TYPE])) {
+          float gBio = grassBiomass(wall[VEGETATION]);
+          float fBio = forestBiomass(wall[VEGETATION]);
+          surfaceDrag = map_rangeC(fBio, 0., float(FOREST_VEG_MAX - GRASS_VEG_MAX), 0.0015 + gBio * 0.00004, 0.020);
+        }
         else if (wall[TYPE] == WALLTYPE_LAND || wall[TYPE] == WALLTYPE_FIRE) {
           float gBio = grassBiomass(wall[VEGETATION]);
           float fBio = forestBiomass(wall[VEGETATION]);
@@ -450,6 +453,7 @@ void main()
           }
         }
       case WALLTYPE_LAND:                                                                                     // no break,can also be fire or urban:
+      case 10: case 11: case 12: case 13: case 14: case 15: case 16: case 17: // custom base slots
         {
           float rainInput = precipDeposition[RAIN_DEPOSITION] * 0.1;
           float poreSpace = max(soilFieldCapacity - water[SOIL_MOISTURE], 0.0);

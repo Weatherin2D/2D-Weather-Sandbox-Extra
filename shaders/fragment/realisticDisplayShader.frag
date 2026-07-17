@@ -549,8 +549,8 @@ void main()
     case WALLTYPE_FIRE:
     case WALLTYPE_LAND:
     case WALLTYPE_SUBURBAN:
-    case WALLTYPE_CUSTOM_BASE:
-    case WALLTYPE_CUSTOM_OVERLAY:
+    case 10: case 11: case 12: case 13: case 14: case 15: case 16: case 17: // custom base slots
+    case 18: case 19: case 20: case 21: case 22: case 23: case 24: case 25: // custom overlay slots
 
       // horizontally interpolate depth value
       float interpDepth = mix(mix(float(-wallXmY0[VERT_DISTANCE]), float(-wall[VERT_DISTANCE]), clamp(fract(fragCoord.x) + 0.5, 0.5, 1.)), float(-wallXpY0[VERT_DISTANCE]), clamp(fract(fragCoord.x) - 0.5, 0., 0.5));
@@ -561,10 +561,10 @@ void main()
         color *= texture(noiseTex, vec2(texCoord.x * resolution.x, texCoord.y * resolution.y) * 0.2).rgb;
         color = mix(color, vec3(1.0), clamp(min(water[SNOW], fullWhiteSnowHeight) / fullWhiteSnowHeight - max(depth * 0.3, 0.), 0.0, 1.0));
         color = applyFloodTint(color);
-      } else if ((wall[TYPE] == WALLTYPE_CUSTOM_BASE || wall[TYPE] == WALLTYPE_CUSTOM_OVERLAY) && wall[VERT_DISTANCE] == 0) {
+      } else if (isCustomTerrain(wall[TYPE]) && wall[VERT_DISTANCE] == 0) {
         // Ground: land-like soil with a tint sample from the custom strip bottom
         color = getWallColor(depth);
-        int cslot = clamp(wall[VEGETATION], 0, 7);
+        int cslot = customAtlasSlot(wall[TYPE]);
         vec4 groundSample = customSurfaceTexture(cslot, vec2(mod(fragCoord.x, resolution.x) * 0.02, 0.92));
         if (groundSample.a > 0.2)
           color = mix(color, groundSample.rgb, 0.55);
@@ -700,12 +700,12 @@ void main()
       // Zoom-only: throttled visualQuality often stays ≤0.55 at default 3000×300, which hid trees.
       bool showSurfaceDetail = view[2] / resolution.x > 0.0025;
 
-      if (showSurfaceDetail && (wallX0Ym[TYPE] == WALLTYPE_CUSTOM_BASE || wallX0Ym[TYPE] == WALLTYPE_CUSTOM_OVERLAY)) {
+      if (showSurfaceDetail && isCustomTerrain(wallX0Ym[TYPE])) {
         float heightAboveGround = localY + float(wall[VERT_DISTANCE] - 1);
         float urbanTexHeightNorm = maxBuildingHeight / cellHeight;
         float urbanTexCoordX = mod(fragCoord.x, resolution.x) * texAspect / urbanTexHeightNorm;
         float urbanTexCoordY = 1.0 - (heightAboveGround / urbanTexHeightNorm);
-        int cslot = clamp(wallX0Ym[VEGETATION], 0, 7);
+        int cslot = customAtlasSlot(wallX0Ym[TYPE]);
         vec4 texCol = customSurfaceTexture(cslot, vec2(urbanTexCoordX, urbanTexCoordY));
         if (texCol.a > 0.5) {
           if (nightTime) {
@@ -817,7 +817,7 @@ void main()
 
         vec4 texCol = vec4(0.0);
         if (wallX0Ym[VEGETATION] > GRASS_VEG_MAX &&
-            (wallX0Ym[TYPE] == WALLTYPE_LAND || wallX0Ym[TYPE] == WALLTYPE_URBAN || wallX0Ym[TYPE] == WALLTYPE_SUBURBAN)) { // forest canopy only
+            (wallX0Ym[TYPE] == WALLTYPE_LAND || wallX0Ym[TYPE] == WALLTYPE_URBAN || wallX0Ym[TYPE] == WALLTYPE_SUBURBAN || isCustomBase(wallX0Ym[TYPE]))) { // forest canopy only
           vec4 surfaceWater = texture(waterTex, texCoordX0Ym);                     // snow on land below
           float snow = surfaceWater[SNOW];
           if (snow * 0.01 / cellHeight > heightAboveGround)

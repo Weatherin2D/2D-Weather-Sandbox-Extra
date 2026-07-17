@@ -220,9 +220,8 @@
           addPass(CUSTOM_OVERLAY_INPUT, mag);
         else
           addPass(14, mag); // urban fallback
-      } else if (opts.useCustomWall) {
-        addPass(CUSTOM_BASE_INPUT, mag);
       } else {
+        // Build mountains/terrain with the proven builtin wall brush first.
         const sk = opts.surfaceKind || 'land';
         const mapped = terrainToInputType(sk === 'custom' ? 'land' : sk);
         if (mapped != null) addPass(mapped, mag);
@@ -239,8 +238,8 @@
     addPass(23, effects.charge);
     addPass(20, effects.soilMoisture);
     addPass(21, effects.snow);
-    // Skip grass/forest when vegetation channel is an atlas slot, or for terrain overlays
-    if (!opts.useCustomWall && !(opts.terrainMode && opts.terrainRole === 'overlay')) {
+    // Grass/forest on the builtin land surface (before custom type stamp).
+    if (!(opts.terrainMode && opts.terrainRole === 'overlay')) {
       addPass(27, effects.grass);
       addPass(28, effects.forest);
       const friction = +effects.friction;
@@ -250,6 +249,12 @@
         else
           addPass(27, friction * Math.max(0.01, Math.abs(+baseBrush.intensity || 0.01)));
       }
+    }
+    // Stamp custom type + atlas slot last so VEGETATION from forest/grass is kept
+    // (atlas slot is encoded in TYPE, not VEGETATION).
+    if (opts.terrainMode && opts.terrainRole !== 'overlay' && opts.useCustomWall) {
+      const mag = Math.max(0.01, Math.abs(+baseBrush.intensity || 0.01));
+      addPass(CUSTOM_BASE_INPUT, mag);
     }
 
     const windX = +effects.windX || 0;
