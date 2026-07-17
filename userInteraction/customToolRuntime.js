@@ -327,8 +327,11 @@
 
     const hasTexture = !!(tool.textureDataUrl && Number.isFinite(+tool.atlasSlot) && +tool.atlasSlot >= 0);
     const terrainMode = tool.mode === 'terrain';
-    // Custom WALLTYPE_* + atlas only when a texture is assigned; otherwise use builtin surface kinds
-    const useCustomWall = hasTexture;
+    // Terrain tools always paint WALLTYPE_CUSTOM_* so they are a distinct surface type.
+    // Textured brushes also use the custom wall path.
+    const useCustomWall = terrainMode || hasTexture;
+    const slot = hasTexture ? +tool.atlasSlot
+      : (terrainMode && Number.isFinite(+tool.atlasSlot) && +tool.atlasSlot >= 0 ? +tool.atlasSlot : 0);
 
     const passes = effectsToBrushPasses(effects, baseBrush, {
       terrainMode: terrainMode,
@@ -337,7 +340,7 @@
       surfaceKindUniform: SURFACE_KIND_TO_UNIFORM[tool.surfaceKind] != null
         ? SURFACE_KIND_TO_UNIFORM[tool.surfaceKind]
         : 0,
-      customSlot: hasTexture ? +tool.atlasSlot : 0,
+      customSlot: slot,
       useCustomWall: useCustomWall,
     });
 
@@ -355,7 +358,7 @@
       active: passes.length > 0,
       passes: passes,
       customToolId: tool.id,
-      customSlot: hasTexture ? +tool.atlasSlot : 0,
+      customSlot: slot,
       surfaceKind: SURFACE_KIND_TO_UNIFORM[tool.surfaceKind] != null
         ? SURFACE_KIND_TO_UNIFORM[tool.surfaceKind]
         : 0,

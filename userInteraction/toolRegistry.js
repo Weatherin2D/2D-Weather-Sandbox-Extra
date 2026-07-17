@@ -445,13 +445,46 @@
     return -1;
   }
 
+  function defaultTerrainTextureDataUrl(surfaceKind) {
+    const colors = {
+      land: '#6b5344',
+      fresh: '#3a7a8c',
+      sea: '#1a4a6e',
+      iceSheet: '#c8dce8',
+      iceCap: '#e8f2f8',
+      custom: '#8a7058',
+    };
+    const fill = colors[surfaceKind] || colors.land;
+    try {
+      const canvas = document.createElement('canvas');
+      canvas.width = 256;
+      canvas.height = 128;
+      const ctx = canvas.getContext('2d');
+      ctx.fillStyle = fill;
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      // Simple facade bands so vertical walls have visible texture
+      ctx.fillStyle = 'rgba(255,255,255,0.12)';
+      for (let y = 8; y < canvas.height; y += 16)
+        ctx.fillRect(0, y, canvas.width, 2);
+      ctx.fillStyle = 'rgba(0,0,0,0.18)';
+      for (let x = 16; x < canvas.width; x += 32)
+        ctx.fillRect(x, 0, 2, canvas.height);
+      return canvas.toDataURL('image/png');
+    } catch (e) {
+      return null;
+    }
+  }
+
   function normalizeCustomTool(raw) {
     if (!raw || typeof raw !== 'object') return null;
     const id = raw.id && String(raw.id).startsWith('CUSTOM_') ? String(raw.id) : uid();
     const mode = normalizeMode(raw.mode);
-    const textureDataUrl = raw.textureDataUrl && String(raw.textureDataUrl).startsWith('data:')
+    let textureDataUrl = raw.textureDataUrl && String(raw.textureDataUrl).startsWith('data:')
       ? String(raw.textureDataUrl)
       : null;
+    // Terrain tools always get a texture strip (user upload or generated default)
+    if (mode === 'terrain' && !textureDataUrl)
+      textureDataUrl = defaultTerrainTextureDataUrl(normalizeSurfaceKind(raw.surfaceKind));
     let atlasSlot = Number.isFinite(+raw.atlasSlot) ? +raw.atlasSlot : null;
     if (textureDataUrl) {
       if (atlasSlot == null || atlasSlot < 0 || atlasSlot >= MAX_ATLAS_SLOTS)
@@ -549,7 +582,9 @@
   function upsertCustomTool(def) {
     const tool = normalizeCustomTool(def);
     if (!tool) return null;
-    if (tool.textureDataUrl) {
+    // Terrain tools need an atlas slot even if the default texture failed to generate
+    const needsSlot = !!(tool.textureDataUrl || tool.mode === 'terrain');
+    if (needsSlot) {
       const keep = Number.isFinite(+tool.atlasSlot) && +tool.atlasSlot >= 0
         && !usedAtlasSlots(tool.id).has(+tool.atlasSlot);
       if (!keep) {
@@ -558,6 +593,8 @@
           throw new Error('All ' + MAX_ATLAS_SLOTS + ' custom texture slots are in use. Delete a textured tool first.');
         tool.atlasSlot = slot;
       }
+      if (!tool.textureDataUrl && tool.mode === 'terrain')
+        tool.textureDataUrl = defaultTerrainTextureDataUrl(tool.surfaceKind);
     } else {
       tool.atlasSlot = null;
     }

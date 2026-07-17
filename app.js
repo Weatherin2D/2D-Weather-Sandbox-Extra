@@ -553,6 +553,12 @@ window.setGuiTool = function(tool)
   if (window.UserInteraction && window.UserInteraction.menu &&
       typeof window.UserInteraction.menu.refreshUserInteractionMenu === 'function')
     window.UserInteraction.menu.refreshUserInteractionMenu();
+  // Ensure custom terrain textures are uploaded before painting
+  if (window.UserInteraction && window.UserInteraction.atlas &&
+      window.WeatherMpProtocol && window.WeatherMpProtocol.isCustomToolId &&
+      window.WeatherMpProtocol.isCustomToolId(tool)) {
+    window.UserInteraction.atlas.scheduleRebuild();
+  }
   return true;
 };
 
@@ -2631,7 +2637,64 @@ const SOUNDING_VIEW_CONFIGS = [
   { mode: 'DISP_HAZ_FLOODING', key: 'hazardFlooding', scaleId: 'hazardProb', min: 0, max: 100, label: 'Flooding/Heavy Rain', unit: '%' },
   { mode: 'DISP_HAZ_GENERAL_TS', key: 'hazardGeneralThunderstorm', scaleId: 'hazardProb', min: 0, max: 100, label: 'General Thunderstorm', unit: '%' },
   { mode: 'DISP_FIRE_RISK', key: 'fireIndex', scaleId: 'fireRisk', min: 0, max: 80, label: 'Fire Risk', unit: '' },
+  { mode: 'DISP_SND_RAIN_ACCUM', key: 'rainAccum_mm', scaleId: 'radarAccum', min: 0, max: 75, label: 'Rain Accumulation', unit: 'mm' },
+  { mode: 'DISP_SND_SOIL_MOISTURE', key: 'soilMoisture_mm', scaleId: 'soundingSoil', min: 0, max: 150, label: 'Soil Moisture', unit: 'mm' },
+  { mode: 'DISP_SND_SNOW_DEPTH', key: 'snowDepth_cm', scaleId: 'soundingSnow', min: 0, max: 100, label: 'Snow Depth', unit: 'cm' },
 ];
+
+function isLandSurfaceWallType(wallType)
+{
+  return wallType === 1 || wallType === 3 || wallType === 4
+    || wallType === 5 || wallType === 6 || wallType === 7
+    || wallType === 10 || wallType === 11;
+}
+
+function sampleColumnRainAccumMm(sx, simResX, simResY)
+{
+  if (!radarAccumData || !radarAccumData.length) return 0;
+  const x0 = Math.max(0, Math.min(simResX - 1, Math.floor(sx)));
+  const x1 = Math.max(0, Math.min(simResX - 1, x0 + 1));
+  const t = clamp(sx - x0, 0, 1);
+  let maxAccum = 0;
+  for (let y = 0; y < simResY; y++) {
+    const a0 = radarAccumData[(y * simResX + x0) * 4 + 2]; // 24-hr channel
+    const a1 = radarAccumData[(y * simResX + x1) * 4 + 2];
+    const v = a0 + (a1 - a0) * t;
+    if (v > maxAccum) maxAccum = v;
+  }
+  return Math.max(0, maxAccum);
+}
+
+function sampleColumnSurfaceHydrology(waterAll, wallAll, sx, simResX, surfaceLevel)
+{
+  const x0 = Math.max(0, Math.min(simResX - 1, Math.floor(sx)));
+  const x1 = Math.max(0, Math.min(simResX - 1, x0 + 1));
+  const t = clamp(sx - x0, 0, 1);
+  const sfcWallY = surfaceLevel > 0 ? surfaceLevel - 1 : 0;
+  const i0 = (sfcWallY * simResX + x0) * 4;
+  const i1 = (sfcWallY * simResX + x1) * 4;
+  const land0 = isLandSurfaceWallType(wallAll[i0]);
+  const land1 = isLandSurfaceWallType(wallAll[i1]);
+  let soil = 0;
+  let snow = 0;
+  if (land0 || land1) {
+    const soil0 = land0 ? Math.max(0, waterAll[i0 + 2]) : 0;
+    const soil1 = land1 ? Math.max(0, waterAll[i1 + 2]) : 0;
+    const snow0 = land0 ? Math.max(0, waterAll[i0 + 3]) : 0;
+    const snow1 = land1 ? Math.max(0, waterAll[i1 + 3]) : 0;
+    if (land0 && land1) {
+      soil = soil0 + (soil1 - soil0) * t;
+      snow = snow0 + (snow1 - snow0) * t;
+    } else if (land0) {
+      soil = soil0;
+      snow = snow0;
+    } else {
+      soil = soil1;
+      snow = snow1;
+    }
+  }
+  return { soilMoisture_mm: soil, snowDepth_cm: snow };
+}
 
 function isSoundingDisplayMode(mode)
 {
@@ -2754,11 +2817,15 @@ function computeOverlayColumnBundle(baseAll, waterAll, wallAll, chargeAll, sx, s
     colScratch.vxRaw, colScratch.vyRaw, colScratch.waterArr, simResY, dz, {lite: opts.lite !== false});
   if (!metrics) return null;
 
+  const hydrology = sampleColumnSurfaceHydrology(
+    waterAll, wallAll, sx, simResX, metrics.surfaceLevel);
+  metrics.soilMoisture_mm = hydrology.soilMoisture_mm;
+  metrics.snowDepth_cm = hydrology.snowDepth_cm;
+  metrics.rainAccum_mm = sampleColumnRainAccumMm(sx, simResX, simResY);
+
   if (opts.needHazards) {
-    const xNear = Math.max(0, Math.min(simResX - 1, Math.round(sx)));
-    const soilMoistureSfc = waterAll[(metrics.surfaceLevel * simResX + xNear) * 4 + 2];
     Object.assign(metrics, computeColumnHazardsAndFire(
-      metrics, colScratch.envTempsC, colScratch.waterArr, soilMoistureSfc,
+      metrics, colScratch.envTempsC, colScratch.waterArr, metrics.soilMoisture_mm,
       colScratch.vxRaw, colScratch.vyRaw));
   }
 
@@ -14335,6 +14402,23 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         sfcWaterTempC = KtoC(baseTextureValues[4 * sfcWallY + 3]);
         sfcWaterLabel = sfcWallType === 9 ? 'Ice Temp' : 'Water Temp';
       }
+      const sfcIsLand = sfcWallType === 1 || sfcWallType === 3 || sfcWallType === 4
+        || sfcWallType === 5 || sfcWallType === 6 || sfcWallType === 7
+        || sfcWallType === 10 || sfcWallType === 11;
+      let sfcSoilMoistureMm = null;
+      let sfcSnowCm = null;
+      let sfcFloodMm = null;
+      if (sfcIsLand) {
+        const soilMm = waterTextureValues[4 * sfcWallY + 2];
+        const snowCm = waterTextureValues[4 * sfcWallY + 3];
+        if (Number.isFinite(soilMm) && soilMm > 0.05) {
+          sfcSoilMoistureMm = soilMm;
+          const flood = Math.max(0, soilMm - 85.0);
+          if (flood > 0.5) sfcFloodMm = flood;
+        }
+        if (Number.isFinite(snowCm) && snowCm > 0.05)
+          sfcSnowCm = snowCm;
+      }
 
       const surfaceWindSpeed = rawVelocityTo_ms(Math.sqrt(
         Math.pow(baseTextureValues[4 * surfaceLevel], 2) + Math.pow(baseTextureValues[4 * surfaceLevel + 1], 2)
@@ -15453,6 +15537,29 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
           skewTLeft + 4, sfcScrY + 14);
       }
 
+      // Surface soil moisture / flood / snow depth labels on the skew-T
+      if (sfcSoilMoistureMm != null || sfcSnowCm != null) {
+        const sfcScrY = scrYFromSimY(surfaceLevel);
+        let labelY = sfcScrY + (sfcWaterTempC !== null ? 28 : 14);
+        c.font = 'bold 11px Arial';
+        c.textAlign = 'left';
+        c.textBaseline = 'alphabetic';
+        if (sfcSoilMoistureMm != null) {
+          if (sfcFloodMm != null) {
+            c.fillStyle = '#4aa3ff';
+            c.fillText('🌊 Flood ' + printSoilMoisture(sfcFloodMm), skewTLeft + 4, labelY);
+          } else {
+            c.fillStyle = '#7ec8ff';
+            c.fillText('💧 Soil ' + printSoilMoisture(sfcSoilMoistureMm), skewTLeft + 4, labelY);
+          }
+          labelY += 14;
+        }
+        if (sfcSnowCm != null) {
+          c.fillStyle = '#e8f4ff';
+          c.fillText('❄ Snow ' + printSnowHeight(sfcSnowCm), skewTLeft + 4, labelY);
+        }
+      }
+
       if (balloonPathSamples && balloonPathSamples.length >= 2) {
         traceBalloonSkewField(balloonPathSamples, 'd', '#66CCFF', 2.5);
         const markSample = nearestBalloonSample(simYpos);
@@ -15924,6 +16031,14 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       ];
       if (sfcWaterTempC !== null) {
         parcelSfcRow.push([sfcWaterLabel || 'Water Temp', printTemp(sfcWaterTempC), 'water-temp']);
+      }
+      if (sfcFloodMm != null) {
+        parcelSfcRow.push(['Flood', printSoilMoisture(sfcFloodMm), 'flood']);
+      } else if (sfcSoilMoistureMm != null) {
+        parcelSfcRow.push(['Soil Moisture', printSoilMoisture(sfcSoilMoistureMm), 'soil']);
+      }
+      if (sfcSnowCm != null) {
+        parcelSfcRow.push(['Snow Depth', printSnowHeight(sfcSnowCm), 'snow']);
       }
       const parcelCols = [
         [parcelSfcRow],
@@ -18877,6 +18992,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     { id: 'lightningHotspots', name: 'Lightning Hotspots', col:47, stops: 33, interpolate: false },
     { id: 'hazardProb',        name: 'Hazard Probability', col:48, stops: 33, interpolate: false },
     { id: 'fireRisk',          name: 'Fire Risk',          col:49, stops: 33, interpolate: false },
+    { id: 'soundingSoil',      name: 'Soil Moisture (Sounding)', col:61, stops: 33, interpolate: false },
+    { id: 'soundingSnow',      name: 'Snow Depth (Sounding)',    col:62, stops: 33, interpolate: false },
     { id: 'radarZdr',          name: 'Radar ZDR',          col:50, stops: 33, interpolate: false },
     { id: 'radarKdp',          name: 'Radar KDP',          col:51, stops: 33, interpolate: false },
     { id: 'radarHca',          name: 'Radar HCA',          col:52, stops: 8,  interpolate: false },
@@ -19422,6 +19539,14 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       {t: 0.65, c: [255, 136, 0]},
       {t: 0.85, c: [255, 68, 0]},
       {t: 1, c: [255, 0, 0]},
+    ]);
+    buildPalette('soundingSoil', n33, 0, 150, [
+      {t: 0, c: [120, 80, 40]}, {t: 0.35, c: [160, 140, 60]}, {t: 0.55, c: [40, 140, 80]},
+      {t: 0.75, c: [20, 120, 200]}, {t: 1, c: [40, 80, 255]},
+    ]);
+    buildPalette('soundingSnow', n33, 0, 100, [
+      {t: 0, c: [40, 50, 70]}, {t: 0.25, c: [120, 150, 180]}, {t: 0.55, c: [200, 220, 240]},
+      {t: 1, c: [255, 255, 255]},
     ]);
     buildPalette('hailSize', n33, 0, 100, [
       {t: 0, c: [8, 12, 28]},
@@ -24470,50 +24595,138 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     window.WeatherMultiplayer.emitBrush(brush);
   };
 
-  function applySingleBrushPassToGpu(brush)
+  /**
+   * Apply brush pass(es) with brushOnlyMode so wall/terrain paints persist.
+   * Reads *_0, writes frameBuff_1, copies results back to *_0 (same as pause-edit).
+   */
+  function applyBrushPassesBrushOnly(passes)
   {
-    if (!brush || brush.inputType < 0) return;
-    gl.useProgram(advectionProgram);
-    gl.uniform1i(uloc_adv_userInputType, brush.inputType);
-    gl.uniform4f(uloc_adv_userInputValues, brush.x, brush.y, brush.intensity, brush.brushSize * 0.5);
-    gl.uniform2f(uloc_adv_userInputMove, brush.moveX || 0, brush.moveY || 0);
-    gl.uniform1i(uloc_adv_wrapHorizontally, brush.wrap ? 1 : 0);
-    if (uloc_adv_userInputCustomSlot)
-      gl.uniform1i(uloc_adv_userInputCustomSlot, brush.customSlot != null ? brush.customSlot : 0);
-    if (uloc_adv_userInputSurfaceKind)
-      gl.uniform1i(uloc_adv_userInputSurfaceKind, brush.surfaceKind != null ? brush.surfaceKind : 0);
-    if (brush.inputType === 23) {
-      gl.useProgram(chargeProgram);
-      gl.uniform4f(uloc_charge_userInputValues, brush.x, brush.y, brush.intensity, brush.brushSize * 0.5);
-      gl.uniform1i(uloc_charge_userInputType, brush.inputType);
-      gl.uniform1i(uloc_charge_invertTool, brush.invertTool ? 1 : 0);
-      gl.uniform1i(uloc_charge_wrapHorizontally, brush.wrap ? 1 : 0);
-      uploadChargeDischargeUniforms();
+    if (!passes || !passes.length) return;
+    gl.viewport(0, 0, sim_res_x, sim_res_y);
+    for (let p = 0; p < passes.length; p++) {
+      const pass = passes[p];
+      if (!pass || pass.inputType < 0) continue;
+      gl.useProgram(advectionProgram);
+      gl.uniform1i(uloc_adv_userInputType, pass.inputType);
+      gl.uniform4f(uloc_adv_userInputValues, pass.x, pass.y, pass.intensity, pass.brushSize * 0.5);
+      gl.uniform2f(uloc_adv_userInputMove, pass.moveX || 0, pass.moveY || 0);
+      gl.uniform1i(uloc_adv_wrapHorizontally, pass.wrap ? 1 : 0);
+      if (uloc_adv_userInputCustomSlot)
+        gl.uniform1i(uloc_adv_userInputCustomSlot, pass.customSlot != null ? pass.customSlot : 0);
+      if (uloc_adv_userInputSurfaceKind)
+        gl.uniform1i(uloc_adv_userInputSurfaceKind, pass.surfaceKind != null ? pass.surfaceKind : 0);
+      if (uloc_adv_brushOnlyMode)
+        gl.uniform1i(uloc_adv_brushOnlyMode, 1);
+      gl.uniform1f(uloc_adv_iterNum, iterNum);
       gl.activeTexture(gl.TEXTURE0);
-      gl.bindTexture(gl.TEXTURE_2D, baseTexture_1);
+      gl.bindTexture(gl.TEXTURE_2D, baseTexture_0);
       gl.activeTexture(gl.TEXTURE1);
       gl.bindTexture(gl.TEXTURE_2D, waterTexture_0);
       gl.activeTexture(gl.TEXTURE2);
       gl.bindTexture(gl.TEXTURE_2D, wallTexture_0);
-      gl.activeTexture(gl.TEXTURE3);
-      gl.bindTexture(gl.TEXTURE_2D, chargeTexture_0);
-      gl.bindFramebuffer(gl.FRAMEBUFFER, chargeFrameBuff_1);
-      gl.drawBuffers([ gl.COLOR_ATTACHMENT0 ]);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_1);
+      gl.drawBuffers([ gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1, gl.COLOR_ATTACHMENT2 ]);
       gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+
+      gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_1);
+      gl.readBuffer(gl.COLOR_ATTACHMENT0);
+      gl.bindTexture(gl.TEXTURE_2D, baseTexture_0);
+      gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, sim_res_x, sim_res_y);
+      gl.readBuffer(gl.COLOR_ATTACHMENT1);
+      gl.bindTexture(gl.TEXTURE_2D, waterTexture_0);
+      gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, sim_res_x, sim_res_y);
+      gl.readBuffer(gl.COLOR_ATTACHMENT2);
+      gl.bindTexture(gl.TEXTURE_2D, wallTexture_0);
+      gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, sim_res_x, sim_res_y);
+
+      if (pass.inputType === 23) {
+        gl.useProgram(chargeProgram);
+        gl.uniform4f(uloc_charge_userInputValues, pass.x, pass.y, pass.intensity, pass.brushSize * 0.5);
+        gl.uniform1i(uloc_charge_userInputType, pass.inputType);
+        gl.uniform1i(uloc_charge_invertTool, pass.invertTool ? 1 : 0);
+        gl.uniform1i(uloc_charge_wrapHorizontally, pass.wrap ? 1 : 0);
+        uploadChargeDischargeUniforms();
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, baseTexture_0);
+        gl.activeTexture(gl.TEXTURE1);
+        gl.bindTexture(gl.TEXTURE_2D, waterTexture_0);
+        gl.activeTexture(gl.TEXTURE2);
+        gl.bindTexture(gl.TEXTURE_2D, wallTexture_0);
+        gl.activeTexture(gl.TEXTURE3);
+        gl.bindTexture(gl.TEXTURE_2D, chargeTexture_0);
+        gl.bindFramebuffer(gl.FRAMEBUFFER, chargeFrameBuff_1);
+        gl.drawBuffers([ gl.COLOR_ATTACHMENT0 ]);
+        gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+      }
     }
-    applyUserBrushPass();
+    if (uloc_adv_brushOnlyMode) {
+      gl.useProgram(advectionProgram);
+      gl.uniform1i(uloc_adv_brushOnlyMode, 0);
+      gl.uniform1i(uloc_adv_userInputType, -1);
+    }
+  }
+
+  /**
+   * Apply extra custom-tool passes after the main advection write to *_1,
+   * then copy results back onto *_1 so pressure/display see them.
+   */
+  function applyBrushPassesAfterAdvection(passes)
+  {
+    if (!passes || !passes.length) return;
+    gl.viewport(0, 0, sim_res_x, sim_res_y);
+    for (let p = 0; p < passes.length; p++) {
+      const pass = passes[p];
+      if (!pass || pass.inputType < 0) continue;
+      gl.useProgram(advectionProgram);
+      gl.uniform1i(uloc_adv_userInputType, pass.inputType);
+      gl.uniform4f(uloc_adv_userInputValues, pass.x, pass.y, pass.intensity, pass.brushSize * 0.5);
+      gl.uniform2f(uloc_adv_userInputMove, pass.moveX || 0, pass.moveY || 0);
+      gl.uniform1i(uloc_adv_wrapHorizontally, pass.wrap ? 1 : 0);
+      if (uloc_adv_userInputCustomSlot)
+        gl.uniform1i(uloc_adv_userInputCustomSlot, pass.customSlot != null ? pass.customSlot : 0);
+      if (uloc_adv_userInputSurfaceKind)
+        gl.uniform1i(uloc_adv_userInputSurfaceKind, pass.surfaceKind != null ? pass.surfaceKind : 0);
+      if (uloc_adv_brushOnlyMode)
+        gl.uniform1i(uloc_adv_brushOnlyMode, 1);
+      gl.uniform1f(uloc_adv_iterNum, iterNum);
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, baseTexture_1);
+      gl.activeTexture(gl.TEXTURE1);
+      gl.bindTexture(gl.TEXTURE_2D, waterTexture_1);
+      gl.activeTexture(gl.TEXTURE2);
+      gl.bindTexture(gl.TEXTURE_2D, wallTexture_1);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_0);
+      gl.drawBuffers([ gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1, gl.COLOR_ATTACHMENT2 ]);
+      gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+
+      // Copy brushed result back to *_1 (advection output pair)
+      gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_0);
+      gl.readBuffer(gl.COLOR_ATTACHMENT0);
+      gl.bindTexture(gl.TEXTURE_2D, baseTexture_1);
+      gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, sim_res_x, sim_res_y);
+      gl.readBuffer(gl.COLOR_ATTACHMENT1);
+      gl.bindTexture(gl.TEXTURE_2D, waterTexture_1);
+      gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, sim_res_x, sim_res_y);
+      gl.readBuffer(gl.COLOR_ATTACHMENT2);
+      gl.bindTexture(gl.TEXTURE_2D, wallTexture_1);
+      gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, sim_res_x, sim_res_y);
+    }
+    if (uloc_adv_brushOnlyMode) {
+      gl.useProgram(advectionProgram);
+      gl.uniform1i(uloc_adv_brushOnlyMode, 0);
+      gl.uniform1i(uloc_adv_userInputType, -1);
+    }
   }
 
   function applyBrushInputToGpu(brush)
   {
     if (!brush) return;
     if (Array.isArray(brush.passes) && brush.passes.length) {
-      for (let i = 0; i < brush.passes.length; i++)
-        applySingleBrushPassToGpu(brush.passes[i]);
+      applyBrushPassesBrushOnly(brush.passes);
       return;
     }
     if (brush.inputType < 0) return;
-    applySingleBrushPassToGpu(brush);
+    applyBrushPassesBrushOnly([ brush ]);
   }
 
   function applyRemotePlacement(msg)
@@ -25198,50 +25411,36 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   // Pause-edit: apply brush without advancing weather, then resync ping-pong buffers.
   function applyPausedBrushEdit(optionalBrush)
   {
-    gl.viewport(0, 0, sim_res_x, sim_res_y);
-
-    const passes = (optionalBrush && Array.isArray(optionalBrush.passes) && optionalBrush.passes.length)
-      ? optionalBrush.passes
-      : [ null ];
-
-    for (let p = 0; p < passes.length; p++) {
-      const pass = passes[p];
-      gl.useProgram(advectionProgram);
-      if (pass) {
-        gl.uniform1i(uloc_adv_userInputType, pass.inputType);
-        gl.uniform4f(uloc_adv_userInputValues, pass.x, pass.y, pass.intensity, pass.brushSize * 0.5);
-        gl.uniform2f(uloc_adv_userInputMove, pass.moveX || 0, pass.moveY || 0);
-        gl.uniform1i(uloc_adv_wrapHorizontally, pass.wrap ? 1 : 0);
-        if (uloc_adv_userInputCustomSlot)
-          gl.uniform1i(uloc_adv_userInputCustomSlot, pass.customSlot != null ? pass.customSlot : 0);
-        if (uloc_adv_userInputSurfaceKind)
-          gl.uniform1i(uloc_adv_userInputSurfaceKind, pass.surfaceKind != null ? pass.surfaceKind : 0);
-      }
-      if (uloc_adv_brushOnlyMode)
-        gl.uniform1i(uloc_adv_brushOnlyMode, 1);
-      gl.uniform1f(uloc_adv_iterNum, iterNum);
-      gl.activeTexture(gl.TEXTURE0);
-      gl.bindTexture(gl.TEXTURE_2D, baseTexture_0);
-      gl.activeTexture(gl.TEXTURE1);
-      gl.bindTexture(gl.TEXTURE_2D, waterTexture_0);
-      gl.activeTexture(gl.TEXTURE2);
-      gl.bindTexture(gl.TEXTURE_2D, wallTexture_0);
-      gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_1);
-      gl.drawBuffers([ gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1, gl.COLOR_ATTACHMENT2 ]);
-      gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
-
-      // Ping-pong so the next pass reads the previous result
-      gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_1);
-      gl.readBuffer(gl.COLOR_ATTACHMENT0);
-      gl.bindTexture(gl.TEXTURE_2D, baseTexture_0);
-      gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, sim_res_x, sim_res_y);
-      gl.readBuffer(gl.COLOR_ATTACHMENT1);
-      gl.bindTexture(gl.TEXTURE_2D, waterTexture_0);
-      gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, sim_res_x, sim_res_y);
-      gl.readBuffer(gl.COLOR_ATTACHMENT2);
-      gl.bindTexture(gl.TEXTURE_2D, wallTexture_0);
-      gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, sim_res_x, sim_res_y);
+    if (optionalBrush && Array.isArray(optionalBrush.passes) && optionalBrush.passes.length) {
+      applyBrushPassesBrushOnly(optionalBrush.passes);
+      return;
     }
+    // Builtin single-type brush while paused: reuse existing uniforms already set on advectionProgram
+    gl.viewport(0, 0, sim_res_x, sim_res_y);
+    gl.useProgram(advectionProgram);
+    if (uloc_adv_brushOnlyMode)
+      gl.uniform1i(uloc_adv_brushOnlyMode, 1);
+    gl.uniform1f(uloc_adv_iterNum, iterNum);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, baseTexture_0);
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, waterTexture_0);
+    gl.activeTexture(gl.TEXTURE2);
+    gl.bindTexture(gl.TEXTURE_2D, wallTexture_0);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_1);
+    gl.drawBuffers([ gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1, gl.COLOR_ATTACHMENT2 ]);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+
+    gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_1);
+    gl.readBuffer(gl.COLOR_ATTACHMENT0);
+    gl.bindTexture(gl.TEXTURE_2D, baseTexture_0);
+    gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, sim_res_x, sim_res_y);
+    gl.readBuffer(gl.COLOR_ATTACHMENT1);
+    gl.bindTexture(gl.TEXTURE_2D, waterTexture_0);
+    gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, sim_res_x, sim_res_y);
+    gl.readBuffer(gl.COLOR_ATTACHMENT2);
+    gl.bindTexture(gl.TEXTURE_2D, wallTexture_0);
+    gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, sim_res_x, sim_res_y);
 
     if (uloc_adv_brushOnlyMode) {
       gl.useProgram(advectionProgram);
@@ -25325,6 +25524,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       var inputType = -1;
       var brushPosXinSim = -2.0;
       var brushIntensity = 0.0;
+      var pendingCustomBrushExtraPasses = null;
       if (leftMousePressed) {
         if (guiControls.tool == 'TOOL_NONE')
           inputType = 0; // only flashlight on
@@ -25373,7 +25573,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         else if (window.WeatherMpProtocol && window.WeatherMpProtocol.isCustomToolId &&
                  window.WeatherMpProtocol.isCustomToolId(guiControls.tool) &&
                  window.WeatherMpProtocol.isBrushTool(guiControls.tool)) {
-          // Custom brushes are applied via multi-pass below; keep advection input idle here.
+          // Primary pass rides the main advection; extras applied after advection.
           inputType = -1;
         }
 
@@ -25402,6 +25602,37 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         gl.uniform4f(uloc_adv_userInputValues, posXinSim, mouseYinSim, intensity, guiControls.brushSize * 0.5);
         gl.uniform2f(uloc_adv_userInputMove, moveX, moveY);
         gl.uniform1i(uloc_adv_wrapHorizontally, guiControls.wrapHorizontally);
+
+        // Resolve custom brush primary pass into advection uniforms
+        if (window.WeatherMpProtocol && window.WeatherMpProtocol.isCustomToolId &&
+            window.WeatherMpProtocol.isCustomToolId(guiControls.tool) &&
+            window.WeatherMpProtocol.isBrushTool(guiControls.tool)) {
+          const customBrush = computeBrushFromTool(
+            guiControls.tool, mouseXinSim, mouseYinSim, moveX, moveY, true);
+          const primary = customBrush && Array.isArray(customBrush.passes) && customBrush.passes.length
+            ? customBrush.passes[0]
+            : (customBrush && customBrush.inputType >= 0 ? customBrush : null);
+          if (primary && primary.inputType >= 0) {
+            inputType = primary.inputType;
+            brushPosXinSim = primary.x;
+            brushIntensity = primary.intensity;
+            gl.uniform4f(uloc_adv_userInputValues, primary.x, primary.y, primary.intensity, primary.brushSize * 0.5);
+            gl.uniform2f(uloc_adv_userInputMove, primary.moveX || 0, primary.moveY || 0);
+            gl.uniform1i(uloc_adv_wrapHorizontally, primary.wrap ? 1 : 0);
+            if (uloc_adv_userInputCustomSlot)
+              gl.uniform1i(uloc_adv_userInputCustomSlot, primary.customSlot != null ? primary.customSlot : 0);
+            if (uloc_adv_userInputSurfaceKind)
+              gl.uniform1i(uloc_adv_userInputSurfaceKind, primary.surfaceKind != null ? primary.surfaceKind : 0);
+            pendingCustomBrushExtraPasses = customBrush.passes.slice(1);
+          } else {
+            inputType = -1;
+            pendingCustomBrushExtraPasses = null;
+          }
+        } else {
+          pendingCustomBrushExtraPasses = null;
+        }
+      } else {
+        pendingCustomBrushExtraPasses = null;
       }
         gl.uniform1i(uloc_adv_userInputType, inputType);
 
@@ -25466,14 +25697,11 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
           let particleLightningCheckPending = guiControls.enablePrecipitation;
 
           for (var i = 0; i < numIterations; i++) { // Simulation loop
+            // Remote brushes: apply with brush-only so they persist (after boundary would be ideal;
+            // brush-only on *_0 is safe before velocity because velocity reads *_0).
             if (isMultiplayerHost() && remoteActiveBrushes.size > 0) {
               for (const brush of remoteActiveBrushes.values())
                 applyBrushInputToGpu(brush);
-            }
-            if (isPaintingCustomBrushTool() && !isMultiplayerPeer()) {
-              const customBrush = getLocalCustomBrushPayload();
-              if (customBrush && customBrush.active)
-                applyBrushInputToGpu(customBrush);
             }
             // calc and apply velocity
             gl.useProgram(velocityProgram);
@@ -25592,6 +25820,9 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
               gl.useProgram(advectionProgram);
               gl.uniform1f(uloc_adv_iterNum, iterNum);
               gl.uniform1i(uloc_adv_wrapHorizontally, guiControls.wrapHorizontally);
+              // Re-assert primary brush type each iter (other programs may have rebound advection)
+              if (leftMousePressed && inputType > 0)
+                gl.uniform1i(uloc_adv_userInputType, inputType);
               gl.activeTexture(gl.TEXTURE0);
               gl.bindTexture(gl.TEXTURE_2D, baseTexture_0);
               gl.activeTexture(gl.TEXTURE1);
@@ -25601,6 +25832,10 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
               gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_1);
               gl.drawBuffers([ gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1, gl.COLOR_ATTACHMENT2 ]);
               gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+
+              // Secondary custom-tool effect passes (moisture, veg, etc.) on advection output
+              if (pendingCustomBrushExtraPasses && pendingCustomBrushExtraPasses.length)
+                applyBrushPassesAfterAdvection(pendingCustomBrushExtraPasses);
 
               applyAirmassGeneratorsCpu();
               applyCustomToolEntitiesCpu();
@@ -26494,6 +26729,9 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         case 'DISP_HAZ_FLOODING':
         case 'DISP_HAZ_GENERAL_TS':
         case 'DISP_FIRE_RISK':
+        case 'DISP_SND_RAIN_ACCUM':
+        case 'DISP_SND_SOIL_MOISTURE':
+        case 'DISP_SND_SNOW_DEPTH':
           break;
         case 'DISP_CHARGE':
           // Charge view uses its own dedicated display shader (not universalDisplayProgram)
