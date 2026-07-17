@@ -639,14 +639,14 @@ const guiControls_default = {
   inactiveDroplets : 0,
   aboveZeroThreshold : 1.0, // PRECIPITATION
   subZeroThreshold : 0.005, // 0.01
-  spawnChance : 0.00005,
+  spawnChance : 0.00008,
   snowDensity : 0.2,        // 0.3
   fallSpeed : 0.0003,
-  growthRate0C : 0.0001,    // 0.0005
-  growthRate_30C : 0.001,   // 0.01
+  growthRate0C : 0.0005,
+  growthRate_30C : 0.005,
   freezingRate : 0.01,
   meltingRate : 0.01,
-  evapRate : 0.0008, // 0.0005
+  evapRate : 0.0005,
   displayMode : 'DISP_REAL',
   wrapHorizontally : true,
   SmoothCam : true,
@@ -693,7 +693,7 @@ const guiControls_default = {
   graphFixedY : 0,
   realDewPoint : false, // show real dew point in graph, instead of dew point with cloud water included
   enablePrecipitation : true,
-  showDrops : false,
+  showDrops : true,
   enableRainbows : true,
   smoothClouds : true, // Hermite-smoothed cloud edges (original smoother look)
   paused : false,
@@ -8602,6 +8602,8 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'meltingHeat'), guiControls.meltingHeat);
     gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'aboveZeroThreshold'), guiControls.aboveZeroThreshold);
     gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'subZeroThreshold'), guiControls.subZeroThreshold);
+    gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'inactiveDroplets'),
+                 guiControls.inactiveDroplets > 0 ? guiControls.inactiveDroplets : NUM_DROPLETS);
     gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'spawnChanceMult'), guiControls.spawnChance);
     gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'snowDensity'), guiControls.snowDensity);
     gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'fallSpeed'), guiControls.fallSpeed);
@@ -8700,6 +8702,17 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       guiControls.showDebugOverlay = guiControls_default.showDebugOverlay;
     if (guiControls.smoothClouds === undefined)
       guiControls.smoothClouds = guiControls_default.smoothClouds;
+    // Upgrade legacy weak precip defaults that prevent heavy rain shafts.
+    if (guiControls.growthRate0C != null && guiControls.growthRate0C <= 0.0001)
+      guiControls.growthRate0C = guiControls_default.growthRate0C;
+    if (guiControls.growthRate_30C != null && guiControls.growthRate_30C <= 0.001)
+      guiControls.growthRate_30C = guiControls_default.growthRate_30C;
+    if (guiControls.spawnChance != null && guiControls.spawnChance < 0.00005)
+      guiControls.spawnChance = guiControls_default.spawnChance;
+    if (guiControls.evapRate != null && guiControls.evapRate >= 0.0008)
+      guiControls.evapRate = guiControls_default.evapRate;
+    if (guiControls.showDrops === undefined)
+      guiControls.showDrops = true;
 
     if (typeof LightningV2 !== 'undefined') {
       // Apply June 8 defaults + Enhanced Realistic preset (same cold-start as 23613cd).
@@ -9335,6 +9348,8 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         initRainDrops();
         setupPrecipitationBuffers();
         guiControls.inactiveDroplets = NUM_DROPLETS;
+        gl.useProgram(precipitationProgram);
+        gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'inactiveDroplets'), NUM_DROPLETS);
       })
       .name('Enable Precipitation');
 
@@ -9464,7 +9479,12 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         initRainDrops();
         setupPrecipitationBuffers();
         guiControls.inactiveDroplets = NUM_DROPLETS;
+        gl.useProgram(precipitationProgram);
+        gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'inactiveDroplets'), NUM_DROPLETS);
+        if (typeof setGuiUniforms === 'function')
+          setGuiUniforms();
       })
+      .listen()
       .name('Reduce Precipitation');
     advanced_folder.add(guiControls, 'disableTempChangeHistory').name('Disable Temp History');
 
@@ -15970,12 +15990,22 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   {
     if (!guiControls.enablePrecipitation)
       return false;
-    if (guiControls.performanceAutoScaling === false && !guiControls.highResPerformanceMode)
+    // Legacy full quality unless high-res performance mode is on.
+    // Skipping precip while still decaying the precip field kills heavy shafts.
+    if (!guiControls.highResPerformanceMode) {
+      if (guiControls.performanceAutoScaling === false)
+        return true;
+      const pressure = getFramePressure();
+      const resCost = getResolutionCostFactor();
+      if (pressure > 0.60 || resCost > 3.0)
+        return iterIndex === 0;
+      if (pressure > 0.42 || resCost > 2.2)
+        return iterIndex === 0 || ((frameNum & 1) === 0 && (iterIndex & 1) === 0);
       return true;
+    }
     const pressure = getFramePressure();
     const resCost = getResolutionCostFactor();
-    // Aggressive high-res / load: precip at most once per frame (iter 0).
-    if (useLiteVisualsMode() || guiControls.highResPerformanceMode || resCost > 1.8 || pressure > 0.40)
+    if (useLiteVisualsMode() || resCost > 1.8 || pressure > 0.40)
       return iterIndex === 0;
     if (pressure > 0.22 || resCost > 1.25)
       return iterIndex === 0 || ((frameNum & 1) === 0 && (iterIndex & 1) === 0);
@@ -16851,6 +16881,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   }
 
   setupPrecipitationBuffers();
+  if (!(guiControls.inactiveDroplets > 0))
+    guiControls.inactiveDroplets = NUM_DROPLETS;
 
 
   /*
@@ -24057,14 +24089,15 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
               gl.drawArrays(gl.POINTS, 0, NUM_DROPLETS);
               gl.endTransformFeedback();
 
-              // sample to count number of inactive droplets
-              if (iterNum % 600 == 0) {
+              // sample to count number of inactive droplets (keep spawn rate stable)
+              if (iterNum % 60 == 0) {
                 gl.readBuffer(gl.COLOR_ATTACHMENT0);
                 if (!window._inactiveDropletScratch) window._inactiveDropletScratch = new Float32Array(4);
                 gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.FLOAT, window._inactiveDropletScratch);
-                guiControls.inactiveDroplets = window._inactiveDropletScratch[0];
+                const inactiveCount = Math.max(window._inactiveDropletScratch[0], 0);
+                guiControls.inactiveDroplets = inactiveCount;
                 // gl.useProgram(precipitationProgram); // already set
-                gl.uniform1f(uloc_precip_inactiveDroplets, window._inactiveDropletScratch[0]);
+                gl.uniform1f(uloc_precip_inactiveDroplets, inactiveCount > 0 ? inactiveCount : NUM_DROPLETS);
               }
 
               gl.bindTransformFeedback(gl.TRANSFORM_FEEDBACK, null);

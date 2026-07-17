@@ -126,8 +126,11 @@ void main()
     water[TOTAL] += precipEvaporation; // evaporating rain adds water vapor to air
 
 
-    //  0.004 for rain visualisation
-    water[PRECIPITATION] = max(water[PRECIPITATION] * 0.997 - 0.00001 + precipFeedback[MASS] * 0.005, 0.0);
+    // Rain visualisation intensity. Decay gently when precip particles did not
+    // run this iter (empty feedback) so auto-throttling cannot wipe shafts out.
+    float precipMassIn = precipFeedback[MASS];
+    float precipDecay = precipMassIn > 1e-7 ? 0.997 : 0.9995;
+    water[PRECIPITATION] = max(water[PRECIPITATION] * precipDecay - 0.000005 + precipMassIn * 0.018, 0.0);
 
 
     // rain removes smoke from air

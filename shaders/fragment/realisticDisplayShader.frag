@@ -619,6 +619,23 @@ void main()
     color = airColor.rgb;
     applyAirLightning(texCoord, cloudwater, water[PRECIPITATION], max(cloudwater * 13.6, 0.0));
 
+    // Rain / snow curtain sheets — precip shafts falling out of clouds
+    float precipAmt = water[PRECIPITATION];
+    if (precipAmt > 0.008) {
+      float noiseX  = texCoord.x * resolution.x * 0.55;
+      float noiseY  = texCoord.y * resolution.y * 0.30 - iterNum * 0.22;
+      float streak  = texture(noiseTex, vec2(noiseX, noiseY) * 0.012).r;
+      float streak2 = texture(noiseTex, vec2(noiseX * 1.7 + 0.3, noiseY * 0.9 + 0.15) * 0.018).r;
+      float curtain = pow(max((streak + streak2 * 0.65) - 0.48, 0.0) * 2.8, 1.6);
+      float tempC = KtoC(realTemp);
+      vec3 rainCol  = mix(vec3(0.42, 0.52, 0.68), vec3(0.88, 0.92, 0.98), smoothstep(0.0, -3.0, tempC));
+      // Strongest under cloud base (low cloudwater), fades inside dense cloud
+      float curtainOpacity = curtain * clamp(precipAmt * 24.0, 0.0, 0.88) * (1.0 - cloudwater * 1.35);
+      curtainOpacity = clamp(curtainOpacity, 0.0, 0.72);
+      rainCol *= mix(0.28, 1.0, lightIntensity);
+      color   = mix(color, rainCol, curtainOpacity);
+      opacity = clamp(opacity + curtainOpacity * 0.65, 0.0, 1.0);
+    }
 
     if (enableRainbows != 0 && visualQuality >= 0.55 && view[2] / resolution.x > 0.0025) {
     vec2 rainbowCenter = vec2(0.0, -1.5 + abs(localSunAngle) * 0.60);

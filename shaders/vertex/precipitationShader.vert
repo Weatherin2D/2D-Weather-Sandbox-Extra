@@ -103,9 +103,8 @@ void main()
 
       float spawnChance = ((water[CLOUD] - threshold) / (inactiveDroplets + 10.0)) * resolution.x * resolution.y * spawnChanceMult; // 20.0  50.0
 
-      //    float nrmRand = random2d(vec2(mass[WATER] * 0.2324, iterNum * 0.1783 + random(mass[ICE]))); // normalized random value
-
-      float nrmRand = fract(pow(water[CLOUD] * 10.0, 2.0));
+      // Must be real random — cloud-derived fract(pow(...)) gated most warm-cloud cells out of spawning.
+      float nrmRand = random2d(vec2(mass[WATER] * 0.2324, iterNum * 0.1783 + random(mass[ICE])));
 
       if (spawnChance > nrmRand) {                                       // spawn precipitation particle
         spawned = true;
@@ -143,7 +142,9 @@ void main()
           newMass[ICE] = 0.0;
           newDensity = 1.0;
         }
-        feedback[VAPOR] -= initalMass;
+        // VAPOR shares channel 2 with START_ITERNUM — do not overwrite lightning stamp
+        if (!lightningSpawned)
+          feedback[VAPOR] -= initalMass;
       }
     }
 
