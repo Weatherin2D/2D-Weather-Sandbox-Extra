@@ -22017,6 +22017,9 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
 
   function getLightningIterScale()
   {
+    // Realtime runs ~0–1 iters/frame; don't stretch flash hold/animation by the GUI IterPerFrame.
+    if (guiControls.realtimeMode)
+      return 1;
     return Math.max(1, guiControls.IterPerFrame || 1);
   }
 
@@ -23239,7 +23242,10 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     // Fast path: skip expensive lookback while an active flash is playing out
     if (proceduralLightningState.trackedEventId >= 0 && proceduralLightningState.trackedChannel) {
       const age = iterNum - proceduralLightningState.trackedEventId;
-      if (age >= 0 && age < getLightningFlashDuration()) {
+      const visualAge = getLightningVisualAge();
+      // Release once the wall-clock flash finishes so realtime does not block new strikes.
+      if (age >= 0 && age < getLightningFlashDuration()
+          && (visualAge >= 0 || !proceduralLightningState.flashStartMs)) {
         proceduralLightningState.eventAge = age;
         proceduralLightningState.eventId = proceduralLightningState.trackedEventId;
         proceduralLightningState.channelId = proceduralLightningState.trackedChannel.id;
@@ -23276,6 +23282,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         || proceduralLightningState.channelId !== active.channel.id) {
       proceduralLightningState.builtEventId = active.eventId;
       proceduralLightningState.strikes = buildProceduralStrikesForEvent(active.eventId, active.channel);
+      proceduralLightningState.flashStartMs = performance.now();
+      proceduralLightningState.frozenVisualAge = null;
       broadcastHostLightningFlash(active.eventId, active.channel, proceduralLightningState.strikes);
 
       for (let s = 0; s < proceduralLightningState.strikes.length; s++) {
@@ -23316,8 +23324,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   {
     const st = proceduralLightningState;
     const maxShader = typeof LightningV2 !== 'undefined' ? LightningV2.MAX_SHADER_STRIKES : 8;
-    // June 8 used iteration eventAge (not wall-clock visual age) to keep bolts uploaded.
-    const visualAge = st.eventAge >= 0 ? st.eventAge : -1;
+    // Wall-clock age so bolt/flash animation stays normal pace under realtimeMode.
+    const visualAge = getLightningVisualAge();
     const count = visualAge >= 0 ? Math.min(st.strikes.length, maxShader) : 0;
 
     let skipBoltPass = 0;
