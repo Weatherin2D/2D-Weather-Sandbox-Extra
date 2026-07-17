@@ -14414,7 +14414,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         if (Number.isFinite(soilMm) && soilMm > 0.05) {
           sfcSoilMoistureMm = soilMm;
           const flood = Math.max(0, soilMm - 85.0);
-          if (flood > 0.5) sfcFloodMm = flood;
+          if (flood > 0.1) sfcFloodMm = flood;
         }
         if (Number.isFinite(snowCm) && snowCm > 0.05)
           sfcSnowCm = snowCm;
@@ -15538,20 +15538,30 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       }
 
       // Surface soil moisture / flood / snow depth labels on the skew-T
-      if (sfcSoilMoistureMm != null || sfcSnowCm != null) {
+      if (sfcSoilMoistureMm != null || sfcSnowCm != null || sfcFloodMm != null) {
         const sfcScrY = scrYFromSimY(surfaceLevel);
         let labelY = sfcScrY + (sfcWaterTempC !== null ? 28 : 14);
-        c.font = 'bold 11px Arial';
+        c.font = 'bold 12px Arial';
         c.textAlign = 'left';
         c.textBaseline = 'alphabetic';
-        if (sfcSoilMoistureMm != null) {
-          if (sfcFloodMm != null) {
-            c.fillStyle = '#4aa3ff';
-            c.fillText('🌊 Flood ' + printSoilMoisture(sfcFloodMm), skewTLeft + 4, labelY);
-          } else {
-            c.fillStyle = '#7ec8ff';
+        if (sfcFloodMm != null) {
+          c.fillStyle = '#4fc3ff';
+          c.strokeStyle = 'rgba(0,0,0,0.65)';
+          c.lineWidth = 3;
+          const floodLabel = '🌊 Flood depth ' + printSoilMoisture(sfcFloodMm);
+          c.strokeText(floodLabel, skewTLeft + 4, labelY);
+          c.fillText(floodLabel, skewTLeft + 4, labelY);
+          labelY += 15;
+          if (sfcSoilMoistureMm != null) {
+            c.font = 'bold 11px Arial';
+            c.fillStyle = '#9ad0ff';
             c.fillText('💧 Soil ' + printSoilMoisture(sfcSoilMoistureMm), skewTLeft + 4, labelY);
+            labelY += 14;
+            c.font = 'bold 12px Arial';
           }
+        } else if (sfcSoilMoistureMm != null) {
+          c.fillStyle = '#7ec8ff';
+          c.fillText('💧 Soil ' + printSoilMoisture(sfcSoilMoistureMm), skewTLeft + 4, labelY);
           labelY += 14;
         }
         if (sfcSnowCm != null) {
@@ -16033,8 +16043,9 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         parcelSfcRow.push([sfcWaterLabel || 'Water Temp', printTemp(sfcWaterTempC), 'water-temp']);
       }
       if (sfcFloodMm != null) {
-        parcelSfcRow.push(['Flood', printSoilMoisture(sfcFloodMm), 'flood']);
-      } else if (sfcSoilMoistureMm != null) {
+        parcelSfcRow.push(['Flood Depth', printSoilMoisture(sfcFloodMm), 'flood']);
+      }
+      if (sfcSoilMoistureMm != null) {
         parcelSfcRow.push(['Soil Moisture', printSoilMoisture(sfcSoilMoistureMm), 'soil']);
       }
       if (sfcSnowCm != null) {

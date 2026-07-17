@@ -136,11 +136,24 @@ vec3 getWallColor(float depth)
   // Standing water / flash-flood tint when soil exceeds field capacity
   float floodDepth = max(water[SOIL_MOISTURE] - soilFieldCapacity, 0.0);
   if (floodVizStrength > 0.0 && floodDepth > 0.0) {
-    float floodAmt = clamp(floodDepth / 40.0, 0.0, 1.0) * floodVizStrength;
-    vec3 floodCol = vec3(0.15, 0.35, 0.65);
-    color = mix(color, floodCol, floodAmt * 0.85);
+    // Reach strong blue by ~12 mm of ponding so heavy rain is obvious
+    float floodAmt = clamp(floodDepth / 12.0, 0.0, 1.0) * floodVizStrength;
+    vec3 floodCol = vec3(0.10, 0.42, 0.92);
+    color = mix(color, floodCol, floodAmt * 0.95);
   }
 
+  return color;
+}
+
+// Apply flood tint to any surface color (suburban, custom ground, etc.)
+vec3 applyFloodTint(vec3 color)
+{
+  float floodDepth = max(water[SOIL_MOISTURE] - soilFieldCapacity, 0.0);
+  if (floodVizStrength > 0.0 && floodDepth > 0.0) {
+    float floodAmt = clamp(floodDepth / 12.0, 0.0, 1.0) * floodVizStrength;
+    vec3 floodCol = vec3(0.10, 0.42, 0.92);
+    return mix(color, floodCol, floodAmt * 0.95);
+  }
   return color;
 }
 
@@ -547,6 +560,7 @@ void main()
         color = getSuburbanGroundColor(suburbanWorldX(fragCoord.x));
         color *= texture(noiseTex, vec2(texCoord.x * resolution.x, texCoord.y * resolution.y) * 0.2).rgb;
         color = mix(color, vec3(1.0), clamp(min(water[SNOW], fullWhiteSnowHeight) / fullWhiteSnowHeight - max(depth * 0.3, 0.), 0.0, 1.0));
+        color = applyFloodTint(color);
       } else if ((wall[TYPE] == WALLTYPE_CUSTOM_BASE || wall[TYPE] == WALLTYPE_CUSTOM_OVERLAY) && wall[VERT_DISTANCE] == 0) {
         // Ground: land-like soil with a tint sample from the custom strip bottom
         color = getWallColor(depth);
@@ -554,6 +568,7 @@ void main()
         vec4 groundSample = customSurfaceTexture(cslot, vec2(mod(fragCoord.x, resolution.x) * 0.02, 0.92));
         if (groundSample.a > 0.2)
           color = mix(color, groundSample.rgb, 0.55);
+        color = applyFloodTint(color);
       } else {
         color = getWallColor(depth);
       }

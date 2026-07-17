@@ -454,14 +454,18 @@ void main()
           float rainInput = precipDeposition[RAIN_DEPOSITION] * 0.1;
           float poreSpace = max(soilFieldCapacity - water[SOIL_MOISTURE], 0.0);
           float infiltration = min(rainInput, min(maxInfiltrationRate, poreSpace * 0.25 + maxInfiltrationRate * 0.3));
+          float runoff = max(rainInput - infiltration, 0.0);
 
           water[SOIL_MOISTURE] = clamp(water[SOIL_MOISTURE] + infiltration, 0.0, 1000.0);
 
+          // Heavy rain that cannot infiltrate becomes standing water (flash flood ponding)
+          if (runoff > 0.0)
+            water[SOIL_MOISTURE] = clamp(water[SOIL_MOISTURE] + runoff, 0.0, 1000.0);
+
           if (water[SOIL_MOISTURE] > soilFieldCapacity) { // runoff / ponding from saturated soil
             float excess = water[SOIL_MOISTURE] - soilFieldCapacity;
-            // Slow drain so standing water persists for flood visualization
-            water[SOIL_MOISTURE] -= excess * 0.02;
-            // Lateral smoothing of ponded water toward neighbors is handled below
+            // Slow drain so standing water stays visible during/after heavy rain
+            water[SOIL_MOISTURE] -= excess * 0.008;
           }
 
           // Legacy saves: seed climate moisture from established vegetation, not one-off rain spikes
