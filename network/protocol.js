@@ -104,13 +104,13 @@
     if (tool === 'TOOL_NONE') return true;
     if (tool === 'TOOL_NUKE' || tool === 'TOOL_AIRPLANE') return false;
     return tool.startsWith('TOOL_') && ![
-      'TOOL_STATION', 'TOOL_BALLOON', 'TOOL_RADAR', 'TOOL_AIRMASS', 'TOOL_MARKER', 'TOOL_NUKE',
+      'TOOL_STATION', 'TOOL_BALLOON', 'TOOL_RADAR', 'TOOL_AIRMASS', 'TOOL_SYNOPTIC_LOW', 'TOOL_SYNOPTIC_HIGH', 'TOOL_MARKER', 'TOOL_NUKE',
     ].includes(tool);
   }
 
   function isPlacementTool(tool) {
     return [
-      'TOOL_STATION', 'TOOL_BALLOON', 'TOOL_RADAR', 'TOOL_AIRMASS', 'TOOL_MARKER',
+      'TOOL_STATION', 'TOOL_BALLOON', 'TOOL_RADAR', 'TOOL_AIRMASS', 'TOOL_SYNOPTIC_LOW', 'TOOL_SYNOPTIC_HIGH', 'TOOL_MARKER',
     ].includes(tool);
   }
 

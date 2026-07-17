@@ -21,7 +21,7 @@ precision highp isampler2D;
 #define soilFieldCapacity 85.0       // mm; soil pore space before runoff
 #define maxInfiltrationRate 1.2      // mm per iteration; caps burst infiltration from downpours
 #define sustainedMoistureGain 0.12   // fraction of infiltrated rain that builds long-term climate moisture
-#define sustainedMoistureDecay 0.00015 // mm per iteration; slow dry-out of climate moisture memory
+#define sustainedMoistureDecay 0.00002 // mm per iteration; climate moisture memory (was 0.00015 — drained greenness too fast)
 #define minVegetationMoisture 12.0   // mm sustained moisture required for vegetation growth
 
 #define iterPerSimDay 300000.0              // in-game iterations per day (timePerIteration = 0.00008 h)

@@ -126,11 +126,8 @@ void main()
     water[TOTAL] += precipEvaporation; // evaporating rain adds water vapor to air
 
 
-    // Rain visualisation intensity. Decay gently when precip particles did not
-    // run this iter (empty feedback) so auto-throttling cannot wipe shafts out.
-    float precipMassIn = precipFeedback[MASS];
-    float precipDecay = precipMassIn > 1e-7 ? 0.997 : 0.9995;
-    water[PRECIPITATION] = max(water[PRECIPITATION] * precipDecay - 0.000005 + precipMassIn * 0.018, 0.0);
+    //  0.004 for rain visualisation
+    water[PRECIPITATION] = max(water[PRECIPITATION] * 0.997 - 0.00001 + precipFeedback[MASS] * 0.005, 0.0);
 
 
     // rain removes smoke from air
@@ -456,9 +453,11 @@ void main()
 
           water[SOIL_MOISTURE] = clamp(water[SOIL_MOISTURE] + infiltration, 0.0, 1000.0);
 
-          if (water[SOIL_MOISTURE] > soilFieldCapacity) { // runoff from saturated soil
+          if (water[SOIL_MOISTURE] > soilFieldCapacity) { // runoff / ponding from saturated soil
             float excess = water[SOIL_MOISTURE] - soilFieldCapacity;
-            water[SOIL_MOISTURE] -= excess * 0.08;
+            // Slow drain so standing water persists for flood visualization
+            water[SOIL_MOISTURE] -= excess * 0.02;
+            // Lateral smoothing of ponded water toward neighbors is handled below
           }
 
           // Legacy saves: seed climate moisture from established vegetation, not one-off rain spikes

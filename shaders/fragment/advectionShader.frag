@@ -42,6 +42,7 @@ uniform float globalHeating;
 uniform float soundingForcing;
 uniform float waterTemperature;
 uniform float iterNum;
+uniform int brushOnlyMode; // 1 = copy fields + apply brush only (pause-edit; no advection/physics)
 
 layout(location = 0) out vec4 base;
 layout(location = 1) out vec4 water;
@@ -71,7 +72,13 @@ void main()
 
   float actualTempChange = 0.0, realTemp;
 
-  if (wall[DISTANCE] != 0) { // not wall
+  // Pause-edit path: copy state and only apply the brush — no advection, condensation, or gravity.
+  if (brushOnlyMode != 0) {
+    base = texture(baseTex, texCoord);
+    water = texture(waterTex, texCoord);
+    if (wall[DISTANCE] != 0)
+      realTemp = potentialToRealT(base[TEMPERATURE]);
+  } else if (wall[DISTANCE] != 0) { // not wall
 
     vec4 cellX0Y0 = texture(baseTex, texCoord);
     vec4 cellXmY0 = texture(baseTex, texCoordXmY0);

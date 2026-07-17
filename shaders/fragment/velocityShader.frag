@@ -14,6 +14,7 @@ uniform isampler2D wallTex;
 uniform float dragMultiplier;
 
 uniform float wind;
+uniform float coriolisStrength;
 
 uniform vec2 texelSize;
 // uniform vec2 resolution;
@@ -63,5 +64,13 @@ void main()
     // base[VY] * dragMultiplier;
 
     base[VX] += wind * 0.000001;
+
+    // Weak Coriolis-like deflection (f-plane). Strength 0 disables.
+    if (coriolisStrength > 1e-8 && wall[DISTANCE] != 0) {
+      float vx = base[VX];
+      float vy = base[VY];
+      base[VX] += -coriolisStrength * vy;
+      base[VY] += coriolisStrength * vx;
+    }
   }
 }

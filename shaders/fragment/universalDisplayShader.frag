@@ -15,6 +15,7 @@ uniform sampler2D colorScalesTex;
 
 uniform int quantityIndex; // wich quantity to display
 uniform float dispMultiplier;
+uniform float floodThreshold; // when > 0, display = max(0, cell[q] - floodThreshold)
 uniform int colorScaleColumn; // which column of colorScalesTex to sample (4=universal, 5=waterVapor)
 uniform int useUnipolarScale;  // 1 = clamp(val,0,1), 0 = bipolar (val+1)*0.5
 uniform int colorScaleStops;  // number of palette stops in colorScalesTex
@@ -31,7 +32,10 @@ void main()
   vec4 cell = texture(anyTex, texCoord);
   ivec2 wall = texture(wallTex, texCoord).xy;
 
-  float val = cell[quantityIndex] * dispMultiplier;
+  float raw = cell[quantityIndex];
+  if (floodThreshold > 0.0)
+    raw = max(raw - floodThreshold, 0.0);
+  float val = raw * dispMultiplier;
 
   if (wall[1] == 0) {  // is wall
     switch (wall[0]) { // wall type

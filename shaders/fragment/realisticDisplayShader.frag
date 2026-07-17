@@ -56,6 +56,7 @@ uniform vec4 cursor; // Xpos   Ypos  Size   type
 uniform float displayVectorField;
 uniform int enableRainbows;
 uniform float smoothClouds;
+uniform float floodVizStrength;
 
 uniform float iterNum;
 uniform float visualQuality;
@@ -102,7 +103,7 @@ vec4 surfaceTexture(int index, vec2 pos)
 
 vec3 getWallColor(float depth)
 {
-  float vegMoisture = water[SUSTAINED_MOISTURE]; // vegetation greenness follows sustained climate moisture
+  float vegMoisture = max(water[SUSTAINED_MOISTURE], water[SOIL_MOISTURE] * 0.65);
   vec3 vegetationCol = mix(greenGrassCol, dryGrassCol, max(1.0 - vegMoisture * (1. / fullGreenSoilMoisture), 0.)); // green to brown
 
   vec3 bareSoilCol = mix(bareDrySoilCol, bareWetSoilCol, map_rangeC(water[SOIL_MOISTURE], 0.0, 20.0, 0.0, 1.0));
@@ -117,6 +118,14 @@ vec3 getWallColor(float depth)
   color *= texture(noiseTex, vec2(texCoord.x * resolution.x, texCoord.y * resolution.y) * 0.2).rgb;                                   // add noise texture
 
   color = mix(color, vec3(1.0), clamp(min(water[SNOW], fullWhiteSnowHeight) / fullWhiteSnowHeight - max(depth * 0.3, 0.), 0.0, 1.0)); // mix in white for snow cover
+
+  // Standing water / flash-flood tint when soil exceeds field capacity
+  float floodDepth = max(water[SOIL_MOISTURE] - soilFieldCapacity, 0.0);
+  if (floodVizStrength > 0.0 && floodDepth > 0.0) {
+    float floodAmt = clamp(floodDepth / 40.0, 0.0, 1.0) * floodVizStrength;
+    vec3 floodCol = vec3(0.15, 0.35, 0.65);
+    color = mix(color, floodCol, floodAmt * 0.85);
+  }
 
   return color;
 }
@@ -619,23 +628,6 @@ void main()
     color = airColor.rgb;
     applyAirLightning(texCoord, cloudwater, water[PRECIPITATION], max(cloudwater * 13.6, 0.0));
 
-    // Rain / snow curtain sheets — precip shafts falling out of clouds
-    float precipAmt = water[PRECIPITATION];
-    if (precipAmt > 0.008) {
-      float noiseX  = texCoord.x * resolution.x * 0.55;
-      float noiseY  = texCoord.y * resolution.y * 0.30 - iterNum * 0.22;
-      float streak  = texture(noiseTex, vec2(noiseX, noiseY) * 0.012).r;
-      float streak2 = texture(noiseTex, vec2(noiseX * 1.7 + 0.3, noiseY * 0.9 + 0.15) * 0.018).r;
-      float curtain = pow(max((streak + streak2 * 0.65) - 0.48, 0.0) * 2.8, 1.6);
-      float tempC = KtoC(realTemp);
-      vec3 rainCol  = mix(vec3(0.42, 0.52, 0.68), vec3(0.88, 0.92, 0.98), smoothstep(0.0, -3.0, tempC));
-      // Strongest under cloud base (low cloudwater), fades inside dense cloud
-      float curtainOpacity = curtain * clamp(precipAmt * 24.0, 0.0, 0.88) * (1.0 - cloudwater * 1.35);
-      curtainOpacity = clamp(curtainOpacity, 0.0, 0.72);
-      rainCol *= mix(0.28, 1.0, lightIntensity);
-      color   = mix(color, rainCol, curtainOpacity);
-      opacity = clamp(opacity + curtainOpacity * 0.65, 0.0, 1.0);
-    }
 
     if (enableRainbows != 0 && visualQuality >= 0.55 && view[2] / resolution.x > 0.0025) {
     vec2 rainbowCenter = vec2(0.0, -1.5 + abs(localSunAngle) * 0.60);
@@ -778,7 +770,8 @@ void main()
           else {                                                                                                                                                  // display vegetation
             float treeScale = wallX0Ym[TYPE] == WALLTYPE_SUBURBAN ? 0.55 : 1.0;
             vec4 treeColor = surfaceTexture(FOREST, vec2(treeTexCoordX, treeTexCoordY * treeScale + (1.0 - treeScale) * 0.5));
-            vec4 vegetationCol = mix(treeColor, vec4(dryGrassCol, 1.), max(0.5 - surfaceWater[SUSTAINED_MOISTURE] * (0.5 / fullGreenSoilMoisture), 0.) * treeColor.a); // green to brown
+            float treeVegMoist = max(surfaceWater[SUSTAINED_MOISTURE], surfaceWater[SOIL_MOISTURE] * 0.65);
+            vec4 vegetationCol = mix(treeColor, vec4(dryGrassCol, 1.), max(0.5 - treeVegMoist * (0.5 / fullGreenSoilMoisture), 0.) * treeColor.a); // green to brown
             if (wallX0Ym[TYPE] == WALLTYPE_SUBURBAN)
               vegetationCol.a *= step(0.82, suburbanHash(floor(suburbanWorldX(fragCoord.x) / suburbanLotWidth) + 53.1));
             texCol = mix(vegetationCol, surfaceTexture(SNOW_FOREST, vec2(treeTexCoordX, treeTexCoordY * treeScale)), min(snow / fullWhiteSnowHeight, 1.0));
