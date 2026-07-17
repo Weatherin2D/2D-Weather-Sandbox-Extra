@@ -10679,8 +10679,15 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       .onChange(function() { guiControls.auto_IterPerFrame = false; })
       .name('Iterations / Frame').listen();
     advancedSimulation.add(guiControls, 'auto_IterPerFrame').name('Auto Adjust').listen();
+    advancedSimulation.add(guiControls, 'realtimeMode')
+      .onChange(function(on) {
+        if (on) enableRealtimeMode();
+        else resetRealtimeClockState();
+      })
+      .name('Realtime')
+      .listen();
     advancedSimulation.add(guiControls, 'slowMotion')
-      .name('Realtime');
+      .name('Slow Motion');
     advancedSimulation.add(guiControls, 'soundingMode')
       .onChange(function() {
         gl.useProgram(velocityProgram);
