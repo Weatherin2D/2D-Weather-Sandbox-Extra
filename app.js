@@ -21102,6 +21102,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   gl.uniform1i(gl.getUniformLocation(skyBackgroundDisplayProgram, 'ambientLightTex'), 9);
   gl.uniform1i(gl.getUniformLocation(skyBackgroundDisplayProgram, 'precipFeedbackTex'), 7);
   gl.uniform1i(gl.getUniformLocation(skyBackgroundDisplayProgram, 'planeTex'), 8);
+  gl.uniform1i(gl.getUniformLocation(skyBackgroundDisplayProgram, 'planeTexR'), 12);
   gl.uniform1i(gl.getUniformLocation(skyBackgroundDisplayProgram, 'planeGearTex'), 10);
   gl.uniform1i(gl.getUniformLocation(skyBackgroundDisplayProgram, 'sunColumnTex'), 11);
 
@@ -21495,6 +21496,12 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   // airplane per-frame
   const uloc_sky_planeDirectionAndGearPos = gl.getUniformLocation(skyBackgroundDisplayProgram, 'planeDirectionAndGearPos');
   const uloc_sky_planePos                 = gl.getUniformLocation(skyBackgroundDisplayProgram, 'planePos');
+  const uloc_sky_trafficPlaneCount        = gl.getUniformLocation(skyBackgroundDisplayProgram, 'trafficPlaneCount');
+  const uloc_sky_trafficPlanePos          = gl.getUniformLocation(skyBackgroundDisplayProgram, 'trafficPlanePos[0]');
+  const uloc_sky_trafficPlaneDirGear      = gl.getUniformLocation(skyBackgroundDisplayProgram, 'trafficPlaneDirGear[0]');
+  const SKY_MAX_TRAFFIC_PLANES = 16;
+  const skyTrafficPosScratch = new Float32Array(SKY_MAX_TRAFFIC_PLANES * 4);
+  const skyTrafficDirGearScratch = new Float32Array(SKY_MAX_TRAFFIC_PLANES * 2);
   const uloc_adv_airplaneValues           = gl.getUniformLocation(advectionProgram,            'airplaneValues');
 
   // radar texture slot uniforms
@@ -25974,7 +25981,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
 
       // draw background
       gl.activeTexture(gl.TEXTURE8);
-      gl.bindTexture(gl.TEXTURE_2D, airplane.directionIsLeft ? A380Texture : A380_R_Texture); // A380Texture
+      gl.bindTexture(gl.TEXTURE_2D, A380Texture); // left-facing (shader picks L/R per plane)
       gl.activeTexture(gl.TEXTURE9);
       gl.bindTexture(gl.TEXTURE_2D, ambientLightFBOs[0].texture);
       gl.activeTexture(gl.TEXTURE10);
@@ -25982,6 +25989,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       // Sky samples sunColumnTex on unit 11; realistic uses 11–13 for illum + 14 for sunColumn.
       gl.activeTexture(gl.TEXTURE11);
       gl.bindTexture(gl.TEXTURE_2D, sunColumnTexture);
+      gl.activeTexture(gl.TEXTURE12);
+      gl.bindTexture(gl.TEXTURE_2D, A380_R_Texture);
 
       gl.useProgram(skyBackgroundDisplayProgram);
       gl.uniform2f(uloc_sky_aspectRatios, sim_aspect, canvas_aspect);
@@ -25991,6 +26000,21 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       if (uloc_sky_visualQuality !== null)
         gl.uniform1f(uloc_sky_visualQuality, Math.min(sunlightVisualQuality, realisticVisualQuality));
       uploadSkyUniforms();
+
+      // NPC traffic planes → same sky A380 path as airplane mode
+      let trafficCount = 0;
+      skyTrafficPosScratch.fill(0);
+      skyTrafficDirGearScratch.fill(0);
+      if (window.AviationTraffic && typeof window.AviationTraffic.fillSkyUniforms === 'function') {
+        trafficCount = window.AviationTraffic.fillSkyUniforms(
+          skyTrafficPosScratch, skyTrafficDirGearScratch, SKY_MAX_TRAFFIC_PLANES);
+      }
+      if (uloc_sky_trafficPlaneCount)
+        gl.uniform1i(uloc_sky_trafficPlaneCount, trafficCount);
+      if (uloc_sky_trafficPlanePos)
+        gl.uniform4fv(uloc_sky_trafficPlanePos, skyTrafficPosScratch);
+      if (uloc_sky_trafficPlaneDirGear)
+        gl.uniform2fv(uloc_sky_trafficPlaneDirGear, skyTrafficDirGearScratch);
 
       gl.drawBuffers([ gl.COLOR_ATTACHMENT0 ]);
 

@@ -1164,36 +1164,14 @@
 
   installPointerHooks();
 
-  // ─── A380 assets (same as flight mode) ────────────────────────────────────
-
-  let a380ImgL = null;
-  let a380ImgR = null;
-  let a380GearImg = null;
-  let a380ImagesReady = false;
-
-  function ensureA380Images() {
-    if (a380ImgL) return;
-    a380ImgL = new Image();
-    a380ImgR = new Image();
-    a380GearImg = new Image();
-    let loaded = 0;
-    const onLoad = () => {
-      loaded++;
-      if (loaded >= 2) a380ImagesReady = true;
-    };
-    a380ImgL.onload = onLoad;
-    a380ImgR.onload = onLoad;
-    a380ImgL.src = 'resources/img/A380.png';
-    a380ImgR.src = 'resources/img/A380_R.png';
-    a380GearImg.src = 'resources/img/A380_gear.png';
-  }
+  // A380 textures come from WebGL (same as airplane mode). DOM images unused.
+  function ensureA380Images() { /* no-op — sky shader uses A380Texture / A380_R_Texture */ }
   ensureA380Images();
 
-  // ─── TrafficPlane (A380 look + balloon-style sim-iter physics) ─────────────
+  // ─── TrafficPlane (in-sim A380 via sky shader + path-follow physics) ───────
 
   class TrafficPlane {
     constructor(fromAirport, toAirport, route, cruiseAltM) {
-      ensureA380Images();
       this.id = uidPlane();
       this.routeId = route ? route.id : null;
       this.fromId = fromAirport.id;
@@ -1228,21 +1206,9 @@
 
       this._syncMetersFromCells();
 
-      this._width = 220;
-      this._height = 110;
-      this._mainDiv = document.createElement('div');
-      this._canvas = document.createElement('canvas');
-      this._mainDiv.appendChild(this._canvas);
-      document.body.appendChild(this._mainDiv);
-      this._canvas.width = this._width;
-      this._canvas.height = this._height;
-      this._mainDiv.style.position = 'absolute';
-      this._mainDiv.style.width = '0px';
-      this._mainDiv.style.height = '0px';
-      this._mainDiv.style.pointerEvents = 'none';
-      this._c = this._canvas.getContext('2d');
-      this._canvas.style.position = 'absolute';
-      this._canvas.style.zIndex = '3';
+      // Rendered in-sim via sky A380 shader (same path as airplane mode) — no DOM sprite
+      this._mainDiv = null;
+      this._canvas = null;
     }
 
     _syncMetersFromCells() {
@@ -1251,6 +1217,23 @@
       this.posY = this._y * ch;
       this._pitch = this.angle;
       this._heading = this.directionIsLeft ? -1 : 1;
+    }
+
+    /** Norm coords + angle/gear matching Airplane.display / sky uniforms */
+    fillSkySlot(posArr, dirGearArr, slot) {
+      const sx = typeof sim_res_x === 'number' ? sim_res_x : 1;
+      const sy = typeof sim_res_y === 'number' ? sim_res_y : 1;
+      const normX = wrapSimX(this._x) / sx;
+      const normY = (this._y + 1.0) / sy;
+      const angle = this.directionIsLeft ? this.angle : -this.angle;
+      // Match airplane gear visual: 0 = down, higher = retracted
+      const gearPos = this.gearExtPos;
+      posArr[slot * 4 + 0] = normX;
+      posArr[slot * 4 + 1] = normY;
+      posArr[slot * 4 + 2] = angle;
+      posArr[slot * 4 + 3] = 0;
+      dirGearArr[slot * 2 + 0] = this.directionIsLeft ? 1 : 0;
+      dirGearArr[slot * 2 + 1] = gearPos;
     }
 
     _getRoutePathCells() {
@@ -1526,85 +1509,8 @@
       this.destroy();
     }
 
-    _planePixelSize() {
-      const ch = typeof cellHeight === 'number' ? cellHeight : 50;
-      // Flight-mode A380 uses scaleMult = 60/cellHeight; ~72 m long on screen
-      const lenCells = 72 / ch;
-      if (typeof simToScreenX === 'function') {
-        const a = simToScreenX(this._x);
-        const b = simToScreenX(this._x + lenCells);
-        return clamp(Math.abs(b - a), 48, 480);
-      }
-      return 140;
-    }
-
     updateCanvas() {
-      if (!this._alive) return;
-      const pxSize = this._planePixelSize();
-      const w = Math.ceil(pxSize * 1.4);
-      const h = Math.ceil(pxSize * 0.7);
-      if (this._canvas.width !== w || this._canvas.height !== h) {
-        this._canvas.width = w;
-        this._canvas.height = h;
-        this._width = w;
-        this._height = h;
-      }
-      const screenX = simToScreenX(this._x) - w / 2;
-      const screenY = simToScreenY(this._y) - h / 2;
-      this._mainDiv.style.left = screenX + 'px';
-      this._mainDiv.style.top = screenY + 'px';
-
-      const c = this._c;
-      c.clearRect(0, 0, w, h);
-      c.save();
-      c.translate(w / 2, h / 2);
-      // Align sprite with velocity: +angle = nose up in sim (Y up).
-      // Canvas Y is down, so left-facing uses -angle, right-facing uses +angle.
-      const faceLeft = this.directionIsLeft;
-      c.rotate(faceLeft ? -this.angle : this.angle);
-
-      const img = faceLeft ? a380ImgL : a380ImgR;
-      const iw = pxSize;
-      const ih = img && img.naturalWidth > 0
-        ? pxSize * (img.naturalHeight / img.naturalWidth)
-        : pxSize * 0.4;
-
-      if (a380ImagesReady && img && img.complete && img.naturalWidth > 0) {
-        c.globalAlpha = this._state === 'distressed' ? 0.88 : 1;
-
-        // Gear only when clearly extended (avoid mid-cruise gear crumbs looking like debris)
-        if (this.gearExtPos < 1.5 && a380GearImg && a380GearImg.complete && a380GearImg.naturalWidth > 0) {
-          const gearDrop = (1.5 - this.gearExtPos) * 0.05 * ih;
-          const gw = iw * 0.5;
-          const gh = ih * 0.45;
-          c.globalAlpha = 0.95;
-          if (faceLeft)
-            c.drawImage(a380GearImg, -iw * 0.2, ih * 0.12 + gearDrop, gw, gh);
-          else {
-            c.save();
-            c.scale(-1, 1);
-            c.drawImage(a380GearImg, -iw * 0.2, ih * 0.12 + gearDrop, gw, gh);
-            c.restore();
-          }
-          c.globalAlpha = this._state === 'distressed' ? 0.88 : 1;
-        }
-
-        if (this._smoke > 0.1) {
-          c.fillStyle = 'rgba(30,30,30,' + Math.min(0.65, this._smoke) + ')';
-          c.beginPath();
-          c.arc(faceLeft ? iw * 0.32 : -iw * 0.32, -ih * 0.05, 5 + this._smoke * 10, 0, Math.PI * 2);
-          c.fill();
-        }
-
-        c.drawImage(img, -iw / 2, -ih / 2, iw, ih);
-      } else {
-        c.fillStyle = this._state === 'distressed' ? '#c44' : '#cfd8e3';
-        c.scale(faceLeft ? 1 : -1, 1);
-        c.beginPath();
-        c.ellipse(0, 0, pxSize * 0.45, pxSize * 0.08, 0, 0, Math.PI * 2);
-        c.fill();
-      }
-      c.restore();
+      // Planes are drawn by the sky A380 shader — no DOM overlay.
     }
 
     destroy() {
@@ -2005,6 +1911,18 @@
     return false;
   }
 
+  function fillSkyUniforms(posArr, dirGearArr, maxPlanes) {
+    const cap = Math.min(maxPlanes || 16, trafficPlanes.length);
+    let n = 0;
+    for (let i = 0; i < trafficPlanes.length && n < cap; i++) {
+      const p = trafficPlanes[i];
+      if (!p || !p._alive) continue;
+      p.fillSkySlot(posArr, dirGearArr, n);
+      n++;
+    }
+    return n;
+  }
+
   function setDisplayAirports(v) { displayAirports = !!v; }
   function setDisplayFlightRoutes(v) { displayFlightRoutes = !!v; }
 
@@ -2024,6 +1942,7 @@
     clearAll,
     step,
     updateOverlays,
+    fillSkyUniforms,
     buildSavedForGuiControls,
     restoreFromGuiControls,
     syncInfrastructure,
