@@ -133,8 +133,8 @@ float floodPondingMm()
   return max(water[SOIL_MOISTURE] - soilFieldCapacity, 0.0);
 }
 
-// Floodwater mix amount: 0 = fully transparent (land shows through), 1 = opaque blue.
-// Small ponding stays clear; deeper standing water becomes opaque. Also fades with vertical depth.
+// Floodwater mix amount: land shows through when shallow; deep ponding goes opaque.
+// Any real ponding stays clearly blue — small amounts are translucent, not invisible.
 float floodSheetOpacity(float depth)
 {
   if (floodVizStrength <= 0.0)
@@ -142,17 +142,17 @@ float floodSheetOpacity(float depth)
   float floodDepth = floodPondingMm();
   if (floodDepth <= 0.0)
     return 0.0;
-  float depthFade = 1.0 - smoothstep(0.0, 0.9, max(depth, 0.0));
-  // ~0–3 mm nearly clear, ~25 mm approaches opaque (scaled by floodVizStrength)
-  float amount = clamp(floodDepth / 25.0, 0.0, 1.0);
-  amount *= amount; // ease-in so light flooding stays transparent
-  float a = amount * clamp(floodVizStrength, 0.0, 2.5) * 0.9;
-  return clamp(a, 0.0, 0.92) * depthFade;
+  float depthFade = 1.0 - smoothstep(0.0, 1.1, max(depth, 0.0));
+  // ~1 mm lightly visible, ~8 mm strong, ~16 mm nearly opaque
+  float amount = clamp(floodDepth / 16.0, 0.0, 1.0);
+  amount = pow(amount, 0.65); // boost shallow ponding so it stays readable
+  float a = mix(0.28, 0.95, amount) * clamp(floodVizStrength, 0.0, 2.5);
+  return clamp(a, 0.0, 0.95) * depthFade;
 }
 
 vec3 floodWaterColor()
 {
-  return vec3(0.08, 0.55, 1.0);
+  return vec3(0.12, 0.58, 1.0);
 }
 
 vec3 getLandColor(float depth)
@@ -1015,7 +1015,7 @@ void main()
     float depthLit = float(-wall[VERT_DISTANCE]) - fract(fragCoord.y);
     float floodA = floodSheetOpacity(max(depthLit, 0.0));
     if (floodA > 0.0)
-      finalColor = mix(finalColor, floodWaterColor(), clamp(floodA * 0.55, 0.0, 0.75));
+      finalColor = mix(finalColor, floodWaterColor(), clamp(floodA * 0.75, 0.0, 0.9));
   }
 
   fragmentColor = vec4(finalColor, opacity);

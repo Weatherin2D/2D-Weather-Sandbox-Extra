@@ -18344,7 +18344,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
 
   // load shaders
-  const SHADER_ASSET_VERSION = 21; // bump to bust CDN/browser cache after shader edits
+  const SHADER_ASSET_VERSION = 22; // bump to bust CDN/browser cache after shader edits
 
   var commonSource = await loadSourceFile('shaders/common.glsl');
   var commonDisplaySource = await loadSourceFile('shaders/commonDisplay.glsl');
@@ -27367,7 +27367,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
           gl.bindTexture(gl.TEXTURE_2D, waterTexture_1);
           gl.uniform1i(uloc_univ_quantityIndex, 2);
           gl.uniform1f(uloc_univ_floodThreshold, 85.0); // soilFieldCapacity
-          gl.uniform1f(uloc_univ_dispMultiplier, 0.04); // ~25 mm ponding → full scale
+          gl.uniform1f(uloc_univ_dispMultiplier, 0.07); // ~14 mm ponding → full scale
           gl.uniform1i(uloc_univ_colorScaleColumn, 5);
           gl.uniform1i(uloc_univ_useUnipolarScale, 1);
           colorScaleStops = 33;
