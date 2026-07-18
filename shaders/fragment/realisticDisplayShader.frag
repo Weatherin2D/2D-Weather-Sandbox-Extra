@@ -152,7 +152,8 @@ float floodSheetOpacity(float depth)
 
 vec3 floodWaterColor()
 {
-  return vec3(0.12, 0.58, 1.0);
+  // Muted water blue — lighting/shadows darken this further (not a neon unlit glow)
+  return vec3(0.04, 0.22, 0.42);
 }
 
 vec3 getLandColor(float depth)
@@ -1010,12 +1011,15 @@ void main()
     opacity = mix(opacity, max(opacity, 0.4), fogAmt * 0.45);
   }
 
-  // Keep flooded sheet readable after lighting (land only); mix amount = transparency
+  // Soft wet highlight only — keep flood tint lit/shadowed (do not re-apply unlit neon blue)
   if (wall[DISTANCE] == 0 && isFloodTintLandType(wall[TYPE]) && floodPondingMm() > 0.0) {
     float depthLit = float(-wall[VERT_DISTANCE]) - fract(fragCoord.y);
     float floodA = floodSheetOpacity(max(depthLit, 0.0));
-    if (floodA > 0.0)
-      finalColor = mix(finalColor, floodWaterColor(), clamp(floodA * 0.75, 0.0, 0.9));
+    if (floodA > 0.0) {
+      float sunLit = clamp(max(lightIntensity, shadowLight), 0.05, 1.0);
+      vec3 shadowedFlood = floodWaterColor() * sunLit;
+      finalColor = mix(finalColor, shadowedFlood, clamp(floodA * 0.35 * sunLit, 0.0, 0.55));
+    }
   }
 
   fragmentColor = vec4(finalColor, opacity);

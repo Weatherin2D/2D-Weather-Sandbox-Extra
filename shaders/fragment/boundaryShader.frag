@@ -52,6 +52,7 @@ layout(location = 2) out ivec4 wall;
 #define minimalFireVegetation 20
 
 #define minimalFireIntensity 0.002
+#define significantFloodMm 3.0 // standing water above field capacity that instantly quenches fire
 
 #define wallVerticalInfluence 1 // 2 How many cells above the wall surface effects like heating and evaporation are applied
 
@@ -357,9 +358,12 @@ void main()
       switch (wall[TYPE]) {
       case WALLTYPE_FIRE:
         if (wall[VERT_DISTANCE] == 1) { // forest fire & one above surface
-          float fireIntensity = calcFireIntensity(wall[VEGETATION], waterInSurface[SOIL_MOISTURE], water[PRECIPITATION]);
-
-          fireIntensity = max(fireIntensity, 0.);
+          float sfcFlood = max(waterInSurface[SOIL_MOISTURE] - soilFieldCapacity, 0.0);
+          float fireIntensity = 0.0;
+          if (sfcFlood < significantFloodMm) {
+            fireIntensity = calcFireIntensity(wall[VEGETATION], waterInSurface[SOIL_MOISTURE], water[PRECIPITATION]);
+            fireIntensity = max(fireIntensity, 0.);
+          }
           base[TEMPERATURE] += fireIntensity;   // heat
           water[SMOKE] += fireIntensity * 2.0;  // smoke
           water[TOTAL] += fireIntensity * 0.50; // extra water from burning trees, both from water in the wood and from burning of hydrogen and hydrocarbons
@@ -464,14 +468,20 @@ void main()
           wall[VEGETATION] = min(wall[VEGETATION], 75); // limit vegetation in urban areas
       case WALLTYPE_FIRE:
         if (wall[TYPE] == WALLTYPE_FIRE) {            // extra check to make sure it's not urban
-          float fireIntensity = calcFireIntensity(wall[VEGETATION], water[SOIL_MOISTURE], waterX0Yp[PRECIPITATION]);
+          float floodExcessFire = max(water[SOIL_MOISTURE] - soilFieldCapacity, 0.0);
+          // Significant standing floodwater extinguishes fire immediately
+          if (floodExcessFire >= significantFloodMm) {
+            wall[TYPE] = WALLTYPE_LAND;
+          } else {
+            float fireIntensity = calcFireIntensity(wall[VEGETATION], water[SOIL_MOISTURE], waterX0Yp[PRECIPITATION]);
 
-          if (fireIntensity < minimalFireIntensity) { // fire goes out
-            wall[TYPE] = WALLTYPE_LAND;               // turn off fire
-          } else if (int(iterNum) % (int(10. / fireIntensity) + 1) == 0) {
-            wall[VEGETATION] -= 1;                    // reduce vegetation
-            if (wall[VEGETATION] < 10)
-              wall[TYPE] = WALLTYPE_LAND;             // turn off fire
+            if (fireIntensity < minimalFireIntensity) { // fire goes out
+              wall[TYPE] = WALLTYPE_LAND;               // turn off fire
+            } else if (int(iterNum) % (int(10. / fireIntensity) + 1) == 0) {
+              wall[VEGETATION] -= 1;                    // reduce vegetation
+              if (wall[VEGETATION] < 10)
+                wall[TYPE] = WALLTYPE_LAND;             // turn off fire
+            }
           }
         }
       case WALLTYPE_LAND:                                                                                     // no break,can also be fire or urban:
@@ -495,6 +505,11 @@ void main()
             float drain = min(excess * (0.0012 + sunSoak * 0.006), 0.12);
             water[SOIL_MOISTURE] -= drain;
           }
+
+          // Same-frame quench: fire dies as soon as standing floodwater builds up
+          if (wall[TYPE] == WALLTYPE_FIRE
+              && max(water[SOIL_MOISTURE] - soilFieldCapacity, 0.0) >= significantFloodMm)
+            wall[TYPE] = WALLTYPE_LAND;
 
           // Legacy saves: seed climate moisture from established vegetation, not one-off rain spikes
           if (water[SUSTAINED_MOISTURE] < 0.01 && wall[VEGETATION] > 15)
@@ -604,9 +619,12 @@ void main()
 
           int subInterval = int(iterNum) / 100;
 
-          if (subInterval % (int(water[SOIL_MOISTURE] * 0.1 + water[SNOW] * 0.5) + 10) == 0 && wall[VEGETATION] >= minimalFireVegetation &&
-              (wallXmY0[TYPE] == WALLTYPE_FIRE || wallXpY0[TYPE] == WALLTYPE_FIRE || texture(waterTex, texCoordX0Yp)[SMOKE] > 4.5)) { // if left or right is on fire or fire is blowing over
-            wall[TYPE] = WALLTYPE_FIRE;                                                                                               // spread fire
+          // Fire cannot spread onto significantly flooded ground
+          if (max(water[SOIL_MOISTURE] - soilFieldCapacity, 0.0) < significantFloodMm
+              && subInterval % (int(water[SOIL_MOISTURE] * 0.1 + water[SNOW] * 0.5) + 10) == 0
+              && wall[VEGETATION] >= minimalFireVegetation
+              && (wallXmY0[TYPE] == WALLTYPE_FIRE || wallXpY0[TYPE] == WALLTYPE_FIRE || texture(waterTex, texCoordX0Yp)[SMOKE] > 4.5)) {
+            wall[TYPE] = WALLTYPE_FIRE;
           }
           //}
         }
