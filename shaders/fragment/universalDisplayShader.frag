@@ -15,7 +15,7 @@ uniform sampler2D colorScalesTex;
 
 uniform int quantityIndex; // wich quantity to display
 uniform float dispMultiplier;
-uniform float floodThreshold; // when > 0, display = max(0, cell[q] - floodThreshold)
+uniform float floodThreshold; // when > 0, value = max(0, cell[q] - floodThreshold)
 uniform int colorScaleColumn; // which column of colorScalesTex to sample (4=universal, 5=waterVapor)
 uniform int useUnipolarScale;  // 1 = clamp(val,0,1), 0 = bipolar (val+1)*0.5
 uniform int colorScaleStops;  // number of palette stops in colorScalesTex
@@ -25,6 +25,7 @@ uniform vec4 cursor; // xpos   Ypos  Size   type
 
 out vec4 fragmentColor;
 
+#include "common.glsl"
 #include "commonDisplay.glsl"
 
 bool isLandSurfaceWall(int wallType)
@@ -45,10 +46,24 @@ vec4 sampleQuantityColor(float val)
   return texelFetch(colorScalesTex, ivec2(colorScaleColumn, palIdx), 0);
 }
 
+// Bright discrete flood palette — readable against the dark ground fill
+vec4 floodDepthColor(float depthMm)
+{
+  float t = clamp(depthMm * dispMultiplier, 0.0, 1.0);
+  // Keep even shallow ponding clearly blue (floor brightness)
+  t = max(t, 0.22);
+  vec3 shallow = vec3(0.10, 0.45, 0.95);
+  vec3 mid = vec3(0.15, 0.70, 1.0);
+  vec3 deep = vec3(0.65, 0.92, 1.0);
+  vec3 col = mix(shallow, mid, smoothstep(0.22, 0.55, t));
+  col = mix(col, deep, smoothstep(0.55, 1.0, t));
+  return vec4(col, 1.0);
+}
+
 void main()
 {
   vec4 cell = texture(anyTex, texCoord);
-  ivec2 wall = texture(wallTex, texCoord).xy;
+  ivec4 wall = texture(wallTex, texCoord);
 
   float raw = cell[quantityIndex];
   if (floodThreshold > 0.0)
@@ -56,17 +71,25 @@ void main()
   float val = raw * dispMultiplier;
 
   // Soil moisture / flood depth are stored on land surface cells (walls), not fluid air.
-  // Flood view (floodThreshold > 0) and soil-moisture scale (col 14) must color those walls.
+  // Underground cells copy soil moisture from above — only color VERT_DISTANCE == 0.
   bool surfaceFieldView = floodThreshold > 0.0 || colorScaleColumn == 14;
+  bool atSurface = wall[DISTANCE] == 0 && wall[VERT_DISTANCE] == 0;
 
-  if (wall[1] == 0) {  // is wall
-    if (surfaceFieldView && isLandSurfaceWall(wall[0])) {
-      if (floodThreshold > 0.0 && raw <= 0.001)
-        fragmentColor = vec4(vec3(0.06), 1.0); // dry land under flood view
-      else
+  if (wall[DISTANCE] == 0) {  // is wall
+    if (surfaceFieldView && isLandSurfaceWall(wall[TYPE]) && atSurface) {
+      if (floodThreshold > 0.0) {
+        if (raw <= 0.05)
+          fragmentColor = vec4(vec3(0.08), 1.0); // dry land under flood view
+        else
+          fragmentColor = floodDepthColor(raw);
+      } else {
         fragmentColor = sampleQuantityColor(val);
+      }
+    } else if (surfaceFieldView) {
+      // Subsurface / non-land walls stay dark in soil & flood views
+      fragmentColor = vec4(vec3(0.05), 1.0);
     } else {
-      switch (wall[0]) { // wall type
+      switch (wall[TYPE]) { // wall type
       case 0:
         fragmentColor = vec4(0, 0, 0, 1);
         break;
