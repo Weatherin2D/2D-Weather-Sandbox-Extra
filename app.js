@@ -740,7 +740,8 @@ const guiControls_default = {
   pressureThermalScale : 1.5,      // hPa per °C column warmth (warm → lower MSLP)
   pressureDynamicScale : 20.0,     // hPa per unit near-surface fluid pressure
   pressureSynopticScale : 8.0,     // hPa amplitude at synoptic L/H center (strength=1)
-  floodVizStrength : 1.35, // realistic-view standing-water tint strength
+  floodVizStrength : 0.75, // legacy alias; kept in sync with floodWaterOpacity
+  floodWaterOpacity : 0.75, // Display: floodwater opacity (0 = hidden, 1 = full)
   fogHazeStrength : 0.0, // realistic-view near-surface fog/haze strength
   stormTrackOverlay : false, // canvas trails of precip/CAPE cores
   lightningIllumTexture : true,
@@ -10215,8 +10216,16 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     guiControls.enableAutoSeaBreeze = guiControls_default.enableAutoSeaBreeze;
   if (guiControls.autoSeaBreezeStrength === undefined)
     guiControls.autoSeaBreezeStrength = guiControls_default.autoSeaBreezeStrength;
-  if (guiControls.floodVizStrength === undefined)
-    guiControls.floodVizStrength = guiControls_default.floodVizStrength;
+  if (guiControls.floodWaterOpacity === undefined) {
+    const legacy = guiControls.floodVizStrength;
+    if (Number.isFinite(legacy))
+      guiControls.floodWaterOpacity = clamp(legacy > 1.0 ? legacy / 2.0 : legacy, 0.0, 1.0);
+    else
+      guiControls.floodWaterOpacity = guiControls_default.floodWaterOpacity;
+  } else {
+    guiControls.floodWaterOpacity = clamp(guiControls.floodWaterOpacity, 0.0, 1.0);
+  }
+  guiControls.floodVizStrength = guiControls.floodWaterOpacity;
   if (guiControls.fogHazeStrength === undefined)
     guiControls.fogHazeStrength = guiControls_default.fogHazeStrength;
   if (guiControls.stormTrackOverlay === undefined)
@@ -11022,6 +11031,14 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     displayAppearance.add(guiControls, 'showDrops').name('Show Droplets').listen();
     displayAppearance.add(guiControls, 'enableRainbows').name('Rainbows').listen();
     displayAppearance.add(guiControls, 'smoothClouds').name('Smooth Clouds').listen();
+    displayAppearance.add(guiControls, 'floodWaterOpacity', 0.0, 1.0, 0.01)
+      .onChange(function() {
+        guiControls.floodVizStrength = guiControls.floodWaterOpacity;
+        gl.useProgram(realisticDisplayProgram);
+        gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'floodVizStrength'), guiControls.floodWaterOpacity);
+      })
+      .name('Floodwater Opacity')
+      .listen();
     displayAppearance.add(guiControls, 'autoMinShadowLight').name('Auto Shadow Light');
     displayAppearance.add(guiControls, 'minShadowLight', 0.0, 0.2, 0.001)
       .onChange(function() {
@@ -11224,12 +11241,6 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
           window.WeatherSandbox.synopticBoundaries.setDisplaySeaBreezes(guiControls.displaySeaBreezes);
       })
       .name('Show Sea Breezes');
-    advancedOverlays.add(guiControls, 'floodVizStrength', 0.0, 2.0, 0.05)
-      .onChange(function() {
-        gl.useProgram(realisticDisplayProgram);
-        gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'floodVizStrength'), guiControls.floodVizStrength);
-      })
-      .name('Flood Viz Strength');
     advancedOverlays.add(guiControls, 'fogHazeStrength', 0.0, 2.0, 0.05)
       .onChange(function() {
         gl.useProgram(realisticDisplayProgram);
@@ -18344,7 +18355,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
 
   // load shaders
-  const SHADER_ASSET_VERSION = 22; // bump to bust CDN/browser cache after shader edits
+  const SHADER_ASSET_VERSION = 23; // bump to bust CDN/browser cache after shader edits
 
   var commonSource = await loadSourceFile('shaders/common.glsl');
   var commonDisplaySource = await loadSourceFile('shaders/commonDisplay.glsl');
@@ -21887,7 +21898,9 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'cellHeight'), cellHeight);
   gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'visualQuality'), 1.0);
   gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'smoothClouds'), guiControls.smoothClouds !== false ? 1.0 : 0.0);
-  gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'floodVizStrength'), guiControls.floodVizStrength != null ? guiControls.floodVizStrength : 1.0);
+  gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'floodVizStrength'),
+    guiControls.floodWaterOpacity != null ? guiControls.floodWaterOpacity
+      : (guiControls.floodVizStrength != null ? guiControls.floodVizStrength : 0.75));
   gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'fogHazeStrength'), guiControls.fogHazeStrength != null ? guiControls.fogHazeStrength : 0.0);
 
   if (lightningIllumProgram) {

@@ -146,7 +146,8 @@ float floodSheetOpacity(float depth)
   // ~1 mm lightly visible, ~8 mm strong, ~16 mm nearly opaque
   float amount = clamp(floodDepth / 16.0, 0.0, 1.0);
   amount = pow(amount, 0.65); // boost shallow ponding so it stays readable
-  float a = mix(0.28, 0.95, amount) * clamp(floodVizStrength, 0.0, 2.5);
+  // floodVizStrength is the Display "Floodwater Opacity" slider (0–1)
+  float a = mix(0.28, 0.95, amount) * clamp(floodVizStrength, 0.0, 1.0);
   return clamp(a, 0.0, 0.95) * depthFade;
 }
 
