@@ -399,7 +399,7 @@ void main()
           // Flooded land: sun-boosted evaporation into the air (like open freshwater)
           float floodFracAir = clamp((waterInSurface[SOIL_MOISTURE] - soilFieldCapacity) / 12.0, 0.0, 1.0);
           if (floodFracAir > 0.0) {
-            float sunEvap = max(light[SUNLIGHT] * cos(colSunAngle), 0.0) / max(standardSunBrightness, 1.0);
+            float sunEvap = max(light[SUNLIGHT] * cos(colSunAngle), 0.0) / standardSunBrightness;
             float waterLikeEvap = max((maxWater(realTemp) - water[TOTAL]) * waterEvaporation, 0.0) / influenceDevider;
             evaporation = mix(evaporation, max(evaporation, waterLikeEvap), floodFracAir);
             evaporation *= (1.0 + sunEvap * 2.5 * floodFracAir);
@@ -491,7 +491,7 @@ void main()
           if (water[SOIL_MOISTURE] > soilFieldCapacity) { // runoff / ponding from saturated soil
             float excess = water[SOIL_MOISTURE] - soilFieldCapacity;
             // Slow soak-in by default; sunlight speeds drainage via evaporation-driven loss
-            float sunSoak = max(lightAboveSurface[SUNLIGHT] * cos(colSunAngle), 0.0) / max(standardSunBrightness, 1.0);
+            float sunSoak = max(lightAboveSurface[SUNLIGHT] * cos(colSunAngle), 0.0) / standardSunBrightness;
             float drain = min(excess * (0.0012 + sunSoak * 0.006), 0.12);
             water[SOIL_MOISTURE] -= drain;
           }
@@ -515,7 +515,7 @@ void main()
         // Sunlight accelerates ponded-water loss into vapor (soil moisture drawn down faster when sunny)
         {
           float excessEvap = max(water[SOIL_MOISTURE] - soilFieldCapacity, 0.0);
-          float sunEvap = max(lightAboveSurface[SUNLIGHT] * cos(colSunAngle), 0.0) / max(standardSunBrightness, 1.0);
+          float sunEvap = max(lightAboveSurface[SUNLIGHT] * cos(colSunAngle), 0.0) / standardSunBrightness;
           if (excessEvap > 0.0)
             evaporation *= (1.0 + sunEvap * 3.0);
           else
