@@ -133,8 +133,8 @@ float floodPondingMm()
   return max(water[SOIL_MOISTURE] - soilFieldCapacity, 0.0);
 }
 
-// Floodwater mix amount: land shows through when shallow; deep ponding goes opaque.
-// Any real ponding stays clearly blue — small amounts are translucent, not invisible.
+// Floodwater mix: strong per-mm contrast — shallow nearly clear, deep nearly opaque.
+// floodVizStrength = Display "Floodwater Opacity" slider (0–1) scales the whole curve.
 float floodSheetOpacity(float depth)
 {
   if (floodVizStrength <= 0.0)
@@ -143,12 +143,11 @@ float floodSheetOpacity(float depth)
   if (floodDepth <= 0.0)
     return 0.0;
   float depthFade = 1.0 - smoothstep(0.0, 1.1, max(depth, 0.0));
-  // ~1 mm lightly visible, ~8 mm strong, ~16 mm nearly opaque
-  float amount = clamp(floodDepth / 16.0, 0.0, 1.0);
-  amount = pow(amount, 0.65); // boost shallow ponding so it stays readable
-  // floodVizStrength is the Display "Floodwater Opacity" slider (0–1)
-  float a = mix(0.28, 0.95, amount) * clamp(floodVizStrength, 0.0, 1.0);
-  return clamp(a, 0.0, 0.95) * depthFade;
+  // Wide dynamic range: ~2 mm faint, ~10 mm medium, ~30 mm solid
+  float amount = clamp(floodDepth / 30.0, 0.0, 1.0);
+  amount = pow(amount, 1.85); // steep curve so depth differences read clearly
+  float a = amount * clamp(floodVizStrength, 0.0, 1.0);
+  return clamp(a, 0.0, 0.98) * depthFade;
 }
 
 vec3 floodWaterColor()
