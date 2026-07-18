@@ -474,21 +474,23 @@
   async function hostGame() {
     if (!await ensureMultiplayerWipAcknowledged()) return;
     const nameInput = document.getElementById('mpPlayerName');
+    const pwInput = document.getElementById('mpRoomPassword');
     const name = (nameInput && nameInput.value.trim()) || 'Host';
+    const password = (pwInput && pwInput.value) || '';
     try {
       setStatus('Connecting to ' + mp().getRelayUrl() + '…');
-      const code = await mp().host(name);
+      const code = await mp().host(name, null, password);
       global.multiplayerHostMode = true;
       global.multiplayerPeerMode = false;
-      window.multiplayerJoinInfo = { roomCode: code, playerName: name, role: 'host' };
+      window.multiplayerJoinInfo = { roomCode: code, playerName: name, role: 'host', roomPassword: password };
       if (typeof global.SETUP_MODE !== 'undefined' && !global.SETUP_MODE)
         global.multiplayerSimReady = true;
       showRoomCode(code);
       updateUrlRoomParam(code);
       if (mp().isOnlineMultiplayerOrigin && mp().isOnlineMultiplayerOrigin())
-        setStatus('Hosting room ' + code + ' — share this page with friends');
+        setStatus('Hosting room ' + code + (password ? ' (password set)' : '') + ' — share this page with friends');
       else
-        setStatus('Hosting room ' + code + ' — create a simulation to start');
+        setStatus('Hosting room ' + code + (password ? ' (password set)' : '') + ' — create a simulation to start');
       showPanel(true);
       setHostMenuOpen(true);
       updateHud();
@@ -505,18 +507,25 @@
     if (!await ensureMultiplayerWipAcknowledged()) return;
     const nameInput = document.getElementById('mpPlayerName');
     const codeInput = document.getElementById('mpRoomCode');
+    const pwInput = document.getElementById('mpRoomPassword');
     const name = (nameInput && nameInput.value.trim()) || 'Player';
     const code = codeInput ? codeInput.value.trim() : '';
+    const password = (pwInput && pwInput.value) || '';
     if (!code) {
       setStatus('Enter a room code', true);
       return;
     }
     try {
       setStatus('Connecting to ' + mp().getRelayUrl() + '…');
-      await mp().join(code, name);
+      await mp().join(code, name, password);
       global.multiplayerHostMode = false;
       global.multiplayerPeerMode = true;
-      window.multiplayerJoinInfo = { roomCode: code.toUpperCase().trim(), playerName: name, role: 'peer' };
+      window.multiplayerJoinInfo = {
+        roomCode: code.toUpperCase().trim(),
+        playerName: name,
+        role: 'peer',
+        roomPassword: password,
+      };
       updateIntroForPeerMode();
       showRoomCode(code.toUpperCase());
       setStatus('Joined room ' + code.toUpperCase() + ' — waiting for host simulation…');

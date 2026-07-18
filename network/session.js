@@ -246,10 +246,15 @@
         waiter.resolve(msg);
     }
 
-    async host(playerName, roomCode) {
+    async host(playerName, roomCode, roomPassword) {
       this.playerName = playerName || 'Host';
       this.roomCode = roomCode || generateRoomCode();
-      this._joinInfo = { roomCode: this.roomCode, playerName: this.playerName };
+      this.roomPassword = roomPassword ? String(roomPassword) : '';
+      this._joinInfo = {
+        roomCode: this.roomCode,
+        playerName: this.playerName,
+        roomPassword: this.roomPassword,
+      };
       this._peerPermissions.clear();
       await this.connect();
       const joined = this._waitForJoinResponse();
@@ -258,16 +263,22 @@
         role: 'host',
         roomCode: this.roomCode,
         playerName: this.playerName,
+        roomPassword: this.roomPassword || undefined,
       });
       await joined;
       return this.roomCode;
     }
 
-    async join(roomCode, playerName) {
+    async join(roomCode, playerName, roomPassword) {
       this.playerName = playerName || 'Player';
       this.roomCode = (roomCode || '').toUpperCase().trim();
       if (!this.roomCode) throw new Error('Room code required');
-      this._joinInfo = { roomCode: this.roomCode, playerName: this.playerName };
+      this.roomPassword = roomPassword ? String(roomPassword) : '';
+      this._joinInfo = {
+        roomCode: this.roomCode,
+        playerName: this.playerName,
+        roomPassword: this.roomPassword,
+      };
       this._myPermissions = defaultPermissions();
       await this.connect();
       const joined = this._waitForJoinResponse();
@@ -276,6 +287,7 @@
         role: 'peer',
         roomCode: this.roomCode,
         playerName: this.playerName,
+        roomPassword: this.roomPassword || undefined,
       });
       await joined;
     }
@@ -284,7 +296,11 @@
       if (!this._joinInfo) return false;
       try {
         if (this.transport.isConnected()) this.leave(true);
-        await this.join(this._joinInfo.roomCode, this._joinInfo.playerName);
+        await this.join(
+          this._joinInfo.roomCode,
+          this._joinInfo.playerName,
+          this._joinInfo.roomPassword
+        );
         return true;
       } catch (e) {
         console.warn('Peer reconnect failed', e);

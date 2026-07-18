@@ -3,3 +3,13 @@ node_modules/
 Thumbs.db
 *.log
 .cursor/
+_extract_*.txt
+_panel_*.txt
+_line*.txt
+_grid_*.txt
+_dyn_*.txt
+_replace_*.txt
+_measure_*.txt
+_skewfn_*.txt
+*_diff.txt
+test_exec.js

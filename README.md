@@ -6,7 +6,7 @@
 
 Multiplayer co-op is still **work-in-progress** (may be laggy or glitchy). For local multiplayer testing, run `npm start` and share your LAN URL.
 
-THIS IS FORK OF 2D WEATHER SANDBOX. I DO NOT GUARANTE THAT IT WILL WORK AS INTENDED!
+This is a fork of 2D Weather Sandbox. It is provided as-is; behavior may differ from upstream.
 
 Previously called "Weather_Sim_4"
 
@@ -152,7 +152,9 @@ If you still want a Node server with WebSocket relay (e.g. when Render quota is 
 
 | Who | What to do |
 |-----|------------|
-| Host | `npm install` then `npm start` → open http://localhost:8080 → **Host Game** |
-| Friends (same network) | Open the host's `http://<host-ip>:8080` → **Join Game** with room code |
+| Host | `npm install` then `npm start` → open http://localhost:8080 → **Host Game** (optional room password) |
+| Friends (same network) | Open the host's `http://<host-ip>:8080` → **Join Game** with room code (and password if set) |
 
-Multiplayer is experimental — expect lag, desync, or broken sessions.
+Room codes are 8 characters. The relay limits payload size and rate-limits connections. Multiplayer is experimental — expect lag, desync, or broken sessions.
+
+Sounding imports use a CORS proxy; only `meteociel.fr` hosts are allowed client-side. Override the proxy base with `window.__WEATHER_CORS_PROXY` if you host your own Worker (restrict it to those hosts).

@@ -226,16 +226,21 @@ void main()
         // Uniform horizontal-surface irradiance (same as water); not screen-space sun direction.
         float lightPower = max(light[SUNLIGHT] * cos(colSunAngle), 0.0);
 
-        float albedoTotal = 1.0;
+        float albedoTotal = ALBEDO_INERT;
 
-        if (wall[TYPE] == WALLTYPE_LAND || wall[TYPE] == WALLTYPE_FIRE || isCustomBase(wall[TYPE])) {
+        if (wall[TYPE] == WALLTYPE_INERT) {
+          albedoTotal = ALBEDO_INERT;
+        } else if (wall[TYPE] == WALLTYPE_LAND || wall[TYPE] == WALLTYPE_FIRE || isCustomBase(wall[TYPE])) {
           float albedoSoil = map_rangeC(soilMoisture, 0., 20., ALBEDO_DRYSOIL, ALBEDO_WETSOIL);
           albedoSoil = map_rangeC(snowCover, 0.0, fullWhiteSnowHeight, albedoSoil, ALBEDO_SNOW);                         // add snow albedo
-          float fullVegetationAlbedo = map_range(snowCover, 0., fullWhiteSnowHeight, ALBEDO_FOREST, ALBEDO_SNOW_FOREST); // the albedo of full tree height with snow taken into account
           float vegSample = float(wallX0Ym[VEGETATION]);
-          float vegCover = max(grassBiomass(int(vegSample)) / float(GRASS_VEG_MAX) * 0.42,
-            forestBiomass(int(vegSample)) / float(FOREST_VEG_MAX - GRASS_VEG_MAX));
-          albedoTotal = mix(albedoSoil, fullVegetationAlbedo, clamp(vegCover, 0.0, 1.0));
+          float grassFrac = clamp(grassBiomass(int(vegSample)) / float(GRASS_VEG_MAX), 0.0, 1.0);
+          float forestFrac = clamp(forestBiomass(int(vegSample)) / float(FOREST_VEG_MAX - GRASS_VEG_MAX), 0.0, 1.0);
+          float grassAlbedo = map_range(snowCover, 0., fullWhiteSnowHeight, ALBEDO_GRASS, ALBEDO_SNOW);
+          float forestAlbedo = map_range(snowCover, 0., fullWhiteSnowHeight, ALBEDO_FOREST, ALBEDO_SNOW_FOREST);
+          float vegAlbedo = mix(grassAlbedo, forestAlbedo, forestFrac);
+          float vegCover = max(grassFrac * 0.55, forestFrac);
+          albedoTotal = mix(albedoSoil, vegAlbedo, clamp(vegCover, 0.0, 1.0));
         } else if (wall[TYPE] == WALLTYPE_URBAN || isCustomOverlay(wall[TYPE])) {
           albedoTotal = ALBEDO_URBAN;
         } else if (wall[TYPE] == WALLTYPE_SUBURBAN) {
@@ -468,8 +473,10 @@ void main()
 
           if (water[SOIL_MOISTURE] > soilFieldCapacity) { // runoff / ponding from saturated soil
             float excess = water[SOIL_MOISTURE] - soilFieldCapacity;
-            // Slow drain so standing water stays visible during/after heavy rain
-            water[SOIL_MOISTURE] -= excess * 0.008;
+            // Very slow soak-in so ponded water lingers visibly after heavy rain
+            // (~0.12% of excess / iter, capped) — takes many minutes of sim time to clear
+            float drain = min(excess * 0.0012, 0.04);
+            water[SOIL_MOISTURE] -= drain;
           }
 
           // Legacy saves: seed climate moisture from established vegetation, not one-off rain spikes
@@ -611,7 +618,8 @@ void main()
             netWaterHeating -= max((maxWater(base[TEMPERATURE]) - waterX0Yp[TOTAL]) * waterEvaporation, 0.) * evapHeat * 0.5;
 
             float lightPower = max(lightAboveSurface[SUNLIGHT] * cos(colSunAngle), 0.0);
-            lightPower *= (1. - ALBEDO_WATER);
+            float waterAlbedo = (wall[TYPE] == WALLTYPE_FRESH_WATER) ? ALBEDO_FRESH_WATER : ALBEDO_WATER;
+            lightPower *= (1. - waterAlbedo);
             lightPower *= lightHeatingConst;
             netWaterHeating += lightPower * lightEffectScale;
             netWaterHeating += lightAboveSurface[NET_HEATING] * lightEffectScale;

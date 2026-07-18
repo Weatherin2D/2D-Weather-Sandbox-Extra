@@ -38,6 +38,7 @@ const MIME = {
   '.mp3': 'audio/mpeg',
   '.wav': 'audio/wav',
   '.ogg': 'audio/ogg',
+  '.m4a': 'audio/mp4',
   '.md': 'text/plain; charset=utf-8',
   '.txt': 'text/plain; charset=utf-8',
 };
@@ -47,25 +48,51 @@ const BLOCKED_DIRS = new Set([
   'server',
   '.git',
   '.cursor',
+  'test',
+  'tools',
+  'scripts',
+  'docs',
+  'attached_assets',
+  '_ref_frames',
 ]);
 
+const BLOCKED_FILE_PREFIXES = ['_extract_', '_panel_', '_line', '_grid_', '_dyn_', '_replace_', '_measure_', '_skewfn_'];
+
 function safePath(urlPath) {
-  const decoded = decodeURIComponent(urlPath.split('?')[0]);
+  let decoded;
+  try {
+    decoded = decodeURIComponent((urlPath || '/').split('?')[0]);
+  } catch (e) {
+    return null;
+  }
   const rel = decoded.replace(/^\/+/, '') || 'index.html';
   const normalized = path.normalize(rel).replace(/^(\.\.(\/|\\|$))+/, '');
-  const abs = path.join(ROOT, normalized);
-  if (!abs.startsWith(ROOT))
+  const abs = path.resolve(ROOT, normalized);
+  const rootWithSep = ROOT.endsWith(path.sep) ? ROOT : ROOT + path.sep;
+  if (abs !== ROOT && !abs.startsWith(rootWithSep))
+    return null;
+  const relCheck = path.relative(ROOT, abs);
+  if (relCheck.startsWith('..') || path.isAbsolute(relCheck))
     return null;
   const parts = normalized.split(/[/\\]/);
   if (parts.some((p) => BLOCKED_DIRS.has(p)))
+    return null;
+  const base = parts[parts.length - 1] || '';
+  if (BLOCKED_FILE_PREFIXES.some((p) => base.startsWith(p)) || base.endsWith('_diff.txt'))
     return null;
   return abs;
 }
 
 function getPublicPlayUrlInject() {
+  const parts = [];
   const external = process.env.RENDER_EXTERNAL_URL || process.env.PUBLIC_PLAY_URL || '';
-  if (!external) return '';
-  return '<script>window.__WEATHER_PUBLIC_PLAY_URL=' + JSON.stringify(String(external).trim().replace(/\/$/, '')) + ';</script>\n    ';
+  if (external)
+    parts.push('window.__WEATHER_PUBLIC_PLAY_URL=' + JSON.stringify(String(external).trim().replace(/\/$/, '')) + ';');
+  const corsProxy = process.env.WEATHER_CORS_PROXY || '';
+  if (corsProxy)
+    parts.push('window.__WEATHER_CORS_PROXY=' + JSON.stringify(String(corsProxy)) + ';');
+  if (!parts.length) return '';
+  return '<script>' + parts.join('') + '</script>\n    ';
 }
 
 function serveIndexHtml(res) {

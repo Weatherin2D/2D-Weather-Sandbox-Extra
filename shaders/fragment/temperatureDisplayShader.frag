@@ -59,8 +59,8 @@ void main()
     palletteIndex = clamp(palletteIndex, 0, 130);
     fragmentColor = texelFetch(colorScalesTex, ivec2(0, palletteIndex), 0);
 
-    // Overlay red for high pressure (1020 hPa+)
-    // base[PRESSURE] is dimensionless, scale to hPa
+    // Cosmetic high-pressure tint. surfacePressure is MSL baseline (hPa);
+    // base[PRESSURE] is dimensionless fluid pressure (same scale as MSLP Dynamic Scale default 20).
     float pressureHpa = surfacePressure + base[2] * 20.0;
     if (pressureHpa >= 1020.0) {
       float intensity = smoothstep(1020.0, 1040.0, pressureHpa);

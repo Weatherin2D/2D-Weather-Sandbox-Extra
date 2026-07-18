@@ -48,7 +48,7 @@ function generateLightningBolt(width, height)
     const colR = 12;
     const colG = 12;
     const colB = 12;
-    brightness = Math.pow(lineWidth, 2.0);
+    const brightness = Math.pow(lineWidth, 2.0);
     return `rgb(${colR * brightness}, ${colG * brightness}, ${colB * brightness})`;
   }
 

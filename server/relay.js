@@ -1,20 +1,56 @@
 /**
  * Multiplayer WebSocket relay — routes messages between players in a room.
  * Does not run simulation physics.
+ *
+ * Hardening: payload limits, host-only large binary, rate limits,
+ * optional room passwords, connection caps.
  */
 'use strict';
 
+const crypto = require('crypto');
 const { WebSocketServer } = require('ws');
 
 const BINARY_SNAPSHOT = 0x01;
 const BINARY_TEXTURE_SYNC = 0x02;
 
-/** @type {Map<string, { hostId: string, players: Map<string, object> }>} */
+const MAX_PAYLOAD = 32 * 1024 * 1024; // 32 MB
+const MAX_ROOMS = 64;
+const MAX_PLAYERS_PER_ROOM = 8;
+const MAX_SOCKETS_PER_IP = 16;
+const MAX_JSON_MSG_PER_SEC = 40;
+const MAX_BINARY_BYTES_PER_SEC = 8 * 1024 * 1024;
+const MAX_JOIN_ATTEMPTS_PER_MIN = 12;
+const ROOM_CODE_RE = /^[A-Z2-9]{6,8}$/;
+
+/** @type {Map<string, { hostId: string, players: Map<string, object>, passwordHash: string|null }>} */
 const rooms = new Map();
+
+/** @type {Map<string, number>} */
+const socketsPerIp = new Map();
 
 let nextPlayerId = 1;
 
 const DEFAULT_PERMISSIONS = { paint: true, place: true, pause: false, nuke: false, settings: false };
+
+function makePasswordSalt() {
+  return crypto.randomBytes(16).toString('hex');
+}
+
+function hashRoomPassword(password, salt) {
+  if (!password) return null;
+  const pw = String(password).slice(0, 128);
+  return crypto.createHash('sha256')
+    .update('wse-mp-v1\0' + String(salt || '') + '\0' + pw)
+    .digest('hex');
+}
+
+function clientIp(req) {
+  const xf = req && req.headers && req.headers['x-forwarded-for'];
+  if (typeof xf === 'string' && xf.length)
+    return xf.split(',')[0].trim().slice(0, 64);
+  const addr = req && req.socket && req.socket.remoteAddress;
+  return addr ? String(addr) : 'unknown';
+}
 
 function sanitizePlayers(room) {
   return Array.from(room.players.values()).map((p) => ({
@@ -51,6 +87,13 @@ function sendToPlayer(room, playerId, data, isBinary) {
 function removePlayer(ws) {
   const roomCode = ws._roomCode;
   const playerId = ws._playerId;
+  const ip = ws._clientIp;
+  if (ip && socketsPerIp.has(ip)) {
+    const n = socketsPerIp.get(ip) - 1;
+    if (n <= 0) socketsPerIp.delete(ip);
+    else socketsPerIp.set(ip, n);
+  }
+
   if (!roomCode || !playerId) return;
 
   const room = rooms.get(roomCode);
@@ -80,6 +123,46 @@ function removePlayer(ws) {
   });
 }
 
+function allowRate(ws, kind, cost) {
+  const now = Date.now();
+  if (!ws._rate) {
+    ws._rate = {
+      jsonWindowStart: now,
+      jsonCount: 0,
+      binWindowStart: now,
+      binBytes: 0,
+      joinWindowStart: now,
+      joinCount: 0,
+    };
+  }
+  const r = ws._rate;
+  if (kind === 'join') {
+    if (now - r.joinWindowStart > 60000) {
+      r.joinWindowStart = now;
+      r.joinCount = 0;
+    }
+    r.joinCount += 1;
+    return r.joinCount <= MAX_JOIN_ATTEMPTS_PER_MIN;
+  }
+  if (kind === 'json') {
+    if (now - r.jsonWindowStart > 1000) {
+      r.jsonWindowStart = now;
+      r.jsonCount = 0;
+    }
+    r.jsonCount += 1;
+    return r.jsonCount <= MAX_JSON_MSG_PER_SEC;
+  }
+  if (kind === 'binary') {
+    if (now - r.binWindowStart > 1000) {
+      r.binWindowStart = now;
+      r.binBytes = 0;
+    }
+    r.binBytes += cost || 0;
+    return r.binBytes <= MAX_BINARY_BYTES_PER_SEC;
+  }
+  return true;
+}
+
 /**
  * Attach multiplayer relay WebSocket handler to an existing HTTP server.
  * @param {import('http').Server} httpServer
@@ -88,10 +171,19 @@ function removePlayer(ws) {
 function attachMultiplayerRelay(httpServer) {
   const wss = new WebSocketServer({
     server: httpServer,
-    maxPayload: 128 * 1024 * 1024,
+    maxPayload: MAX_PAYLOAD,
   });
 
-  wss.on('connection', (ws) => {
+  wss.on('connection', (ws, req) => {
+    const ip = clientIp(req);
+    const ipCount = socketsPerIp.get(ip) || 0;
+    if (ipCount >= MAX_SOCKETS_PER_IP) {
+      sendJson(ws, { type: 'join_error', message: 'Too many connections from this address' });
+      ws.close();
+      return;
+    }
+    socketsPerIp.set(ip, ipCount + 1);
+    ws._clientIp = ip;
     ws._roomCode = null;
     ws._playerId = null;
     ws.isAlive = true;
@@ -104,7 +196,13 @@ function attachMultiplayerRelay(httpServer) {
         const room = rooms.get(roomCode);
         if (!room) return;
 
-        const bytes = Buffer.from(data);
+        const bytes = Buffer.isBuffer(data) ? data : Buffer.from(data);
+        if (bytes.length > MAX_PAYLOAD) return;
+        if (!allowRate(ws, 'binary', bytes.length)) return;
+
+        // Only the host may send large binary snapshots / texture sync
+        if (String(ws._playerId) !== String(room.hostId)) return;
+
         if (bytes.length >= 5 && (bytes[0] === BINARY_SNAPSHOT || bytes[0] === BINARY_TEXTURE_SYNC)) {
           const targetId = bytes.readUInt32LE(1);
           if (targetId > 0) {
@@ -120,6 +218,8 @@ function attachMultiplayerRelay(httpServer) {
         return;
       }
 
+      if (!allowRate(ws, 'json', 0)) return;
+
       let msg;
       try {
         msg = JSON.parse(data.toString());
@@ -128,11 +228,17 @@ function attachMultiplayerRelay(httpServer) {
       }
 
       if (msg.type === 'join') {
+        if (!allowRate(ws, 'join', 0)) {
+          sendJson(ws, { type: 'join_error', message: 'Too many join attempts' });
+          return;
+        }
+
         const roomCode = String(msg.roomCode || '').toUpperCase().trim();
         const role = msg.role === 'host' ? 'host' : 'peer';
         const playerName = String(msg.playerName || 'Player').slice(0, 24);
+        const password = msg.roomPassword != null ? String(msg.roomPassword) : '';
 
-        if (!roomCode) {
+        if (!ROOM_CODE_RE.test(roomCode)) {
           sendJson(ws, { type: 'join_error', message: 'Invalid room code' });
           return;
         }
@@ -144,16 +250,33 @@ function attachMultiplayerRelay(httpServer) {
             sendJson(ws, { type: 'join_error', message: 'Room already exists' });
             return;
           }
-          room = { hostId: null, players: new Map() };
+          if (rooms.size >= MAX_ROOMS) {
+            sendJson(ws, { type: 'join_error', message: 'Server room limit reached' });
+            return;
+          }
+          const salt = password ? makePasswordSalt() : null;
+          room = {
+            hostId: null,
+            players: new Map(),
+            passwordSalt: salt,
+            passwordHash: salt ? hashRoomPassword(password, salt) : null,
+          };
           rooms.set(roomCode, room);
         } else {
           if (!room) {
             sendJson(ws, { type: 'join_error', message: 'Room not found' });
             return;
           }
-          if (room.players.size >= 8) {
+          if (room.players.size >= MAX_PLAYERS_PER_ROOM) {
             sendJson(ws, { type: 'join_error', message: 'Room is full' });
             return;
+          }
+          if (room.passwordHash) {
+            const attempt = hashRoomPassword(password, room.passwordSalt);
+            if (attempt !== room.passwordHash) {
+              sendJson(ws, { type: 'join_error', message: 'Incorrect room password' });
+              return;
+            }
           }
         }
 
@@ -185,6 +308,7 @@ function attachMultiplayerRelay(httpServer) {
           playerId,
           roomCode,
           isHost: role === 'host',
+          hasPassword: !!room.passwordHash,
           players: sanitizePlayers(room),
         });
 
@@ -224,6 +348,7 @@ function attachMultiplayerRelay(httpServer) {
       }
 
       if (msg.type === 'snapshot_meta') {
+        if (String(ws._playerId) !== String(room.hostId)) return;
         const targetId = msg.targetPlayerId || 0;
         if (targetId > 0)
           sendToPlayer(room, targetId, JSON.stringify(msg), false);
@@ -245,7 +370,7 @@ function attachMultiplayerRelay(httpServer) {
       if (msg.type === 'room_code_change') {
         if (String(ws._playerId) !== String(room.hostId)) return;
         const newCode = String(msg.newRoomCode || '').toUpperCase().trim();
-        if (!newCode || newCode === roomCode) return;
+        if (!ROOM_CODE_RE.test(newCode) || newCode === roomCode) return;
         if (rooms.has(newCode)) {
           sendJson(ws, { type: 'join_error', message: 'Room code already taken' });
           return;
@@ -330,7 +455,7 @@ function attachMultiplayerRelay(httpServer) {
       ws.isAlive = false;
       ws.ping();
     }
-  }, 30000);
+  }, 25000);
 
   wss.on('close', () => clearInterval(heartbeat));
 
@@ -343,7 +468,7 @@ function attachMultiplayerRelay(httpServer) {
   };
 }
 
-module.exports = { attachMultiplayerRelay };
+module.exports = { attachMultiplayerRelay, hashRoomPassword, MAX_PAYLOAD };
 
 // Standalone relay-only mode: node server/relay.js [port]
 if (require.main === module) {

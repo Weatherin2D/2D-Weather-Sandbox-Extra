@@ -26,24 +26,32 @@ function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+function openWs(url) {
+  return new Promise((resolve, reject) => {
+    const ws = new WebSocket(url);
+    ws.once('open', () => resolve(ws));
+    ws.once('error', reject);
+  });
+}
+
 server.listen(0, async () => {
   const port = server.address().port;
   const url = 'ws://127.0.0.1:' + port;
   const peerMsgs = [];
   const hostInputMsgs = [];
+  let failed = false;
 
   try {
-    const host = new WebSocket(url);
-    await new Promise((r) => host.once('open', r));
-    host.send(JSON.stringify({ type: 'join', role: 'host', roomCode: 'TEST01', playerName: 'Host' }));
+    // --- Open room (no password) ---
+    const host = await openWs(url);
+    host.send(JSON.stringify({ type: 'join', role: 'host', roomCode: 'TESTABCD', playerName: 'Host' }));
     await waitMsg(host, 'joined');
 
-    const peer = new WebSocket(url);
-    await new Promise((r) => peer.once('open', r));
+    const peer = await openWs(url);
     peer.on('message', (d) => peerMsgs.push(JSON.parse(d.toString())));
     host.on('message', (d) => hostInputMsgs.push(JSON.parse(d.toString())));
 
-    peer.send(JSON.stringify({ type: 'join', role: 'peer', roomCode: 'TEST01', playerName: 'Peer' }));
+    peer.send(JSON.stringify({ type: 'join', role: 'peer', roomCode: 'TESTABCD', playerName: 'Peer' }));
     await waitMsg(peer, 'joined');
     peer.send(JSON.stringify({ type: 'snapshot_request' }));
     await sleep(100);
@@ -73,19 +81,68 @@ server.listen(0, async () => {
       peer_no_input_brush: !peerTypes.includes('input_brush'),
     };
 
-    console.log('peer received:', peerTypes.join(', '));
-    console.log('host received:', hostInputTypes.join(', '));
-    console.log('checks:', JSON.stringify(checks, null, 2));
+    console.log('open-room checks:', JSON.stringify(checks, null, 2));
+    if (!Object.values(checks).every(Boolean)) {
+      console.error('FAIL: open room relay checks');
+      failed = true;
+    }
 
-    const ok = Object.values(checks).every(Boolean);
-    console.log(ok ? 'INTEGRATION_OK' : 'INTEGRATION_FAIL');
     host.close();
     peer.close();
+    await sleep(50);
+
+    // --- Password room ---
+    const hostPw = await openWs(url);
+    hostPw.send(JSON.stringify({
+      type: 'join', role: 'host', roomCode: 'PASSROOM', playerName: 'Host', roomPassword: 'secret',
+    }));
+    await waitMsg(hostPw, 'joined');
+
+    const badPeer = await openWs(url);
+    const badJoin = waitMsg(badPeer, 'join_error');
+    badPeer.send(JSON.stringify({
+      type: 'join', role: 'peer', roomCode: 'PASSROOM', playerName: 'Bad', roomPassword: 'wrong',
+    }));
+    const badMsg = await badJoin;
+    if (badMsg.message !== 'Incorrect room password') {
+      console.error('FAIL: expected incorrect password error, got', badMsg);
+      failed = true;
+    } else {
+      console.log('password reject: ok');
+    }
+    badPeer.close();
+
+    const goodPeer = await openWs(url);
+    goodPeer.send(JSON.stringify({
+      type: 'join', role: 'peer', roomCode: 'PASSROOM', playerName: 'Good', roomPassword: 'secret',
+    }));
+    const goodJoined = await waitMsg(goodPeer, 'joined');
+    if (!goodJoined || goodJoined.isHost) {
+      console.error('FAIL: password peer join');
+      failed = true;
+    } else {
+      console.log('password join: ok');
+    }
+
+    // Peer binary should be ignored (no crash)
+    goodPeer.send(Buffer.from([0x01, 0, 0, 0, 0, 1, 2, 3]));
+    await sleep(50);
+
+    hostPw.close();
+    goodPeer.close();
+
+    if (failed) {
+      console.error('relay-integration FAILED');
+      process.exitCode = 1;
+    } else {
+      console.log('relay-integration OK');
+      process.exitCode = 0;
+    }
+  } catch (e) {
+    console.error('relay-integration error', e);
+    process.exitCode = 1;
+  } finally {
     server.close();
-    process.exit(ok ? 0 : 1);
-  } catch (err) {
-    console.error(err);
-    server.close();
-    process.exit(1);
+    setTimeout(() => process.exit(process.exitCode || 0), 100);
   }
 });

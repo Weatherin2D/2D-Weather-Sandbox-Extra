@@ -68,6 +68,10 @@ void main()
   newMass = mass;         // amount of water and ice carried
   newDensity = density;   // determines fall speed
 
+  // Match lightingShader: process rates were tuned at vertical res 300.
+  // At coarser Y, cells are taller — scale growth/phase-change/fall accordingly.
+  float cellHComp = 300.0 / max(resolution.y, 1.0);
+
   if (mass[WATER] < 0.) { // inactive
                           /*
                           We have to generate a random position before we know if the droplet is actually gonna spawn, seems ineffcient but there is no way arround it.
@@ -202,14 +206,14 @@ void main()
 
       // growthRate = 0.0;                                                                                                                  // for debug
 
-      float growth = water[CLOUD] * growthRate * surfaceArea;
+      float growth = water[CLOUD] * growthRate * surfaceArea * cellHComp;
 
       growth += max(relativeHumidity - 1.0, 0.) * max(-30.0 - KtoC(realTemp), 0.) * 0.0000; // increase growthrate below -30 C and above 100% relative humidity
 
 
       // Hail growth enhancement:
       if (realTemp < CtoK(0.0) && water[CLOUD] > 0.0 && density == 1.0) { // below freezing
-        growth += surfaceArea * water[PRECIPITATION] * 0.0030;            // rain freezing onto hail
+        growth += surfaceArea * water[PRECIPITATION] * 0.0030 * cellHComp; // rain freezing onto hail
       }
 
       feedback[VAPOR] -= growth * 1.0; // takes water from the air
@@ -220,7 +224,7 @@ void main()
         newMass[ICE] += growth;   // ice growth
         feedback[HEAT] += growth * meltingHeat;
 
-        float freezing = min((CtoK(0.0) - realTemp) * freezingRate * surfaceArea, newMass[WATER]); // rain freezing
+        float freezing = min((CtoK(0.0) - realTemp) * freezingRate * surfaceArea * cellHComp, newMass[WATER]); // rain freezing
         newMass[WATER] -= freezing;
         newMass[ICE] += freezing;
         feedback[HEAT] += freezing * meltingHeat;
@@ -228,7 +232,7 @@ void main()
       } else {                                                                                                    // above freezing
         newMass[WATER] += growth;                                                                                 // water growth
 
-        float melting = min((realTemp - CtoK(0.0)) * meltingRate * surfaceArea /* / newDensity */, newMass[ICE]); // 0.0002 snow / hail melting
+        float melting = min((realTemp - CtoK(0.0)) * meltingRate * surfaceArea * cellHComp /* / newDensity */, newMass[ICE]); // snow / hail melting
         newMass[ICE] -= melting;
         newMass[WATER] += melting;
         feedback[HEAT] -= melting * meltingHeat;
@@ -242,7 +246,7 @@ void main()
       if (newMass[ICE] > 0.0)                                                                        // if any ice
         dropletTemp = min(dropletTemp, CtoK(0.0));                                                   // temp can not be more than 0 C
 
-      float evapAndSubli = max((maxWater(dropletTemp) - water[TOTAL]) * surfaceArea * evapRate, 0.); // 0.0005 evaporation and sublimation only positive
+      float evapAndSubli = max((maxWater(dropletTemp) - water[TOTAL]) * surfaceArea * evapRate * cellHComp, 0.); // evaporation and sublimation only positive
 
       // evapAndSubli = 0.0000;                                                                         // remove quickly for DEBUG
 
@@ -261,7 +265,7 @@ void main()
       // Update position
       // move with air    * 2. because droplet position goes from -1. to 1
       newPos += base.xy / resolution * 2.;
-      newPos.y -= fallSpeed * newDensity * sqrt(totalMass / surfaceArea); // fall speed relative to air
+      newPos.y -= fallSpeed * newDensity * sqrt(totalMass / surfaceArea) * cellHComp; // fall speed relative to air
       /*
        // falling at fixed speed:
       float cellHeight = texelSize.y * 12000.0; // in meters

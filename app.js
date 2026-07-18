@@ -97,79 +97,7 @@ function mixGeneric(a, b, t, {clamp = false} = {})
   throw new TypeError('Unsupported types for mixGeneric');
 }
 
-const corsUrl = 'https://my-cors-proxy.nielsdaemen747.workers.dev/?url='; // my own proxy worker on cloudfare
-
-async function getSoundingGraphImgUrl(url)
-{
-  try {
-    const response = await fetch(corsUrl + encodeURIComponent(url));
-    const html = await response.text();
-    const parser = new DOMParser();
-    const doc = parser.parseFromString(html, 'text/html');
-    const img = doc.querySelectorAll('img')[0];
-    return 'https://www.meteociel.fr/' + img.getAttribute('src');
-  } catch (error) {
-    console.error('Error fetching the data:', error);
-  }
-}
-
-// Function to scrape table data from the given URL
-async function scrapeTableData(url)
-{
-  try {
-    const response = await fetch(corsUrl + encodeURIComponent(url));
-    const html = await response.text();
-
-    const parser = new DOMParser();
-    const doc = parser.parseFromString(html, 'text/html');
-
-    // Select the rows of the main table (starting at line 51)
-    const rows = doc.querySelectorAll('table:nth-of-type(2) tr:not(:first-child)');
-
-    const tableData = [];
-
-    rows.forEach(row => {
-      const cells = row.querySelectorAll('td');
-
-      const rowData = {
-        alt : parseFloat(cells[0].textContent),
-        p : parseFloat(cells[1].textContent),
-        t : parseFloat(cells[2].textContent),
-        tw : parseFloat(cells[3].textContent),
-        td : parseFloat(cells[4].textContent),
-        rh : parseFloat(cells[5].textContent),
-        vel : parseFloat(cells[6].textContent.split(' / ')[1]),
-        angle : parseFloat(cells[6].textContent.split(' / ')[0]),
-      };
-
-      const hasNaN = Object.values(rowData).some(v => Number.isNaN(v));
-
-      if (!hasNaN) // discard if the row contains any NaN
-        tableData.push(rowData);
-    });
-    return tableData;
-
-  } catch (error) {
-    console.error('Error fetching the data:', error);
-  }
-}
-
-async function loadSounding(stationID, timeStamp)
-{
-
-  const imgMapType = 1; // 0 = large classic emagram   1 = small emagram
-  const graphPageUrl = 'https://www.meteociel.fr/cartes_obs/sondage_display.php?id=' + stationID + '&map=' + imgMapType + '&date=' + timeStamp;
-  const tablePageUrl = 'https://www.meteociel.fr/cartes_obs/sondage_display.php?id=' + stationID + '&map=4&date=' + timeStamp;
-
-  const SoundingGraphImgUrl = await getSoundingGraphImgUrl(graphPageUrl);
-
-  const soundingImgEl = document.getElementById('soundingPreview');
-  soundingImgEl.src = SoundingGraphImgUrl;
-
-  // console.log(graphPageUrl, SoundingGraphImgUrl, tablePageUrl);
-
-  return scrapeTableData(tablePageUrl);
-}
+// Sounding scrape/load provided by js/sounding.js
 
 function sampleIsInvalid(s) { return isNaN(s.t) || isNaN(s.td) || isNaN(s.vel); }
 
@@ -190,7 +118,7 @@ function rawSoundingToSimSounding(soundingData, simHeight, inSimSoundingRes)
   }
 
   // Debug: check first few data points to understand the input format
-  console.log('rawSoundingToSimSounding input sample:', soundingData[0], soundingData[Math.floor(soundingData.length/2)], soundingData[soundingData.length-1]);
+  debugLog('rawSoundingToSimSounding input sample:', soundingData[0], soundingData[Math.floor(soundingData.length/2)], soundingData[soundingData.length-1]);
 
   // The sounding data is stored with increasing altitude (index 0 = lowest, last = highest)
   // We need to find the correct data point for each simulation level
@@ -231,7 +159,7 @@ function rawSoundingToSimSounding(soundingData, simHeight, inSimSoundingRes)
   }
 
   // Debug: check output
-  console.log('rawSoundingToSimSounding output sample:', soundingForSim[0], soundingForSim[Math.floor(inSimSoundingRes/2)], soundingForSim[inSimSoundingRes-1]);
+  debugLog('rawSoundingToSimSounding output sample:', soundingForSim[0], soundingForSim[Math.floor(inSimSoundingRes/2)], soundingForSim[inSimSoundingRes-1]);
 
   return soundingForSim;
 }
@@ -253,7 +181,7 @@ function createPresetSelect()
 {
   let select = document.getElementById('presetSelect');
 
-  //  console.log(presets);
+  //  debugLog(presets);
 
   presets.forEach((preset, index) => {
     const option = document.createElement('option');
@@ -610,6 +538,8 @@ window.enforceMultiplayerGuardrails = function()
   } else if (guiControls.IterPerFrame > 20) {
     guiControls.IterPerFrame = 10;
   }
+  if (guiControls.IterPerFrame < 0.1)
+    guiControls.IterPerFrame = 0.1;
   if (multiplayerPeerMode && window.WeatherMultiplayer && window.WeatherMpProtocol) {
     const perms = window.WeatherMultiplayer.getMyPermissions();
     const proto = window.WeatherMpProtocol;
@@ -782,6 +712,7 @@ const guiControls_default = {
   minShadowLight : 0.02,
   autoMinShadowLight : true,
   displayWeatherStations : true,
+  displayMeteogram : false,
   displayRadars : true,
   displayAirmassGenerators : true,
   airplaneMode : false,
@@ -798,7 +729,20 @@ const guiControls_default = {
   coriolisStrength : 0.0, // 0 = off; weak sideways deflection of horizontal wind
   enableSynopticSystems : true,
   displaySynopticSystems : true,
-  floodVizStrength : 1.0, // realistic-view standing-water tint strength
+  enableDrylines : true,
+  displayDrylines : true,
+  enableSeaBreezes : true,
+  displaySeaBreezes : true,
+  enableAutoSeaBreeze : false,
+  autoSeaBreezeStrength : 0.6,
+  // Meteorological MSLP (display/stations). Fluid base[PRESSURE] stays dimensionless.
+  surfacePressure : 1013.25,       // sea-level baseline hPa
+  pressureThermalScale : 1.5,      // hPa per °C column warmth (warm → lower MSLP)
+  pressureDynamicScale : 20.0,     // hPa per unit near-surface fluid pressure
+  pressureSynopticScale : 8.0,     // hPa amplitude at synoptic L/H center (strength=1)
+  floodVizStrength : 1.35, // realistic-view standing-water tint strength
+  fogHazeStrength : 0.0, // realistic-view near-surface fog/haze strength
+  stormTrackOverlay : false, // canvas trails of precip/CAPE cores
   lightningIllumTexture : true,
   lightningIllumBlurStrength : 1.0,
   performanceAutoScaling : true,
@@ -843,6 +787,11 @@ var riskData = []; // stores {sx, sfcY, color} computed on frequency interval
 var soundingOverlayCanvas = null;
 var soundingOverlayData = [];
 var sampleSoundingColorScale = null;
+
+var coldPoolDomainMeanSfcTempC = 15.0;
+var stormTrackPoints = []; // {x, y, t} ring buffer for storm-track overlay
+var stormTrackCanvas = null;
+var stormTrackLastScanIter = -9999;
 
 var radarOverlayCanvas = null;
 var radarImageData = null;
@@ -976,6 +925,38 @@ var NUM_DROPLETS;
 const NUM_DROPLETS_DEVIDER = 25; // baseline cells-per-droplet at default res
 const NUM_DROPLETS_CAP = 80000; // hard GPU TF cap (was 120000)
 const NUM_DROPLETS_CAP_REDUCED = 50000;
+const NUM_DROPLETS_CAP_MOBILE = 20000;
+const NUM_DROPLETS_CAP_MOBILE_REDUCED = 10000;
+
+var precipGpuCapabilities = {
+  checked: false,
+  mobile: false,
+  colorBufferFloat: false,
+  floatBlend: false,
+  feedbackComplete: true,
+  precipAvailable: true,
+  warned: false,
+};
+
+function detectMobileGpuLikely()
+{
+  try {
+    if (typeof navigator !== 'undefined') {
+      if (/Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent || ''))
+        return true;
+    }
+    if (typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches)
+      return true;
+  } catch (e) { /* ignore */ }
+  return false;
+}
+
+function getDropletCap(reduced)
+{
+  if (precipGpuCapabilities.mobile)
+    return reduced ? NUM_DROPLETS_CAP_MOBILE_REDUCED : NUM_DROPLETS_CAP_MOBILE;
+  return reduced ? NUM_DROPLETS_CAP_REDUCED : NUM_DROPLETS_CAP;
+}
 
 // Scale droplet density down as grid size grows so transform-feedback cost stays playable.
 function computeNumDroplets(resX, resY)
@@ -984,6 +965,8 @@ function computeNumDroplets(resX, resY)
   const y = resY != null ? resY : sim_res_y;
   const cells = Math.max(1, (x | 0) * (y | 0));
   let divider = NUM_DROPLETS_DEVIDER;
+  if (precipGpuCapabilities.mobile)
+    divider = Math.max(divider, 60);
   if (cells > 900000)
     divider = 35;
   if (cells > 1500000)
@@ -998,12 +981,62 @@ function computeNumDroplets(resX, resY)
     divider = 250;
   if (cells > 30000000)
     divider = 400;
+  if (precipGpuCapabilities.mobile)
+    divider = Math.max(divider, 80);
   let n = cells / divider;
   const reduced = guiControls && guiControls.reducedPrecipitation;
   if (reduced)
     n *= 0.5;
-  const cap = reduced ? NUM_DROPLETS_CAP_REDUCED : NUM_DROPLETS_CAP;
+  const cap = getDropletCap(!!reduced);
   return Math.max(1, Math.min(Math.floor(n), cap));
+}
+
+/** After precip feedback FBOs exist: gate precipitation on float renderability / mobile budgets. */
+function configurePrecipitationGpuCapabilities()
+{
+  if (typeof gl === 'undefined' || !gl)
+    return;
+  precipGpuCapabilities.checked = true;
+  precipGpuCapabilities.mobile = detectMobileGpuLikely();
+  precipGpuCapabilities.colorBufferFloat = !!gl.getExtension('EXT_color_buffer_float');
+  precipGpuCapabilities.floatBlend = !!gl.getExtension('EXT_float_blend');
+
+  let status = gl.FRAMEBUFFER_COMPLETE;
+  if (typeof precipitationFeedbackFrameBuff !== 'undefined' && precipitationFeedbackFrameBuff) {
+    gl.bindFramebuffer(gl.FRAMEBUFFER, precipitationFeedbackFrameBuff);
+    status = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  }
+  precipGpuCapabilities.feedbackComplete = (status === gl.FRAMEBUFFER_COMPLETE);
+
+  const ok = precipGpuCapabilities.colorBufferFloat && precipGpuCapabilities.feedbackComplete;
+  precipGpuCapabilities.precipAvailable = ok;
+
+  if (precipGpuCapabilities.mobile && guiControls) {
+    guiControls.reducedPrecipitation = true;
+    if (guiControls.highResPerformanceMode === false && cellsLikelyHeavy())
+      guiControls.highResPerformanceMode = true;
+  }
+
+  if (!ok && guiControls) {
+    guiControls.enablePrecipitation = false;
+    if (!precipGpuCapabilities.warned) {
+      precipGpuCapabilities.warned = true;
+      console.warn('[precip] Float precip feedback unavailable — precipitation disabled on this device.');
+      try {
+        if (typeof alert === 'function')
+          alert('Precipitation is unavailable on this device (GPU float buffers unsupported). The rest of the simulation still works.');
+      } catch (e) { /* ignore */ }
+    }
+  } else if (precipGpuCapabilities.mobile && !precipGpuCapabilities.warned) {
+    precipGpuCapabilities.warned = true;
+    console.info('[precip] Mobile GPU detected — using reduced droplet budget for reliability.');
+  }
+}
+
+function cellsLikelyHeavy()
+{
+  return (sim_res_x | 0) * (sim_res_y | 0) > 400000;
 }
 
 let hdrFBO;
@@ -1027,7 +1060,7 @@ var lightningIllumResH = 0;
 var lightningIllumBlurApplied = false;
 
 
-function clamp(num, min, max) { return Math.min(Math.max(num, min), max); }
+// clamp / map_range / download provided by js/utils.js
 
 function screenToSimX(screenX)
 {
@@ -1247,7 +1280,9 @@ function updateRadarAccumTextureFromCache()
     return;
   initRadarAccumTexture();
   const n = sim_res_x * sim_res_y;
-  const waterPixels = new Float32Array(n * 4);
+  const waterPixels = (typeof getRadarWaterPixelsBuffer === 'function')
+    ? getRadarWaterPixelsBuffer(n)
+    : new Float32Array(n * 4);
   gl.bindFramebuffer(gl.READ_FRAMEBUFFER, frameBuff_1);
   gl.readBuffer(gl.COLOR_ATTACHMENT1);
   gl.readPixels(0, 0, sim_res_x, sim_res_y, gl.RGBA, gl.FLOAT, waterPixels);
@@ -1338,29 +1373,7 @@ function worldRadarNeedsAccumTexture()
   return p.startsWith('accumulation');
 }
 
-function download(filename, data)
-{
-  var url = URL.createObjectURL(data);
-  const element = document.createElement('a');
-  element.setAttribute('href', url);
-  element.setAttribute('download', filename);
-  element.style.display = 'none';
-  document.body.appendChild(element);
-  element.click();
-  document.body.removeChild(element);
-}
-
-// Universal Functions
-
-function mod(a, b)
-{
-  // proper modulo to handle negative numbers
-  return ((a % b) + b) % b;
-}
-
-function map_range(value, low1, high1, low2, high2) { return low2 + ((high2 - low2) * (value - low1)) / (high1 - low1); }
-
-function map_range_C(value, low1, high1, low2, high2) { return clamp(low2 + ((high2 - low2) * (value - low1)) / (high1 - low1), Math.min(low2, high2), Math.max(low2, high2)); }
+// Universal Functions (mod / map_range / map_range_C / download from js/utils.js)
 
 // Temperature Functions
 
@@ -1644,9 +1657,127 @@ function skewAltMFromHpa(hpa)
   return (1.0 - Math.pow(hpa / 1013.25, 1.0 / 5.25588)) / 2.25577e-5;
 }
 
-function skewHpaFromAltM(altM)
+/** ISA barometric pressure (hPa) from altitude — used for CAPE/skew-T vertical coords. */
+function isaPressureHpa(altM)
 {
   return 1013.25 * Math.pow(1.0 - 2.25577e-5 * Math.max(0, altM), 5.25588);
+}
+
+function skewHpaFromAltM(altM)
+{
+  return isaPressureHpa(altM);
+}
+
+/** ISA temperature (°C) in the troposphere (15°C MSL, 6.5 K/km). */
+function isaTempC(altM)
+{
+  return 15.0 - 6.5 * (Math.max(0, altM) / 1000.0);
+}
+
+/**
+ * Synoptic Low/High contribution to displayed MSLP (hPa).
+ * Display-only — does not write fluid PRESSURE.
+ */
+function synopticMslpAnomalyHpa(simX, simY, amplitudeHpa)
+{
+  if (typeof synopticSystems === 'undefined' || !synopticSystems || !synopticSystems.length)
+    return 0;
+  if (guiControls && guiControls.enableSynopticSystems === false)
+    return 0;
+
+  const amp = Number.isFinite(amplitudeHpa) ? amplitudeHpa
+    : ((guiControls && Number.isFinite(guiControls.pressureSynopticScale))
+      ? guiControls.pressureSynopticScale : 8.0);
+  if (!(amp > 0))
+    return 0;
+
+  const aspect = sim_res_y / sim_res_x;
+  const wrapX = !!(guiControls && guiControls.wrapHorizontally);
+  let sum = 0;
+
+  for (let g = 0; g < synopticSystems.length; g++) {
+    const sys = synopticSystems[g];
+    const cx = sys.getXpos();
+    const cy = sys.getYpos();
+    const radius = sys.getRadius();
+    const strength = sys.getStrength();
+    if (strength <= 0.0001 || radius < 1)
+      continue;
+
+    let dx = simX - cx;
+    if (wrapX) {
+      const adx = Math.abs(dx);
+      dx = adx <= sim_res_x - adx ? dx : (dx > 0 ? dx - sim_res_x : dx + sim_res_x);
+    }
+    const dy = simY - cy;
+    const dist = Math.sqrt((dx * aspect) * (dx * aspect) + dy * dy);
+    if (dist >= radius)
+      continue;
+
+    const weight = 1.0 - dist / radius;
+    // Low → negative MSLP anomaly; High → positive (SYNOPTIC_TYPE_LOW === 0)
+    const sign = sys.getType() === 0 ? -1.0 : 1.0;
+    sum += sign * amp * strength * weight;
+  }
+  return sum;
+}
+
+/**
+ * Diagnostic mean sea-level pressure (hPa).
+ * Keeps fluid base[PRESSURE] unchanged; combines thermal, dynamic, and synoptic anomalies.
+ */
+function computeMslpHpa(opts)
+{
+  const surfacePressure = (guiControls && Number.isFinite(guiControls.surfacePressure))
+    ? guiControls.surfacePressure : 1013.25;
+  const kT = (guiControls && Number.isFinite(guiControls.pressureThermalScale))
+    ? guiControls.pressureThermalScale : 1.5;
+  const kP = (guiControls && Number.isFinite(guiControls.pressureDynamicScale))
+    ? guiControls.pressureDynamicScale : 20.0;
+  const kS = (guiControls && Number.isFinite(guiControls.pressureSynopticScale))
+    ? guiControls.pressureSynopticScale : 8.0;
+
+  const surfaceLevel = opts.surfaceLevel | 0;
+  const simResY = opts.simResY | 0;
+  const dz = opts.dz > 0 ? opts.dz : 1;
+  const envTempsC = opts.envTempsC;
+  const isFluid = opts.isFluid;
+  const fluidPressure = opts.fluidPressure;
+
+  const thermalDepthM = 1500;
+  const dynamicDepthM = 200;
+  const maxThermalY = Math.min(simResY - 1, surfaceLevel + Math.max(1, Math.round(thermalDepthM / dz)));
+  const maxDynamicY = Math.min(simResY - 1, surfaceLevel + Math.max(1, Math.round(dynamicDepthM / dz)));
+
+  let sumDT = 0, nT = 0;
+  for (let y = surfaceLevel; y <= maxThermalY; y++) {
+    if (!isFluid[y]) continue;
+    const t = envTempsC[y];
+    if (!Number.isFinite(t)) continue;
+    sumDT += t - isaTempC(y * dz);
+    nT++;
+  }
+
+  let sumP = 0, nP = 0;
+  if (fluidPressure) {
+    for (let y = surfaceLevel; y <= maxDynamicY; y++) {
+      if (!isFluid[y]) continue;
+      const p = fluidPressure[y];
+      if (!Number.isFinite(p)) continue;
+      sumP += p;
+      nP++;
+    }
+  }
+
+  const thermalAnomaly = nT > 0 ? -kT * (sumDT / nT) : 0;
+  const dynamicAnomaly = nP > 0 ? kP * (sumP / nP) : 0;
+  let synopticAnomaly = 0;
+  if (Number.isFinite(opts.simX)) {
+    const sy = Number.isFinite(opts.simY) ? opts.simY : surfaceLevel;
+    synopticAnomaly = synopticMslpAnomalyHpa(opts.simX, sy, kS);
+  }
+
+  return clamp(surfacePressure + thermalAnomaly + dynamicAnomaly + synopticAnomaly, 870, 1080);
 }
 
 // Meteorological parcel thermo (for skew-T CAPE / CIN / DCAPE — not the sim's game evapHeat).
@@ -2318,7 +2449,29 @@ function computeColumnSoundingMetrics(envTempsC, envDewC, isFluid, vxRaw, vyRaw,
     lightningFlMin = lScore * pScore * mScore * uScore * sScore * slotScore * 38.0;
   }
 
-  const sfcPress_hPa = 1013.25 * Math.pow(1.0 - 2.25577e-5 * sfcAltM, 5.25588);
+  const sfcPress_hPa = computeMslpHpa({
+    envTempsC,
+    isFluid,
+    fluidPressure: options && options.fluidPressure,
+    surfaceLevel,
+    simResY,
+    dz,
+    simX: options && options.columnX,
+    simY: options && Number.isFinite(options.columnY) ? options.columnY : surfaceLevel,
+  });
+
+  // Near-surface θ (real °C) depression vs rolling domain mean — cold-pool proxy.
+  const y500 = Math.min(simResY - 1, surfaceLevel + Math.max(1, Math.round(500 / dz)));
+  let sfcTempC = envTempsC[surfaceLevel];
+  let nSfc = 0;
+  let sumSfc = 0;
+  for (let y = surfaceLevel; y <= y500; y++) {
+    if (!isFluid[y] || !Number.isFinite(envTempsC[y])) continue;
+    sumSfc += envTempsC[y];
+    nSfc++;
+  }
+  if (nSfc > 0) sfcTempC = sumSfc / nSfc;
+  const coldPool_K = Math.max(0, coldPoolDomainMeanSfcTempC - sfcTempC);
 
   return {
     surfaceLevel,
@@ -2344,6 +2497,8 @@ function computeColumnSoundingMetrics(envTempsC, envDewC, isFluid, vxRaw, vyRaw,
     dcape,
     estHailIn,
     lightningFlMin,
+    sfcTempC,
+    coldPool_K,
   };
 }
 
@@ -2625,7 +2780,7 @@ const SOUNDING_VIEW_CONFIGS = [
   { mode: 'DISP_HAIL',       key: 'estHailIn',        scaleId: 'hail',       min: 0,    max: 4,     label: 'Est. Hail',      unit: 'in' },
   { mode: 'DISP_LIGHTNING',  key: 'lightningFlMin',   scaleId: 'lightning',  min: 0,    max: 40,    label: 'Lightning',      unit: 'fl/min' },
   { mode: 'DISP_LIGHTNING_HOTSPOTS', key: 'lightningHotspotFreq', scaleId: 'lightningHotspots', min: 0, max: 10, label: 'Lightning Frequency (Hotspots)', unit: 'fl/min' },
-  { mode: 'DISP_SFC_PRES',   key: 'sfcPress_hPa',     scaleId: 'sfcPres',    min: 900,  max: 1050,  label: 'Sfc Pressure',   unit: 'hPa' },
+  { mode: 'DISP_SFC_PRES',   key: 'sfcPress_hPa',     scaleId: 'sfcPres',    min: 900,  max: 1050,  label: 'MSLP',           unit: 'hPa' },
   { mode: 'DISP_HAZ_PDS_TORNADO', key: 'hazardPdsTornado', scaleId: 'hazardProb', min: 0, max: 100, label: 'PDS Tornado', unit: '%' },
   { mode: 'DISP_HAZ_TORNADO', key: 'hazardTornado', scaleId: 'hazardProb', min: 0, max: 100, label: 'Tornado', unit: '%' },
   { mode: 'DISP_HAZ_SUPERCELL', key: 'hazardSupercell', scaleId: 'hazardProb', min: 0, max: 100, label: 'Supercell', unit: '%' },
@@ -2640,6 +2795,7 @@ const SOUNDING_VIEW_CONFIGS = [
   { mode: 'DISP_SND_RAIN_ACCUM', key: 'rainAccum_mm', scaleId: 'radarAccum', min: 0, max: 75, label: 'Rain Accumulation', unit: 'mm' },
   { mode: 'DISP_SND_SOIL_MOISTURE', key: 'soilMoisture_mm', scaleId: 'soundingSoil', min: 0, max: 150, label: 'Soil Moisture', unit: 'mm' },
   { mode: 'DISP_SND_SNOW_DEPTH', key: 'snowDepth_cm', scaleId: 'soundingSnow', min: 0, max: 100, label: 'Snow Depth', unit: 'cm' },
+  { mode: 'DISP_COLD_POOL', key: 'coldPool_K', scaleId: 'coldPool', min: 0, max: 12, label: 'Cold Pool', unit: 'K' },
 ];
 
 function isLandSurfaceWallType(wallType)
@@ -2735,6 +2891,7 @@ function prepareOverlayColumnArrays(simResY)
     isFluid: new Array(simResY),
     vxRaw: new Float32Array(simResY),
     vyRaw: new Float32Array(simResY),
+    fluidPressure: new Float32Array(simResY),
     waterArr: new Float32Array(simResY),
     chargeCol: new Float32Array(simResY),
     cloudWaterCol: new Float32Array(simResY),
@@ -2814,7 +2971,11 @@ function computeOverlayColumnBundle(baseAll, waterAll, wallAll, chargeAll, sx, s
   fillOverlayColumnSample(colScratch, baseAll, waterAll, wallAll, chargeAll, sx, simResX, simResY);
   const metrics = computeColumnSoundingMetrics(
     colScratch.envTempsC, colScratch.envDewC, colScratch.isFluid,
-    colScratch.vxRaw, colScratch.vyRaw, colScratch.waterArr, simResY, dz, {lite: opts.lite !== false});
+    colScratch.vxRaw, colScratch.vyRaw, colScratch.waterArr, simResY, dz, {
+      lite: opts.lite !== false,
+      fluidPressure: colScratch.fluidPressure,
+      columnX: sx,
+    });
   if (!metrics) return null;
 
   const hydrology = sampleColumnSurfaceHydrology(
@@ -2822,6 +2983,23 @@ function computeOverlayColumnBundle(baseAll, waterAll, wallAll, chargeAll, sx, s
   metrics.soilMoisture_mm = hydrology.soilMoisture_mm;
   metrics.snowDepth_cm = hydrology.snowDepth_cm;
   metrics.rainAccum_mm = sampleColumnRainAccumMm(sx, simResX, simResY);
+
+  // Column precip max for storm-track cores
+  {
+    const x0 = Math.max(0, Math.min(simResX - 1, Math.floor(sx)));
+    let colPrecipMax = 0;
+    let precipMaxY = metrics.surfaceLevel;
+    for (let y = metrics.surfaceLevel; y < simResY; y++) {
+      if (!colScratch.isFluid[y]) continue;
+      const p = Math.max(0, waterAll[(y * simResX + x0) * 4 + 2]);
+      if (p > colPrecipMax) {
+        colPrecipMax = p;
+        precipMaxY = y;
+      }
+    }
+    metrics.colPrecipMax = colPrecipMax;
+    metrics.precipMaxY = precipMaxY;
+  }
 
   if (opts.needHazards) {
     Object.assign(metrics, computeColumnHazardsAndFire(
@@ -2843,6 +3021,53 @@ function computeOverlayColumnBundle(baseAll, waterAll, wallAll, chargeAll, sx, s
   return metrics;
 }
 
+function updateColdPoolDomainMeanFromPending(pending)
+{
+  if (!pending || !pending.length) return;
+  let sum = 0;
+  let n = 0;
+  for (let i = 0; i < pending.length; i++) {
+    const m = pending[i] && pending[i].metrics;
+    if (!m || !Number.isFinite(m.sfcTempC)) continue;
+    sum += m.sfcTempC;
+    n++;
+  }
+  if (n > 0)
+    coldPoolDomainMeanSfcTempC = sum / n;
+}
+
+function updateStormTracksFromPending(pending)
+{
+  if (!pending || pending.length < 3) return;
+  for (let i = 1; i < pending.length - 1; i++) {
+    const d = pending[i];
+    const m = d && d.metrics;
+    if (!m) continue;
+    const precip = m.colPrecipMax || 0;
+    const cape = m.muCape || 0;
+    const score = precip * 12.0 + cape * 0.001;
+    const mL = pending[i - 1].metrics || {};
+    const mR = pending[i + 1].metrics || {};
+    const scoreL = (mL.colPrecipMax || 0) * 12.0 + (mL.muCape || 0) * 0.001;
+    const scoreR = (mR.colPrecipMax || 0) * 12.0 + (mR.muCape || 0) * 0.001;
+    if (score > scoreL && score > scoreR && (precip > 0.35 || cape > 400)) {
+      stormTrackPoints.push({
+        x: d.sx,
+        y: Number.isFinite(m.precipMaxY) ? m.precipMaxY : (d.sfcY + 15),
+        t: iterNum,
+      });
+    }
+  }
+  while (stormTrackPoints.length > 200)
+    stormTrackPoints.shift();
+}
+
+function clearStormTracks()
+{
+  stormTrackPoints = [];
+  stormTrackLastScanIter = -9999;
+}
+
 function tickOverlayScan()
 {
   if (!overlayScan.active) return;
@@ -2856,10 +3081,19 @@ function tickOverlayScan()
       if (isRisk) {
         riskData = overlayScan.pending;
       } else {
+        updateColdPoolDomainMeanFromPending(overlayScan.pending);
+        for (let i = 0; i < overlayScan.pending.length; i++) {
+          const m = overlayScan.pending[i] && overlayScan.pending[i].metrics;
+          if (!m || !Number.isFinite(m.sfcTempC)) continue;
+          m.coldPool_K = Math.max(0, coldPoolDomainMeanSfcTempC - m.sfcTempC);
+        }
         soundingOverlayData = overlayScan.pending;
       }
+      if (guiControls.stormTrackOverlay)
+        updateStormTracksFromPending(overlayScan.pending);
       overlayScan.active = false;
       overlayScan.lastFinishIter = iterNum;
+      stormTrackLastScanIter = iterNum;
       return;
     }
     const metrics = computeOverlayColumnBundle(
@@ -2876,7 +3110,7 @@ function tickOverlayScan()
         const color = convectiveRiskRgba(
           metrics.muCape, metrics.shear6km, metrics.stp, metrics.drySlotStrength);
         if (color)
-          overlayScan.pending.push({sx, sfcY: metrics.surfaceLevel, step, color});
+          overlayScan.pending.push({sx, sfcY: metrics.surfaceLevel, step, color, metrics});
       } else {
         overlayScan.pending.push({sx, sfcY: metrics.surfaceLevel, step, metrics});
       }
@@ -2923,6 +3157,7 @@ function fillOverlayColumnSample(out, baseAll, waterAll, wallAll, chargeAll, sx,
       out.envDewC[y] = NaN;
       out.vxRaw[y] = 0;
       out.vyRaw[y] = 0;
+      out.fluidPressure[y] = 0;
       out.waterArr[y] = 0;
       out.chargeCol[y] = 0;
       out.cloudWaterCol[y] = 0;
@@ -2935,6 +3170,7 @@ function fillOverlayColumnSample(out, baseAll, waterAll, wallAll, chargeAll, sx,
       out.envDewC[y] = KtoC(dewpoint(Math.max(waterAll[i0], 0)));
       out.vxRaw[y] = baseAll[i0];
       out.vyRaw[y] = baseAll[i0 + 1];
+      out.fluidPressure[y] = baseAll[i0 + 2];
       out.waterArr[y] = Math.max(waterAll[i0], 0);
       out.cloudWaterCol[y] = Math.max(waterAll[i0 + 1], 0);
       out.chargeCol[y] = chargeAll ? chargeAll[i0] : 0;
@@ -2943,6 +3179,7 @@ function fillOverlayColumnSample(out, baseAll, waterAll, wallAll, chargeAll, sx,
       out.envDewC[y] = KtoC(dewpoint(Math.max(waterAll[i1], 0)));
       out.vxRaw[y] = baseAll[i1];
       out.vyRaw[y] = baseAll[i1 + 1];
+      out.fluidPressure[y] = baseAll[i1 + 2];
       out.waterArr[y] = Math.max(waterAll[i1], 0);
       out.cloudWaterCol[y] = Math.max(waterAll[i1 + 1], 0);
       out.chargeCol[y] = chargeAll ? chargeAll[i1] : 0;
@@ -2956,6 +3193,7 @@ function fillOverlayColumnSample(out, baseAll, waterAll, wallAll, chargeAll, sx,
         KtoC(dewpoint(Math.max(waterAll[i1], 0))));
       out.vxRaw[y] = lerp(baseAll[i0], baseAll[i1]);
       out.vyRaw[y] = lerp(baseAll[i0 + 1], baseAll[i1 + 1]);
+      out.fluidPressure[y] = lerp(baseAll[i0 + 2], baseAll[i1 + 2]);
       out.waterArr[y] = lerp(Math.max(waterAll[i0], 0), Math.max(waterAll[i1], 0));
       out.cloudWaterCol[y] = lerp(Math.max(waterAll[i0 + 1], 0), Math.max(waterAll[i1 + 1], 0));
       out.chargeCol[y] = chargeAll ? lerp(chargeAll[i0], chargeAll[i1]) : 0;
@@ -3148,7 +3386,7 @@ function createBloomFBOs()
     let width = res.x >> i;       // right shift to devide by 2 multiple times
     let height = res.y >> i;
 
-    //  console.log('BloomFBO', i, width, height)
+    //  debugLog('BloomFBO', i, width, height)
 
     if (width < 2 || height < 2)
       break; // stop when texture resolution is 2 x 2
@@ -3165,7 +3403,7 @@ function createAmbientLightFBOs()
 
   let res = new Vec2D(sim_res_x, sim_res_y);
 
-  // console.log('createAmbientLightFBOs');
+  // debugLog('createAmbientLightFBOs');
 
   ambientLightFBOs.length = 0;   // empty array
   for (let i = 0; i < 80; i++) { // max iterations
@@ -3249,6 +3487,7 @@ class Weatherstation
   #dewpoint = 0;     // °C
   #relativeHumd = 0; // %
   #velocity = 0;     // ms
+  #mslpHpa = 1013.25; // diagnostic mean sea-level pressure
   #soilMoisture = 0; // mm
   #snowHeight = 0;   // cm
   #airQuality = 0;   // AQI
@@ -3315,6 +3554,12 @@ class Weatherstation
       }
     });
 
+    this.#canvas.addEventListener('dblclick', function(event) {
+      event.stopPropagation();
+      if (window.WeatherSandbox && window.WeatherSandbox.meteogram)
+        window.WeatherSandbox.meteogram.toggleForStation(thisObj);
+    });
+
     this.#canvas.addEventListener('contextmenu', function(event) { event.preventDefault(); }); // Prevent the browser's context menu from appearing
 
     this.createChartJSCanvas();
@@ -3369,7 +3614,8 @@ class Weatherstation
           {label : 'Air Quality', data : [], backgroundColor : '#803c00', borderColor : '#803c00', radius : 0, borderWidth : 1, fill : false, hidden : true},                           //
           {label : 'Precipitation', data : [], backgroundColor : '#0055FF', borderColor : '#0055FF', radius : 0, borderWidth : 1, fill : false, hidden : true, reallyHidden : true},    //
           {label : 'Snow Height', data : [], backgroundColor : '#FFFFFF', borderColor : '#FFFFFF', radius : 0, borderWidth : 1, fill : false, hidden : true, reallyHidden : true},      //
-          {label : 'Water Temperature', data : [], backgroundColor : '#406cff', borderColor : '#406cff', radius : 0, borderWidth : 1, fill : false, hidden : true, reallyHidden : true} //
+          {label : 'Water Temperature', data : [], backgroundColor : '#406cff', borderColor : '#406cff', radius : 0, borderWidth : 1, fill : false, hidden : true, reallyHidden : true}, //
+          {label : 'MSLP', data : [], backgroundColor : '#FFCC66', borderColor : '#FFCC66', radius : 0, borderWidth : 1, fill : false, hidden : true} //
         ]
       },
       options : {
@@ -3440,6 +3686,8 @@ class Weatherstation
       } else if (this.#isOnWater) {
         this.#historyChart.data.datasets[6].data.push(convertTempToSelectedUnit(this.#waterTemperature));
       }
+      if (this.#historyChart.data.datasets[7])
+        this.#historyChart.data.datasets[7].data.push(this.#mslpHpa);
 
       this.#historyChart.data.labels.push(this.#time);
 
@@ -3469,8 +3717,78 @@ class Weatherstation
     this.#chartCanvas.remove();
     this.#canvas.parentElement.removeChild(this.#canvas); // remove canvas element
     this.#weatherIconDiv.remove(); // remove weather icon div
+    if (window.WeatherSandbox && window.WeatherSandbox.meteogram)
+      window.WeatherSandbox.meteogram.clearStation(this);
     let index = weatherStations.indexOf(this);
     weatherStations.splice(index, 1);                     // remove object from array
+  }
+
+  /** Subsample the atmospheric column for the meteogram time-height panel. */
+  #recordMeteogramSample()
+  {
+    if (!window.WeatherSandbox || !window.WeatherSandbox.meteogram || typeof gl === 'undefined')
+      return;
+
+    const nLev = window.WeatherSandbox.meteogram.NUM_LEVELS || 36;
+    const y0 = Math.max(0, Math.min(sim_res_y - 1, this.#y));
+    const h = Math.max(1, sim_res_y - y0);
+    const colBase = new Float32Array(h * 4);
+    const colWater = new Float32Array(h * 4);
+    const colWall = new Int8Array(h * 4);
+
+    gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_0);
+    gl.readBuffer(gl.COLOR_ATTACHMENT0);
+    gl.readPixels(this.#x, y0, 1, h, gl.RGBA, gl.FLOAT, colBase);
+    gl.readBuffer(gl.COLOR_ATTACHMENT1);
+    gl.readPixels(this.#x, y0, 1, h, gl.RGBA, gl.FLOAT, colWater);
+    gl.readBuffer(gl.COLOR_ATTACHMENT2);
+    gl.readPixels(this.#x, y0, 1, h, gl.RGBA_INTEGER, gl.BYTE, colWall);
+
+    const dz = guiControls.simHeight / sim_res_y;
+    const altsM = new Float32Array(nLev);
+    const tempsC = new Float32Array(nLev);
+    const dewsC = new Float32Array(nLev);
+    const windsMs = new Float32Array(nLev);
+    const clouds = new Float32Array(nLev);
+    let precipHint = 0;
+
+    for (let i = 0; i < nLev; i++) {
+      const frac = nLev <= 1 ? 0 : i / (nLev - 1);
+      const yi = Math.min(h - 1, Math.floor(frac * (h - 1)));
+      const yAbs = y0 + yi;
+      altsM[i] = yAbs * dz;
+      const idx = yi * 4;
+      if (colWall[idx + 1] === 0) {
+        tempsC[i] = this.#temperature;
+        dewsC[i] = this.#dewpoint;
+        windsMs[i] = this.#velocity;
+        clouds[i] = 0;
+        continue;
+      }
+      tempsC[i] = KtoC(potentialToRealT(colBase[idx + 3], yAbs));
+      dewsC[i] = KtoC(dewpoint(Math.max(colWater[idx], 0)));
+      if (guiControls.realDewPoint)
+        dewsC[i] = Math.min(tempsC[i], dewsC[i]);
+      const vx = colBase[idx];
+      const vy = colBase[idx + 1];
+      windsMs[i] = rawVelocityTo_ms(Math.sqrt(vx * vx + vy * vy));
+      clouds[i] = Math.max(colWater[idx + 1], 0);
+      if (frac < 0.15)
+        precipHint = Math.max(precipHint, Math.max(colWater[idx + 2], 0));
+    }
+
+    window.WeatherSandbox.meteogram.record(this, {
+      timeIso: this.#time,
+      altsM,
+      tempsC,
+      dewsC,
+      windsMs,
+      clouds,
+      sfcWind: this.#velocity,
+      mslp: this.#mslpHpa,
+      soilMoisture: this.#soilMoisture,
+      precipHint,
+    });
   }
 
   measure()
@@ -3484,6 +3802,44 @@ class Weatherstation
 
     this.#temperature = KtoC(T);
     this.#velocity = rawVelocityTo_ms(Math.sqrt(Math.pow(baseTextureValues[2 * 4 + 0], 2) + Math.pow(baseTextureValues[4 + 1], 2)));
+
+    // Diagnostic MSLP from a short column above the station (display-only).
+    {
+      const dz = guiControls.simHeight / sim_res_y;
+      const depthCells = Math.max(2, Math.round(1500 / dz));
+      const y0 = Math.max(0, Math.min(sim_res_y - 1, this.#y));
+      const h = Math.max(1, Math.min(depthCells, sim_res_y - y0));
+      const colBase = new Float32Array(h * 4);
+      const colWall = new Int8Array(h * 4);
+      gl.readBuffer(gl.COLOR_ATTACHMENT0);
+      gl.readPixels(this.#x, y0, 1, h, gl.RGBA, gl.FLOAT, colBase);
+      gl.readBuffer(gl.COLOR_ATTACHMENT2);
+      gl.readPixels(this.#x, y0, 1, h, gl.RGBA_INTEGER, gl.BYTE, colWall);
+      const envTempsC = new Float32Array(sim_res_y);
+      const isFluid = new Array(sim_res_y);
+      const fluidPressure = new Float32Array(sim_res_y);
+      for (let y = 0; y < sim_res_y; y++)
+        isFluid[y] = false;
+      for (let i = 0; i < h; i++) {
+        const y = y0 + i;
+        const fluid = colWall[i * 4 + 1] !== 0;
+        isFluid[y] = fluid;
+        if (fluid) {
+          envTempsC[y] = KtoC(potentialToRealT(colBase[i * 4 + 3], y));
+          fluidPressure[y] = colBase[i * 4 + 2];
+        }
+      }
+      this.#mslpHpa = computeMslpHpa({
+        envTempsC,
+        isFluid,
+        fluidPressure,
+        surfaceLevel: y0,
+        simResY: sim_res_y,
+        dz,
+        simX: this.#x,
+        simY: this.#y,
+      });
+    }
 
     // gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_0);
     gl.readBuffer(gl.COLOR_ATTACHMENT1); // watertexture
@@ -3571,6 +3927,7 @@ class Weatherstation
     this.#time = simDateTime.toISOString();
     this.#predictWeather();
     this.updateChartJS(); // update chart
+    this.#recordMeteogramSample();
   }
 
   #predictWeather()
@@ -3701,6 +4058,10 @@ class Weatherstation
 
       c.fillStyle = '#FFFFFF';
       c.fillText(printVelocity(this.#velocity), 20, 40);
+      c.fillStyle = '#FFCC66';
+      c.font = '11px Arial';
+      c.fillText(this.#mslpHpa.toFixed(0) + ' hPa', 72, 40);
+      c.font = '12px Arial';
 
       if (this.#soilMoisture > 0.) {
         const floodMm = Math.max(0, this.#soilMoisture - 85.0);
@@ -6586,7 +6947,7 @@ function applyRadarSettingsFromSave(radarSettings)
   if (n < radars.length)
     console.warn('Save file has settings for ' + n + ' radars but ' + radars.length + ' towers were loaded');
   else
-    console.log('Loaded radar settings for ' + n + ' radar towers');
+    debugLog('Loaded radar settings for ' + n + ' radar towers');
 }
 
 function airmassPositionsLookValid(positions, count)
@@ -6614,7 +6975,7 @@ function applyAirmassSettingsFromSave(airmassSettings)
   if (n < airmassGenerators.length)
     console.warn('Save file has settings for ' + n + ' airmass generators but ' + airmassGenerators.length + ' were loaded');
   else
-    console.log('Loaded airmass settings for ' + n + ' generators');
+    debugLog('Loaded airmass settings for ' + n + ' generators');
 }
 
 async function loadAirmassGeneratorsFromSave(dataBlob, sliceStart, totalBytes)
@@ -6660,7 +7021,7 @@ async function loadAirmassGeneratorsFromSave(dataBlob, sliceStart, totalBytes)
   for (let i = 0; i < count; i++)
     airmassGenerators.push(new AirmassGenerator(airmassArray[i * 2], airmassArray[i * 2 + 1]));
 
-  console.log('Loaded ' + count + ' airmass generators');
+  debugLog('Loaded ' + count + ' airmass generators');
   return offset + posBytes;
 }
 
@@ -6797,7 +7158,7 @@ async function loadRadarTowersFromSave(dataBlob, sliceStart, totalBytes)
     radars.push(new Radar(radarArray[i * 2], radarArray[i * 2 + 1]));
 
   refreshRadarOverlaySourceDropdown();
-  console.log('Loaded ' + count + ' radar towers');
+  debugLog('Loaded ' + count + ' radar towers');
   return offset + posBytes;
 }
 
@@ -6818,7 +7179,7 @@ async function loadRadarSettingsFromSaveBlob(settingsArrayBlob, offsetInBlob)
         applyRadarSettingsFromSave(JSON.parse(text));
         return;
       } catch (e) {
-        console.log('Failed to parse length-prefixed radar settings:', e.message);
+        debugLog('Failed to parse length-prefixed radar settings:', e.message);
       }
     }
   }
@@ -6833,7 +7194,7 @@ async function loadRadarSettingsFromSaveBlob(settingsArrayBlob, offsetInBlob)
     if (arrEnd >= 0)
       applyRadarSettingsFromSave(JSON.parse(trimmed.slice(0, arrEnd + 1)));
   } catch (e) {
-    console.log('No radar settings in save file:', e.message);
+    debugLog('No radar settings in save file:', e.message);
   }
 }
 
@@ -6874,6 +7235,12 @@ function syncDisplayFlagsFromGuiControls()
     displayAirmassGenerators = guiControls.displayAirmassGenerators;
   if (guiControls.displaySynopticSystems !== undefined)
     displaySynopticSystems = guiControls.displaySynopticSystems;
+  if (window.WeatherSandbox && window.WeatherSandbox.synopticBoundaries) {
+    if (guiControls.displayDrylines !== undefined)
+      window.WeatherSandbox.synopticBoundaries.setDisplayDrylines(guiControls.displayDrylines);
+    if (guiControls.displaySeaBreezes !== undefined)
+      window.WeatherSandbox.synopticBoundaries.setDisplaySeaBreezes(guiControls.displaySeaBreezes);
+  }
   if (guiControls.airplaneMode !== undefined)
     airplaneMode = !!guiControls.airplaneMode;
 }
@@ -6924,7 +7291,7 @@ async function loadMasterFormatSettings(dataBlob, sliceStart, totalBytes)
   const numWeatherStations = new Int16Array(numWSBuf)[0];
   let offset = sliceStart + Int16Array.BYTES_PER_ELEMENT;
 
-  console.log('numWeatherStations', numWeatherStations);
+  debugLog('numWeatherStations', numWeatherStations);
 
   if (numWeatherStations > 0 && numWeatherStations < 10000) {
     const wsBytes = numWeatherStations * 2 * Int16Array.BYTES_PER_ELEMENT;
@@ -6997,7 +7364,7 @@ async function loadNewFormatSettings(dataBlob, sliceStart, totalBytes, fileVersi
 
     throw new Error('Invalid guiControls length prefix');
   } catch (e) {
-    console.log('Using legacy settings layout in save file:', e.message);
+    debugLog('Using legacy settings layout in save file:', e.message);
     const settingsText = await settingsArrayBlob.text();
     const jsonStr = extractJsonObject(settingsText);
 
@@ -7070,6 +7437,10 @@ async function loadSnapshotFromDecompressed(decompressed, version, inPlaceApplyF
   airmassGenerators = [];
   while (synopticSystems.length)
     synopticSystems[0].destroy();
+  if (window.WeatherSandbox && window.WeatherSandbox.synopticBoundaries) {
+    window.WeatherSandbox.synopticBoundaries.destroyAllDrylines();
+    window.WeatherSandbox.synopticBoundaries.destroyAllSeaBreezes();
+  }
   if (window.AviationTraffic)
     window.AviationTraffic.clearAll();
 
@@ -7318,26 +7689,26 @@ window.loadData = async function()
         saveFileName = saveFileName.split('.').slice(0, -1).join('.'); // remove extension
       }
 
-      console.log('loading file: ' + saveFileName);
-      console.log('File versionID: ' + version);
-      console.log('sim_res_x: ' + sim_res_x);
-      console.log('sim_res_y: ' + sim_res_y);
-      console.log('Total decompressed size:', bytes.byteLength);
+      debugLog('loading file: ' + saveFileName);
+      debugLog('File versionID: ' + version);
+      debugLog('sim_res_x: ' + sim_res_x);
+      debugLog('sim_res_y: ' + sim_res_y);
+      debugLog('Total decompressed size:', bytes.byteLength);
 
       const cellCount = sim_res_x * sim_res_y;
       sliceStart = sliceEnd;
       sliceEnd += cellCount * 16;
-      console.log('baseTex slice:', sliceStart, 'to', sliceEnd, 'size:', sliceEnd - sliceStart);
+      debugLog('baseTex slice:', sliceStart, 'to', sliceEnd, 'size:', sliceEnd - sliceStart);
       let baseTexF32 = new Float32Array(buffer, byteOffset + sliceStart, cellCount * 4);
 
       sliceStart = sliceEnd;
       sliceEnd += cellCount * 16;
-      console.log('waterTex slice:', sliceStart, 'to', sliceEnd, 'size:', sliceEnd - sliceStart);
+      debugLog('waterTex slice:', sliceStart, 'to', sliceEnd, 'size:', sliceEnd - sliceStart);
       let waterTexF32 = new Float32Array(buffer, byteOffset + sliceStart, cellCount * 4);
 
       sliceStart = sliceEnd;
       sliceEnd += cellCount * 4;
-      console.log('wallTex slice:', sliceStart, 'to', sliceEnd, 'size:', sliceEnd - sliceStart);
+      debugLog('wallTex slice:', sliceStart, 'to', sliceEnd, 'size:', sliceEnd - sliceStart);
       let wallTexI8 = new Int8Array(buffer, byteOffset + sliceStart, cellCount * 4);
 
       // Read precipitation: format stores droplet count (263574037 and newer)
@@ -7346,11 +7717,11 @@ window.loadData = async function()
         sliceEnd += 1 * Uint32Array.BYTES_PER_ELEMENT;
         let savedNumDroplets = new Uint32Array(buffer, byteOffset + sliceStart, 1)[0];
         NUM_DROPLETS = savedNumDroplets;
-        console.log('Loaded saved NUM_DROPLETS:', NUM_DROPLETS);
+        debugLog('Loaded saved NUM_DROPLETS:', NUM_DROPLETS);
 
         sliceStart = sliceEnd;
         sliceEnd += NUM_DROPLETS * Float32Array.BYTES_PER_ELEMENT * 5;
-        console.log('precipArray slice:', sliceStart, 'to', sliceEnd, 'size:', sliceEnd - sliceStart);
+        debugLog('precipArray slice:', sliceStart, 'to', sliceEnd, 'size:', sliceEnd - sliceStart);
 
         if (sliceEnd > bytes.byteLength) {
           console.error('ERROR: precipArray slice extends past end of file!');
@@ -7361,26 +7732,26 @@ window.loadData = async function()
         }
 
         precipArray = new Float32Array(buffer, byteOffset + sliceStart, NUM_DROPLETS * 5);
-        console.log('precipArray actual length:', precipArray.length, 'expected:', NUM_DROPLETS * 5);
+        debugLog('precipArray actual length:', precipArray.length, 'expected:', NUM_DROPLETS * 5);
       } else if (version == 263574036 || version == 1939327491) {
         // Master / legacy format: precipitation size is derived from resolution (no saved droplet count)
-        NUM_DROPLETS = Math.min(NUM_DROPLETS, NUM_DROPLETS_CAP);
+        NUM_DROPLETS = Math.min(NUM_DROPLETS, getDropletCap(!!(guiControls && guiControls.reducedPrecipitation)));
         sliceStart = sliceEnd;
         sliceEnd += NUM_DROPLETS * Float32Array.BYTES_PER_ELEMENT * 5;
         if (sliceEnd <= bytes.byteLength) {
           precipArray = new Float32Array(buffer, byteOffset + sliceStart, NUM_DROPLETS * 5);
-          console.log('Loaded precipitation from legacy save file (version ' + version + ')');
+          debugLog('Loaded precipitation from legacy save file (version ' + version + ')');
         } else {
           sliceEnd = sliceStart;
           precipArray = null;
-          console.log('No precipitation section in legacy save file — using defaults');
+          debugLog('No precipitation section in legacy save file — using defaults');
         }
       } else {
         precipArray = null;
       }
 
       if (version == saveFileVersionID || version == 263574037) {             // formats with saved droplet count
-        console.log('Loading weather stations, radars, and settings for new version');
+        debugLog('Loading weather stations, radars, and settings for new version');
 
         const totalBytes = bytes.byteLength;
         function safeSlice(start, end) {
@@ -7401,7 +7772,7 @@ window.loadData = async function()
           }
         }
 
-        console.log('numWeatherStations', numWeatherStations);
+        debugLog('numWeatherStations', numWeatherStations);
 
         if (numWeatherStations > 0 && numWeatherStations < 10000) {
           sliceStart = sliceEnd;
@@ -7431,7 +7802,7 @@ window.loadData = async function()
         if (sliceStart < totalBytes)
           await loadNewFormatSettings(dataBlob, sliceStart, totalBytes, version);
         else
-          console.log('Save file has no settings section — using defaults');
+          debugLog('Save file has no settings section — using defaults');
 
         } catch(e) {
           // Older file with same version ID but missing/truncated optional sections
@@ -7440,14 +7811,14 @@ window.loadData = async function()
       } else if (version == 263574036) {
         try {
           await loadMasterFormatSettings(dataBlob, sliceEnd, decompressed.byteLength);
-          console.log('Loaded guiControls from master-format save file (v263574036)');
+          debugLog('Loaded guiControls from master-format save file (v263574036)');
         } catch (e) {
           console.warn('Could not load settings from master-format save file:', e.message);
         }
       } else if (version == 1939327491) {
         weatherStations = [];
         radars = [];
-        console.log('Oldest save format — simulation textures loaded, default settings used');
+        debugLog('Oldest save format — simulation textures loaded, default settings used');
       }
 
       try {
@@ -7672,13 +8043,13 @@ function loadSoundingFromFile(file)
     if (newSoundingData.length > 0) {
       soundingData = newSoundingData;
       customSoundingLoaded = true; // Mark that a custom sounding was loaded
-      console.log('Loaded custom sounding data sample:', newSoundingData[0], newSoundingData[Math.floor(newSoundingData.length/2)], newSoundingData[newSoundingData.length-1]);
+      debugLog('Loaded custom sounding data sample:', newSoundingData[0], newSoundingData[Math.floor(newSoundingData.length/2)], newSoundingData[newSoundingData.length-1]);
       // Update the sounding uniforms in the shader (only if simulation is initialized)
       if (guiControls && guiControls.simHeight && realWorldSounding_T) {
         updateSoundingUniforms();
-        console.log('Updated sounding uniforms. realWorldSounding_T[0]:', realWorldSounding_T[0], 'realWorldSounding_T[100]:', realWorldSounding_T[100]);
+        debugLog('Updated sounding uniforms. realWorldSounding_T[0]:', realWorldSounding_T[0], 'realWorldSounding_T[100]:', realWorldSounding_T[100]);
       } else {
-        console.log('Simulation not yet initialized, uniforms will be updated when simulation starts');
+        debugLog('Simulation not yet initialized, uniforms will be updated when simulation starts');
       }
       // Update the preview image
       updateSoundingPreview(newSoundingData);
@@ -8077,19 +8448,26 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       this.audioCtx = new window.AudioContext();
       this.jetEngineSound = new JetEngineSoundGenerator(this.audioCtx);
       // load sound files asynchronously
-      this.loadThunderSounds('cc', 8).then(buffers => { this.thunderCCSounds = buffers; });
-      this.loadThunderSounds('cg', 8).then(buffers => { this.thunderCGSounds = buffers; });
+      const onAudioErr = (err) => { if (typeof debugLog === 'function') debugLog('Audio load failed', err); };
+      this.loadThunderSounds('cc', 8).then(buffers => { this.thunderCCSounds = buffers; }).catch(onAudioErr);
+      this.loadThunderSounds('cg', 8).then(buffers => { this.thunderCGSounds = buffers; }).catch(onAudioErr);
 
-      this.loadSound('urban.m4a').then(buffer => { this.urban_sound = this.playLoop(buffer, 0.0); });
-      this.loadSound('forest.mp3').then(buffer => { this.forest_sound = this.playLoop(buffer, 0.0); });
-      this.loadSound('beach.mp3').then(buffer => { this.beach_sound = this.playLoop(buffer, 0.0); });
-      this.loadSound('rain.m4a').then(buffer => { this.rain_sound = this.playLoop(buffer, 0.0); });
-      this.loadSound('wind.m4a').then(buffer => { this.wind_sound = this.playLoop(buffer, 0.0); });
+      this.loadSound('urban.m4a').then(buffer => { this.urban_sound = this.playLoop(buffer, 0.0); }).catch(onAudioErr);
+      this.loadSound('forest.mp3').then(buffer => { this.forest_sound = this.playLoop(buffer, 0.0); }).catch(onAudioErr);
+      this.loadSound('beach.mp3').then(buffer => { this.beach_sound = this.playLoop(buffer, 0.0); }).catch(onAudioErr);
+      this.loadSound('rain.m4a').then(buffer => { this.rain_sound = this.playLoop(buffer, 0.0); }).catch(onAudioErr);
+      this.loadSound('wind.m4a').then(buffer => { this.wind_sound = this.playLoop(buffer, 0.0); }).catch(onAudioErr);
     }
 
     async loadSound(url)
     {
+      const decode = (typeof WeatherSandbox !== 'undefined' && WeatherSandbox.audio)
+        ? WeatherSandbox.audio.decodeAudioUrl.bind(WeatherSandbox.audio)
+        : null;
+      if (decode)
+        return decode(this.audioCtx, 'resources/sounds/' + url);
       const resp = await fetch('resources/sounds/' + url);
+      if (!resp.ok) throw new Error('Audio fetch failed: ' + resp.status);
       const arrayBuffer = await resp.arrayBuffer();
       return await this.audioCtx.decodeAudioData(arrayBuffer);
     }
@@ -8115,13 +8493,15 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
       let camHorDistFromStrike = (x - camXnorm) * cellHeight * sim_res_x;
 
-      let vecStrikeToCam = new Vec2D(camDistFromSim, camHorDistFromStrike);
+      if (!this._thunderVec) this._thunderVec = new Vec2D(0, 0);
+      this._thunderVec.x = camDistFromSim;
+      this._thunderVec.y = camHorDistFromStrike;
 
-      let distance = vecStrikeToCam.mag();
+      let distance = this._thunderVec.mag();
       if (!Number.isFinite(distance))
         distance = 1000.0;
 
-      let leftRightBalance = -vecStrikeToCam.angle();
+      let leftRightBalance = -this._thunderVec.angle();
       if (!Number.isFinite(leftRightBalance))
         leftRightBalance = 0.0;
 
@@ -8278,14 +8658,14 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
         this.setSoundGainAndPan(this.rain_sound, rainVolume);
 
-        //    console.log(distVolumeMult, rainVolume, windVolume);
+        //    debugLog(distVolumeMult, rainVolume, windVolume);
       }
 
       if (airplaneMode) {
         let camXnorm = 1. - (cam.curXpos + 1.0) / 2.0;
         let camYnorm = 1. - (cam.curYpos * sim_aspect + 1.0) / 2.0;
 
-        //    console.log(camXnorm, airplane.phys.pos.x);
+        //    debugLog(camXnorm, airplane.phys.pos.x);
 
         const vecCamToPlaneOnFlatSimArea = airplane.phys.pos.copy().subtract(new Vec2D(camXnorm * cellHeight * sim_res_x, camYnorm * cellHeight * sim_res_y));
 
@@ -8472,7 +8852,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
       let throttle = clamp(this.speedPID.update(targetIAS, IAS) + 0.60, 0.0, 1.0); // add 60% thrust bias
 
-      // console.log(this.targetAltitude, altitude, this.targetPitch);
+      // debugLog(this.targetAltitude, altitude, this.targetPitch);
 
       let elevator = clamp(this.pitchPID.update(this.targetPitch, pitchAttitude) + 0.2, -1.0, 1.0);
 
@@ -8482,7 +8862,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         throttle = -1.0;
       }
 
-      //  console.log(this.#desiredPitch, pitchAttitude, elevator);
+      //  debugLog(this.#desiredPitch, pitchAttitude, elevator);
 
       return [ elevator, throttle ];
     }
@@ -9082,10 +9462,10 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
         let angleToCm = pos.angle();      // angle to center of mass
 
-                                          // console.log(F);
+                                          // debugLog(F);
         F.rotate(-angleToCm); // make force vector perpendicular to vector to center off mass
 
-                              // console.log('After rotating ', F, angleToCm * radToDeg);
+                              // debugLog('After rotating ', F, angleToCm * radToDeg);
 
         let torque = -F.y * pos.mag(); // if force perpendicular to vector from center, mult by dist from center
         this.aVel += torque / this.I;
@@ -9201,7 +9581,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
       let Ypos = 90;
 
-      // console.log(Ypos);
+      // debugLog(Ypos);
 
       gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_0);
       gl.readBuffer(gl.COLOR_ATTACHMENT2); // walltexture
@@ -9454,7 +9834,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
       this.#radarAltitude = Math.min(mix(radarAltL, radarAltM, fractX), mix(radarAltM, radarAltR, fractX));
 
-      // console.log(Xpos, Ypos, radarAltL.toFixed(1), radarAltM.toFixed(1), radarAltR.toFixed(1), fractX);
+      // debugLog(Xpos, Ypos, radarAltL.toFixed(1), radarAltM.toFixed(1), radarAltR.toFixed(1), fractX);
 
       if (this.#gearStatus == 'EXTENDING') {
         this.#gearExtPos = Math.max(this.#gearExtPos - 0.01, 0.0);
@@ -9487,7 +9867,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         let draught = gearTouchAlt - heightAboveGround;
         if (draught > 0.0) {
           let waterDragForce = this.phys.vel.x * -50000.0 * draught;
-          // console.log(waterDragForce);
+          // debugLog(waterDragForce);
           if (waterDragForce > 3000000 || this.#gearExtPos < 7.0) { // crash on water
             guiControls.IterPerFrame = 1;
             guiControls.auto_IterPerFrame = false;
@@ -9559,27 +9939,27 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       let liftForce = this.Cl(AOA) * dynamicPressMult * 800.0;
       let dragForce = this.Cd(AOA) * dynamicPressMult * 800.0;
 
-      // console.log(Math.round(liftForce, 1), Math.round(dragForce, 1));
-      // console.log((liftForce / dragForce).toFixed(1));
-      // console.log(Math.abs(this.phys.vel.x));
+      // debugLog(Math.round(liftForce, 1), Math.round(dragForce, 1));
+      // debugLog((liftForce / dragForce).toFixed(1));
+      // debugLog(Math.abs(this.phys.vel.x));
 
       let mainWingForce = new Vec2D(dragForce, liftForce);
       mainWingForce.rotate(this.#relVelAngle);
       this.phys.applyForce(mainWingForce); // Apply Main wing force at center off mass
 
-      // console.log('this.elevator ' + this.elevator);
+      // debugLog('this.elevator ' + this.elevator);
 
       let vertStabilAOA = AOA - (this.elevator * 15.0 + 3.0) * degToRad; // angled at -12 to 18 degrees relative to main wing with 3 deg center position
 
-      // console.log('vertStabilAOA ', vertStabilAOA * radToDeg);
+      // debugLog('vertStabilAOA ', vertStabilAOA * radToDeg);
 
       let vertStabilPos = new Vec2D(35., 0.); // 35 meters to the right of the center of mass
       vertStabilPos.rotate(this.phys.angle);
-      // console.log('vertStabilPos ', vertStabilPos);
+      // debugLog('vertStabilPos ', vertStabilPos);
       let vertStabilForce = new Vec2D(this.Cd(vertStabilAOA) * dynamicPressMult * 40.0, this.Cl(vertStabilAOA) * dynamicPressMult * 40.0);
       vertStabilForce.rotate(this.#relVelAngle);
 
-      // console.log((vertStabilAOA * radToDeg).toFixed(2), vertStabilForce.copy().div(10000));
+      // debugLog((vertStabilAOA * radToDeg).toFixed(2), vertStabilForce.copy().div(10000));
 
       let thrust = this.jetEngine.update(this.throttle);
 
@@ -9687,7 +10067,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       this.elevator += Math.max(-this.phys.angle * radToDeg - 50.0, 0.) * 0.03; // limit elevator to prevent going down steeper than vertical
       this.elevator -= Math.max(this.phys.angle * radToDeg - 50.0, 0.) * 0.03;  // limit elevator to prevent going up steeper than vertical
 
-      // console.log(this.phys.angle * radToDeg, this.elevator);
+      // debugLog(this.phys.angle * radToDeg, this.elevator);
 
       if (gp) {
         if (!this.#autopilot.autoThrottleEnabled) {
@@ -9708,7 +10088,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       let normXpos = this.phys.pos.x / cellHeight / sim_res_x;
       let normYpos = (this.phys.pos.y / cellHeight + 1.0) / sim_res_y;
 
-      // console.log(normXpos, normYpos);
+      // debugLog(normXpos, normYpos);
       gl.useProgram(skyBackgroundDisplayProgram);
       gl.uniform3f(uloc_sky_planePos, normXpos, normYpos, this.directionIsLeft ? this.phys.angle : -this.phys.angle);
       gl.useProgram(advectionProgram);
@@ -9756,11 +10136,11 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     stencil : false,
   };
   gl = canvas.getContext('webgl2', contextAttributes);
-  // console.log(gl.getContextAttributes());
+  // debugLog(gl.getContextAttributes());
 
   if (!gl) {
     alert('Your browser does not support WebGL2, Download a new browser.');
-    throw ' Error: Your browser does not support WebGL2';
+    throw new Error('Your browser does not support WebGL2');
   }
 
   // SETUP GUI
@@ -9815,8 +10195,32 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     guiControls.enableSynopticSystems = guiControls_default.enableSynopticSystems;
   if (guiControls.displaySynopticSystems === undefined)
     guiControls.displaySynopticSystems = guiControls_default.displaySynopticSystems;
+  if (guiControls.surfacePressure === undefined)
+    guiControls.surfacePressure = guiControls_default.surfacePressure;
+  if (guiControls.pressureThermalScale === undefined)
+    guiControls.pressureThermalScale = guiControls_default.pressureThermalScale;
+  if (guiControls.pressureDynamicScale === undefined)
+    guiControls.pressureDynamicScale = guiControls_default.pressureDynamicScale;
+  if (guiControls.pressureSynopticScale === undefined)
+    guiControls.pressureSynopticScale = guiControls_default.pressureSynopticScale;
+  if (guiControls.enableDrylines === undefined)
+    guiControls.enableDrylines = guiControls_default.enableDrylines;
+  if (guiControls.displayDrylines === undefined)
+    guiControls.displayDrylines = guiControls_default.displayDrylines;
+  if (guiControls.enableSeaBreezes === undefined)
+    guiControls.enableSeaBreezes = guiControls_default.enableSeaBreezes;
+  if (guiControls.displaySeaBreezes === undefined)
+    guiControls.displaySeaBreezes = guiControls_default.displaySeaBreezes;
+  if (guiControls.enableAutoSeaBreeze === undefined)
+    guiControls.enableAutoSeaBreeze = guiControls_default.enableAutoSeaBreeze;
+  if (guiControls.autoSeaBreezeStrength === undefined)
+    guiControls.autoSeaBreezeStrength = guiControls_default.autoSeaBreezeStrength;
   if (guiControls.floodVizStrength === undefined)
     guiControls.floodVizStrength = guiControls_default.floodVizStrength;
+  if (guiControls.fogHazeStrength === undefined)
+    guiControls.fogHazeStrength = guiControls_default.fogHazeStrength;
+  if (guiControls.stormTrackOverlay === undefined)
+    guiControls.stormTrackOverlay = guiControls_default.stormTrackOverlay;
   if (guiControls.airTrafficEnabled === undefined)
     guiControls.airTrafficEnabled = guiControls_default.airTrafficEnabled;
   if (guiControls.airTrafficMaxPlanes === undefined)
@@ -9827,12 +10231,18 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     guiControls.airTrafficShowRoutes = guiControls_default.airTrafficShowRoutes;
   if (guiControls.displayAirports === undefined)
     guiControls.displayAirports = guiControls_default.displayAirports;
+  if (guiControls.displayMeteogram === undefined)
+    guiControls.displayMeteogram = guiControls_default.displayMeteogram;
 
   restoreSavedRadarTowersFromGuiControls();
   restoreSavedAirmassGeneratorsFromGuiControls();
   restoreSavedCustomToolDefinitionsFromGuiControls();
   restoreSavedCustomToolEntitiesFromGuiControls();
   restoreSavedSynopticSystemsFromGuiControls();
+  if (window.WeatherSandbox && window.WeatherSandbox.synopticBoundaries) {
+    window.WeatherSandbox.synopticBoundaries.restoreSavedDrylinesFromGuiControls();
+    window.WeatherSandbox.synopticBoundaries.restoreSavedSeaBreezesFromGuiControls();
+  }
   if (window.AviationTraffic) {
     window.AviationTraffic.restoreFromGuiControls();
     if (guiControls.__trafficPlaneState && Array.isArray(guiControls.__trafficPlaneState)) {
@@ -10004,7 +10414,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
     try {
       const jsonStr = extractJsonObject(strGuiControls) || strGuiControls.trim();
-      guiControls = JSON.parse(jsonStr);
+      guiControls = typeof safeJsonParse === 'function' ? safeJsonParse(jsonStr) : JSON.parse(jsonStr);
     } catch (e) {
       console.warn('Save file settings are invalid or corrupted, using defaults:', e.message);
       guiControls = JSON.parse(JSON.stringify(guiControls_default));
@@ -10230,6 +10640,8 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         'Airmass Generator' : 'TOOL_AIRMASS',
         'Synoptic Low' : 'TOOL_SYNOPTIC_LOW',
         'Synoptic High' : 'TOOL_SYNOPTIC_HIGH',
+        'Dryline' : 'TOOL_DRYLINE',
+        'Sea / Lake Breeze' : 'TOOL_SEA_BREEZE',
         'Marker' : 'TOOL_MARKER',
         'Airport' : 'TOOL_AIRPORT',
         'Flight Route' : 'TOOL_FLIGHT_ROUTE',
@@ -10552,6 +10964,8 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         'Flash Flood / Runoff' : 'DISP_FLOOD',
         'Curl' : 'DISP_CURL',
         'Relative Humidity / Cloud Density' : 'DISP_HUMD',
+        'Equivalent Potential Temp (θe)' : 'DISP_THETAE',
+        'Precipitation Type' : 'DISP_PRECIP_TYPE',
         'Air Quality' : 'DISP_AIRQUALITY',
         'Temperature Change' : 'DISP_TEMPERATURE_CHANGE',
         'Charge' : 'DISP_CHARGE',
@@ -10560,7 +10974,8 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         'Radar Imagery' : 'DISP_RADAR',
         'Composite Radar' : 'DISP_RADAR_COMPOSITE',
         'World Radar' : 'DISP_RADAR_WORLD',
-        'Convective Risk' : 'DISP_RISK'
+        'Convective Risk' : 'DISP_RISK',
+        'Fluid Pressure' : 'DISP_PRESSURE'
     };
     SOUNDING_VIEW_CONFIGS.forEach(cfg => {
       displayModeOptions['Sounding: ' + cfg.label] = cfg.mode;
@@ -10638,6 +11053,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         overlayScan.lastFinishIter = -9999;
         riskData = [];
         soundingOverlayData = [];
+        clearStormTracks();
       });
     displayOverlays.add(guiControls, 'riskUpdateFrequency', 5, 120, 1)
       .name('Risk/Sounding Update Freq');
@@ -10731,6 +11147,20 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         resetAtmosphereKeepTerrain();
     };
     advanced_folder.add(guiControls, 'resetAtmosphereKeepTerrain').name('Reset Atmosphere (Keep Terrain)');
+    guiControls.generateProceduralTerrain = function() {
+      if (window.WeatherSandbox && window.WeatherSandbox.terrainGen)
+        window.WeatherSandbox.terrainGen.promptAndGenerate();
+      else
+        alert('Terrain generator not loaded');
+    };
+    advanced_folder.add(guiControls, 'generateProceduralTerrain').name('Generate Procedural Terrain');
+    guiControls.loadScenarioPack = function() {
+      if (window.WeatherSandbox && window.WeatherSandbox.scenarios)
+        window.WeatherSandbox.scenarios.promptAndLoad();
+      else
+        alert('Scenario loader not loaded');
+    };
+    advanced_folder.add(guiControls, 'loadScenarioPack').name('Load Scenario Pack');
 
     var advancedSimulation = advanced_folder.addFolder('Simulation');
     advancedSimulation.add(guiControls, 'coriolisStrength', 0.0, 0.02, 0.0005)
@@ -10742,8 +11172,19 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       })
       .name('Coriolis Strength');
     advancedSimulation.add(guiControls, 'enableSynopticSystems').name('Enable Synoptic Systems');
-    advancedSimulation.add(guiControls, 'IterPerFrame', 1, 50, 1)
-      .onChange(function() { guiControls.auto_IterPerFrame = false; })
+    advancedSimulation.add(guiControls, 'enableDrylines').name('Enable Drylines');
+    advancedSimulation.add(guiControls, 'enableSeaBreezes').name('Enable Sea Breezes');
+    advancedSimulation.add(guiControls, 'enableAutoSeaBreeze').name('Auto Sea Breeze (coasts)');
+    advancedSimulation.add(guiControls, 'autoSeaBreezeStrength', 0, 2, 0.05).name('Auto Sea Breeze Strength');
+    advancedSimulation.add(guiControls, 'surfacePressure', 950, 1050, 0.25).name('MSLP Baseline (hPa)');
+    advancedSimulation.add(guiControls, 'pressureThermalScale', 0, 4, 0.05).name('MSLP Thermal Scale');
+    advancedSimulation.add(guiControls, 'pressureDynamicScale', 0, 40, 0.5).name('MSLP Dynamic Scale');
+    advancedSimulation.add(guiControls, 'pressureSynopticScale', 0, 20, 0.25).name('MSLP Synoptic Scale');
+    advancedSimulation.add(guiControls, 'IterPerFrame', 0.1, 50, 0.1)
+      .onChange(function() {
+        guiControls.auto_IterPerFrame = false;
+        guiControls.IterPerFrame = Math.round(clamp(guiControls.IterPerFrame, 0.1, 50) * 10) / 10;
+      })
       .name('Iterations / Frame').listen();
     advancedSimulation.add(guiControls, 'auto_IterPerFrame').name('Auto Adjust').listen();
     advancedSimulation.add(guiControls, 'realtimeMode')
@@ -10771,12 +11212,36 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
           synopticSystems[i].setHidden(!displaySynopticSystems);
       })
       .name('Show Synoptic Systems');
+    advancedOverlays.add(guiControls, 'displayDrylines')
+      .onChange(function() {
+        if (window.WeatherSandbox && window.WeatherSandbox.synopticBoundaries)
+          window.WeatherSandbox.synopticBoundaries.setDisplayDrylines(guiControls.displayDrylines);
+      })
+      .name('Show Drylines');
+    advancedOverlays.add(guiControls, 'displaySeaBreezes')
+      .onChange(function() {
+        if (window.WeatherSandbox && window.WeatherSandbox.synopticBoundaries)
+          window.WeatherSandbox.synopticBoundaries.setDisplaySeaBreezes(guiControls.displaySeaBreezes);
+      })
+      .name('Show Sea Breezes');
     advancedOverlays.add(guiControls, 'floodVizStrength', 0.0, 2.0, 0.05)
       .onChange(function() {
         gl.useProgram(realisticDisplayProgram);
         gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'floodVizStrength'), guiControls.floodVizStrength);
       })
       .name('Flood Viz Strength');
+    advancedOverlays.add(guiControls, 'fogHazeStrength', 0.0, 2.0, 0.05)
+      .onChange(function() {
+        gl.useProgram(realisticDisplayProgram);
+        gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'fogHazeStrength'), guiControls.fogHazeStrength);
+      })
+      .name('Fog / Haze Strength');
+    advancedOverlays.add(guiControls, 'stormTrackOverlay')
+      .onChange(function() {
+        if (!guiControls.stormTrackOverlay && stormTrackCanvas)
+          stormTrackCanvas.style.display = 'none';
+      })
+      .name('Storm Track Overlay');
     advancedOverlays.add(guiControls, 'enableVectorField').name('Vector Field');
     advancedOverlays.add(guiControls, 'displayWeatherStations')
       .onChange(function() {
@@ -10786,6 +11251,13 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         }
       })
       .name('Weather Stations');
+    advancedOverlays.add(guiControls, 'displayMeteogram')
+      .onChange(function() {
+        if (window.WeatherSandbox && window.WeatherSandbox.meteogram)
+          window.WeatherSandbox.meteogram.syncVisibilityFromGui();
+      })
+      .name('Meteogram Panel')
+      .listen();
     advancedOverlays.add(guiControls, 'displayRadars')
       .onChange(function() {
         displayRadars = guiControls.displayRadars;
@@ -10862,7 +11334,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       guiControls.inactiveDroplets = NUM_DROPLETS;
       if (typeof setGuiUniforms === 'function')
         setGuiUniforms();
-      console.log('Performance preset applied — aggressive high-res throttling enabled. Droplets:', NUM_DROPLETS);
+      debugLog('Performance preset applied — aggressive high-res throttling enabled. Droplets:', NUM_DROPLETS);
     };
     advancedPerformance.add(guiControls, 'applyPerformancePreset').name('Apply Performance Preset');
     advancedPerformance.add(guiControls, 'skipCurlCalculation').name('Skip Curl (Faster)');
@@ -11084,7 +11556,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       console.warn('Simulation still loading — GPU programs not ready yet.');
       return;
     }
-    console.log('startSimulation called, SETUP_MODE was:', SETUP_MODE);
+    debugLog('startSimulation called, SETUP_MODE was:', SETUP_MODE);
     SETUP_MODE = false;
     simRuntimeFrames = 0;
     gl.useProgram(postProcessingProgram);
@@ -11455,29 +11927,29 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       if (!this.buttonClickHandler) {
         this.buttonClickHandler = (e) => {
           if (!this.saveButtonBounds) {
-            console.log('Button bounds not set');
+            debugLog('Button bounds not set');
             return;
           }
           const rect = this.graphCanvas.getBoundingClientRect();
           const x = e.clientX - rect.left;
           const y = e.clientY - rect.top;
           
-          console.log('Click at:', x, y, 'Button bounds:', this.saveButtonBounds, this.unlockButtonBounds);
+          debugLog('Click at:', x, y, 'Button bounds:', this.saveButtonBounds, this.unlockButtonBounds);
           
           // Check if save button was clicked
           if (x >= this.saveButtonBounds.x && x <= this.saveButtonBounds.x + this.saveButtonBounds.width &&
               y >= this.saveButtonBounds.y && y <= this.saveButtonBounds.y + this.saveButtonBounds.height) {
-            console.log('Save button clicked! Current fixedPosition:', guiControls.graphFixedPosition);
+            debugLog('Save button clicked! Current fixedPosition:', guiControls.graphFixedPosition);
             if (guiControls.graphFixedPosition) {
               // Save sounding (stay frozen)
               this.saveCurrentSounding();
-              console.log('Sounding saved, staying frozen');
+              debugLog('Sounding saved, staying frozen');
             } else {
               // Freeze position
               guiControls.graphFixedPosition = true;
               guiControls.graphFixedX = Math.floor(Math.abs(mod(mouseXinSim * sim_res_x, sim_res_x)));
               guiControls.graphFixedY = Math.floor(mouseYinSim * sim_res_y);
-              console.log('Frozen to position:', guiControls.graphFixedX, guiControls.graphFixedY);
+              debugLog('Frozen to position:', guiControls.graphFixedX, guiControls.graphFixedY);
             }
           }
           
@@ -11485,9 +11957,9 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
           if (this.unlockButtonBounds && 
               x >= this.unlockButtonBounds.x && x <= this.unlockButtonBounds.x + this.unlockButtonBounds.width &&
               y >= this.unlockButtonBounds.y && y <= this.unlockButtonBounds.y + this.unlockButtonBounds.height) {
-            console.log('Unlock button clicked - unfreezing without saving');
+            debugLog('Unlock button clicked - unfreezing without saving');
             guiControls.graphFixedPosition = false;
-            console.log('Unlocked - now following cursor');
+            debugLog('Unlocked - now following cursor');
           }
         };
         this.graphCanvas.addEventListener('click', this.buttonClickHandler);
@@ -12675,13 +13147,13 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         } else if (row.miniBar) {
           const name = row.shortLabel || row.label;
           const pct = Math.max(0, Math.min(100, row.pct || 0));
-          const color = row.color || '#88aacc';
+          const color = sanitizeCssColor(row.color, '#88aacc');
           html += '<div class="sounding-metrics-bar"><span class="name">' + this._escapeHtml(name) +
             '</span><span class="pct">' + pct + '%</span><div class="track"><div class="fill" style="width:' +
             pct + '%;background:' + color + '"></div></div></div>';
         } else if (row.label) {
           const cls = row.highlight ? 'sounding-metrics-row highlight' : 'sounding-metrics-row';
-          const valColor = row.color || '#e8eef2';
+          const valColor = sanitizeCssColor(row.color, '#e8eef2');
           html += '<div class="' + cls + '"><span class="lbl">' + this._escapeHtml(row.label) +
             '</span><span class="val" style="color:' + valColor + '">' +
             this._escapeHtml(row.value) + '</span></div>';
@@ -12737,9 +13209,9 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       try {
         const rawUser = localStorage.getItem(this.SOUNDING_ANALOGS_USER_KEY);
         const rawLegacy = localStorage.getItem(this.SOUNDING_ANALOGS_STORAGE_KEY);
-        let user = rawUser ? JSON.parse(rawUser) : null;
+        let user = rawUser ? (typeof safeJsonParse === 'function' ? safeJsonParse(rawUser, null) : JSON.parse(rawUser)) : null;
         if (!Array.isArray(user) && rawLegacy) {
-          const legacy = JSON.parse(rawLegacy);
+          const legacy = typeof safeJsonParse === 'function' ? safeJsonParse(rawLegacy, null) : JSON.parse(rawLegacy);
           user = Array.isArray(legacy) ? legacy.filter(a => a && a.id && !a.builtin) : [];
         }
         this._userAnalogs = Array.isArray(user) ? user.filter(a => a && a.id && !a.builtin) : [];
@@ -12748,7 +13220,9 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       }
       try {
         const rawHidden = localStorage.getItem(this.SOUNDING_ANALOGS_HIDDEN_KEY);
-        this._hiddenBuiltinIds = rawHidden ? JSON.parse(rawHidden) : [];
+        this._hiddenBuiltinIds = rawHidden
+          ? (typeof safeJsonParse === 'function' ? safeJsonParse(rawHidden, []) : JSON.parse(rawHidden))
+          : [];
         if (!Array.isArray(this._hiddenBuiltinIds)) this._hiddenBuiltinIds = [];
       } catch (e) {
         this._hiddenBuiltinIds = [];
@@ -13320,7 +13794,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       if (raw.startsWith('WSE-ANALOG:')) {
         jsonStr = decodeURIComponent(escape(atob(raw.slice('WSE-ANALOG:'.length))));
       }
-      const parsed = JSON.parse(jsonStr);
+      const parsed = typeof safeJsonParse === 'function' ? safeJsonParse(jsonStr) : JSON.parse(jsonStr);
       if (parsed && parsed.type === 'wse-sounding-analog' && parsed.analog) return parsed.analog;
       if (parsed && parsed.id && parsed.hazards) return parsed;
       if (Array.isArray(parsed)) return parsed;
@@ -13329,22 +13803,28 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     },
     _normalizeImportedAnalog : function(raw) {
       if (!raw || typeof raw !== 'object') return null;
-      const hazards = Array.isArray(raw.hazards) ? raw.hazards : [];
-      if (!hazards.length && !raw.indices) return null;
+      const hazardsIn = Array.isArray(raw.hazards) ? raw.hazards : [];
+      if (!hazardsIn.length && !raw.indices) return null;
+      const hazards = hazardsIn.slice(0, 32).map((h) => ({
+        label: String((h && h.label) || '').slice(0, 64),
+        pct: Math.max(0, Math.min(100, Number(h && h.pct) || 0)),
+        color: sanitizeCssColor(h && h.color, '#88aacc'),
+      }));
+      const riskIn = raw.risk || {};
       return {
         id: raw.id || this._newAnalogId(),
-        name: String(raw.name || 'Imported Analog').trim() || 'Imported Analog',
+        name: String(raw.name || 'Imported Analog').trim().slice(0, 64) || 'Imported Analog',
         createdAt: raw.createdAt || Date.now(),
-        columnLabel: raw.columnLabel || '—',
-        simTimeLabel: raw.simTimeLabel || '—',
-        obsTimeLabel: raw.obsTimeLabel || '',
+        columnLabel: String(raw.columnLabel || '—').slice(0, 64),
+        simTimeLabel: String(raw.simTimeLabel || '—').slice(0, 64),
+        obsTimeLabel: String(raw.obsTimeLabel || '').slice(0, 64),
         hazards,
         indices: raw.indices || {},
-        stormTypes: raw.stormTypes || [],
-        convMode: raw.convMode || '—',
-        risk: raw.risk || {label: '—', color: '#888888'},
-        profile: Array.isArray(raw.profile) ? raw.profile : [],
-        notes: raw.notes || '',
+        stormTypes: Array.isArray(raw.stormTypes) ? raw.stormTypes.slice(0, 16) : [],
+        convMode: String(raw.convMode || '—').slice(0, 64),
+        risk: { label: String(riskIn.label || '—').slice(0, 64), color: sanitizeCssColor(riskIn.color, '#888888') },
+        profile: Array.isArray(raw.profile) ? raw.profile.slice(0, 512) : [],
+        notes: String(raw.notes || '').slice(0, 2000),
       };
     },
     importAnalogsFromText : function(text) {
@@ -13706,15 +14186,15 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     _formatAnalogHazardDetailsHtml : function(analog, color) {
       const details = this.getAnalogHazardDetails(analog);
       if (!details.length) return '';
-      const c = color || '#8899aa';
+      const c = sanitizeCssColor(color, '#8899aa');
       return '<div class="sounding-analog-hazard-details" style="color:' + c + '">' +
         details.map(d => '<span>' + this._escapeHtml(d) + '</span>').join('') + '</div>';
     },
     _renderSimilarAnalogMatchHtml : function(analog, score) {
       const pct = Math.max(0, Math.min(100, score || 0));
       const severity = this.computeAnalogSeverityScore(analog);
-      const nameColor = this.severityScoreToColor(severity);
-      const subColor = this._lerpColor(nameColor, '#7a8fa0', 0.35);
+      const nameColor = sanitizeCssColor(this.severityScoreToColor(severity), '#e8eef2');
+      const subColor = sanitizeCssColor(this._lerpColor(nameColor, '#7a8fa0', 0.35), '#7a8fa0');
       const glow = this._severityTextShadowCss(nameColor);
       const sub = this._analogMatchSubline(analog);
       const detailsHtml = this._formatAnalogHazardDetailsHtml(analog, subColor);
@@ -13760,9 +14240,10 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     _formatOneHazardBar : function(h) {
       const pct = Math.max(0, Math.min(100, h.pct || 0));
       const dim = pct < 12 ? ' dim' : '';
+      const color = sanitizeCssColor(h && h.color, '#88aacc');
       return '<div class="sounding-metrics-bar' + dim + '"><span class="name">' + this._escapeHtml(h.label) +
         '</span><span class="pct">' + pct + '%</span><div class="track"><div class="fill" style="width:' +
-        pct + '%;background:' + (h.color || '#88aacc') + '"></div></div></div>';
+        pct + '%;background:' + color + '"></div></div></div>';
     },
     _renderAnalogCard : function(analog, snap) {
       const overlayOn = this._overlayAnalogIds.includes(analog.id);
@@ -13999,7 +14480,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       const dz = guiControls.simHeight / sim_res_y;
       const soundingData = [];
       
-      console.log('saveCurrentSounding: dryLapse =', dryLapse, 'simHeight =', guiControls.simHeight, 'sim_res_y =', sim_res_y);
+      debugLog('saveCurrentSounding: dryLapse =', dryLapse, 'simHeight =', guiControls.simHeight, 'sim_res_y =', sim_res_y);
       
       for (let y = 0; y < sim_res_y; y++) {
         if (wallTextureValues[4 * y + 1] === 0) continue; // Skip non-fluid cells
@@ -14020,10 +14501,10 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         const vel = rawVelocityTo_ms(velRaw) * 3.6; // Convert to km/h
         const angle = Math.atan2(baseTextureValues[4 * y + 1], baseTextureValues[4 * y]) * 180 / Math.PI;
         
-        // Estimate pressure (simple barometric formula)
+        // ISA pressure for sounding export vertical coordinate (CAPE still uses ISA P(z))
         const alt = y * dz;
-        const p = 1013.25 * Math.pow(1 - 2.25577e-5 * alt, 5.25588);
-        
+        const p = isaPressureHpa(alt);
+
         // Estimate wet bulb (simplified)
         const tw = temp - (100 - rh) / 5;
         
@@ -14039,7 +14520,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         });
       }
       
-      console.log('saveCurrentSounding: sample data at y=0:', soundingData[0], 'at y=100:', soundingData[100], 'at y=200:', soundingData[200]);
+      debugLog('saveCurrentSounding: sample data at y=0:', soundingData[0], 'at y=100:', soundingData[100], 'at y=200:', soundingData[200]);
       
       // Create text file content
       let content = "# Sounding Data Export from Simulation\n";
@@ -14060,7 +14541,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
       
-      alert('Sounding saved! You can load it from the main menu using the "Load Sounding" button (:');
+      alert('Sounding saved. Load it from the main menu with the "Load Sounding" button.');
     },
     draw : function(simXpos, simYpos) {
       // draw graph
@@ -16210,6 +16691,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       for (let i = 0; i < synopticSystems.length; i++)
         synopticSystems[i].drawRadiusOverlay(nukeOverlayCtx);
     }
+    if (window.WeatherSandbox && window.WeatherSandbox.synopticBoundaries)
+      window.WeatherSandbox.synopticBoundaries.drawOverlays(nukeOverlayCtx);
   }
 
   function logSample()
@@ -16242,39 +16725,39 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     var precipitationFeedbackTextureValues = new Float32Array(4);
     gl.readPixels(simXpos, simYpos, 1, 1, gl.RGBA, gl.FLOAT, precipitationFeedbackTextureValues);
 
-    console.log(' ');
-    console.log(' ');
-    console.log('Sample at:      X: ' + simXpos + ' (' + simXpos * cellHeight / 1000 + ' km)', '  Y: ' + simYpos + ' (' + simYpos * cellHeight / 1000 + ' km)');
-    console.log('BASE-----------------------------------------');
-    console.log('[0] X-vel:', baseTextureValues[0]);
-    console.log('[1] Y-vel:', baseTextureValues[1]);
-    console.log('[2] Press:', baseTextureValues[2]);
-    console.log('[3] Temp :', baseTextureValues[3].toFixed(2) + ' K   ', KtoC(baseTextureValues[3]).toFixed(2) + ' °C   ', KtoC(potentialToRealT(baseTextureValues[3], simYpos)).toFixed(2) + ' °C');
+    debugLog(' ');
+    debugLog(' ');
+    debugLog('Sample at:      X: ' + simXpos + ' (' + simXpos * cellHeight / 1000 + ' km)', '  Y: ' + simYpos + ' (' + simYpos * cellHeight / 1000 + ' km)');
+    debugLog('BASE-----------------------------------------');
+    debugLog('[0] X-vel:', baseTextureValues[0]);
+    debugLog('[1] Y-vel:', baseTextureValues[1]);
+    debugLog('[2] Press:', baseTextureValues[2]);
+    debugLog('[3] Temp :', baseTextureValues[3].toFixed(2) + ' K   ', KtoC(baseTextureValues[3]).toFixed(2) + ' °C   ', KtoC(potentialToRealT(baseTextureValues[3], simYpos)).toFixed(2) + ' °C');
 
-    console.log('WATER-----------------------------------------');
-    console.log('[0] Water:     ', waterTextureValues[0]);
-    console.log('[1] Cloudwater:', waterTextureValues[1]);
-    console.log('[2] Soil Moisture / Precipitation:', waterTextureValues[2]);
-    console.log('[3] Smoke/snow:', waterTextureValues[3]);
+    debugLog('WATER-----------------------------------------');
+    debugLog('[0] Water:     ', waterTextureValues[0]);
+    debugLog('[1] Cloudwater:', waterTextureValues[1]);
+    debugLog('[2] Soil Moisture / Precipitation:', waterTextureValues[2]);
+    debugLog('[3] Smoke/snow:', waterTextureValues[3]);
 
-    console.log('WALL-----------------------------------------');
-    console.log('[0] walltype :         ', wallTextureValues[0]);
-    console.log('[1] distance:          ', wallTextureValues[1]);
-    console.log('[2] Vertical distance :', wallTextureValues[2]);
-    console.log('[3] Vegetation:        ', wallTextureValues[3]);
+    debugLog('WALL-----------------------------------------');
+    debugLog('[0] walltype :         ', wallTextureValues[0]);
+    debugLog('[1] distance:          ', wallTextureValues[1]);
+    debugLog('[2] Vertical distance :', wallTextureValues[2]);
+    debugLog('[3] Vegetation:        ', wallTextureValues[3]);
 
-    console.log('LIGHT-----------------------------------------');
-    console.log('[0] Sunlight:  ', lightTextureValues[0].toFixed(2), 'W/m²');
-    console.log('[1] IR Heating:', (lightTextureValues[1] / 0.000002).toFixed(2), 'W/m²  (includes sunlight absorbed by smoke)'); // net effect of ir
-    console.log('[2] IR down:   ', lightTextureValues[2].toFixed(2), 'W/m²', KtoC(IR_temp(lightTextureValues[2])).toFixed(2) + ' °C');
-    console.log('[3] IR up:     ', lightTextureValues[3].toFixed(2), 'W/m²', KtoC(IR_temp(lightTextureValues[3])).toFixed(2) + ' °C');
-    console.log('Net IR up:     ', (lightTextureValues[3] - lightTextureValues[2]).toFixed(2), 'W/m²');
+    debugLog('LIGHT-----------------------------------------');
+    debugLog('[0] Sunlight:  ', lightTextureValues[0].toFixed(2), 'W/m²');
+    debugLog('[1] IR Heating:', (lightTextureValues[1] / 0.000002).toFixed(2), 'W/m²  (includes sunlight absorbed by smoke)'); // net effect of ir
+    debugLog('[2] IR down:   ', lightTextureValues[2].toFixed(2), 'W/m²', KtoC(IR_temp(lightTextureValues[2])).toFixed(2) + ' °C');
+    debugLog('[3] IR up:     ', lightTextureValues[3].toFixed(2), 'W/m²', KtoC(IR_temp(lightTextureValues[3])).toFixed(2) + ' °C');
+    debugLog('Net IR up:     ', (lightTextureValues[3] - lightTextureValues[2]).toFixed(2), 'W/m²');
 
-    console.log('PRECIPITATION FEEDBACK-------------------------');
-    console.log('[0] Mass:  ', precipitationFeedbackTextureValues[0]);
-    console.log('[1] Heat:', precipitationFeedbackTextureValues[1]); // net effect of ir
-    console.log('[2] Vapor:   ', precipitationFeedbackTextureValues[2]);
-    console.log('[3] Snow deposition:     ', precipitationFeedbackTextureValues[3]);
+    debugLog('PRECIPITATION FEEDBACK-------------------------');
+    debugLog('[0] Mass:  ', precipitationFeedbackTextureValues[0]);
+    debugLog('[1] Heat:', precipitationFeedbackTextureValues[1]); // net effect of ir
+    debugLog('[2] Vapor:   ', precipitationFeedbackTextureValues[2]);
+    debugLog('[3] Snow deposition:     ', precipitationFeedbackTextureValues[3]);
   }
 
 
@@ -16379,6 +16862,10 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       onDown() { cycleRadarProducts(1); } },
     { id: 'displayHumidity', name: 'Humidity display', category: 'Display', defaultCode: 'KeyC',
       onDown() { guiControls.displayMode = 'DISP_HUMD'; } },
+    { id: 'displayThetae', name: 'θe display', category: 'Display', defaultCode: null,
+      onDown() { guiControls.displayMode = 'DISP_THETAE'; } },
+    { id: 'displayPrecipType', name: 'Precip type display', category: 'Display', defaultCode: null,
+      onDown() { guiControls.displayMode = 'DISP_PRECIP_TYPE'; } },
     { id: 'displayTemperature', name: 'Temperature display', category: 'Display', defaultCode: 'Digit1',
       onDown() { guiControls.displayMode = 'DISP_TEMPERATURE'; } },
     { id: 'displayWater', name: 'Water vapor display', category: 'Display', defaultCode: 'Digit2',
@@ -16553,6 +17040,10 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       onDown() { setGuiTool('TOOL_SYNOPTIC_LOW'); } },
     { id: 'toolSynopticHigh', name: 'Tool: synoptic high', category: 'Tools', defaultCode: null,
       onDown() { setGuiTool('TOOL_SYNOPTIC_HIGH'); } },
+    { id: 'toolDryline', name: 'Tool: dryline', category: 'Tools', defaultCode: null,
+      onDown() { setGuiTool('TOOL_DRYLINE'); } },
+    { id: 'toolSeaBreeze', name: 'Tool: sea / lake breeze', category: 'Tools', defaultCode: null,
+      onDown() { setGuiTool('TOOL_SEA_BREEZE'); } },
     { id: 'toolNuke', name: 'Tool: nuke', category: 'Tools', defaultCode: null,
       onDown() { setGuiTool('TOOL_NUKE'); } },
     { id: 'displayPrecipVapor', name: 'Precipitation vapor feedback display', category: 'Display', defaultCode: null,
@@ -16851,6 +17342,45 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         unit = '% RH';
         break;
 
+      case 'DISP_THETAE': {
+        gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_0);
+        gl.readBuffer(gl.COLOR_ATTACHMENT1);
+        var waterTextureValues = new Float32Array(4);
+        gl.readPixels(simXpos, simYpos, 1, 1, gl.RGBA, gl.FLOAT, waterTextureValues);
+        gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_0);
+        gl.readBuffer(gl.COLOR_ATTACHMENT0);
+        var baseTextureValues = new Float32Array(4);
+        gl.readPixels(simXpos, simYpos, 1, 1, gl.RGBA, gl.FLOAT, baseTextureValues);
+        const tC = KtoC(potentialToRealT(baseTextureValues[3], simYpos));
+        const tdC = KtoC(dewpoint(Math.max(waterTextureValues[0], 0)));
+        const altM = (simYpos / Math.max(sim_res_y - 1, 1)) * guiControls.simHeight;
+        const thetaeK = equivalentPotentialTempK(tC, tdC, altM);
+        readoutText = Number.isFinite(thetaeK) ? KtoC(thetaeK).toFixed(1) : '--';
+        unit = '°C θe';
+        break;
+      }
+
+      case 'DISP_PRECIP_TYPE': {
+        gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_0);
+        gl.readBuffer(gl.COLOR_ATTACHMENT1);
+        var waterTextureValues = new Float32Array(4);
+        gl.readPixels(simXpos, simYpos, 1, 1, gl.RGBA, gl.FLOAT, waterTextureValues);
+        gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_0);
+        gl.readBuffer(gl.COLOR_ATTACHMENT0);
+        var baseTextureValues = new Float32Array(4);
+        gl.readPixels(simXpos, simYpos, 1, 1, gl.RGBA, gl.FLOAT, baseTextureValues);
+        const tC = KtoC(potentialToRealT(baseTextureValues[3], simYpos));
+        const precip = Math.max(waterTextureValues[2], 0);
+        let label = 'None';
+        if (precip > 0.08) {
+          if (tC < 0) label = 'Snow';
+          else label = 'Rain';
+        }
+        readoutText = label;
+        unit = '';
+        break;
+      }
+
       case 'DISP_HORIVEL':
         gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_0);
         gl.readBuffer(gl.COLOR_ATTACHMENT0);
@@ -16956,14 +17486,25 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         unit = 'mm/h';
         break;
 
-      case 'DISP_SOILMOISTURE':
+      case 'DISP_SOIL_MOISTURE':
         gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_0);
         gl.readBuffer(gl.COLOR_ATTACHMENT1);
         var waterTextureValues = new Float32Array(4);
         gl.readPixels(simXpos, simYpos, 1, 1, gl.RGBA, gl.FLOAT, waterTextureValues);
-        readoutText = waterTextureValues[1].toFixed(3);
-        unit = 'm³/m³';
+        readoutText = printSoilMoisture(Math.max(0, waterTextureValues[2]));
+        unit = '';
         break;
+
+      case 'DISP_FLOOD': {
+        gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_0);
+        gl.readBuffer(gl.COLOR_ATTACHMENT1);
+        var waterTextureValues = new Float32Array(4);
+        gl.readPixels(simXpos, simYpos, 1, 1, gl.RGBA, gl.FLOAT, waterTextureValues);
+        const floodMm = Math.max(0, waterTextureValues[2] - 85.0);
+        readoutText = floodMm > 0.05 ? printSoilMoisture(floodMm) : '0';
+        unit = 'ponding';
+        break;
+      }
 
       case 'DISP_CURL':
         gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_0);
@@ -17071,7 +17612,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   {
     let simXpos = clamp(Math.floor(mouseXinSim * sim_res_x), 0, sim_res_x - 1);
     let simYpos = clamp(Math.floor(mouseYinSim * sim_res_y), 0, sim_res_y - 1);
-    // console.log(simYpos)
+    // debugLog(simYpos)
 
     gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_1);
     gl.readBuffer(gl.COLOR_ATTACHMENT2); // walltexture
@@ -17093,7 +17634,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   function mouseDownEvent(e)
   {
     // event.preventDefault(); // caused problems with dat.gui
-    // console.log('mousedown');
+    // debugLog('mousedown');
     if (e.button == 0) { // left
       leftMousePressed = true;
       if (SETUP_MODE) {
@@ -17183,6 +17724,18 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
           displaySynopticSystems = true;
           guiControls.displaySynopticSystems = true;
         }
+      } else if (guiControls.tool == 'TOOL_DRYLINE') {
+        let simXpos = Math.floor(mouseXinSim * sim_res_x);
+        let simYpos = findSimYposAboveSurfaceAtMouseX();
+        if (simXpos >= 0 && simXpos < sim_res_x && simYpos !== undefined
+            && window.WeatherSandbox && window.WeatherSandbox.synopticBoundaries)
+          window.WeatherSandbox.synopticBoundaries.placeDryline(simXpos, simYpos);
+      } else if (guiControls.tool == 'TOOL_SEA_BREEZE') {
+        let simXpos = Math.floor(mouseXinSim * sim_res_x);
+        let simYpos = findSimYposAboveSurfaceAtMouseX();
+        if (simXpos >= 0 && simXpos < sim_res_x && simYpos !== undefined
+            && window.WeatherSandbox && window.WeatherSandbox.synopticBoundaries)
+          window.WeatherSandbox.synopticBoundaries.placeSeaBreeze(simXpos, simYpos);
       } else if (guiControls.tool == 'TOOL_MARKER') {
         let simXpos = Math.floor(mouseXinSim * sim_res_x);
         let simYpos = findSimYposAboveSurfaceAtMouseX();
@@ -17255,7 +17808,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
 
     if (event.touches.length == 1) { // single finger
 
-      // console.log(event.touches[0]);
+      // debugLog(event.touches[0]);
       if (!wasTwoFingerTouchBefore) {
         leftMousePressed = true; // treat just like holding left mouse button
         mouseX = event.touches[0].clientX;
@@ -17306,6 +17859,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   var ambientLevelCapState = 6;
   var realtimeLastWallClockMs = 0;
   var realtimeIterAccumulator = 0;
+  var simIterAccumulator = 0; // fractional IterPerFrame remainder
 
   function getResolutionCostFactor()
   {
@@ -17607,7 +18161,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
             
             // Try to lock orientation (this may prompt user permission)
             screen.orientation.lock(orientation).catch(() => {
-              console.log('Could not lock screen orientation');
+              debugLog('Could not lock screen orientation');
             });
           }
           
@@ -17773,11 +18327,15 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
 
   await loadingBar.set(9, 'Setting up WebGL');
 
-  gl.getExtension('EXT_color_buffer_float');
-  gl.getExtension('EXT_float_blend');
+  const extColorBufferFloat = gl.getExtension('EXT_color_buffer_float');
+  const extFloatBlend = gl.getExtension('EXT_float_blend');
   gl.getExtension('OES_texture_float_linear');
   gl.getExtension('OES_texture_half_float_linear');
   const parallelShaderCompileExt = gl.getExtension('KHR_parallel_shader_compile');
+  // Stash early extension presence; full precip FBO check runs after feedback buffers exist.
+  precipGpuCapabilities.colorBufferFloat = !!extColorBufferFloat;
+  precipGpuCapabilities.floatBlend = !!extFloatBlend;
+  precipGpuCapabilities.mobile = detectMobileGpuLikely();
 
   gl.clear(gl.COLOR_BUFFER_BIT);
   gl.disable(gl.DEPTH_TEST);
@@ -17786,7 +18344,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
 
   // load shaders
-  const SHADER_ASSET_VERSION = 13; // bump to bust CDN/browser cache after shader edits
+  const SHADER_ASSET_VERSION = 16; // bump to bust CDN/browser cache after shader edits
 
   var commonSource = await loadSourceFile('shaders/common.glsl');
   var commonDisplaySource = await loadSourceFile('shaders/commonDisplay.glsl');
@@ -17828,6 +18386,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   const temperatureChangeDisplayShader = await loadShader('temperatureChangeDisplayShader.frag');
   const airQualityDisplayShader = await loadShader('airQualityDisplayShader.frag');
   const humidityDisplayShader = await loadShader('humidityDisplayShader.frag');
+  const thetaeDisplayShader = await loadShader('thetaeDisplayShader.frag');
+  const precipTypeDisplayShader = await loadShader('precipTypeDisplayShader.frag');
   const precipDisplayShader = await loadShader('precipDisplayShader.frag');
   const universalDisplayShader = await loadShader('universalDisplayShader.frag');
   const skyBackgroundDisplayShader = await loadShader('skyBackgroundDisplayShader.frag');
@@ -17866,6 +18426,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   const temperatureChangeDisplayProgram = createProgram(dispVertexShader, temperatureChangeDisplayShader);
   const airQualityDisplayProgram = createProgram(dispVertexShader, airQualityDisplayShader);
   const humidityDisplayProgram = createProgram(dispVertexShader, humidityDisplayShader);
+  const thetaeDisplayProgram = createProgram(dispVertexShader, thetaeDisplayShader);
+  const precipTypeDisplayProgram = createProgram(dispVertexShader, precipTypeDisplayShader);
   const precipDisplayProgram = createProgram(precipDisplayVertexShader, precipDisplayShader);
   gl.deleteShader(precipDisplayVertexShader);
   const universalDisplayProgram = createProgram(dispVertexShader, universalDisplayShader);
@@ -18203,10 +18765,10 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     gl.bindBuffer(gl.TRANSFORM_FEEDBACK_BUFFER, even ? precipVertexBuffer_0 : precipVertexBuffer_1); // x, y, water, ice, density
     gl.getBufferSubData(gl.TRANSFORM_FEEDBACK_BUFFER, 0, tempDroplets);
 
-    console.log(' ');
-    console.log(' ');
-    console.log('DROPLETS:-----------------------------------------');
-    console.log(' ');
+    debugLog(' ');
+    debugLog(' ');
+    debugLog('DROPLETS:-----------------------------------------');
+    debugLog(' ');
 
     let closestN = -1;
     let closestDist = Infinity;
@@ -18240,24 +18802,24 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     }
 
     if (closestN >= 0) {
-      console.log('n:', closestN);
-      console.log('x:', closestX);
-      console.log('y:', closestY);
-      console.log('water:', closestWater);
-      console.log('Ice:', closestIce);
-      console.log('Density:', closestDensity);
+      debugLog('n:', closestN);
+      debugLog('x:', closestX);
+      debugLog('y:', closestY);
+      debugLog('water:', closestWater);
+      debugLog('Ice:', closestIce);
+      debugLog('Density:', closestDensity);
       const w = computeDropletWidths(closestWater, closestIce, closestDensity);
-      console.log('Width H:', w.horizStr);
-      console.log('Width V:', w.vertStr);
-      console.log('dist:', closestDist);
-      console.log(' ');
+      debugLog('Width H:', w.horizStr);
+      debugLog('Width V:', w.vertStr);
+      debugLog('dist:', closestDist);
+      debugLog(' ');
 
       dropletFollowID = closestN;
       let dropletInfoCanvas = document.getElementById('dropletInfoCanvas');
       dropletInfoCanvas.style.display = 'block';
     }
 
-    console.log(NUM_DROPLETS, 'total droplets. Closest droplet:', closestN >= 0 ? closestN : 'none');
+    debugLog(NUM_DROPLETS, 'total droplets. Closest droplet:', closestN >= 0 ? closestN : 'none');
   }
 
 
@@ -18279,13 +18841,13 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     // let ice = dropletData[3];
     // let density = dropletData[4];
 
-    // console.log('Droplet ', n);
-    // console.log('x:', x);
-    // console.log('y:', y);
-    // console.log('water:', water);
-    // console.log('Ice:', ice);
-    // console.log('Density:', density);
-    // console.log(' ');
+    // debugLog('Droplet ', n);
+    // debugLog('x:', x);
+    // debugLog('y:', y);
+    // debugLog('water:', water);
+    // debugLog('Ice:', ice);
+    // debugLog('Density:', density);
+    // debugLog(' ');
 
     return dropletData;
   }
@@ -18561,7 +19123,12 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     gl.useProgram(precipitationProgram);
     gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'inactiveDroplets'), NUM_DROPLETS);
 
-    console.log('Atmosphere reset — terrain and instruments kept (default ~25°C surface profile)');
+    clearStormTracks();
+    coldPoolDomainMeanSfcTempC = 15.0;
+    riskData = [];
+    soundingOverlayData = [];
+
+    debugLog('Atmosphere reset — terrain and instruments kept (default ~25°C surface profile)');
   }
 
   createAmbientLightFBOs();
@@ -18572,6 +19139,10 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   finalizeLoadedRadars();
   finalizeLoadedAirmassGenerators();
   finalizeLoadedSynopticSystems();
+  if (window.WeatherSandbox && window.WeatherSandbox.synopticBoundaries) {
+    window.WeatherSandbox.synopticBoundaries.finalizeLoadedDrylines();
+    window.WeatherSandbox.synopticBoundaries.finalizeLoadedSeaBreezes();
+  }
 
   // Set up Framebuffers
 
@@ -18700,6 +19271,12 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, precipitationFeedbackTexture, 0);
   gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT1, gl.TEXTURE_2D, precipitationDepositionTexture, 0);
 
+  configurePrecipitationGpuCapabilities();
+  if (guiControls && guiControls.enablePrecipitation) {
+    NUM_DROPLETS = computeNumDroplets(sim_res_x, sim_res_y);
+    guiControls.inactiveDroplets = NUM_DROPLETS;
+  }
+
   gl.bindTexture(gl.TEXTURE_2D, lightningDataTexture);
   gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, 1, 1, 0, gl.RGBA, gl.FLOAT, null);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
@@ -18820,7 +19397,14 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     const lightningGeneratorWorker = new Worker('./lightningGenerator.js');
     const texIndex = i;
     lightningGeneratorWorker.onmessage = (imgElement) => {
-      generateLightningTexture(texIndex, imgElement.data);
+      try {
+        generateLightningTexture(texIndex, imgElement.data);
+      } finally {
+        lightningGeneratorWorker.terminate();
+      }
+    };
+    lightningGeneratorWorker.onerror = () => {
+      lightningGeneratorWorker.terminate();
     };
     lightningGeneratorWorker.postMessage({
       width: 2500, height: 5000,
@@ -18999,7 +19583,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     { id: 'dcape',            name: 'DCAPE',              col:43, stops: 33, interpolate: false },
     { id: 'hail',             name: 'Est. Hail',          col:44, stops: 33, interpolate: false },
     { id: 'lightning',        name: 'Lightning',          col:45, stops: 33, interpolate: false },
-    { id: 'sfcPres',          name: 'Sfc Pressure',       col:46, stops: 33, interpolate: false },
+    { id: 'sfcPres',          name: 'MSLP',               col:46, stops: 33, interpolate: false },
     { id: 'lightningHotspots', name: 'Lightning Hotspots', col:47, stops: 33, interpolate: false },
     { id: 'hazardProb',        name: 'Hazard Probability', col:48, stops: 33, interpolate: false },
     { id: 'fireRisk',          name: 'Fire Risk',          col:49, stops: 33, interpolate: false },
@@ -19015,6 +19599,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     { id: 'radarAccum',        name: 'Radar Accumulation', col:57, stops: 33, interpolate: false },
     { id: 'hailSize',          name: 'Hail Size',          col:58, stops: 33, interpolate: true },
     { id: 'dropletSize',       name: 'Droplet Size',       col:59, stops: 33, interpolate: true },
+    { id: 'thetae',            name: 'Equivalent Potential Temp', col:63, stops: 33, interpolate: true },
+    { id: 'coldPool',          name: 'Cold Pool',          col:64, stops: 33, interpolate: false },
   ];
 
   const DEFAULT_IR_PALETTE = [
@@ -19559,6 +20145,14 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       {t: 0, c: [40, 50, 70]}, {t: 0.25, c: [120, 150, 180]}, {t: 0.55, c: [200, 220, 240]},
       {t: 1, c: [255, 255, 255]},
     ]);
+    buildPalette('thetae', n33, -20, 70, [
+      {t: 0, c: [20, 30, 120]}, {t: 0.25, c: [40, 140, 220]}, {t: 0.45, c: [80, 220, 120]},
+      {t: 0.65, c: [255, 230, 40]}, {t: 0.85, c: [255, 100, 20]}, {t: 1, c: [180, 0, 40]},
+    ]);
+    buildPalette('coldPool', n33, 0, 12, [
+      {t: 0, c: [20, 40, 80]}, {t: 0.35, c: [40, 120, 220]}, {t: 0.65, c: [180, 220, 255]},
+      {t: 1, c: [255, 255, 255]},
+    ]);
     buildPalette('hailSize', n33, 0, 100, [
       {t: 0, c: [8, 12, 28]},
       {t: 0.2, c: [0, 120, 220]},
@@ -19578,7 +20172,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
 
   function uploadColorScaleTexture() {
     // radarReflectivity is initialized in initColorScaleData, not here
-    const TEX_W = COLOR_SCALE_CONFIGS.length;
+    // Columns are addressed by cfg.col (not array index) — size to max column.
+    const TEX_W = Math.max(...COLOR_SCALE_CONFIGS.map(cfg => cfg.col), 0) + 1;
     const TEX_H = Math.max(...COLOR_SCALE_CONFIGS.map(cfg => cfg.stops), 131);
     const offC = document.createElement('canvas');
     offC.width = TEX_W; offC.height = TEX_H;
@@ -20976,8 +21571,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   realWorldSounding_W = new Float32Array(504);   // sim_res_y + 1
   realWorldSounding_Vel = new Float32Array(504); // sim_res_y + 1
   if (soundingData && soundingData.length > 10) {
-    console.log('mainScript: Initializing with sounding data. customSoundingLoaded =', customSoundingLoaded);
-    console.log('mainScript: soundingData sample:', soundingData[0], soundingData[Math.floor(soundingData.length/2)], soundingData[soundingData.length-1]);
+    debugLog('mainScript: Initializing with sounding data. customSoundingLoaded =', customSoundingLoaded);
+    debugLog('mainScript: soundingData sample:', soundingData[0], soundingData[Math.floor(soundingData.length/2)], soundingData[soundingData.length-1]);
     var soundingForSim = rawSoundingToSimSounding(soundingData, guiControls.simHeight, sim_res_y + 1);
 
     for (var y = 0; y < sim_res_y + 1; y++) {
@@ -20988,9 +21583,9 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       realWorldSounding_W[y] = maxWater(CtoK(soundingSample.td), y);        // initial temperature profile
       realWorldSounding_Vel[y] = soundingSample.vel;
     }
-    console.log('mainScript: Initialized sounding arrays. realWorldSounding_T[0]:', realWorldSounding_T[0], 'realWorldSounding_T[100]:', realWorldSounding_T[100]);
+    debugLog('mainScript: Initialized sounding arrays. realWorldSounding_T[0]:', realWorldSounding_T[0], 'realWorldSounding_T[100]:', realWorldSounding_T[100]);
   } else {
-    console.log('No valid sounding loaded! Using default profile.');
+    debugLog('No valid sounding loaded! Using default profile.');
     // Initialize with default atmospheric profile to prevent infinite cooling
     // Use warmer temperatures to match typical simulation conditions
     for (var y = 0; y < sim_res_y + 1; y++) {
@@ -21216,6 +21811,26 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   gl.uniform1i(gl.getUniformLocation(humidityDisplayProgram, 'colorScalesTex'), 9);
   gl.uniform1f(gl.getUniformLocation(humidityDisplayProgram, 'dryLapse'), dryLapse);
 
+  gl.useProgram(thetaeDisplayProgram);
+  gl.uniform2f(gl.getUniformLocation(thetaeDisplayProgram, 'resolution'), sim_res_x, sim_res_y);
+  gl.uniform2f(gl.getUniformLocation(thetaeDisplayProgram, 'texelSize'), texelSizeX, texelSizeY);
+  gl.uniform1i(gl.getUniformLocation(thetaeDisplayProgram, 'baseTex'), 0);
+  gl.uniform1i(gl.getUniformLocation(thetaeDisplayProgram, 'waterTex'), 1);
+  gl.uniform1i(gl.getUniformLocation(thetaeDisplayProgram, 'wallTex'), 2);
+  gl.uniform1i(gl.getUniformLocation(thetaeDisplayProgram, 'colorScalesTex'), 9);
+  gl.uniform1f(gl.getUniformLocation(thetaeDisplayProgram, 'dryLapse'), dryLapse);
+  gl.uniform1f(gl.getUniformLocation(thetaeDisplayProgram, 'simHeight'), guiControls.simHeight);
+
+  gl.useProgram(precipTypeDisplayProgram);
+  gl.uniform2f(gl.getUniformLocation(precipTypeDisplayProgram, 'resolution'), sim_res_x, sim_res_y);
+  gl.uniform2f(gl.getUniformLocation(precipTypeDisplayProgram, 'texelSize'), texelSizeX, texelSizeY);
+  gl.uniform1i(gl.getUniformLocation(precipTypeDisplayProgram, 'baseTex'), 0);
+  gl.uniform1i(gl.getUniformLocation(precipTypeDisplayProgram, 'waterTex'), 1);
+  gl.uniform1i(gl.getUniformLocation(precipTypeDisplayProgram, 'wallTex'), 2);
+  gl.uniform1i(gl.getUniformLocation(precipTypeDisplayProgram, 'precipFeedbackTex'), 7);
+  gl.uniform1i(gl.getUniformLocation(precipTypeDisplayProgram, 'dropletSizeTex'), 8);
+  gl.uniform1f(gl.getUniformLocation(precipTypeDisplayProgram, 'dryLapse'), dryLapse);
+
   gl.useProgram(precipDisplayProgram);
   gl.uniform2f(gl.getUniformLocation(precipDisplayProgram, 'resolution'), sim_res_x, sim_res_y);
   gl.uniform2f(gl.getUniformLocation(precipDisplayProgram, 'texelSize'), texelSizeX, texelSizeY);
@@ -21273,6 +21888,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'visualQuality'), 1.0);
   gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'smoothClouds'), guiControls.smoothClouds !== false ? 1.0 : 0.0);
   gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'floodVizStrength'), guiControls.floodVizStrength != null ? guiControls.floodVizStrength : 1.0);
+  gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'fogHazeStrength'), guiControls.fogHazeStrength != null ? guiControls.fogHazeStrength : 0.0);
 
   if (lightningIllumProgram) {
     gl.useProgram(lightningIllumProgram);
@@ -21596,6 +22212,23 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   const uloc_humd_colorScaleCloudMax   = gl.getUniformLocation(humidityDisplayProgram, 'colorScaleCloudMax');
   const uloc_humd_colorScaleCloudOffset = gl.getUniformLocation(humidityDisplayProgram, 'colorScaleCloudOffset');
 
+  const uloc_thetae_aspectRatios       = gl.getUniformLocation(thetaeDisplayProgram, 'aspectRatios');
+  const uloc_thetae_view               = gl.getUniformLocation(thetaeDisplayProgram, 'view');
+  const uloc_thetae_cursor             = gl.getUniformLocation(thetaeDisplayProgram, 'cursor');
+  const uloc_thetae_Xmult              = gl.getUniformLocation(thetaeDisplayProgram, 'Xmult');
+  const uloc_thetae_displayVectorField = gl.getUniformLocation(thetaeDisplayProgram, 'displayVectorField');
+  const uloc_thetae_colorScaleColumn   = gl.getUniformLocation(thetaeDisplayProgram, 'colorScaleColumn');
+  const uloc_thetae_colorScaleMin      = gl.getUniformLocation(thetaeDisplayProgram, 'colorScaleThetaeMin');
+  const uloc_thetae_colorScaleMax      = gl.getUniformLocation(thetaeDisplayProgram, 'colorScaleThetaeMax');
+  const uloc_thetae_colorScaleOffset   = gl.getUniformLocation(thetaeDisplayProgram, 'colorScaleThetaeOffset');
+  const uloc_thetae_simHeight          = gl.getUniformLocation(thetaeDisplayProgram, 'simHeight');
+
+  const uloc_ptype_aspectRatios        = gl.getUniformLocation(precipTypeDisplayProgram, 'aspectRatios');
+  const uloc_ptype_view                = gl.getUniformLocation(precipTypeDisplayProgram, 'view');
+  const uloc_ptype_cursor              = gl.getUniformLocation(precipTypeDisplayProgram, 'cursor');
+  const uloc_ptype_Xmult               = gl.getUniformLocation(precipTypeDisplayProgram, 'Xmult');
+  const uloc_ptype_displayVectorField  = gl.getUniformLocation(precipTypeDisplayProgram, 'displayVectorField');
+
   function setHumidityColorScaleUniforms() {
     const rhVals = colorScaleValues.relativeHumidity;
     const cloudVals = colorScaleValues.humidityCloud;
@@ -21608,6 +22241,16 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     gl.uniform1f(uloc_humd_colorScaleCloudMin, cloudVals[0]);
     gl.uniform1f(uloc_humd_colorScaleCloudMax, cloudVals[cloudVals.length - 1]);
     gl.uniform1f(uloc_humd_colorScaleCloudOffset, 0);
+  }
+
+  function setThetaeColorScaleUniforms() {
+    const vals = colorScaleValues.thetae;
+    if (!vals?.length) return;
+    gl.uniform1i(uloc_thetae_colorScaleColumn, 63);
+    gl.uniform1f(uloc_thetae_colorScaleMin, vals[0]);
+    gl.uniform1f(uloc_thetae_colorScaleMax, vals[vals.length - 1]);
+    gl.uniform1f(uloc_thetae_colorScaleOffset, 0);
+    gl.uniform1f(uloc_thetae_simHeight, guiControls.simHeight);
   }
 
   // IR temp display per-frame
@@ -21965,10 +22608,18 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
 
   function uploadCompositeRadarArrays()
   {
-    const positions = new Float32Array(MAX_COMPOSITE_RADARS * 2);
-    const ranges = new Float32Array(MAX_COMPOSITE_RADARS);
-    const resolutions = new Float32Array(MAX_COMPOSITE_RADARS);
-    const sensitivities = new Float32Array(MAX_COMPOSITE_RADARS);
+    const bufs = (typeof getCompositeRadarBuffers === 'function')
+      ? getCompositeRadarBuffers(MAX_COMPOSITE_RADARS)
+      : {
+          positions: new Float32Array(MAX_COMPOSITE_RADARS * 2),
+          ranges: new Float32Array(MAX_COMPOSITE_RADARS),
+          resolutions: new Float32Array(MAX_COMPOSITE_RADARS),
+          sensitivities: new Float32Array(MAX_COMPOSITE_RADARS),
+        };
+    const positions = bufs.positions;
+    const ranges = bufs.ranges;
+    const resolutions = bufs.resolutions;
+    const sensitivities = bufs.sensitivities;
     const count = Math.min(radars.length, MAX_COMPOSITE_RADARS);
     for (let i = 0; i < count; i++) {
       positions[i * 2] = radars[i].getXpos();
@@ -22013,7 +22664,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       window.WeatherMpProtocol.isBrushTool(guiControls.tool);
     if (guiControls.wholeWidth) {
       cursorType = 2.0;
-    } else if (SETUP_MODE || (inputType <= 0 && !bPressed && !customBrushSelected && (guiControls.tool == 'TOOL_NONE' || guiControls.tool == 'TOOL_STATION' || guiControls.tool == 'TOOL_BALLOON' || guiControls.tool == 'TOOL_RADAR' || guiControls.tool == 'TOOL_AIRMASS' || guiControls.tool == 'TOOL_SYNOPTIC_LOW' || guiControls.tool == 'TOOL_SYNOPTIC_HIGH' || guiControls.tool == 'TOOL_MARKER' || guiControls.tool == 'TOOL_AIRPORT' || guiControls.tool == 'TOOL_FLIGHT_ROUTE' || (window.WeatherMpProtocol && window.WeatherMpProtocol.isCustomToolId && window.WeatherMpProtocol.isCustomToolId(guiControls.tool) && window.WeatherMpProtocol.isPlacementTool(guiControls.tool))))) {
+    } else if (SETUP_MODE || (inputType <= 0 && !bPressed && !customBrushSelected && (guiControls.tool == 'TOOL_NONE' || guiControls.tool == 'TOOL_STATION' || guiControls.tool == 'TOOL_BALLOON' || guiControls.tool == 'TOOL_RADAR' || guiControls.tool == 'TOOL_AIRMASS' || guiControls.tool == 'TOOL_SYNOPTIC_LOW' || guiControls.tool == 'TOOL_SYNOPTIC_HIGH' || guiControls.tool == 'TOOL_DRYLINE' || guiControls.tool == 'TOOL_SEA_BREEZE' || guiControls.tool == 'TOOL_MARKER' || guiControls.tool == 'TOOL_AIRPORT' || guiControls.tool == 'TOOL_FLIGHT_ROUTE' || (window.WeatherMpProtocol && window.WeatherMpProtocol.isCustomToolId && window.WeatherMpProtocol.isCustomToolId(guiControls.tool) && window.WeatherMpProtocol.isPlacementTool(guiControls.tool))))) {
       cursorType = 0;
     }
     if (inputType === 0)
@@ -22897,16 +23548,17 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       return;
     if (!LightningV2.isCgStrikeType(strike.ltType))
       return;
+    // 50/50 chance to spawn a fire tile at the ground-contact cell.
+    if (!LightningV2.rollCgLightningFireChance(strike.ltType, 1, strike.seed, guiControls))
+      return;
     const strikeX = strike.destX;
     const strikeY = strike.destY;
     const surface = findSurfaceWallAtSimColumn(strikeX, strikeY);
     if (!surface)
       return;
-    const cond = readSurfaceFireConditions(surface.x, surface.y);
-    const fireIntensity = LightningV2.calcFireIntensityJS(surface.veg, cond.soilMoist, cond.precip);
-    if (!LightningV2.canSurfaceSupportFire(surface.type, surface.veg, cond.soilMoist, cond.precip))
-      return;
-    if (!LightningV2.rollCgLightningFireChance(strike.ltType, fireIntensity, strike.seed, guiControls))
+    // Ignite solid ground/structures at the strike column (not water/ice/open air).
+    const t = surface.type;
+    if (t === 2 || t === 3 || t === 8 || t === 9 || t === 0)
       return;
     setSurfaceWallType(surface.x, surface.y, 3);
   }
@@ -24789,6 +25441,18 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         }
         break;
       }
+      case 'TOOL_DRYLINE': {
+        const y = findSimYposAboveSurfaceAtX(simX);
+        if (y !== undefined && window.WeatherSandbox && window.WeatherSandbox.synopticBoundaries)
+          window.WeatherSandbox.synopticBoundaries.placeDryline(simX, y);
+        break;
+      }
+      case 'TOOL_SEA_BREEZE': {
+        const y = findSimYposAboveSurfaceAtX(simX);
+        if (y !== undefined && window.WeatherSandbox && window.WeatherSandbox.synopticBoundaries)
+          window.WeatherSandbox.synopticBoundaries.placeSeaBreeze(simX, y);
+        break;
+      }
       case 'TOOL_MARKER':
         markers.push(new Marker(simX, findSimYposAboveSurfaceAtX(simX)));
         break;
@@ -24908,6 +25572,14 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     const embeddedSynoptic = buildSavedSynopticSystemsForGuiControls();
     if (embeddedSynoptic)
       guiControlsForSave.__savedSynopticSystems = embeddedSynoptic;
+    if (window.WeatherSandbox && window.WeatherSandbox.synopticBoundaries) {
+      const embeddedDrylines = window.WeatherSandbox.synopticBoundaries.buildSavedDrylinesForGuiControls();
+      if (embeddedDrylines)
+        guiControlsForSave.__savedDrylines = embeddedDrylines;
+      const embeddedSeaBreezes = window.WeatherSandbox.synopticBoundaries.buildSavedSeaBreezesForGuiControls();
+      if (embeddedSeaBreezes)
+        guiControlsForSave.__savedSeaBreezes = embeddedSeaBreezes;
+    }
     const embeddedCustomTools = buildSavedCustomToolEntitiesForGuiControls();
     if (embeddedCustomTools)
       guiControlsForSave.__savedCustomToolEntities = embeddedCustomTools;
@@ -25663,10 +26335,14 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
           let numIterations;
           if (guiControls.realtimeMode)
             numIterations = getRealtimeIterationsThisFrame();
-          else {
-            numIterations = guiControls.IterPerFrame;
-            if (airplaneMode || guiControls.slowMotion)
-              numIterations = 1;
+          else if (airplaneMode || guiControls.slowMotion) {
+            numIterations = 1;
+            simIterAccumulator = 0;
+          } else {
+            // Support fractional IterPerFrame (e.g. 0.5, 2.3) via accumulator.
+            simIterAccumulator += Math.max(0, Number(guiControls.IterPerFrame) || 0);
+            numIterations = Math.floor(simIterAccumulator);
+            simIterAccumulator -= numIterations;
           }
 
           const startupCap = getStartupIterationCap();
@@ -25826,6 +26502,10 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
               applyAirmassGeneratorsCpu();
               applyCustomToolEntitiesCpu();
               applySynopticSystemsCpu();
+              if (typeof applyDrylinesCpu === 'function')
+                applyDrylinesCpu();
+              if (typeof applySeaBreezesCpu === 'function')
+                applySeaBreezesCpu();
 
               // calc and apply pressure (divergence correction)
               gl.useProgram(pressureProgram);
@@ -26533,6 +27213,35 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
           gl.uniform1f(uloc_humd_displayVectorField, 0.0);
         }
 
+      } else if (guiControls.displayMode == 'DISP_THETAE') {
+        gl.useProgram(thetaeDisplayProgram);
+        gl.uniform2f(uloc_thetae_aspectRatios, sim_aspect, canvas_aspect);
+        gl.uniform3f(uloc_thetae_view, cam.curXpos, cam.curYpos, cam.curZoom);
+        gl.uniform4f(uloc_thetae_cursor, mouseXinSim, mouseYinSim, guiControls.brushSize * 0.5, cursorType);
+        gl.uniform1f(uloc_thetae_Xmult, horizontalDisplayMult);
+        setThetaeColorScaleUniforms();
+        if (cam.curZoom / sim_res_x > 0.003) {
+          gl.uniform1f(uloc_thetae_displayVectorField, guiControls.enableVectorField ? 1.0 : 0.0);
+        } else {
+          gl.uniform1f(uloc_thetae_displayVectorField, 0.0);
+        }
+
+      } else if (guiControls.displayMode == 'DISP_PRECIP_TYPE') {
+        gl.useProgram(precipTypeDisplayProgram);
+        gl.uniform2f(uloc_ptype_aspectRatios, sim_aspect, canvas_aspect);
+        gl.uniform3f(uloc_ptype_view, cam.curXpos, cam.curYpos, cam.curZoom);
+        gl.uniform4f(uloc_ptype_cursor, mouseXinSim, mouseYinSim, guiControls.brushSize * 0.5, cursorType);
+        gl.uniform1f(uloc_ptype_Xmult, horizontalDisplayMult);
+        if (cam.curZoom / sim_res_x > 0.003) {
+          gl.uniform1f(uloc_ptype_displayVectorField, guiControls.enableVectorField ? 1.0 : 0.0);
+        } else {
+          gl.uniform1f(uloc_ptype_displayVectorField, 0.0);
+        }
+        gl.activeTexture(gl.TEXTURE7);
+        gl.bindTexture(gl.TEXTURE_2D, precipitationFeedbackTexture);
+        gl.activeTexture(gl.TEXTURE8);
+        gl.bindTexture(gl.TEXTURE_2D, dropletSizeTexture);
+
       } else if (guiControls.displayMode == 'DISP_IRDOWNTEMP') {
         gl.useProgram(IRtempDisplayProgram);
         gl.uniform2f(uloc_IR_aspectRatios, sim_aspect, canvas_aspect);
@@ -26645,7 +27354,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
           break;
         case 'DISP_SOIL_MOISTURE':
           gl.activeTexture(gl.TEXTURE0);
-          gl.bindTexture(gl.TEXTURE_2D, waterTexture_0);
+          gl.bindTexture(gl.TEXTURE_2D, waterTexture_1);
           gl.uniform1i(uloc_univ_quantityIndex, 2);
           gl.uniform1f(uloc_univ_dispMultiplier, 0.02);
           gl.uniform1i(uloc_univ_colorScaleColumn, 14);
@@ -26653,19 +27362,19 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
           colorScaleStops = 33;
           break;
         case 'DISP_FLOOD':
-          // Ponded water depth = max(0, soilMoisture - fieldCapacity)
+          // Ponded water depth = max(0, soilMoisture - fieldCapacity); lives on land walls
           gl.activeTexture(gl.TEXTURE0);
-          gl.bindTexture(gl.TEXTURE_2D, waterTexture_0);
+          gl.bindTexture(gl.TEXTURE_2D, waterTexture_1);
           gl.uniform1i(uloc_univ_quantityIndex, 2);
           gl.uniform1f(uloc_univ_floodThreshold, 85.0); // soilFieldCapacity
-          gl.uniform1f(uloc_univ_dispMultiplier, 0.025); // ~40 mm → full scale
+          gl.uniform1f(uloc_univ_dispMultiplier, 0.04); // ~25 mm ponding → full scale
           gl.uniform1i(uloc_univ_colorScaleColumn, 5);
           gl.uniform1i(uloc_univ_useUnipolarScale, 1);
           colorScaleStops = 33;
           break;
         case 'DISP_PRESSURE':
-          // base[PRESSURE] is dimensionless fluid pressure, now clamped to ±1.0
-          // multiplier of 1.0 maps ±1.0 to ±1.0 for the full bipolar color scale (blue to red)
+          // Fluid Pressure display: base[PRESSURE] is dimensionless (not meteorological hPa).
+          // For MSLP in hPa use Sounding: MSLP (DISP_SFC_PRES).
           gl.uniform1i(uloc_univ_quantityIndex, 2);
           gl.uniform1f(uloc_univ_dispMultiplier, 1.0);
           gl.uniform1i(uloc_univ_colorScaleColumn, 22);
@@ -26726,6 +27435,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         case 'DISP_SND_RAIN_ACCUM':
         case 'DISP_SND_SOIL_MOISTURE':
         case 'DISP_SND_SNOW_DEPTH':
+        case 'DISP_COLD_POOL':
           break;
         case 'DISP_CHARGE':
           // Charge view uses its own dedicated display shader (not universalDisplayProgram)
@@ -27003,6 +27713,73 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     soundingOverlayCanvas.style.display = 'none';
   }
 
+  // Storm track overlay (works on any display mode when toggled)
+  if (guiControls.stormTrackOverlay) {
+    if (!stormTrackCanvas) {
+      stormTrackCanvas = document.createElement('canvas');
+      stormTrackCanvas.style.cssText = 'position:fixed;top:0;left:0;pointer-events:none;z-index:2;';
+      document.body.appendChild(stormTrackCanvas);
+    }
+    if (stormTrackCanvas.width !== canvas.width || stormTrackCanvas.height !== canvas.height) {
+      stormTrackCanvas.width = canvas.width;
+      stormTrackCanvas.height = canvas.height;
+    }
+    stormTrackCanvas.style.display = 'block';
+    const stc = stormTrackCanvas.getContext('2d');
+    stc.clearRect(0, 0, stormTrackCanvas.width, stormTrackCanvas.height);
+
+    const freq = Math.max(10, guiControls.riskUpdateFrequency | 0);
+    if (!overlayScan.active && (iterNum - stormTrackLastScanIter) >= freq) {
+      if (soundingOverlayData.length && (iterNum - overlayScan.lastFinishIter) < freq * 3) {
+        updateStormTracksFromPending(soundingOverlayData);
+        stormTrackLastScanIter = iterNum;
+      } else if (!isSoundingDisplayMode(guiControls.displayMode) && guiControls.displayMode !== 'DISP_RISK') {
+        const chargeBuff = even ? chargeFrameBuff_0 : chargeFrameBuff_1;
+        beginOverlayScan('sounding', false, false, frameBuff_1, chargeBuff);
+        tickOverlayScan();
+      }
+    } else if (overlayScan.active && overlayScan.kind === 'sounding'
+               && !isSoundingDisplayMode(guiControls.displayMode)
+               && guiControls.displayMode !== 'DISP_RISK') {
+      tickOverlayScan();
+    }
+
+    // Fade old points and draw trail
+    const maxAge = Math.max(120, freq * 8);
+    stc.lineWidth = 2.5;
+    stc.lineJoin = 'round';
+    stc.lineCap = 'round';
+    for (let i = 1; i < stormTrackPoints.length; i++) {
+      const a = stormTrackPoints[i - 1];
+      const b = stormTrackPoints[i];
+      const age = iterNum - b.t;
+      if (age > maxAge) continue;
+      // Only connect nearby samples (same storm core)
+      if (Math.abs(b.x - a.x) > 40 || Math.abs(b.y - a.y) > 60) continue;
+      const alpha = clamp(1.0 - age / maxAge, 0.08, 0.9);
+      stc.strokeStyle = `rgba(255, 220, 80, ${alpha})`;
+      stc.beginPath();
+      stc.moveTo(simToScreenX(a.x), simToScreenY(a.y));
+      stc.lineTo(simToScreenX(b.x), simToScreenY(b.y));
+      stc.stroke();
+    }
+    for (let i = 0; i < stormTrackPoints.length; i++) {
+      const p = stormTrackPoints[i];
+      const age = iterNum - p.t;
+      if (age > maxAge) continue;
+      const alpha = clamp(1.0 - age / maxAge, 0.15, 1.0);
+      stc.fillStyle = `rgba(255, 160, 40, ${alpha})`;
+      stc.beginPath();
+      stc.arc(simToScreenX(p.x), simToScreenY(p.y), 3.5, 0, Math.PI * 2);
+      stc.fill();
+    }
+    // Drop expired points
+    while (stormTrackPoints.length && (iterNum - stormTrackPoints[0].t) > maxAge)
+      stormTrackPoints.shift();
+  } else if (stormTrackCanvas) {
+    stormTrackCanvas.style.display = 'none';
+  }
+
   // Draw H/L pressure labels when in pressure display mode
   if (guiControls.displayMode === 'DISP_PRESSURE') {
     if (!riskCanvas) {
@@ -27191,6 +27968,9 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         synopticSystems[i].updateCanvas();
     }
   }
+
+  if (window.WeatherSandbox && window.WeatherSandbox.synopticBoundaries)
+    window.WeatherSandbox.synopticBoundaries.updateMarkers();
 
   if (displayWeatherBalloons) {
     for (i = 0; i < weatherBalloons.length; i++) {
@@ -27385,6 +28165,14 @@ drawNukeOverlay();
         const embeddedSynoptic = buildSavedSynopticSystemsForGuiControls();
         if (embeddedSynoptic)
           guiControlsForSave.__savedSynopticSystems = embeddedSynoptic;
+        if (window.WeatherSandbox && window.WeatherSandbox.synopticBoundaries) {
+          const embeddedDrylines = window.WeatherSandbox.synopticBoundaries.buildSavedDrylinesForGuiControls();
+          if (embeddedDrylines)
+            guiControlsForSave.__savedDrylines = embeddedDrylines;
+          const embeddedSeaBreezes = window.WeatherSandbox.synopticBoundaries.buildSavedSeaBreezesForGuiControls();
+          if (embeddedSeaBreezes)
+            guiControlsForSave.__savedSeaBreezes = embeddedSeaBreezes;
+        }
         const embeddedCustomTools = buildSavedCustomToolEntitiesForGuiControls();
         if (embeddedCustomTools)
           guiControlsForSave.__savedCustomToolEntities = embeddedCustomTools;
@@ -27535,7 +28323,7 @@ drawNukeOverlay();
       type = 'fragment';
       shaderType = gl.FRAGMENT_SHADER;
     } else {
-      throw 'Invalid shadertype: ' + extension;
+      throw new Error('Invalid shadertype: ' + extension);
     }
 
     let filename = 'shaders/' + type + '/' + nameIn;
@@ -27594,7 +28382,10 @@ drawNukeOverlay();
     return shader;
   }
 
-  function adjIterPerFrame(adj) { guiControls.IterPerFrame = Math.round(clamp(guiControls.IterPerFrame + adj, 1, 50)); }
+  function adjIterPerFrame(adj)
+  {
+    guiControls.IterPerFrame = Math.round(clamp(guiControls.IterPerFrame + adj, 0.1, 50) * 10) / 10;
+  }
 
   function isPageHidden() { return document.hidden || document.msHidden || document.webkitHidden || document.mozHidden; }
 
@@ -27605,7 +28396,7 @@ drawNukeOverlay();
       lastFrameNum = frameNum;
 
       if (!guiControls.paused) {
-        console.log(FPS + ' FPS   ' + guiControls.IterPerFrame + ' Iterations / frame      ' + FPS * guiControls.IterPerFrame + ' Iterations / second');
+        debugLog(FPS + ' FPS   ' + guiControls.IterPerFrame + ' Iterations / frame      ' + FPS * guiControls.IterPerFrame + ' Iterations / second');
       }
       // calculate total amounts of water and smoke for verification of fluid simulation
       /*
@@ -27632,7 +28423,7 @@ drawNukeOverlay();
             }
 
             let totalWater = totalWaterVapor + totalCloudWater;
-            console.log('Water  Vapor  Cloud  Smoke\n', Math.round(totalWater), Math.round(totalWaterVapor), Math.round(totalCloudWater), Math.round(totalSmoke));
+            debugLog('Water  Vapor  Cloud  Smoke\n', Math.round(totalWater), Math.round(totalWaterVapor), Math.round(totalCloudWater), Math.round(totalSmoke));
             */
     }
   }

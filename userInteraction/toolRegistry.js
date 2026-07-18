@@ -52,6 +52,8 @@
     { id: 'TOOL_AIRMASS', name: 'Airmass Generator', category: 'Synoptic', kind: 'place', builtin: true, tags: ['heating', 'generator'] },
     { id: 'TOOL_SYNOPTIC_LOW', name: 'Synoptic Low', category: 'Synoptic', kind: 'place', builtin: true, tags: ['low', 'pressure'] },
     { id: 'TOOL_SYNOPTIC_HIGH', name: 'Synoptic High', category: 'Synoptic', kind: 'place', builtin: true, tags: ['high', 'pressure'] },
+    { id: 'TOOL_DRYLINE', name: 'Dryline', category: 'Synoptic', kind: 'place', builtin: true, tags: ['moisture', 'boundary', 'dryline'] },
+    { id: 'TOOL_SEA_BREEZE', name: 'Sea / Lake Breeze', category: 'Synoptic', kind: 'place', builtin: true, tags: ['coast', 'breeze', 'circulation'] },
     { id: 'TOOL_NUKE', name: 'Nuke', category: 'Utility', kind: 'nuke', builtin: true, tags: ['explosion'] },
   ];
 
@@ -104,14 +106,7 @@
         forest: '0',
         friction: 'param.friction',
       },
-      params: [
-        { key: 'heat', label: 'Heat', min: -1, max: 1, step: 0.01, default: 0.5 },
-        { key: 'friction', label: 'Friction', min: 0, max: 1, step: 0.01, default: 0.2 },
-        { key: 'freezingTemp', label: 'Freezing Temp (°C)', min: -40, max: 10, step: 0.5, default: 0 },
-        { key: 'snowAmount', label: 'Snow Amount', min: 0, max: 1, step: 0.01, default: 0 },
-        { key: 'moisture', label: 'Moisture', min: -1, max: 1, step: 0.01, default: 0 },
-        { key: 'albedoBias', label: 'Albedo Bias', min: 0, max: 1, step: 0.01, default: 0.15 },
-      ],
+      params: terrainDefaultParams(),
     };
   }
 
@@ -649,14 +644,31 @@
   }
 
   function importCustomTools(jsonText, merge) {
-    const data = typeof jsonText === 'string' ? JSON.parse(jsonText) : jsonText;
+    const MAX_CHARS = 2 * 1024 * 1024;
+    const MAX_DATA_URL = 512 * 1024;
+    let data = jsonText;
+    if (typeof jsonText === 'string') {
+      if (jsonText.length > MAX_CHARS)
+        throw new Error('Custom tools JSON exceeds size limit');
+      const reviver = (key, value) => {
+        if (key === '__proto__' || key === 'constructor' || key === 'prototype')
+          return undefined;
+        return value;
+      };
+      data = JSON.parse(jsonText, reviver);
+    }
     const arr = Array.isArray(data) ? data : (data && data.tools);
     if (!Array.isArray(arr)) throw new Error('Invalid custom tools JSON');
     if (!merge) customTools = [];
     let count = 0;
     for (let i = 0; i < arr.length; i++) {
       try {
-        upsertCustomTool(arr[i]);
+        const tool = arr[i];
+        if (tool && typeof tool.textureDataUrl === 'string' && tool.textureDataUrl.length > MAX_DATA_URL)
+          continue;
+        if (tool && typeof tool.script === 'string' && tool.script.length > 100000)
+          continue;
+        upsertCustomTool(tool);
         count++;
       } catch (e) {
         // skip tools that cannot claim a texture slot

@@ -1,0 +1,127 @@
+{
+  "version": 1,
+  "packs": [
+    {
+      "id": "dryline-day",
+      "name": "Loaded-Gun Dryline Day",
+      "description": "Plains-like terrain with a dryline, warm moist air east, and a weak synoptic low.",
+      "terrain": {
+        "seed": 4242,
+        "seaLevel": 0.02,
+        "mountainHeight": 0.22,
+        "roughness": 0.35,
+        "lakeChance": 0.02
+      },
+      "gui": {
+        "timeOfDay": 15.5,
+        "sunAngle": 55,
+        "enableDrylines": true,
+        "enableSynopticSystems": true,
+        "enableSeaBreezes": false
+      },
+      "resetAtmosphere": true,
+      "drylines": [
+        { "xFrac": 0.48, "lineWidth": 40, "influence": 260, "strength": 1.35, "moistOnRight": true, "heatingContrast": 1.2 }
+      ],
+      "synoptic": [
+        { "xFrac": 0.42, "type": 0, "radius": 200, "strength": 1.1 }
+      ]
+    },
+    {
+      "id": "lake-effect",
+      "name": "Lake-Effect Band",
+      "description": "Cold air over a broad inland lake; place-ready for snow bands with sea-breeze assist.",
+      "terrain": {
+        "seed": 9001,
+        "seaLevel": 0.04,
+        "mountainHeight": 0.18,
+        "roughness": 0.25,
+        "lakeChance": 0.45
+      },
+      "gui": {
+        "timeOfDay": 10.0,
+        "sunAngle": 35,
+        "enableSeaBreezes": true,
+        "enableAutoSeaBreeze": true,
+        "autoSeaBreezeStrength": 0.9,
+        "enableDrylines": false
+      },
+      "resetAtmosphere": true,
+      "seaBreezes": [
+        { "xFrac": 0.5, "radius": 220, "strength": 1.4 }
+      ]
+    },
+    {
+      "id": "sea-breeze-coast",
+      "name": "Sea-Breeze Coast",
+      "description": "Ocean on the left, land rising inland — classic daytime sea-breeze setup.",
+      "terrain": {
+        "seed": 1776,
+        "seaLevel": 0.12,
+        "mountainHeight": 0.28,
+        "roughness": 0.4,
+        "lakeChance": 0.0
+      },
+      "gui": {
+        "timeOfDay": 13.0,
+        "sunAngle": 70,
+        "dayNightCycle": true,
+        "enableSeaBreezes": true,
+        "enableAutoSeaBreeze": true,
+        "autoSeaBreezeStrength": 0.75
+      },
+      "resetAtmosphere": true,
+      "seaBreezes": [
+        { "xFrac": 0.22, "radius": 180, "strength": 1.2 }
+      ]
+    },
+    {
+      "id": "fire-weather",
+      "name": "Fire Weather Ridge",
+      "description": "Dry elevated terrain under a synoptic high — hot, dry, breezy.",
+      "terrain": {
+        "seed": 555,
+        "seaLevel": 0.01,
+        "mountainHeight": 0.45,
+        "roughness": 0.6,
+        "lakeChance": 0.0
+      },
+      "gui": {
+        "timeOfDay": 14.0,
+        "sunAngle": 65,
+        "enableSynopticSystems": true,
+        "enableDrylines": false,
+        "enableSeaBreezes": false
+      },
+      "resetAtmosphere": true,
+      "synoptic": [
+        { "xFrac": 0.55, "type": 1, "radius": 280, "strength": 1.5 }
+      ]
+    },
+    {
+      "id": "monsoon-burst",
+      "name": "Monsoon Moisture Surge",
+      "description": "Low terrain with a strong moist dryline flip and synoptic low for deep moisture.",
+      "terrain": {
+        "seed": 808,
+        "seaLevel": 0.03,
+        "mountainHeight": 0.2,
+        "roughness": 0.3,
+        "lakeChance": 0.05
+      },
+      "gui": {
+        "timeOfDay": 16.0,
+        "sunAngle": 45,
+        "enableDrylines": true,
+        "enableSynopticSystems": true
+      },
+      "resetAtmosphere": true,
+      "drylines": [
+        { "xFrac": 0.4, "lineWidth": 50, "influence": 300, "strength": 1.6, "moistOnRight": false, "heatingContrast": 0.8 }
+      ],
+      "synoptic": [
+        { "xFrac": 0.35, "type": 0, "radius": 240, "strength": 1.3 }
+      ]
+    }
+  ]
+}

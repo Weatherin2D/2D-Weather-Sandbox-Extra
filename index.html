@@ -8,6 +8,16 @@
     <script type="text/javascript" src="libraries/pako.min.js"></script>
     <script type="text/javascript" src="libraries/chart.js"></script>
     <script type="text/javascript" src="libraries/chartjs-adapter-date-fns.js"></script>
+    <script type="text/javascript" src="js/debugLog.js"></script>
+    <script type="text/javascript" src="js/utils.js"></script>
+    <script type="text/javascript" src="js/sounding.js"></script>
+    <script type="text/javascript" src="js/audio.js"></script>
+    <script type="text/javascript" src="js/radar.js"></script>
+    <script type="text/javascript" src="js/saveLoad.js"></script>
+    <script type="text/javascript" src="js/synopticBoundaries.js"></script>
+    <script type="text/javascript" src="js/meteogram.js"></script>
+    <script type="text/javascript" src="js/terrainGen.js"></script>
+    <script type="text/javascript" src="js/scenarios.js"></script>
     <script type="text/javascript" src="network/config.js"></script>
     <script type="text/javascript" src="network/protocol.js"></script>
     <script type="text/javascript" src="network/transport.js"></script>
@@ -1532,7 +1542,11 @@
             </div>
             <div style="margin-bottom: 12px;">
                 <label for="mpRoomCode">Room code (to join)</label><br>
-                <input type="text" id="mpRoomCode" maxlength="6" placeholder="ABCDEF" style="width: 120px; padding: 6px; margin-top: 4px; text-transform: uppercase;" />
+                <input type="text" id="mpRoomCode" maxlength="8" placeholder="ABCD2345" style="width: 140px; padding: 6px; margin-top: 4px; text-transform: uppercase;" />
+            </div>
+            <div style="margin-bottom: 12px;">
+                <label for="mpRoomPassword">Room password (optional)</label><br>
+                <input type="password" id="mpRoomPassword" maxlength="64" placeholder="Leave blank for open room" autocomplete="off" style="width: 220px; padding: 6px; margin-top: 4px;" />
             </div>
             <div style="margin-bottom: 12px;">
                 <button type="button" id="mpHostBtn" style="margin-right: 8px; padding: 8px 16px;">Host Game</button>

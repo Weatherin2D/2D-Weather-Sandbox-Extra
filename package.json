@@ -2,11 +2,17 @@
   "homepage": "https://weatherin2d.github.io/2D-Weather-Sandbox-Extra/",
   "dependencies": {
     "@webgpu/glslang": "^0.0.15",
-    "ws": "^8.18.0"
+    "ws": "^8.21.1"
   },
   "scripts": {
     "start": "node server/index.js",
     "dev": "node server/index.js",
-    "relay": "node server/relay.js"
+    "relay": "node server/relay.js",
+    "test": "node test/relay-integration.js",
+    "lint": "eslint . --max-warnings 99999",
+    "validate:shaders": "node scripts/validate_shader.js"
+  },
+  "devDependencies": {
+    "eslint": "^9.39.5"
   }
 }

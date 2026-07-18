@@ -58,6 +58,7 @@ uniform float displayVectorField;
 uniform int enableRainbows;
 uniform float smoothClouds;
 uniform float floodVizStrength;
+uniform float fogHazeStrength;
 
 uniform float iterNum;
 uniform float visualQuality;
@@ -136,10 +137,10 @@ vec3 getWallColor(float depth)
   // Standing water / flash-flood tint when soil exceeds field capacity
   float floodDepth = max(water[SOIL_MOISTURE] - soilFieldCapacity, 0.0);
   if (floodVizStrength > 0.0 && floodDepth > 0.0) {
-    // Reach strong blue by ~12 mm of ponding so heavy rain is obvious
-    float floodAmt = clamp(floodDepth / 12.0, 0.0, 1.0) * floodVizStrength;
-    vec3 floodCol = vec3(0.10, 0.42, 0.92);
-    color = mix(color, floodCol, floodAmt * 0.95);
+    // Reach strong blue by ~5 mm of ponding so shallow flooding is obvious
+    float floodAmt = clamp(floodDepth / 5.0, 0.0, 1.0) * floodVizStrength;
+    vec3 floodCol = vec3(0.08, 0.45, 1.0);
+    color = mix(color, floodCol, clamp(0.40 + floodAmt * 0.60, 0.0, 0.98));
   }
 
   return color;
@@ -150,9 +151,9 @@ vec3 applyFloodTint(vec3 color)
 {
   float floodDepth = max(water[SOIL_MOISTURE] - soilFieldCapacity, 0.0);
   if (floodVizStrength > 0.0 && floodDepth > 0.0) {
-    float floodAmt = clamp(floodDepth / 12.0, 0.0, 1.0) * floodVizStrength;
-    vec3 floodCol = vec3(0.10, 0.42, 0.92);
-    return mix(color, floodCol, floodAmt * 0.95);
+    float floodAmt = clamp(floodDepth / 5.0, 0.0, 1.0) * floodVizStrength;
+    vec3 floodCol = vec3(0.08, 0.45, 1.0);
+    return mix(color, floodCol, clamp(0.40 + floodAmt * 0.60, 0.0, 0.98));
   }
   return color;
 }
@@ -502,14 +503,40 @@ void main()
     emittedLight += icccEmit;
   }
 
-  if (texCoord.y < 0.) {                                     // < texelSize.y below simulation area
+  if (texCoord.y < 0.) {                                     // below simulation area
 
-    float depth = float(-wall[VERT_DISTANCE]) - fragCoord.y; // -1.0?
+    float depth = float(-wall[VERT_DISTANCE]) - fragCoord.y; // depth into subsurface column
+    lightIntensity = texture(lightTex, vec2(texCoord.x, texelSize.y))[0] / standardSunBrightness;
+    lightIntensity *= pow(0.5, -fragCoord.y);
 
-    color = getWallColor(depth);
+    if (isAnyWaterType(wall[TYPE])) {
+      // Show lake/sea column under the sim domain (not buried land).
+      if (wall[TYPE] == WALLTYPE_FRESH_WATER)
+        color = vec3(0.15, 0.65, 0.95);
+      else if (wall[TYPE] == WALLTYPE_ICE)
+        color = getIceColor(water[SNOW]);
+      else
+        color = vec3(0.0, 0.42, 0.82);
+      color *= pow(0.55, max(depth, 0.0) * 0.12);
 
-    lightIntensity = texture(lightTex, vec2(texCoord.x, texelSize.y))[0] / standardSunBrightness; // sample lowest part of sim area
-    lightIntensity *= pow(0.5, -fragCoord.y);                                                     // 0.5 should be same as in lightingshader deeper is darker
+      // 45° seafloor / lakeshore slopes against neighboring land
+      float localX = fract(fragCoord.x);
+      float localY = fract(fragCoord.y);
+      ivec4 wallXm = texture(wallTex, texCoordXmY0);
+      ivec4 wallXp = texture(wallTex, texCoordXpY0);
+      if (wallXm[DISTANCE] == 0 && !isAnyWaterType(wallXm[TYPE])) {
+        if (localX + localY < 1.0)
+          color = getWallColor(depth);
+      }
+      if (wallXp[DISTANCE] == 0 && !isAnyWaterType(wallXp[TYPE])) {
+        if (localY - localX < 0.0)
+          color = getWallColor(depth);
+      }
+      opacity = 1.0;
+      shadowLight = minShadowLight;
+    } else {
+      color = getWallColor(depth);
+    }
 
   } else if (texCoord.y > 1.0) {                                                                  // above simulation area
     // color = vec3(0); // no need to set
@@ -916,6 +943,29 @@ void main()
   vec3 safeEmitted = emittedLight / (vec3(1.0) + emittedLight * 0.2);
   float boltAmt = clamp(length(safeEmitted) * 2.8, 0.0, 1.0);
   vec3 finalColor = mix(litBase + safeEmitted, max(litBase, safeEmitted * 1.4), boltAmt * 0.82);
+
+  // Near-surface fog / haze in moist cool air (off when fogHazeStrength == 0)
+  if (fogHazeStrength > 0.0 && wall[DISTANCE] > 0) {
+    float rhFog = relativeHumd(realTemp, water[TOTAL]);
+    float nearSfc = 1.0 - smoothstep(0.0, 0.14, texCoord.y);
+    float cool = 1.0 - smoothstep(2.0, 18.0, KtoC(realTemp));
+    float moist = smoothstep(0.72, 1.05, rhFog) + smoothstep(0.15, 1.5, water[CLOUD]) * 0.35;
+    float fogAmt = clamp(fogHazeStrength * nearSfc * moist * cool, 0.0, 0.9);
+    vec3 fogCol = vec3(0.72, 0.78, 0.88) * max(max(lightIntensity, shadowLight), 0.15);
+    finalColor = mix(finalColor, fogCol, fogAmt * 0.7);
+    opacity = mix(opacity, max(opacity, 0.4), fogAmt * 0.45);
+  }
+
+  // Post-light flood boost so ponding stays vivid even in shadow / twilight
+  if (floodVizStrength > 0.0 && wall[DISTANCE] == 0 && wall[VERT_DISTANCE] == 0) {
+    float floodDepthLit = max(water[SOIL_MOISTURE] - soilFieldCapacity, 0.0);
+    if (floodDepthLit > 0.0) {
+      float floodAmtLit = clamp(floodDepthLit / 5.0, 0.0, 1.0) * floodVizStrength;
+      vec3 floodGlow = vec3(0.12, 0.55, 1.0);
+      finalColor = mix(finalColor, floodGlow, clamp(floodAmtLit * 0.55, 0.0, 0.75));
+    }
+  }
+
   fragmentColor = vec4(finalColor, opacity);
 
   drawCursor(cursor, view); // over everything else

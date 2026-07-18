@@ -85,8 +85,16 @@
 
   function generateRoomCode() {
     const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+    const len = 8;
     let code = '';
-    for (let i = 0; i < 6; i++)
+    if (typeof crypto !== 'undefined' && crypto.getRandomValues) {
+      const buf = new Uint8Array(len);
+      crypto.getRandomValues(buf);
+      for (let i = 0; i < len; i++)
+        code += chars[buf[i] % chars.length];
+      return code;
+    }
+    for (let i = 0; i < len; i++)
       code += chars[Math.floor(Math.random() * chars.length)];
     return code;
   }
@@ -118,7 +126,7 @@
       return !def || def.mode !== 'place';
     }
     return tool.startsWith('TOOL_') && ![
-      'TOOL_STATION', 'TOOL_BALLOON', 'TOOL_RADAR', 'TOOL_AIRMASS', 'TOOL_SYNOPTIC_LOW', 'TOOL_SYNOPTIC_HIGH', 'TOOL_MARKER', 'TOOL_NUKE',
+      'TOOL_STATION', 'TOOL_BALLOON', 'TOOL_RADAR', 'TOOL_AIRMASS', 'TOOL_SYNOPTIC_LOW', 'TOOL_SYNOPTIC_HIGH', 'TOOL_DRYLINE', 'TOOL_SEA_BREEZE', 'TOOL_MARKER', 'TOOL_NUKE',
     ].includes(tool);
   }
 
@@ -128,7 +136,7 @@
       return !!(def && def.mode === 'place');
     }
     return [
-      'TOOL_STATION', 'TOOL_BALLOON', 'TOOL_RADAR', 'TOOL_AIRMASS', 'TOOL_SYNOPTIC_LOW', 'TOOL_SYNOPTIC_HIGH', 'TOOL_MARKER',
+      'TOOL_STATION', 'TOOL_BALLOON', 'TOOL_RADAR', 'TOOL_AIRMASS', 'TOOL_SYNOPTIC_LOW', 'TOOL_SYNOPTIC_HIGH', 'TOOL_DRYLINE', 'TOOL_SEA_BREEZE', 'TOOL_MARKER',
       'TOOL_AIRPORT', 'TOOL_FLIGHT_ROUTE',
     ].includes(tool);
   }

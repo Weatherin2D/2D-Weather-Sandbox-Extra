@@ -1,1 +1,0 @@
-      let maxHodoWind = STORM_MOTION_MS;

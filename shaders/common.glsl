@@ -44,17 +44,20 @@ precision highp isampler2D;
 #define maxIceThickness 2000.0       // cm max ice sheet / ice cap thickness
 #define oceanSalinityPpt 35.0        // default ocean salinity (parts per thousand)
 
-#define ALBEDO_ICE 0.75
-#define ALBEDO_SNOW 0.85        // above 10 cm of snow cover without vegetation
-#define ALBEDO_SNOW_FOREST 0.30 // at max vegetation and above 10 cm of snow
+#define ALBEDO_ICE 0.70
+#define ALBEDO_SNOW 0.80        // above 10 cm of snow cover without vegetation
+#define ALBEDO_SNOW_FOREST 0.28 // at max vegetation and above 10 cm of snow
 #define ALBEDO_FOREST 0.10
-#define ALBEDO_DRYSOIL 0.30     // desert sand
-#define ALBEDO_WETSOIL 0.15     // above 20 mm of soil moisture
-#define ALBEDO_URBAN 0.08
-#define ALBEDO_SUBURBAN 0.15
-#define ALBEDO_INDUSTRIAL 0.08
-#define ALBEDO_RUNWAY 0.04
-#define ALBEDO_WATER 0.05
+#define ALBEDO_GRASS 0.20       // short grass / shrub canopy
+#define ALBEDO_DRYSOIL 0.35     // desert sand / bare dry soil
+#define ALBEDO_WETSOIL 0.16     // above 20 mm of soil moisture
+#define ALBEDO_URBAN 0.12       // mixed city roofs/pavement
+#define ALBEDO_SUBURBAN 0.18
+#define ALBEDO_INDUSTRIAL 0.10
+#define ALBEDO_RUNWAY 0.05      // asphalt
+#define ALBEDO_WATER 0.06       // open ocean
+#define ALBEDO_FRESH_WATER 0.08 // lakes / rivers (slightly higher)
+#define ALBEDO_INERT 0.90       // non-heated boundary / bedrock filler
 
 // TEXTURE DESCRIPTIONS AND DEFINES
 

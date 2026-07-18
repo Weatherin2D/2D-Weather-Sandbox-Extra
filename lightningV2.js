@@ -1878,13 +1878,16 @@
     }
 
   function rollCgLightningFireChance(ltType, fireIntensity, seed, controls) {
-      if (!controls.cgLightningFireEnabled)
+      controls = controls || {};
+      // Default on; optional guiControls.cgLightningFireEnabled can disable.
+      if (controls.cgLightningFireEnabled === false)
         return false;
-      const base = clamp(controls.cgLightningFireChance ?? 0.32, 0, 1);
-      const posMult = ltType === LT.CG_POSITIVE
-        ? clamp(controls.cgPositiveFireChanceMult ?? 1.65, 1, 3) : 1;
-      const condMult = clamp(fireIntensity / MIN_LIGHTNING_FIRE_INTENSITY, 0, 6);
-      const chance = Math.min(0.92, base * posMult * (0.35 + condMult * 0.22));
+      if (!isCgStrikeType(ltType))
+        return false;
+      // Flat 50/50 chance at the strike point (override via cgLightningFireChance).
+      const chance = clamp(
+        controls.cgLightningFireChance != null ? controls.cgLightningFireChance : 0.5,
+        0, 1);
       return shaderRand(seed + 947.3) < chance;
     }
 

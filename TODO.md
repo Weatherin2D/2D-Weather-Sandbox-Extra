@@ -80,12 +80,12 @@
 - [x] Add Option to reset atmosphere while keeping terain
 - [x] Allow editing while simulation paused
 - [x] Add forces to simulate coriolis effect and pressure systems to make weather more dynamic
-- [ ] Improve Lake/Sea depth visualization, show the water depth under sim area and add 45 deg slopes underwater
-- [ ] Add realistic albedo's for different surface types
-- [ ] Make behaviour of precipitation scale with the vertical resolution to fix unrealistic behavior at resolution lower than 300
-- [ ] Improve terain generation
-- [ ] Make precipitation work on all mobile devices
-- [ ] Simulate realistic atmospheric pressure
+- [x] Improve Lake/Sea depth visualization, show the water depth under sim area and add 45 deg slopes underwater
+- [x] Add realistic albedo's for different surface types
+- [x] Make behaviour of precipitation scale with the vertical resolution to fix unrealistic behavior at resolution lower than 300
+- [x] Improve terain generation
+- [x] Make precipitation work on all mobile devices
+- [x] Simulate realistic atmospheric pressure
 - [x] Add sounds
 - [x] Add weather balloons
 - [x] Flash-flood / runoff visualization (standing water tint + DISP_FLOOD)
