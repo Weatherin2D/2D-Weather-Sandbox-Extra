@@ -744,6 +744,7 @@ const guiControls_default = {
   floodWaterOpacity : 0.75, // Display: floodwater opacity (0 = hidden, 1 = full)
   fogHazeStrength : 0.0, // realistic-view near-surface fog/haze strength
   stormTrackOverlay : false, // canvas trails of precip/CAPE cores
+  outflowOverlay : false, // canvas markers for cold-pool / gust-front edges
   lightningIllumTexture : true,
   lightningIllumBlurStrength : 1.0,
   performanceAutoScaling : true,
@@ -793,6 +794,9 @@ var coldPoolDomainMeanSfcTempC = 15.0;
 var stormTrackPoints = []; // {x, y, t} ring buffer for storm-track overlay
 var stormTrackCanvas = null;
 var stormTrackLastScanIter = -9999;
+var outflowFrontPoints = []; // {x, y, t, strength} gust-front / outflow markers
+var outflowOverlayCanvas = null;
+var outflowLastScanIter = -9999;
 
 var radarOverlayCanvas = null;
 var radarImageData = null;
@@ -2500,6 +2504,7 @@ function computeColumnSoundingMetrics(envTempsC, envDewC, isFluid, vxRaw, vyRaw,
     lightningFlMin,
     sfcTempC,
     coldPool_K,
+    sfcVx: rawVelocityTo_ms(vxRaw[surfaceLevel]),
   };
 }
 
@@ -2754,6 +2759,122 @@ function computeStormTypeComposites(metrics, drySlotStrength)
   };
 }
 
+const STORM_MODE_KEYS = ['none', 'pulse', 'multicell', 'lp', 'classic', 'hp', 'squall', 'derecho'];
+const STORM_MODE_LABELS = ['None', 'Pulse TS', 'Multicell', 'LP Supercell', 'Classic SC', 'HP Supercell', 'Squall Line', 'Derecho'];
+const CONV_SOURCE_LABELS = ['None', 'Surface-Based', 'Elevated', 'Mixed'];
+
+function stormModeKeyToIndex(key)
+{
+  if (!key) return 0;
+  const i = STORM_MODE_KEYS.indexOf(key);
+  return i >= 0 ? i : 0;
+}
+
+function convModeToIndex(convMode)
+{
+  switch (convMode) {
+  case 'Surface-Based': return 1;
+  case 'Elevated': return 2;
+  case 'Mixed': return 3;
+  default: return 0;
+  }
+}
+
+/** Initiation favorability 0–100 from CAPE, CIN, LFC, moisture (convergence applied later). */
+function computeInitiationFavorability(metrics, convergenceMs)
+{
+  const muCape = metrics.muCape || 0;
+  const cin = Math.min(metrics.muCinh || 0, metrics.mlCinh || 0); // more negative = stronger cap
+  const lfc = Number.isFinite(metrics.muLfc) ? metrics.muLfc : 8000;
+  const pwat = metrics.pwat_mm || 0;
+  const conv = Math.max(0, Number.isFinite(convergenceMs) ? -convergenceMs : 0); // converging = negative div
+
+  function nf(v, lo, hi) {
+    if (v <= lo) return 0;
+    if (v >= hi) return 1;
+    return (v - lo) / (hi - lo);
+  }
+  function invCin(c) {
+    // 0 CIN → 1; −200 → ~0
+    if (!Number.isFinite(c) || c >= 0) return 1;
+    return Math.max(0, Math.min(1, 1 + c / 200));
+  }
+
+  const capeF = nf(muCape, 150, 1800);
+  const cinF = invCin(cin);
+  const lfcF = 1 - nf(lfc, 500, 4000); // low LFC favored
+  const moistF = nf(pwat, 12, 36);
+  const convF = nf(conv, 0.3, 4.0);
+
+  if (capeF < 0.08) return 0;
+  const gm = Math.pow(
+    Math.max(0.05, capeF) * Math.max(0.05, cinF) * Math.max(0.05, lfcF)
+      * Math.max(0.08, moistF) * Math.max(0.15, 0.35 + 0.65 * convF),
+    0.2);
+  return Math.min(100, Math.round(gm * 100));
+}
+
+function computeEHI(capeJkg, srhM2s2, shearMs)
+{
+  if (capeJkg <= 0 || srhM2s2 <= 0) return 0;
+  // Standard Energy-Helicity Index; mild shear factor keeps calm columns from scoring high.
+  const ehi = (capeJkg * srhM2s2) / 160000;
+  const shearTerm = Number.isFinite(shearMs) ? Math.min(1.5, Math.max(0.5, shearMs / 12)) : 1;
+  return ehi * shearTerm;
+}
+
+function computeSHIP(muCape, shear6km, lapse700_500, mucin)
+{
+  const capeF = Math.max(0, muCape / 1500);
+  const shearF = Math.max(0, shear6km / 20);
+  const lapseF = Math.max(0, (lapse700_500 || 0) / 9);
+  const cinF = Math.max(0.2, 1 - Math.abs(Math.min(0, mucin)) / 200);
+  return capeF * shearF * lapseF * cinF * 3.0;
+}
+
+function computeSCP(muCape, shear6km, srh3km)
+{
+  return (muCape / 1000) * (shear6km / 10) * (srh3km / 100);
+}
+
+function enrichMetricsWithForecastFields(metrics)
+{
+  if (!metrics) return;
+  // Lite overlay skips elevated CAPE loop — approximate from MU parcel height
+  if (!(metrics.elevatedCape > 0) && (metrics.muParcelAgl || 0) >= 1200)
+    metrics.elevatedCape = (metrics.muCape || 0) * 0.85;
+
+  metrics.ehi = computeEHI(metrics.sbCape || 0, metrics.srh3km || 0, metrics.shear3km || 0);
+  metrics.scp = computeSCP(metrics.muCape || 0, metrics.shear6km || 0, metrics.srh3km || 0);
+
+  const composites = computeStormTypeComposites(metrics, metrics.drySlotStrength || 0);
+  metrics.convMode = composites.convMode;
+  metrics.convSourceIdx = convModeToIndex(composites.convMode);
+  const dom = composites.dominantType;
+  metrics.stormModeKey = dom ? dom.key : 'none';
+  metrics.stormModeIdx = stormModeKeyToIndex(metrics.stormModeKey);
+  metrics.stormModeLabel = dom ? dom.shortLabel : 'None';
+  metrics.stormModeScore = dom ? dom.score : 0;
+  metrics.initiation = computeInitiationFavorability(metrics, 0);
+}
+
+/** Apply neighbor-column convergence into initiation scores after a full scan. */
+function refineInitiationWithConvergence(pending)
+{
+  if (!pending || pending.length < 3) return;
+  for (let i = 1; i < pending.length - 1; i++) {
+    const m = pending[i] && pending[i].metrics;
+    if (!m) continue;
+    const mL = pending[i - 1].metrics || {};
+    const mR = pending[i + 1].metrics || {};
+    const vxL = Number.isFinite(mL.sfcVx) ? mL.sfcVx : 0;
+    const vxR = Number.isFinite(mR.sfcVx) ? mR.sfcVx : 0;
+    const divApprox = vxR - vxL;
+    m.sfcDivergence = divApprox;
+    m.initiation = computeInitiationFavorability(m, divApprox);
+  }
+}
+
 const SOUNDING_VIEW_CONFIGS = [
   { mode: 'DISP_CAPE',       key: 'sbCape',           scaleId: 'cape',       min: 0,    max: 10000, label: 'CAPE',           unit: 'J/kg' },
   { mode: 'DISP_MU_CAPE',    key: 'muCape',           scaleId: 'cape',       min: 0,    max: 10000, label: 'MU CAPE',        unit: 'J/kg' },
@@ -2797,6 +2918,11 @@ const SOUNDING_VIEW_CONFIGS = [
   { mode: 'DISP_SND_SOIL_MOISTURE', key: 'soilMoisture_mm', scaleId: 'soundingSoil', min: 0, max: 150, label: 'Soil Moisture', unit: 'mm' },
   { mode: 'DISP_SND_SNOW_DEPTH', key: 'snowDepth_cm', scaleId: 'soundingSnow', min: 0, max: 100, label: 'Snow Depth', unit: 'cm' },
   { mode: 'DISP_COLD_POOL', key: 'coldPool_K', scaleId: 'coldPool', min: 0, max: 12, label: 'Cold Pool', unit: 'K' },
+  { mode: 'DISP_INITIATION', key: 'initiation', scaleId: 'initiation', min: 0, max: 100, label: 'Initiation Favorability', unit: '' },
+  { mode: 'DISP_STORM_MODE', key: 'stormModeIdx', scaleId: 'stormMode', min: 0, max: 7, label: 'Storm Mode', unit: '' },
+  { mode: 'DISP_CONV_SOURCE', key: 'convSourceIdx', scaleId: 'convSource', min: 0, max: 3, label: 'Convective Source', unit: '' },
+  { mode: 'DISP_EHI', key: 'ehi', scaleId: 'ehi', min: 0, max: 5, label: 'EHI', unit: '' },
+  { mode: 'DISP_SCP', key: 'scp', scaleId: 'scp', min: 0, max: 20, label: 'SCP', unit: '' },
 ];
 
 function isLandSurfaceWallType(wallType)
@@ -3019,6 +3145,8 @@ function computeOverlayColumnBundle(baseAll, waterAll, wallAll, chargeAll, sx, s
   if (Number.isFinite(metrics.muLfc)) metrics.muLfc = Math.max(0, metrics.muLfc - sfc);
   if (Number.isFinite(metrics.muEl)) metrics.muEl = Math.max(0, metrics.muEl - sfc);
   if (Number.isFinite(metrics.freezingAlt)) metrics.freezingAlt = Math.max(0, metrics.freezingAlt - sfc);
+
+  enrichMetricsWithForecastFields(metrics);
   return metrics;
 }
 
@@ -3069,6 +3197,40 @@ function clearStormTracks()
   stormTrackLastScanIter = -9999;
 }
 
+function updateOutflowFrontsFromPending(pending)
+{
+  if (!pending || pending.length < 3) return;
+  for (let i = 1; i < pending.length - 1; i++) {
+    const d = pending[i];
+    const m = d && d.metrics;
+    if (!m) continue;
+    const cp = m.coldPool_K || 0;
+    const mL = pending[i - 1].metrics || {};
+    const mR = pending[i + 1].metrics || {};
+    const vxL = Number.isFinite(mL.sfcVx) ? mL.sfcVx : 0;
+    const vxR = Number.isFinite(mR.sfcVx) ? mR.sfcVx : 0;
+    const divApprox = vxR - vxL; // horizontal divergence proxy across neighboring columns
+    const edge = Math.abs(cp - (mL.coldPool_K || 0)) + Math.abs(cp - (mR.coldPool_K || 0));
+    // Gust front: cool anomaly + divergent near-sfc flow and/or sharp cold-pool edge
+    if (cp > 1.2 && (divApprox > 0.8 || edge > 1.5)) {
+      outflowFrontPoints.push({
+        x: d.sx,
+        y: d.sfcY + 4,
+        t: iterNum,
+        strength: Math.min(cp + Math.max(divApprox, 0) * 0.5, 20),
+      });
+    }
+  }
+  while (outflowFrontPoints.length > 180)
+    outflowFrontPoints.shift();
+}
+
+function clearOutflowFronts()
+{
+  outflowFrontPoints = [];
+  outflowLastScanIter = -9999;
+}
+
 function tickOverlayScan()
 {
   if (!overlayScan.active) return;
@@ -3088,13 +3250,17 @@ function tickOverlayScan()
           if (!m || !Number.isFinite(m.sfcTempC)) continue;
           m.coldPool_K = Math.max(0, coldPoolDomainMeanSfcTempC - m.sfcTempC);
         }
+        refineInitiationWithConvergence(overlayScan.pending);
         soundingOverlayData = overlayScan.pending;
       }
       if (guiControls.stormTrackOverlay)
         updateStormTracksFromPending(overlayScan.pending);
+      if (guiControls.outflowOverlay)
+        updateOutflowFrontsFromPending(overlayScan.pending);
       overlayScan.active = false;
       overlayScan.lastFinishIter = iterNum;
       stormTrackLastScanIter = iterNum;
+      outflowLastScanIter = iterNum;
       return;
     }
     const metrics = computeOverlayColumnBundle(
@@ -3778,6 +3944,42 @@ class Weatherstation
         precipHint = Math.max(precipHint, Math.max(colWater[idx + 2], 0));
     }
 
+    // Column sounding metrics for convective meteogram strip (CAPE/CIN/SRH)
+    let cape = 0, cin = 0, srh = 0;
+    try {
+      const envTempsC = new Float32Array(sim_res_y);
+      const envDewC = new Float32Array(sim_res_y);
+      const isFluid = new Array(sim_res_y);
+      const vxRaw = new Float32Array(sim_res_y);
+      const vyRaw = new Float32Array(sim_res_y);
+      const waterArr = new Float32Array(sim_res_y);
+      for (let y = 0; y < sim_res_y; y++)
+        isFluid[y] = false;
+      for (let yi = 0; yi < h; yi++) {
+        const yAbs = y0 + yi;
+        const idx = yi * 4;
+        if (colWall[idx + 1] === 0) continue;
+        isFluid[yAbs] = true;
+        envTempsC[yAbs] = KtoC(potentialToRealT(colBase[idx + 3], yAbs));
+        envDewC[yAbs] = KtoC(dewpoint(Math.max(colWater[idx], 0)));
+        if (guiControls.realDewPoint)
+          envDewC[yAbs] = Math.min(envTempsC[yAbs], envDewC[yAbs]);
+        vxRaw[yAbs] = colBase[idx];
+        vyRaw[yAbs] = colBase[idx + 1];
+        waterArr[yAbs] = Math.max(colWater[idx], 0);
+      }
+      const metrics = computeColumnSoundingMetrics(
+        envTempsC, envDewC, isFluid, vxRaw, vyRaw, waterArr, sim_res_y, dz, {
+          lite: true,
+          columnX: this.#x,
+        });
+      if (metrics) {
+        cape = metrics.muCape || 0;
+        cin = metrics.muCinh || 0;
+        srh = metrics.srh3km || 0;
+      }
+    } catch (e) { /* keep zeros */ }
+
     window.WeatherSandbox.meteogram.record(this, {
       timeIso: this.#time,
       altsM,
@@ -3789,6 +3991,10 @@ class Weatherstation
       mslp: this.#mslpHpa,
       soilMoisture: this.#soilMoisture,
       precipHint,
+      cape,
+      cin,
+      srh,
+      precipRate: precipHint,
     });
   }
 
@@ -10230,6 +10436,8 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     guiControls.fogHazeStrength = guiControls_default.fogHazeStrength;
   if (guiControls.stormTrackOverlay === undefined)
     guiControls.stormTrackOverlay = guiControls_default.stormTrackOverlay;
+  if (guiControls.outflowOverlay === undefined)
+    guiControls.outflowOverlay = guiControls_default.outflowOverlay;
   if (guiControls.airTrafficEnabled === undefined)
     guiControls.airTrafficEnabled = guiControls_default.airTrafficEnabled;
   if (guiControls.airTrafficMaxPlanes === undefined)
@@ -10974,9 +11182,13 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         'Precipitation/Soil Moisture' : 'DISP_SOIL_MOISTURE',
         'Flash Flood / Runoff' : 'DISP_FLOOD',
         'Curl' : 'DISP_CURL',
+        'Divergence' : 'DISP_DIVERGENCE',
         'Relative Humidity / Cloud Density' : 'DISP_HUMD',
+        'Dewpoint' : 'DISP_DEWPOINT',
+        'Wet-Bulb Temperature' : 'DISP_WETBULB',
         'Equivalent Potential Temp (θe)' : 'DISP_THETAE',
         'Precipitation Type' : 'DISP_PRECIP_TYPE',
+        'Snow Depth' : 'DISP_SNOW_DEPTH',
         'Air Quality' : 'DISP_AIRQUALITY',
         'Temperature Change' : 'DISP_TEMPERATURE_CHANGE',
         'Charge' : 'DISP_CHARGE',
@@ -11073,6 +11285,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         riskData = [];
         soundingOverlayData = [];
         clearStormTracks();
+        clearOutflowFronts();
       });
     displayOverlays.add(guiControls, 'riskUpdateFrequency', 5, 120, 1)
       .name('Risk/Sounding Update Freq');
@@ -11255,6 +11468,14 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
           stormTrackCanvas.style.display = 'none';
       })
       .name('Storm Track Overlay');
+    advancedOverlays.add(guiControls, 'outflowOverlay')
+      .onChange(function() {
+        if (!guiControls.outflowOverlay && outflowOverlayCanvas)
+          outflowOverlayCanvas.style.display = 'none';
+        if (!guiControls.outflowOverlay)
+          clearOutflowFronts();
+      })
+      .name('Outflow / Gust Front Overlay');
     advancedOverlays.add(guiControls, 'enableVectorField').name('Vector Field');
     advancedOverlays.add(guiControls, 'displayWeatherStations')
       .onChange(function() {
@@ -11725,28 +11946,7 @@ function formatWindDirSpd(u, v)
   return dir + '°/' + Math.round(msToKnots(spd)) + ' kt';
 }
 
-function computeEHI(capeJkg, srhM2s2, shearMs)
-{
-  if (capeJkg <= 0 || srhM2s2 <= 0) return 0;
-  // Standard Energy-Helicity Index; mild shear factor keeps calm columns from scoring high.
-  const ehi = (capeJkg * srhM2s2) / 160000;
-  const shearTerm = Number.isFinite(shearMs) ? Math.min(1.5, Math.max(0.5, shearMs / 12)) : 1;
-  return ehi * shearTerm;
-}
-
-function computeSHIP(muCape, shear6km, lapse700_500, mucin)
-{
-  const capeF = Math.max(0, muCape / 1500);
-  const shearF = Math.max(0, shear6km / 20);
-  const lapseF = Math.max(0, (lapse700_500 || 0) / 9);
-  const cinF = Math.max(0.2, 1 - Math.abs(Math.min(0, mucin)) / 200);
-  return capeF * shearF * lapseF * cinF * 3.0;
-}
-
-function computeSCP(muCape, shear6km, srh3km)
-{
-  return (muCape / 1000) * (shear6km / 10) * (srh3km / 100);
-}
+// computeEHI / computeSHIP / computeSCP are defined at top-level (near sounding overlay helpers).
 
 function computeThetaEC(tempC, mixingRatio)
 {
@@ -17373,6 +17573,34 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         break;
       }
 
+      case 'DISP_DEWPOINT': {
+        gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_0);
+        gl.readBuffer(gl.COLOR_ATTACHMENT1);
+        var waterTextureValues = new Float32Array(4);
+        gl.readPixels(simXpos, simYpos, 1, 1, gl.RGBA, gl.FLOAT, waterTextureValues);
+        const tdC = KtoC(dewpoint(Math.max(waterTextureValues[0], 0)));
+        readoutText = Number.isFinite(tdC) ? tdC.toFixed(1) : '--';
+        unit = '°C Td';
+        break;
+      }
+
+      case 'DISP_WETBULB': {
+        gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_0);
+        gl.readBuffer(gl.COLOR_ATTACHMENT1);
+        var waterTextureValues = new Float32Array(4);
+        gl.readPixels(simXpos, simYpos, 1, 1, gl.RGBA, gl.FLOAT, waterTextureValues);
+        gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_0);
+        gl.readBuffer(gl.COLOR_ATTACHMENT0);
+        var baseTextureValues = new Float32Array(4);
+        gl.readPixels(simXpos, simYpos, 1, 1, gl.RGBA, gl.FLOAT, baseTextureValues);
+        const tC = KtoC(potentialToRealT(baseTextureValues[3], simYpos));
+        const rh = relativeHumd(tC, waterTextureValues[0]); // percent
+        const twC = tC - (100 - Math.max(0, Math.min(rh, 100))) / 5;
+        readoutText = Number.isFinite(twC) ? twC.toFixed(1) : '--';
+        unit = '°C Tw';
+        break;
+      }
+
       case 'DISP_PRECIP_TYPE': {
         gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_0);
         gl.readBuffer(gl.COLOR_ATTACHMENT1);
@@ -17529,6 +17757,33 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         unit = 's⁻¹';
         break;
 
+      case 'DISP_DIVERGENCE': {
+        // Approximate ∂u/∂x + ∂v/∂y from base velocity (same stencil as divergenceShader)
+        gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_0);
+        gl.readBuffer(gl.COLOR_ATTACHMENT0);
+        var cell = new Float32Array(4);
+        var cellXp = new Float32Array(4);
+        var cellYp = new Float32Array(4);
+        gl.readPixels(simXpos, simYpos, 1, 1, gl.RGBA, gl.FLOAT, cell);
+        gl.readPixels(Math.min(simXpos + 1, sim_res_x - 1), simYpos, 1, 1, gl.RGBA, gl.FLOAT, cellXp);
+        gl.readPixels(simXpos, Math.min(simYpos + 1, sim_res_y - 1), 1, 1, gl.RGBA, gl.FLOAT, cellYp);
+        const div = (cellXp[0] - cell[0]) + (cellYp[1] - cell[1]);
+        readoutText = (div * 7.0).toFixed(3);
+        unit = 'div';
+        break;
+      }
+
+      case 'DISP_SNOW_DEPTH': {
+        gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_0);
+        gl.readBuffer(gl.COLOR_ATTACHMENT1);
+        var waterTextureValues = new Float32Array(4);
+        gl.readPixels(simXpos, simYpos, 1, 1, gl.RGBA, gl.FLOAT, waterTextureValues);
+        const snowCm = Math.max(0, waterTextureValues[3]);
+        readoutText = snowCm.toFixed(1);
+        unit = 'cm snow';
+        break;
+      }
+
       case 'DISP_AIRQUALITY':
         gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_0);
         gl.readBuffer(gl.COLOR_ATTACHMENT1);
@@ -17584,14 +17839,25 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
             }
           }
           if (metricVal !== null && !isNaN(metricVal)) {
-            const absVal = Math.abs(metricVal);
-            if (absVal >= 100) readoutText = metricVal.toFixed(0);
-            else if (absVal >= 10) readoutText = metricVal.toFixed(1);
-            else readoutText = metricVal.toFixed(2);
+            if (guiControls.displayMode === 'DISP_STORM_MODE') {
+              const idx = Math.round(metricVal);
+              readoutText = STORM_MODE_LABELS[idx] || 'None';
+              unit = '';
+            } else if (guiControls.displayMode === 'DISP_CONV_SOURCE') {
+              const idx = Math.round(metricVal);
+              readoutText = CONV_SOURCE_LABELS[idx] || 'None';
+              unit = '';
+            } else {
+              const absVal = Math.abs(metricVal);
+              if (absVal >= 100) readoutText = metricVal.toFixed(0);
+              else if (absVal >= 10) readoutText = metricVal.toFixed(1);
+              else readoutText = metricVal.toFixed(2);
+              unit = viewCfg.unit;
+            }
           } else {
             readoutText = '--';
+            unit = viewCfg.unit;
           }
-          unit = viewCfg.unit;
         } else {
           readoutText = '';
           unit = '';
@@ -18357,7 +18623,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
 
   // load shaders
-  const SHADER_ASSET_VERSION = 26; // bump to bust CDN/browser cache after shader edits
+  const SHADER_ASSET_VERSION = 28; // bump to bust CDN/browser cache after shader edits
 
   var commonSource = await loadSourceFile('shaders/common.glsl');
   var commonDisplaySource = await loadSourceFile('shaders/commonDisplay.glsl');
@@ -18374,6 +18640,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   const velocityShader = await loadShader('velocityShader.frag');
   const advectionShader = await loadShader('advectionShader.frag');
   const curlShader = await loadShader('curlShader.frag');
+  const divergenceShader = await loadShader('divergenceShader.frag');
   const capeShader = await loadShader('capeShader.frag');
   const chargeShader = await loadShader('chargeShader.frag');
   const lightningSummaryShader = await loadShader('lightningSummaryShader.frag');
@@ -18400,6 +18667,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   const airQualityDisplayShader = await loadShader('airQualityDisplayShader.frag');
   const humidityDisplayShader = await loadShader('humidityDisplayShader.frag');
   const thetaeDisplayShader = await loadShader('thetaeDisplayShader.frag');
+  const dewpointDisplayShader = await loadShader('dewpointDisplayShader.frag');
+  const wetbulbDisplayShader = await loadShader('wetbulbDisplayShader.frag');
   const precipTypeDisplayShader = await loadShader('precipTypeDisplayShader.frag');
   const precipDisplayShader = await loadShader('precipDisplayShader.frag');
   const universalDisplayShader = await loadShader('universalDisplayShader.frag');
@@ -18419,6 +18688,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   const velocityProgram = createProgram(simVertexShader, velocityShader);
   const advectionProgram = createProgram(simVertexShader, advectionShader);
   const curlProgram = createProgram(simVertexShader, curlShader);
+  const divergenceProgram = createProgram(simVertexShader, divergenceShader);
   const capeProgram = createProgram(simVertexShader, capeShader);
   const chargeProgram = createProgram(simVertexShader, chargeShader);
   const lightningSummaryProgram = createProgram(simVertexShader, lightningSummaryShader);
@@ -18440,6 +18710,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   const airQualityDisplayProgram = createProgram(dispVertexShader, airQualityDisplayShader);
   const humidityDisplayProgram = createProgram(dispVertexShader, humidityDisplayShader);
   const thetaeDisplayProgram = createProgram(dispVertexShader, thetaeDisplayShader);
+  const dewpointDisplayProgram = createProgram(dispVertexShader, dewpointDisplayShader);
+  const wetbulbDisplayProgram = createProgram(dispVertexShader, wetbulbDisplayShader);
   const precipTypeDisplayProgram = createProgram(dispVertexShader, precipTypeDisplayShader);
   const precipDisplayProgram = createProgram(precipDisplayVertexShader, precipDisplayShader);
   gl.deleteShader(precipDisplayVertexShader);
@@ -18923,6 +19195,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   window.wallTexture_1 = wallTexture_1;
 
   const curlTexture = gl.createTexture();
+  const divergenceTexture = gl.createTexture();
   const capeTexture = gl.createTexture();
   // Charge texture: RG32F — R=air charge, G=ground/surface charge (bipolar, ±1.0 = ±100 MV)
   const chargeTexture_0 = gl.createTexture();
@@ -18985,6 +19258,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   const frameBuff_1 = gl.createFramebuffer();
 
   const curlFrameBuff = gl.createFramebuffer();
+  const divergenceFrameBuff = gl.createFramebuffer();
   const capeFrameBuff = gl.createFramebuffer();
   const chargeFrameBuff_0 = gl.createFramebuffer();
   const chargeFrameBuff_1 = gl.createFramebuffer();
@@ -19137,6 +19411,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'inactiveDroplets'), NUM_DROPLETS);
 
     clearStormTracks();
+    clearOutflowFronts();
     coldPoolDomainMeanSfcTempC = 15.0;
     riskData = [];
     soundingOverlayData = [];
@@ -19180,6 +19455,14 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   gl.bindFramebuffer(gl.FRAMEBUFFER, curlFrameBuff);
   gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, curlTexture,
                           0); // attach the texture as the first color attachment
+
+  gl.bindTexture(gl.TEXTURE_2D, divergenceTexture);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.R32F, sim_res_x, sim_res_y, 0, gl.RED, gl.FLOAT, null);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+
+  gl.bindFramebuffer(gl.FRAMEBUFFER, divergenceFrameBuff);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, divergenceTexture, 0);
 
   gl.bindTexture(gl.TEXTURE_2D, capeTexture);
   gl.texImage2D(gl.TEXTURE_2D, 0, gl.R32F, sim_res_x, sim_res_y, 0, gl.RED, gl.FLOAT, null);
@@ -19614,6 +19897,14 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     { id: 'dropletSize',       name: 'Droplet Size',       col:59, stops: 33, interpolate: true },
     { id: 'thetae',            name: 'Equivalent Potential Temp', col:63, stops: 33, interpolate: true },
     { id: 'coldPool',          name: 'Cold Pool',          col:64, stops: 33, interpolate: false },
+    { id: 'dewpoint',          name: 'Dewpoint',           col:65, stops: 33, interpolate: true },
+    { id: 'wetbulb',           name: 'Wet-Bulb Temperature', col:66, stops: 33, interpolate: true },
+    { id: 'divergence',        name: 'Divergence',         col:67, stops: 33, interpolate: false },
+    { id: 'initiation',        name: 'Initiation Favorability', col:68, stops: 33, interpolate: false },
+    { id: 'stormMode',         name: 'Storm Mode',         col:69, stops: 8,  interpolate: false },
+    { id: 'convSource',        name: 'Convective Source',  col:70, stops: 4,  interpolate: false },
+    { id: 'ehi',               name: 'EHI',                col:71, stops: 33, interpolate: false },
+    { id: 'scp',               name: 'SCP',                col:72, stops: 33, interpolate: false },
   ];
 
   const DEFAULT_IR_PALETTE = [
@@ -20165,6 +20456,41 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     buildPalette('coldPool', n33, 0, 12, [
       {t: 0, c: [20, 40, 80]}, {t: 0.35, c: [40, 120, 220]}, {t: 0.65, c: [180, 220, 255]},
       {t: 1, c: [255, 255, 255]},
+    ]);
+    buildPalette('dewpoint', n33, -40, 30, [
+      {t: 0, c: [80, 40, 20]}, {t: 0.25, c: [180, 120, 40]}, {t: 0.45, c: [40, 160, 80]},
+      {t: 0.65, c: [20, 160, 220]}, {t: 0.85, c: [40, 80, 220]}, {t: 1, c: [120, 40, 180]},
+    ]);
+    buildPalette('wetbulb', n33, -30, 35, [
+      {t: 0, c: [30, 40, 120]}, {t: 0.3, c: [40, 160, 220]}, {t: 0.5, c: [80, 220, 120]},
+      {t: 0.7, c: [255, 220, 40]}, {t: 0.85, c: [255, 120, 20]}, {t: 1, c: [180, 20, 40]},
+    ]);
+    buildPalette('divergence', n33, -1, 1, [
+      {t: 0, c: [40, 40, 200]}, {t: 0.45, c: [180, 200, 255]}, {t: 0.5, c: [40, 40, 40]},
+      {t: 0.55, c: [255, 200, 160]}, {t: 1, c: [200, 40, 20]},
+    ]);
+    buildPalette('initiation', n33, 0, 100, [
+      {t: 0, c: [20, 20, 30]}, {t: 0.2, c: [40, 80, 160]}, {t: 0.4, c: [40, 180, 120]},
+      {t: 0.65, c: [255, 220, 40]}, {t: 0.85, c: [255, 120, 20]}, {t: 1, c: [255, 40, 40]},
+    ]);
+    // Discrete: None, Pulse, Multicell, LP, Classic, HP, Squall, Derecho
+    colorScaleData.stormMode = [
+      [60, 60, 60], [170, 170, 170], [136, 204, 255], [255, 136, 0],
+      [255, 68, 0], [255, 0, 102], [204, 102, 0], [255, 0, 170],
+    ];
+    colorScaleValues.stormMode = [0, 1, 2, 3, 4, 5, 6, 7];
+    // Discrete: None, Surface-Based, Elevated, Mixed
+    colorScaleData.convSource = [
+      [80, 80, 80], [136, 255, 136], [102, 204, 255], [204, 170, 255],
+    ];
+    colorScaleValues.convSource = [0, 1, 2, 3];
+    buildPalette('ehi', n33, 0, 5, [
+      {t: 0, c: [20, 30, 50]}, {t: 0.25, c: [40, 120, 200]}, {t: 0.5, c: [255, 220, 40]},
+      {t: 0.75, c: [255, 100, 20]}, {t: 1, c: [200, 0, 60]},
+    ]);
+    buildPalette('scp', n33, 0, 20, [
+      {t: 0, c: [20, 25, 40]}, {t: 0.25, c: [60, 140, 220]}, {t: 0.5, c: [80, 220, 120]},
+      {t: 0.75, c: [255, 180, 40]}, {t: 1, c: [220, 40, 40]},
     ]);
     buildPalette('hailSize', n33, 0, 100, [
       {t: 0, c: [8, 12, 28]},
@@ -21707,6 +22033,9 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   gl.useProgram(curlProgram);
   gl.uniform2f(gl.getUniformLocation(curlProgram, 'texelSize'), texelSizeX, texelSizeY);
   gl.uniform1i(gl.getUniformLocation(curlProgram, 'baseTex'), 0);
+  gl.useProgram(divergenceProgram);
+  gl.uniform2f(gl.getUniformLocation(divergenceProgram, 'texelSize'), texelSizeX, texelSizeY);
+  gl.uniform1i(gl.getUniformLocation(divergenceProgram, 'baseTex'), 0);
 
   gl.useProgram(capeProgram);
   gl.uniform2f(gl.getUniformLocation(capeProgram, 'resolution'), sim_res_x, sim_res_y);
@@ -21834,6 +22163,24 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   gl.uniform1f(gl.getUniformLocation(thetaeDisplayProgram, 'dryLapse'), dryLapse);
   gl.uniform1f(gl.getUniformLocation(thetaeDisplayProgram, 'simHeight'), guiControls.simHeight);
 
+  gl.useProgram(dewpointDisplayProgram);
+  gl.uniform2f(gl.getUniformLocation(dewpointDisplayProgram, 'resolution'), sim_res_x, sim_res_y);
+  gl.uniform2f(gl.getUniformLocation(dewpointDisplayProgram, 'texelSize'), texelSizeX, texelSizeY);
+  gl.uniform1i(gl.getUniformLocation(dewpointDisplayProgram, 'baseTex'), 0);
+  gl.uniform1i(gl.getUniformLocation(dewpointDisplayProgram, 'waterTex'), 1);
+  gl.uniform1i(gl.getUniformLocation(dewpointDisplayProgram, 'wallTex'), 2);
+  gl.uniform1i(gl.getUniformLocation(dewpointDisplayProgram, 'colorScalesTex'), 9);
+  gl.uniform1f(gl.getUniformLocation(dewpointDisplayProgram, 'dryLapse'), dryLapse);
+
+  gl.useProgram(wetbulbDisplayProgram);
+  gl.uniform2f(gl.getUniformLocation(wetbulbDisplayProgram, 'resolution'), sim_res_x, sim_res_y);
+  gl.uniform2f(gl.getUniformLocation(wetbulbDisplayProgram, 'texelSize'), texelSizeX, texelSizeY);
+  gl.uniform1i(gl.getUniformLocation(wetbulbDisplayProgram, 'baseTex'), 0);
+  gl.uniform1i(gl.getUniformLocation(wetbulbDisplayProgram, 'waterTex'), 1);
+  gl.uniform1i(gl.getUniformLocation(wetbulbDisplayProgram, 'wallTex'), 2);
+  gl.uniform1i(gl.getUniformLocation(wetbulbDisplayProgram, 'colorScalesTex'), 9);
+  gl.uniform1f(gl.getUniformLocation(wetbulbDisplayProgram, 'dryLapse'), dryLapse);
+
   gl.useProgram(precipTypeDisplayProgram);
   gl.uniform2f(gl.getUniformLocation(precipTypeDisplayProgram, 'resolution'), sim_res_x, sim_res_y);
   gl.uniform2f(gl.getUniformLocation(precipTypeDisplayProgram, 'texelSize'), texelSizeX, texelSizeY);
@@ -21926,6 +22273,14 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   gl.uniform2f(gl.getUniformLocation(precipitationProgram, 'resolution'), sim_res_x, sim_res_y);
   gl.uniform2f(gl.getUniformLocation(precipitationProgram, 'texelSize'), texelSizeX, texelSizeY);
   gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'dryLapse'), dryLapse);
+  {
+    const locType = gl.getUniformLocation(precipitationProgram, 'userInputType');
+    const locVals = gl.getUniformLocation(precipitationProgram, 'userInputValues');
+    const locWrap = gl.getUniformLocation(precipitationProgram, 'wrapHorizontally');
+    if (locType) gl.uniform1i(locType, -1);
+    if (locVals) gl.uniform4f(locVals, -2.0, -2.0, 0.0, 0.0);
+    if (locWrap) gl.uniform1i(locWrap, guiControls.wrapHorizontally ? 1 : 0);
+  }
   gl.useProgram(IRtempDisplayProgram);
   gl.uniform2f(gl.getUniformLocation(IRtempDisplayProgram, 'resolution'), sim_res_x, sim_res_y);
   gl.uniform2f(gl.getUniformLocation(IRtempDisplayProgram, 'texelSize'), texelSizeX, texelSizeY);
@@ -22066,6 +22421,9 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   const uloc_precip_iterNum            = gl.getUniformLocation(precipitationProgram,     'iterNum');
   const uloc_precip_inactiveDroplets   = gl.getUniformLocation(precipitationProgram,     'inactiveDroplets');
   const uloc_precip_enableLegacyParticleLightning = gl.getUniformLocation(precipitationProgram, 'enableLegacyParticleLightning');
+  const uloc_precip_userInputValues    = gl.getUniformLocation(precipitationProgram,     'userInputValues');
+  const uloc_precip_userInputType      = gl.getUniformLocation(precipitationProgram,     'userInputType');
+  const uloc_precip_wrapHorizontally   = gl.getUniformLocation(precipitationProgram,     'wrapHorizontally');
   const uloc_lightningLocation_iterNum = gl.getUniformLocation(lightningLocationProgram, 'iterNum');
 
   // bloom blur
@@ -22238,6 +22596,26 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   const uloc_thetae_colorScaleOffset   = gl.getUniformLocation(thetaeDisplayProgram, 'colorScaleThetaeOffset');
   const uloc_thetae_simHeight          = gl.getUniformLocation(thetaeDisplayProgram, 'simHeight');
 
+  const uloc_dew_aspectRatios          = gl.getUniformLocation(dewpointDisplayProgram, 'aspectRatios');
+  const uloc_dew_view                  = gl.getUniformLocation(dewpointDisplayProgram, 'view');
+  const uloc_dew_cursor                = gl.getUniformLocation(dewpointDisplayProgram, 'cursor');
+  const uloc_dew_Xmult                 = gl.getUniformLocation(dewpointDisplayProgram, 'Xmult');
+  const uloc_dew_displayVectorField    = gl.getUniformLocation(dewpointDisplayProgram, 'displayVectorField');
+  const uloc_dew_colorScaleColumn      = gl.getUniformLocation(dewpointDisplayProgram, 'colorScaleColumn');
+  const uloc_dew_colorScaleMin         = gl.getUniformLocation(dewpointDisplayProgram, 'colorScaleDewMin');
+  const uloc_dew_colorScaleMax         = gl.getUniformLocation(dewpointDisplayProgram, 'colorScaleDewMax');
+  const uloc_dew_colorScaleOffset      = gl.getUniformLocation(dewpointDisplayProgram, 'colorScaleDewOffset');
+
+  const uloc_tw_aspectRatios           = gl.getUniformLocation(wetbulbDisplayProgram, 'aspectRatios');
+  const uloc_tw_view                   = gl.getUniformLocation(wetbulbDisplayProgram, 'view');
+  const uloc_tw_cursor                 = gl.getUniformLocation(wetbulbDisplayProgram, 'cursor');
+  const uloc_tw_Xmult                  = gl.getUniformLocation(wetbulbDisplayProgram, 'Xmult');
+  const uloc_tw_displayVectorField     = gl.getUniformLocation(wetbulbDisplayProgram, 'displayVectorField');
+  const uloc_tw_colorScaleColumn       = gl.getUniformLocation(wetbulbDisplayProgram, 'colorScaleColumn');
+  const uloc_tw_colorScaleMin          = gl.getUniformLocation(wetbulbDisplayProgram, 'colorScaleTwMin');
+  const uloc_tw_colorScaleMax          = gl.getUniformLocation(wetbulbDisplayProgram, 'colorScaleTwMax');
+  const uloc_tw_colorScaleOffset       = gl.getUniformLocation(wetbulbDisplayProgram, 'colorScaleTwOffset');
+
   const uloc_ptype_aspectRatios        = gl.getUniformLocation(precipTypeDisplayProgram, 'aspectRatios');
   const uloc_ptype_view                = gl.getUniformLocation(precipTypeDisplayProgram, 'view');
   const uloc_ptype_cursor              = gl.getUniformLocation(precipTypeDisplayProgram, 'cursor');
@@ -22266,6 +22644,24 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     gl.uniform1f(uloc_thetae_colorScaleMax, vals[vals.length - 1]);
     gl.uniform1f(uloc_thetae_colorScaleOffset, 0);
     gl.uniform1f(uloc_thetae_simHeight, guiControls.simHeight);
+  }
+
+  function setDewpointColorScaleUniforms() {
+    const vals = colorScaleValues.dewpoint;
+    if (!vals?.length) return;
+    gl.uniform1i(uloc_dew_colorScaleColumn, 65);
+    gl.uniform1f(uloc_dew_colorScaleMin, vals[0]);
+    gl.uniform1f(uloc_dew_colorScaleMax, vals[vals.length - 1]);
+    gl.uniform1f(uloc_dew_colorScaleOffset, 0);
+  }
+
+  function setWetbulbColorScaleUniforms() {
+    const vals = colorScaleValues.wetbulb;
+    if (!vals?.length) return;
+    gl.uniform1i(uloc_tw_colorScaleColumn, 66);
+    gl.uniform1f(uloc_tw_colorScaleMin, vals[0]);
+    gl.uniform1f(uloc_tw_colorScaleMax, vals[vals.length - 1]);
+    gl.uniform1f(uloc_tw_colorScaleOffset, 0);
   }
 
   // IR temp display per-frame
@@ -26387,12 +26783,19 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
             gl.drawBuffers([ gl.COLOR_ATTACHMENT0, gl.NONE, gl.COLOR_ATTACHMENT2 ]);
             gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
 
-            // calc curl (legacy: every iteration)
+            // calc curl + divergence (legacy: every iteration)
             if (!guiControls.skipCurlCalculation) {
               gl.useProgram(curlProgram);
               gl.activeTexture(gl.TEXTURE0);
               gl.bindTexture(gl.TEXTURE_2D, baseTexture_1);
               gl.bindFramebuffer(gl.FRAMEBUFFER, curlFrameBuff);
+              gl.drawBuffers([ gl.COLOR_ATTACHMENT0 ]);
+              gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+
+              gl.useProgram(divergenceProgram);
+              gl.activeTexture(gl.TEXTURE0);
+              gl.bindTexture(gl.TEXTURE_2D, baseTexture_1);
+              gl.bindFramebuffer(gl.FRAMEBUFFER, divergenceFrameBuff);
               gl.drawBuffers([ gl.COLOR_ATTACHMENT0 ]);
               gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
             }
@@ -26591,6 +26994,17 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
               // Uniform removed in June 8 precip path; keep upload harmless if present.
               if (uloc_precip_enableLegacyParticleLightning)
                 gl.uniform1f(uloc_precip_enableLegacyParticleLightning, 1.0);
+              // Precipitation brush: spawn/remove droplets under the cursor (type 5)
+              if (uloc_precip_userInputType)
+                gl.uniform1i(uloc_precip_userInputType, inputType === 5 ? inputType : -1);
+              if (uloc_precip_userInputValues) {
+                if (inputType === 5 && leftMousePressed)
+                  gl.uniform4f(uloc_precip_userInputValues, brushPosXinSim, mouseYinSim, brushIntensity, guiControls.brushSize * 0.5);
+                else
+                  gl.uniform4f(uloc_precip_userInputValues, -2.0, -2.0, 0.0, 0.0);
+              }
+              if (uloc_precip_wrapHorizontally)
+                gl.uniform1i(uloc_precip_wrapHorizontally, guiControls.wrapHorizontally ? 1 : 0);
               gl.enable(gl.BLEND);
               gl.blendFunc(gl.ONE, gl.ONE); // add everything together
               gl.activeTexture(gl.TEXTURE0);
@@ -27245,6 +27659,32 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
           gl.uniform1f(uloc_thetae_displayVectorField, 0.0);
         }
 
+      } else if (guiControls.displayMode == 'DISP_DEWPOINT') {
+        gl.useProgram(dewpointDisplayProgram);
+        gl.uniform2f(uloc_dew_aspectRatios, sim_aspect, canvas_aspect);
+        gl.uniform3f(uloc_dew_view, cam.curXpos, cam.curYpos, cam.curZoom);
+        gl.uniform4f(uloc_dew_cursor, mouseXinSim, mouseYinSim, guiControls.brushSize * 0.5, cursorType);
+        gl.uniform1f(uloc_dew_Xmult, horizontalDisplayMult);
+        setDewpointColorScaleUniforms();
+        if (cam.curZoom / sim_res_x > 0.003) {
+          gl.uniform1f(uloc_dew_displayVectorField, guiControls.enableVectorField ? 1.0 : 0.0);
+        } else {
+          gl.uniform1f(uloc_dew_displayVectorField, 0.0);
+        }
+
+      } else if (guiControls.displayMode == 'DISP_WETBULB') {
+        gl.useProgram(wetbulbDisplayProgram);
+        gl.uniform2f(uloc_tw_aspectRatios, sim_aspect, canvas_aspect);
+        gl.uniform3f(uloc_tw_view, cam.curXpos, cam.curYpos, cam.curZoom);
+        gl.uniform4f(uloc_tw_cursor, mouseXinSim, mouseYinSim, guiControls.brushSize * 0.5, cursorType);
+        gl.uniform1f(uloc_tw_Xmult, horizontalDisplayMult);
+        setWetbulbColorScaleUniforms();
+        if (cam.curZoom / sim_res_x > 0.003) {
+          gl.uniform1f(uloc_tw_displayVectorField, guiControls.enableVectorField ? 1.0 : 0.0);
+        } else {
+          gl.uniform1f(uloc_tw_displayVectorField, 0.0);
+        }
+
       } else if (guiControls.displayMode == 'DISP_PRECIP_TYPE') {
         gl.useProgram(precipTypeDisplayProgram);
         gl.uniform2f(uloc_ptype_aspectRatios, sim_aspect, canvas_aspect);
@@ -27409,6 +27849,24 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
           gl.uniform1i(uloc_univ_useUnipolarScale, 0);
           colorScaleStops = 33;
           break;
+        case 'DISP_DIVERGENCE':
+          gl.activeTexture(gl.TEXTURE0);
+          gl.bindTexture(gl.TEXTURE_2D, divergenceTexture);
+          gl.uniform1i(uloc_univ_quantityIndex, 0);
+          gl.uniform1f(uloc_univ_dispMultiplier, 7.0);
+          gl.uniform1i(uloc_univ_colorScaleColumn, 67);
+          gl.uniform1i(uloc_univ_useUnipolarScale, 0);
+          colorScaleStops = 33;
+          break;
+        case 'DISP_SNOW_DEPTH':
+          gl.activeTexture(gl.TEXTURE0);
+          gl.bindTexture(gl.TEXTURE_2D, waterTexture_1);
+          gl.uniform1i(uloc_univ_quantityIndex, 3); // SNOW (cm)
+          gl.uniform1f(uloc_univ_dispMultiplier, 0.02); // ~50 cm → full scale
+          gl.uniform1i(uloc_univ_colorScaleColumn, 62);
+          gl.uniform1i(uloc_univ_useUnipolarScale, 1);
+          colorScaleStops = 33;
+          break;
         case 'DISP_RADAR':
         case 'DISP_RADAR_COMPOSITE':
         case 'DISP_RADAR_WORLD':
@@ -27455,6 +27913,11 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         case 'DISP_SND_SOIL_MOISTURE':
         case 'DISP_SND_SNOW_DEPTH':
         case 'DISP_COLD_POOL':
+        case 'DISP_INITIATION':
+        case 'DISP_STORM_MODE':
+        case 'DISP_CONV_SOURCE':
+        case 'DISP_EHI':
+        case 'DISP_SCP':
           break;
         case 'DISP_CHARGE':
           // Charge view uses its own dedicated display shader (not universalDisplayProgram)
@@ -27751,7 +28214,10 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     if (!overlayScan.active && (iterNum - stormTrackLastScanIter) >= freq) {
       if (soundingOverlayData.length && (iterNum - overlayScan.lastFinishIter) < freq * 3) {
         updateStormTracksFromPending(soundingOverlayData);
+        if (guiControls.outflowOverlay)
+          updateOutflowFrontsFromPending(soundingOverlayData);
         stormTrackLastScanIter = iterNum;
+        outflowLastScanIter = iterNum;
       } else if (!isSoundingDisplayMode(guiControls.displayMode) && guiControls.displayMode !== 'DISP_RISK') {
         const chargeBuff = even ? chargeFrameBuff_0 : chargeFrameBuff_1;
         beginOverlayScan('sounding', false, false, frameBuff_1, chargeBuff);
@@ -27797,6 +28263,67 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       stormTrackPoints.shift();
   } else if (stormTrackCanvas) {
     stormTrackCanvas.style.display = 'none';
+  }
+
+  // Outflow / gust-front overlay (cold-pool edges + near-sfc divergence)
+  if (guiControls.outflowOverlay) {
+    if (!outflowOverlayCanvas) {
+      outflowOverlayCanvas = document.createElement('canvas');
+      outflowOverlayCanvas.style.cssText = 'position:fixed;top:0;left:0;pointer-events:none;z-index:2;';
+      document.body.appendChild(outflowOverlayCanvas);
+    }
+    if (outflowOverlayCanvas.width !== canvas.width || outflowOverlayCanvas.height !== canvas.height) {
+      outflowOverlayCanvas.width = canvas.width;
+      outflowOverlayCanvas.height = canvas.height;
+    }
+    outflowOverlayCanvas.style.display = 'block';
+    const ofc = outflowOverlayCanvas.getContext('2d');
+    ofc.clearRect(0, 0, outflowOverlayCanvas.width, outflowOverlayCanvas.height);
+
+    const ofFreq = Math.max(10, guiControls.riskUpdateFrequency | 0);
+    if (!overlayScan.active && (iterNum - outflowLastScanIter) >= ofFreq) {
+      if (soundingOverlayData.length && (iterNum - overlayScan.lastFinishIter) < ofFreq * 3) {
+        updateOutflowFrontsFromPending(soundingOverlayData);
+        outflowLastScanIter = iterNum;
+      } else if (!isSoundingDisplayMode(guiControls.displayMode) && guiControls.displayMode !== 'DISP_RISK'
+                 && !guiControls.stormTrackOverlay) {
+        // Storm-track path may already be driving a sounding scan; otherwise start one.
+        const chargeBuff = even ? chargeFrameBuff_0 : chargeFrameBuff_1;
+        beginOverlayScan('sounding', false, false, frameBuff_1, chargeBuff);
+        tickOverlayScan();
+      }
+    } else if (overlayScan.active && overlayScan.kind === 'sounding'
+               && !isSoundingDisplayMode(guiControls.displayMode)
+               && guiControls.displayMode !== 'DISP_RISK'
+               && !guiControls.stormTrackOverlay) {
+      tickOverlayScan();
+    }
+
+    const ofMaxAge = Math.max(100, ofFreq * 7);
+    for (let i = 0; i < outflowFrontPoints.length; i++) {
+      const p = outflowFrontPoints[i];
+      const age = iterNum - p.t;
+      if (age > ofMaxAge) continue;
+      const alpha = clamp(1.0 - age / ofMaxAge, 0.12, 0.95);
+      const r = 3.0 + Math.min(p.strength || 0, 12) * 0.35;
+      const sx = simToScreenX(p.x);
+      const sy = simToScreenY(p.y);
+      // Vertical tick + cool cyan arc — gust-front / outflow edge cue
+      ofc.strokeStyle = `rgba(80, 220, 255, ${alpha})`;
+      ofc.lineWidth = 2;
+      ofc.beginPath();
+      ofc.moveTo(sx, sy - 10);
+      ofc.lineTo(sx, sy + 6);
+      ofc.stroke();
+      ofc.fillStyle = `rgba(40, 180, 255, ${alpha * 0.85})`;
+      ofc.beginPath();
+      ofc.arc(sx, sy, r, 0, Math.PI * 2);
+      ofc.fill();
+    }
+    while (outflowFrontPoints.length && (iterNum - outflowFrontPoints[0].t) > ofMaxAge)
+      outflowFrontPoints.shift();
+  } else if (outflowOverlayCanvas) {
+    outflowOverlayCanvas.style.display = 'none';
   }
 
   // Draw H/L pressure labels when in pressure display mode

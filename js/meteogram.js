@@ -35,6 +35,10 @@
         sfcWind: [],
         sfcMslp: [],
         sfcPrecip: [],
+        sfcCape: [],
+        sfcCin: [],
+        sfcSrh: [],
+        sfcPrecipRate: [],
         prevSoil: null,
       };
       buffers.set(station, buf);
@@ -75,6 +79,15 @@
     if (Number.isFinite(sample.soilMoisture))
       buf.prevSoil = sample.soilMoisture;
 
+    if (!buf.sfcCape) buf.sfcCape = [];
+    if (!buf.sfcCin) buf.sfcCin = [];
+    if (!buf.sfcSrh) buf.sfcSrh = [];
+    if (!buf.sfcPrecipRate) buf.sfcPrecipRate = [];
+    buf.sfcCape.push(Number.isFinite(sample.cape) ? sample.cape : 0);
+    buf.sfcCin.push(Number.isFinite(sample.cin) ? sample.cin : 0);
+    buf.sfcSrh.push(Number.isFinite(sample.srh) ? sample.srh : 0);
+    buf.sfcPrecipRate.push(Number.isFinite(sample.precipRate) ? sample.precipRate : precip);
+
     while (buf.times.length > MAX_TIMES) {
       buf.times.shift();
       buf.tempC.shift();
@@ -84,6 +97,10 @@
       buf.sfcWind.shift();
       buf.sfcMslp.shift();
       buf.sfcPrecip.shift();
+      buf.sfcCape.shift();
+      buf.sfcCin.shift();
+      buf.sfcSrh.shift();
+      buf.sfcPrecipRate.shift();
     }
 
     if (activeStation === station && isOpen())
@@ -153,7 +170,7 @@
       '    <button type="button" id="meteogramClose" title="Close">✕</button>',
       '  </div>',
       '</div>',
-      '<canvas id="meteogramCanvas" width="640" height="420"></canvas>',
+      '<canvas id="meteogramCanvas" width="640" height="480"></canvas>',
       '<div class="meteogram-footer" id="meteogramFooter">Double-click a weather station to attach. Hover to scrub time.</div>',
     ].join('');
 
@@ -230,7 +247,7 @@
   }
 
   function getPlotRect() {
-    const padL = 52, padR = 16, padT = 28, padB = 70;
+    const padL = 52, padR = 16, padT = 28, padB = 118;
     return {
       x: padL,
       y: padT,
@@ -245,7 +262,17 @@
       x: plot.x,
       y: plot.y + plot.h + 18,
       w: plot.w,
-      h: 44,
+      h: 36,
+    };
+  }
+
+  function getConvStripRect() {
+    const strip = getStripRect();
+    return {
+      x: strip.x,
+      y: strip.y + strip.h + 16,
+      w: strip.w,
+      h: 36,
     };
   }
 
@@ -428,15 +455,15 @@
     ctx.strokeStyle = 'rgba(255,255,255,0.25)';
     ctx.strokeRect(strip.x, strip.y, strip.w, strip.h);
 
-    function drawSeries(arr, color, minV, maxV) {
-      if (!arr.length) return;
+    function drawSeriesIn(rect, arr, color, minV, maxV) {
+      if (!arr || !arr.length) return;
       ctx.strokeStyle = color;
       ctx.lineWidth = 1.5;
       ctx.beginPath();
       for (let t = 0; t < arr.length; t++) {
-        const x = strip.x + (t / Math.max(1, arr.length - 1)) * strip.w;
+        const x = rect.x + (t / Math.max(1, arr.length - 1)) * rect.w;
         const u = (arr[t] - minV) / Math.max(1e-6, maxV - minV);
-        const y = strip.y + strip.h - clamp(u, 0, 1) * strip.h;
+        const y = rect.y + rect.h - clamp(u, 0, 1) * rect.h;
         if (t === 0) ctx.moveTo(x, y);
         else ctx.lineTo(x, y);
       }
@@ -445,25 +472,53 @@
 
     let maxWind = 1, maxPrecip = 0.01;
     let minMslp = 1080, maxMslp = 870;
+    let maxCape = 500, minCin = 0, maxCin = -50, maxSrh = 50, maxPrecipRate = 0.01;
     for (let i = 0; i < nT; i++) {
       maxWind = Math.max(maxWind, buf.sfcWind[i]);
       maxPrecip = Math.max(maxPrecip, buf.sfcPrecip[i]);
       minMslp = Math.min(minMslp, buf.sfcMslp[i]);
       maxMslp = Math.max(maxMslp, buf.sfcMslp[i]);
+      if (buf.sfcCape) maxCape = Math.max(maxCape, buf.sfcCape[i] || 0);
+      if (buf.sfcCin) {
+        minCin = Math.min(minCin, buf.sfcCin[i] || 0);
+        maxCin = Math.max(maxCin, buf.sfcCin[i] || 0);
+      }
+      if (buf.sfcSrh) maxSrh = Math.max(maxSrh, buf.sfcSrh[i] || 0);
+      if (buf.sfcPrecipRate) maxPrecipRate = Math.max(maxPrecipRate, buf.sfcPrecipRate[i] || 0);
     }
     if (maxMslp - minMslp < 2) {
       minMslp -= 1;
       maxMslp += 1;
     }
+    if (maxCin - minCin < 20) {
+      minCin = Math.min(minCin, -100);
+      maxCin = Math.max(maxCin, 0);
+    }
 
-    drawSeries(buf.sfcWind, '#aaaaaa', 0, maxWind * 1.1);
-    drawSeries(buf.sfcMslp, '#ffcc66', minMslp, maxMslp);
-    drawSeries(buf.sfcPrecip, '#55aaff', 0, maxPrecip * 1.2);
+    drawSeriesIn(strip, buf.sfcWind, '#aaaaaa', 0, maxWind * 1.1);
+    drawSeriesIn(strip, buf.sfcMslp, '#ffcc66', minMslp, maxMslp);
+    drawSeriesIn(strip, buf.sfcPrecip, '#55aaff', 0, maxPrecip * 1.2);
 
     ctx.fillStyle = '#889';
     ctx.font = '10px Arial';
     ctx.textAlign = 'left';
-    ctx.fillText('Surface: wind (gray) · MSLP (amber) · precip Δ (blue)', strip.x, strip.y + strip.h + 14);
+    ctx.fillText('Surface: wind (gray) · MSLP (amber) · precip Δ (blue)', strip.x, strip.y + strip.h + 2);
+
+    // Convective strip: CAPE / CIN / SRH / precip rate
+    const conv = getConvStripRect();
+    ctx.fillStyle = 'rgba(255,255,255,0.06)';
+    ctx.fillRect(conv.x, conv.y, conv.w, conv.h);
+    ctx.strokeStyle = 'rgba(255,255,255,0.25)';
+    ctx.strokeRect(conv.x, conv.y, conv.w, conv.h);
+
+    drawSeriesIn(conv, buf.sfcCape || [], '#ff6644', 0, maxCape * 1.05);
+    drawSeriesIn(conv, buf.sfcCin || [], '#66ccff', minCin, maxCin); // CIN rises toward 0 as cap erodes
+    drawSeriesIn(conv, buf.sfcSrh || [], '#cc88ff', 0, maxSrh * 1.1);
+    drawSeriesIn(conv, buf.sfcPrecipRate || [], '#44ddaa', 0, maxPrecipRate * 1.2);
+
+    ctx.fillStyle = '#889';
+    ctx.fillText('Convective: CAPE (orange) · CIN (cyan) · 0–3km SRH (violet) · precip (teal)',
+      conv.x, conv.y + conv.h + 2);
 
     if (footer) {
       const mins = Math.round((nT - 1)); // ~1 sample/min

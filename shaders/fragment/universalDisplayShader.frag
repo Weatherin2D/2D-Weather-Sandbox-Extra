@@ -36,6 +36,12 @@ bool isLandSurfaceWall(int wallType)
       || (wallType >= 10 && wallType <= 17);
 }
 
+bool isSnowSurfaceWall(int wallType)
+{
+  // Snow depth also lives on ice sheets / caps
+  return isLandSurfaceWall(wallType) || wallType == WALLTYPE_ICE;
+}
+
 vec4 sampleQuantityColor(float val)
 {
   float normalized = (useUnipolarScale == 1)
@@ -71,13 +77,15 @@ void main()
     raw = max(raw - floodThreshold, 0.0);
   float val = raw * dispMultiplier;
 
-  // Soil moisture / flood depth are stored on land surface cells (walls), not fluid air.
+  // Soil moisture / flood / snow depth are stored on surface wall cells, not fluid air.
   // Underground cells copy soil moisture from above — only color VERT_DISTANCE == 0.
-  bool surfaceFieldView = floodThreshold > 0.0 || colorScaleColumn == 14;
+  bool snowDepthView = colorScaleColumn == 62;
+  bool surfaceFieldView = floodThreshold > 0.0 || colorScaleColumn == 14 || snowDepthView;
   bool atSurface = wall[DISTANCE] == 0 && wall[VERT_DISTANCE] == 0;
+  bool validSurfaceWall = snowDepthView ? isSnowSurfaceWall(wall[TYPE]) : isLandSurfaceWall(wall[TYPE]);
 
   if (wall[DISTANCE] == 0) {  // is wall
-    if (surfaceFieldView && isLandSurfaceWall(wall[TYPE]) && atSurface) {
+    if (surfaceFieldView && validSurfaceWall && atSurface) {
       if (floodThreshold > 0.0) {
         if (raw <= 0.05)
           fragmentColor = vec4(vec3(0.08), 1.0); // dry land under flood view
@@ -87,7 +95,7 @@ void main()
         fragmentColor = sampleQuantityColor(val);
       }
     } else if (surfaceFieldView) {
-      // Subsurface / non-land walls stay dark in soil & flood views
+      // Subsurface / non-land walls stay dark in soil, flood & snow views
       fragmentColor = vec4(vec3(0.05), 1.0);
     } else {
       switch (wall[TYPE]) { // wall type

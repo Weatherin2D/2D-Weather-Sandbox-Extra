@@ -34,6 +34,13 @@ uniform float inactiveDroplets; // used to maintain constant spawnrate
 uniform float evapHeat;
 uniform float meltingHeat;
 
+// Brush (TOOL_PRECIP = 5): force-spawn / remove droplets under the cursor
+uniform vec4 userInputValues; // xpos  ypos  intensity  brushSize(cells/2)
+uniform int userInputType;
+uniform bool wrapHorizontally;
+#define BRUSH_INTENSITY 2
+#define BRUSH_SIZE 3
+
 // prcipitation settings:
 uniform float aboveZeroThreshold; // 1.0
 uniform float subZeroThreshold;   // 0.0
@@ -152,6 +159,50 @@ void main()
       }
     }
 
+    // Precipitation brush: force-spawn droplets inside the brush (does not require cloud water)
+    if (!spawned && userInputType == 5 && userInputValues[BRUSH_INTENSITY] > 0.0) {
+      float brushRadiusUV = max(userInputValues[BRUSH_SIZE] * texelSize.y, texelSize.y);
+      float areaCells = 3.14159265 * userInputValues[BRUSH_SIZE] * userInputValues[BRUSH_SIZE];
+      if (userInputValues.x < -0.5)
+        areaCells = max(2.0 * userInputValues[BRUSH_SIZE] * resolution.x, 1.0);
+      float brushSpawnChance = (userInputValues[BRUSH_INTENSITY] * areaCells * 0.08) / (inactiveDroplets + 10.0);
+      float nrmRandBrush = random2d(vec2(mass[WATER] * 0.91, iterNum * 0.317 + mass[ICE]));
+      if (brushSpawnChance > nrmRandBrush) {
+        float u1 = random2d(vec2(mass[ICE] * 0.44, iterNum * 0.219));
+        float u2 = random2d(vec2(mass[WATER] * 0.71, iterNum * 0.533));
+        if (userInputValues.x < -0.5) {
+          texCoord = vec2(u1, clamp(userInputValues.y + (u2 - 0.5) * 2.0 * brushRadiusUV, 0.0, 1.0));
+        } else {
+          float ang = u1 * 6.2831853;
+          float rad = sqrt(u2) * brushRadiusUV;
+          float px = userInputValues.x + cos(ang) * rad;
+          if (wrapHorizontally)
+            px = fract(px);
+          else
+            px = clamp(px, 0.0, 1.0);
+          texCoord = vec2(px, clamp(userInputValues.y + sin(ang) * rad, 0.0, 1.0));
+        }
+        base = texture(baseTex, texCoord);
+        water = texture(waterTex, texCoord);
+        realTemp = potentialToRealT(base[TEMPERATURE]);
+        if (base[TEMPERATURE] < 500.) { // not inside a wall
+          spawned = true;
+          newPos = vec2((texCoord.x - 0.5) * 2., (texCoord.y - 0.5) * 2.);
+          if (realTemp < CtoK(0.0)) {
+            newMass[WATER] = 0.0;
+            newMass[ICE] = initalMass;
+            feedback[HEAT] += newMass[ICE] * meltingHeat;
+            newDensity = snowDensity;
+          } else {
+            newMass[WATER] = initalMass;
+            newMass[ICE] = 0.0;
+            newDensity = 1.0;
+          }
+          feedback[VAPOR] -= initalMass;
+        }
+      }
+    }
+
     if (spawned) {
       if (!lightningSpawned) {
         gl_PointSize = 1.0;
@@ -179,7 +230,26 @@ void main()
 
     float totalMass = newMass[WATER] + newMass[ICE];
 
-    if (totalMass < 0.04) { // to small
+    // Invert precip brush: remove droplets under the cursor
+    bool brushKill = false;
+    if (userInputType == 5 && userInputValues[BRUSH_INTENSITY] < 0.0) {
+      float brushRadiusUV = max(userInputValues[BRUSH_SIZE] * texelSize.y, texelSize.y);
+      vec2 dropUV = vec2(newPos.x * 0.5 + 0.5, newPos.y * 0.5 + 0.5);
+      if (userInputValues.x < -0.5) {
+        brushKill = abs(userInputValues.y - dropUV.y) < brushRadiusUV;
+      } else {
+        float dx = wrapHorizontally ? absHorizontalDist(userInputValues.x, dropUV.x) : abs(userInputValues.x - dropUV.x);
+        float dy = abs(userInputValues.y - dropUV.y);
+        brushKill = length(vec2(dx, dy)) < brushRadiusUV;
+      }
+    }
+
+    if (brushKill) {
+      feedback = vec4(0.0);
+      deposition = vec2(0.0);
+      disableDroplet();
+
+    } else if (totalMass < 0.04) { // to small
                             // evaporation of residual droplet
       feedback[HEAT] = -(totalMass * evapHeat);
       feedback[VAPOR] = totalMass;
