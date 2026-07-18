@@ -116,6 +116,37 @@ vec4 customSurfaceTexture(int slot, vec2 pos)
 }
 
 
+// Flood tint only on land (never lakes/ocean/ice). Fades out with depth into the ground.
+bool isFloodTintLandType(int wallType)
+{
+  return wallType == WALLTYPE_LAND || wallType == WALLTYPE_FIRE
+      || wallType == WALLTYPE_URBAN || wallType == WALLTYPE_SUBURBAN
+      || wallType == WALLTYPE_INDUSTRIAL || wallType == WALLTYPE_RUNWAY
+      || isCustomBase(wallType) || isCustomOverlay(wallType);
+}
+
+float floodTintStrength(float depth)
+{
+  if (floodVizStrength <= 0.0 || !isFloodTintLandType(wall[TYPE]))
+    return 0.0;
+  float floodDepth = max(water[SOIL_MOISTURE] - soilFieldCapacity, 0.0);
+  if (floodDepth <= 0.0)
+    return 0.0;
+  // Strong at the surface; gone by ~1.25 cells underground
+  float depthFade = 1.0 - smoothstep(0.0, 1.25, max(depth, 0.0));
+  float floodAmt = clamp(floodDepth / 5.0, 0.0, 1.0) * floodVizStrength;
+  return clamp(0.45 + floodAmt * 0.55, 0.0, 0.98) * depthFade;
+}
+
+vec3 mixFloodTint(vec3 color, float depth)
+{
+  float amt = floodTintStrength(depth);
+  if (amt <= 0.0)
+    return color;
+  vec3 floodCol = vec3(0.08, 0.50, 1.0);
+  return mix(color, floodCol, amt);
+}
+
 vec3 getWallColor(float depth)
 {
   float vegMoisture = max(water[SUSTAINED_MOISTURE], water[SOIL_MOISTURE] * 0.65);
@@ -134,14 +165,8 @@ vec3 getWallColor(float depth)
 
   color = mix(color, vec3(1.0), clamp(min(water[SNOW], fullWhiteSnowHeight) / fullWhiteSnowHeight - max(depth * 0.3, 0.), 0.0, 1.0)); // mix in white for snow cover
 
-  // Standing water / flash-flood tint when soil exceeds field capacity
-  float floodDepth = max(water[SOIL_MOISTURE] - soilFieldCapacity, 0.0);
-  if (floodVizStrength > 0.0 && floodDepth > 0.0) {
-    // Reach strong blue by ~5 mm of ponding so shallow flooding is obvious
-    float floodAmt = clamp(floodDepth / 5.0, 0.0, 1.0) * floodVizStrength;
-    vec3 floodCol = vec3(0.08, 0.45, 1.0);
-    color = mix(color, floodCol, clamp(0.40 + floodAmt * 0.60, 0.0, 0.98));
-  }
+  // Standing floodwater on land only — fades downward into the soil column
+  color = mixFloodTint(color, depth);
 
   return color;
 }
@@ -149,13 +174,7 @@ vec3 getWallColor(float depth)
 // Apply flood tint to any surface color (suburban, custom ground, etc.)
 vec3 applyFloodTint(vec3 color)
 {
-  float floodDepth = max(water[SOIL_MOISTURE] - soilFieldCapacity, 0.0);
-  if (floodVizStrength > 0.0 && floodDepth > 0.0) {
-    float floodAmt = clamp(floodDepth / 5.0, 0.0, 1.0) * floodVizStrength;
-    vec3 floodCol = vec3(0.08, 0.45, 1.0);
-    return mix(color, floodCol, clamp(0.40 + floodAmt * 0.60, 0.0, 0.98));
-  }
-  return color;
+  return mixFloodTint(color, 0.0);
 }
 
 vec3 getIceColor(float iceThickness)
@@ -506,11 +525,9 @@ void main()
   if (texCoord.y < 0.) {                                     // below simulation area
 
     float depth = float(-wall[VERT_DISTANCE]) - fragCoord.y; // depth into subsurface column
-    lightIntensity = texture(lightTex, vec2(texCoord.x, texelSize.y))[0] / standardSunBrightness;
-    lightIntensity *= pow(0.5, -fragCoord.y);
 
+    // Land underground: soil/rock (flood tint fades with depth). Water/ice keep their own colors — not flood tint.
     if (isAnyWaterType(wall[TYPE])) {
-      // Show lake/sea column under the sim domain (not buried land).
       if (wall[TYPE] == WALLTYPE_FRESH_WATER)
         color = vec3(0.15, 0.65, 0.95);
       else if (wall[TYPE] == WALLTYPE_ICE)
@@ -518,25 +535,14 @@ void main()
       else
         color = vec3(0.0, 0.42, 0.82);
       color *= pow(0.55, max(depth, 0.0) * 0.12);
-
-      // 45° seafloor / lakeshore slopes against neighboring land
-      float localX = fract(fragCoord.x);
-      float localY = fract(fragCoord.y);
-      ivec4 wallXm = texture(wallTex, texCoordXmY0);
-      ivec4 wallXp = texture(wallTex, texCoordXpY0);
-      if (wallXm[DISTANCE] == 0 && !isAnyWaterType(wallXm[TYPE])) {
-        if (localX + localY < 1.0)
-          color = getWallColor(depth);
-      }
-      if (wallXp[DISTANCE] == 0 && !isAnyWaterType(wallXp[TYPE])) {
-        if (localY - localX < 0.0)
-          color = getWallColor(depth);
-      }
       opacity = 1.0;
       shadowLight = minShadowLight;
     } else {
       color = getWallColor(depth);
     }
+
+    lightIntensity = texture(lightTex, vec2(texCoord.x, texelSize.y))[0] / standardSunBrightness;
+    lightIntensity *= pow(0.5, -fragCoord.y);
 
   } else if (texCoord.y > 1.0) {                                                                  // above simulation area
     // color = vec3(0); // no need to set
@@ -956,13 +962,13 @@ void main()
     opacity = mix(opacity, max(opacity, 0.4), fogAmt * 0.45);
   }
 
-  // Post-light flood boost so ponding stays vivid even in shadow / twilight
-  if (floodVizStrength > 0.0 && wall[DISTANCE] == 0 && wall[VERT_DISTANCE] == 0) {
-    float floodDepthLit = max(water[SOIL_MOISTURE] - soilFieldCapacity, 0.0);
-    if (floodDepthLit > 0.0) {
-      float floodAmtLit = clamp(floodDepthLit / 5.0, 0.0, 1.0) * floodVizStrength;
+  // Post-light flood boost on land surface only (never lakes/ocean), fades with depth
+  if (wall[DISTANCE] == 0 && isFloodTintLandType(wall[TYPE])) {
+    float depthLit = float(-wall[VERT_DISTANCE]) - fract(fragCoord.y);
+    float amtLit = floodTintStrength(max(depthLit, 0.0));
+    if (amtLit > 0.0) {
       vec3 floodGlow = vec3(0.12, 0.55, 1.0);
-      finalColor = mix(finalColor, floodGlow, clamp(floodAmtLit * 0.55, 0.0, 0.75));
+      finalColor = mix(finalColor, floodGlow, amtLit * 0.55);
     }
   }
 

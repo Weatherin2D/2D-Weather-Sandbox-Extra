@@ -251,8 +251,16 @@ void main()
           albedoTotal = ALBEDO_RUNWAY;
         }
 
+        // Ponded floodwater: behave like a shallow freshwater surface (higher albedo, larger heat capacity)
+        float floodFrac = clamp((soilMoisture - soilFieldCapacity) / 12.0, 0.0, 1.0);
+        if (floodFrac > 0.0) {
+          albedoTotal = mix(albedoTotal, ALBEDO_FRESH_WATER, floodFrac);
+        }
+
         lightPower *= (1. - albedoTotal);
         lightPower *= lightHeatingConst;
+        // Standing water spreads/absorbs heat — sun warms flooded tiles much less than dry land
+        lightPower /= mix(1.0, waterHeatCapacity * 0.35, floodFrac);
         base[TEMPERATURE] += lightPower * lightEffectScale; // sun heating land
 
         // Mild climate tendency toward latitude-based sea-level temperature
@@ -388,6 +396,15 @@ void main()
 
           float evaporation = calcEvaporation(realTemp, water[TOTAL], vegetationInfluence(wall[VEGETATION]), waterInSurface[SOIL_MOISTURE]) / influenceDevider;
 
+          // Flooded land: sun-boosted evaporation into the air (like open freshwater)
+          float floodFracAir = clamp((waterInSurface[SOIL_MOISTURE] - soilFieldCapacity) / 12.0, 0.0, 1.0);
+          if (floodFracAir > 0.0) {
+            float sunEvap = max(light[SUNLIGHT] * cos(colSunAngle), 0.0) / max(standardSunBrightness, 1.0);
+            float waterLikeEvap = max((maxWater(realTemp) - water[TOTAL]) * waterEvaporation, 0.0) / influenceDevider;
+            evaporation = mix(evaporation, max(evaporation, waterLikeEvap), floodFracAir);
+            evaporation *= (1.0 + sunEvap * 2.5 * floodFracAir);
+          }
+
           water[TOTAL] += evaporation;
           base[TEMPERATURE] -= evaporation * evapHeat * 0.5;                                // evaporative cooling (half the real value, to prevent boring non convective conditions)
 
@@ -473,9 +490,9 @@ void main()
 
           if (water[SOIL_MOISTURE] > soilFieldCapacity) { // runoff / ponding from saturated soil
             float excess = water[SOIL_MOISTURE] - soilFieldCapacity;
-            // Very slow soak-in so ponded water lingers visibly after heavy rain
-            // (~0.12% of excess / iter, capped) — takes many minutes of sim time to clear
-            float drain = min(excess * 0.0012, 0.04);
+            // Slow soak-in by default; sunlight speeds drainage via evaporation-driven loss
+            float sunSoak = max(lightAboveSurface[SUNLIGHT] * cos(colSunAngle), 0.0) / max(standardSunBrightness, 1.0);
+            float drain = min(excess * (0.0012 + sunSoak * 0.006), 0.12);
             water[SOIL_MOISTURE] -= drain;
           }
 
@@ -494,6 +511,16 @@ void main()
         float realTempAboveSurface = potentialToRealT(baseAboveSurface[TEMPERATURE], texCoordX0Yp.y);
 
         float evaporation = calcEvaporation(realTempAboveSurface, waterAboveSurface[TOTAL], vegetationInfluence(wall[VEGETATION]), water[SOIL_MOISTURE]) * 0.10;
+
+        // Sunlight accelerates ponded-water loss into vapor (soil moisture drawn down faster when sunny)
+        {
+          float excessEvap = max(water[SOIL_MOISTURE] - soilFieldCapacity, 0.0);
+          float sunEvap = max(lightAboveSurface[SUNLIGHT] * cos(colSunAngle), 0.0) / max(standardSunBrightness, 1.0);
+          if (excessEvap > 0.0)
+            evaporation *= (1.0 + sunEvap * 3.0);
+          else
+            evaporation *= (1.0 + sunEvap * 0.75);
+        }
 
         water[SOIL_MOISTURE] -= evaporation;
 
