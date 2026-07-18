@@ -46,18 +46,18 @@ vec4 sampleQuantityColor(float val)
   return texelFetch(colorScalesTex, ivec2(colorScaleColumn, palIdx), 0);
 }
 
-// Bright discrete flood palette — readable against the dark ground fill
+// Flood palette: mix over dark land so small amounts look transparent, deep ponding opaque
 vec4 floodDepthColor(float depthMm)
 {
   float t = clamp(depthMm * dispMultiplier, 0.0, 1.0);
-  // Keep even shallow ponding clearly blue (floor brightness)
-  t = max(t, 0.22);
+  t = t * t; // ease-in — light flooding stays subtle
+  vec3 land = vec3(0.08, 0.09, 0.10);
   vec3 shallow = vec3(0.10, 0.45, 0.95);
   vec3 mid = vec3(0.15, 0.70, 1.0);
-  vec3 deep = vec3(0.65, 0.92, 1.0);
-  vec3 col = mix(shallow, mid, smoothstep(0.22, 0.55, t));
-  col = mix(col, deep, smoothstep(0.55, 1.0, t));
-  return vec4(col, 1.0);
+  vec3 deep = vec3(0.55, 0.90, 1.0);
+  vec3 water = mix(shallow, mid, smoothstep(0.0, 0.45, t));
+  water = mix(water, deep, smoothstep(0.45, 1.0, t));
+  return vec4(mix(land, water, clamp(t, 0.0, 1.0)), 1.0);
 }
 
 void main()

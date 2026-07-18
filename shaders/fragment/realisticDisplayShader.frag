@@ -133,7 +133,8 @@ float floodPondingMm()
   return max(water[SOIL_MOISTURE] - soilFieldCapacity, 0.0);
 }
 
-// Floodwater sheet opacity: strong at surface, fades to 0 (transparent) with depth — never darkens to black.
+// Floodwater mix amount: 0 = fully transparent (land shows through), 1 = opaque blue.
+// Small ponding stays clear; deeper standing water becomes opaque. Also fades with vertical depth.
 float floodSheetOpacity(float depth)
 {
   if (floodVizStrength <= 0.0)
@@ -141,9 +142,12 @@ float floodSheetOpacity(float depth)
   float floodDepth = floodPondingMm();
   if (floodDepth <= 0.0)
     return 0.0;
-  float depthFade = 1.0 - smoothstep(0.0, 1.25, max(depth, 0.0));
-  float floodAmt = clamp(floodDepth / 5.0, 0.0, 1.0) * floodVizStrength;
-  return clamp(0.55 + floodAmt * 0.45, 0.0, 1.0) * depthFade;
+  float depthFade = 1.0 - smoothstep(0.0, 0.9, max(depth, 0.0));
+  // ~0–3 mm nearly clear, ~25 mm approaches opaque (scaled by floodVizStrength)
+  float amount = clamp(floodDepth / 25.0, 0.0, 1.0);
+  amount *= amount; // ease-in so light flooding stays transparent
+  float a = amount * clamp(floodVizStrength, 0.0, 2.5) * 0.9;
+  return clamp(a, 0.0, 0.92) * depthFade;
 }
 
 vec3 floodWaterColor()
@@ -184,17 +188,18 @@ vec3 applyFloodTint(vec3 color)
   float floodA = floodSheetOpacity(0.0);
   if (floodA <= 0.0)
     return color;
-  return mix(color, floodWaterColor(), clamp(floodA, 0.0, 0.95));
+  // Mix over land so shallow water stays see-through
+  return mix(color, floodWaterColor(), clamp(floodA, 0.0, 0.92));
 }
 
-// Apply floodwater sheet: bright blue with opacity→0 by depth (not RGB fade-to-black).
+// Apply floodwater sheet: blend blue over land (amount-based transparency). Land stays visible under shallow ponding.
 void applyFloodWaterSheet(float depth)
 {
   float floodA = floodSheetOpacity(depth);
   if (floodA <= 0.0)
     return;
-  color = floodWaterColor();
-  opacity = floodA;
+  color = mix(color, floodWaterColor(), floodA);
+  opacity = 1.0; // surface stays solid; water clarity is the mix ratio, not framebuffer alpha
 }
 
 vec3 getIceColor(float iceThickness)
@@ -1005,14 +1010,12 @@ void main()
     opacity = mix(opacity, max(opacity, 0.4), fogAmt * 0.45);
   }
 
-  // Keep flooded sheet bright after lighting (land only); opacity already encodes depth fade
+  // Keep flooded sheet readable after lighting (land only); mix amount = transparency
   if (wall[DISTANCE] == 0 && isFloodTintLandType(wall[TYPE]) && floodPondingMm() > 0.0) {
     float depthLit = float(-wall[VERT_DISTANCE]) - fract(fragCoord.y);
     float floodA = floodSheetOpacity(max(depthLit, 0.0));
-    if (floodA > 0.0) {
-      finalColor = mix(finalColor, floodWaterColor(), clamp(floodA * 0.65, 0.0, 0.85));
-      opacity = max(opacity, floodA);
-    }
+    if (floodA > 0.0)
+      finalColor = mix(finalColor, floodWaterColor(), clamp(floodA * 0.55, 0.0, 0.75));
   }
 
   fragmentColor = vec4(finalColor, opacity);
