@@ -157,6 +157,7 @@
       case 'TOOL_WATER': return 2;
       case 'TOOL_SMOKE': return 3;
       case 'TOOL_WIND': return 4;
+      case 'TOOL_PRECIP': return 5;
       case 'TOOL_WALL': return 10;
       case 'TOOL_WALL_LAND': return 11;
       case 'TOOL_WALL_FRESH': return 12;
@@ -170,6 +171,7 @@
       case 'TOOL_WALL_INDUSTRIAL': return 16;
       case 'TOOL_WALL_MOIST': return 20;
       case 'TOOL_WALL_SNOW': return 21;
+      case 'TOOL_FLOOD': return 31;
       case 'TOOL_VEG_GRASS': return 27;
       case 'TOOL_VEG_FOREST': return 28;
       case 'TOOL_CHARGE': return 23;

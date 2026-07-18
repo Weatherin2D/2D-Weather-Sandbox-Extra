@@ -10626,6 +10626,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         'Flashlight' : 'TOOL_NONE',
         'Temperature' : 'TOOL_TEMPERATURE',
         'Water Vapor / Cloud' : 'TOOL_WATER',
+        'Precipitation' : 'TOOL_PRECIP',
         'Land' : 'TOOL_WALL_LAND',
         'Fresh Water / Lake' : 'TOOL_WALL_FRESH',
         'Salt Water / Ocean' : 'TOOL_WALL_SEA',
@@ -10638,6 +10639,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         'Fire' : 'TOOL_WALL_FIRE',
         'Smoke / Dust' : 'TOOL_SMOKE',
         'Soil Moisture' : 'TOOL_WALL_MOIST',
+        'Floodwater' : 'TOOL_FLOOD',
         'Grass / Shrub' : 'TOOL_VEG_GRASS',
         'Forest' : 'TOOL_VEG_FOREST',
         'Snow' : 'TOOL_WALL_SNOW',
@@ -18355,7 +18357,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
 
   // load shaders
-  const SHADER_ASSET_VERSION = 25; // bump to bust CDN/browser cache after shader edits
+  const SHADER_ASSET_VERSION = 26; // bump to bust CDN/browser cache after shader edits
 
   var commonSource = await loadSourceFile('shaders/common.glsl');
   var commonDisplaySource = await loadSourceFile('shaders/commonDisplay.glsl');
@@ -26235,6 +26237,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
           inputType = 3;
         else if (guiControls.tool == 'TOOL_WIND')
           inputType = 4;
+        else if (guiControls.tool == 'TOOL_PRECIP')
+          inputType = 5;
         else if (guiControls.tool == 'TOOL_WALL')
           inputType = 10;
         else if (guiControls.tool == 'TOOL_WALL_LAND')
@@ -26261,6 +26265,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         // Surface environment modifiers
         else if (guiControls.tool == 'TOOL_WALL_MOIST')
           inputType = 20;
+        else if (guiControls.tool == 'TOOL_FLOOD')
+          inputType = 31;
         else if (guiControls.tool == 'TOOL_WALL_SNOW')
           inputType = 21;
         else if (guiControls.tool == 'TOOL_VEG_GRASS')

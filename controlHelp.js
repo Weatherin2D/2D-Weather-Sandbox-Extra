@@ -20,6 +20,11 @@ const ControlHelp = (function() {
       body: 'Add or remove moisture and cloud water. Essential for building clouds, fog, and storms. Combine with the temperature tool to trigger convection.',
       keys: 'W',
     },
+    TOOL_PRECIP: {
+      title: 'Precipitation',
+      body: 'Paint falling precipitation in the air (rain curtains / precip mass). Hold Ctrl (or invert) to remove precipitation. Works in fluid cells only — not inside solid terrain.',
+      keys: '',
+    },
     TOOL_WALL_LAND: {
       title: 'Land',
       body: 'Draw dry land terrain. Surface type affects evaporation, vegetation, and how the ground heats under sunlight.',
@@ -79,6 +84,11 @@ const ControlHelp = (function() {
       title: 'Soil Moisture',
       body: 'Wet or dry the soil under vegetation. Affects evaporation, vegetation health, and surface coloring.',
       keys: 'P',
+    },
+    TOOL_FLOOD: {
+      title: 'Floodwater',
+      body: 'Spawn standing floodwater on land by saturating soil past field capacity (ponding). Hold Ctrl (or invert) to drain floodwater. Paint on the land surface only.',
+      keys: '',
     },
     TOOL_VEG_GRASS: {
       title: 'Grass / Shrub',

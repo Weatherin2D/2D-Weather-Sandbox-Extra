@@ -318,6 +318,14 @@ void main()
       } else {
         base.xy += userInputMove * 5.0 * weight * userInputValues[BRUSH_INTENSITY];
       }
+    } else if (userInputType == 5 && wall[DISTANCE] != 0) { // precipitation in air (invert removes)
+      water[PRECIPITATION] += userInputValues[BRUSH_INTENSITY] * 8.0;
+      water[PRECIPITATION] = max(water[PRECIPITATION], 0.0);
+      // Light cloud drip so painted precip looks like falling from moisture
+      if (userInputValues[BRUSH_INTENSITY] > 0.0) {
+        water[CLOUD] = max(water[CLOUD], userInputValues[BRUSH_INTENSITY] * 0.35);
+        water[TOTAL] = max(water[TOTAL], water[CLOUD]);
+      }
     } else if (userInputType >= 10) {               // wall
       if (userInputValues[BRUSH_INTENSITY] > 0.0) { // build wall if positive value else remove wall
 
@@ -392,6 +400,14 @@ void main()
             float moistureBrush = userInputValues[BRUSH_INTENSITY] * 10.0;
             water[SOIL_MOISTURE] += moistureBrush;
             water[SUSTAINED_MOISTURE] = clamp(water[SUSTAINED_MOISTURE] + moistureBrush * sustainedMoistureGain, 0.0, 100.0);
+          }
+          break;
+        case 31: // floodwater — raise soil above field capacity (standing ponding)
+          if (wall[DISTANCE] == 0 && !isAnyWaterType(wall[TYPE]) && texture(wallTex, texCoordX0Yp)[DISTANCE] != 0) {
+            float floodBrush = userInputValues[BRUSH_INTENSITY] * 20.0;
+            water[SOIL_MOISTURE] = max(water[SOIL_MOISTURE], soilFieldCapacity);
+            water[SOIL_MOISTURE] = clamp(water[SOIL_MOISTURE] + floodBrush, 0.0, 1000.0);
+            water[SUSTAINED_MOISTURE] = clamp(water[SUSTAINED_MOISTURE] + floodBrush * sustainedMoistureGain * 0.5, 0.0, 100.0);
           }
           break;
         case 21:                                               // add snow
@@ -506,6 +522,10 @@ void main()
             float moistureBrush = userInputValues[BRUSH_INTENSITY] * 10.0;
             water[SOIL_MOISTURE] += moistureBrush;
             water[SUSTAINED_MOISTURE] = clamp(water[SUSTAINED_MOISTURE] + moistureBrush * sustainedMoistureGain, 0.0, 100.0);
+          } else if (userInputType == 31) { // remove floodwater / dry ponding (invert)
+            float floodBrush = userInputValues[BRUSH_INTENSITY] * 20.0; // negative when inverted
+            water[SOIL_MOISTURE] = max(water[SOIL_MOISTURE] + floodBrush, 0.0);
+            water[SUSTAINED_MOISTURE] = clamp(water[SUSTAINED_MOISTURE] + floodBrush * sustainedMoistureGain * 0.5, 0.0, 100.0);
           } else if (userInputType == 21) {
             water[SNOW] += userInputValues[BRUSH_INTENSITY] * 0.5; // remove snow / ice thickness
           } else if (userInputType == 25 || userInputType == 26) {
