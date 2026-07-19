@@ -1491,6 +1491,19 @@ function printSoilMoisture(soilMoisture_mm)
     return soilMoisture_mm.toFixed(1) + ' mm';
 }
 
+/** Standing flood depth from ponding mm (1 mm ponding = 1 mm water). */
+function printFloodDepth(ponding_mm)
+{
+  if (!Number.isFinite(ponding_mm) || ponding_mm <= 0)
+    return guiControls.lengthUnit == 'LENGTH_UNIT_IMPERIAL' ? '0 ft' : '0 m';
+  const meters = ponding_mm * 0.001;
+  if (guiControls.lengthUnit == 'LENGTH_UNIT_IMPERIAL') {
+    const ft = meters * mToFt;
+    return ft < 10 ? ft.toFixed(1) + ' ft' : ft.toFixed(0) + ' ft';
+  }
+  return meters < 1 ? (meters * 100).toFixed(0) + ' cm' : meters.toFixed(2) + ' m';
+}
+
 
 function printDistance(m)
 {
@@ -4280,7 +4293,7 @@ class Weatherstation
         const floodMm = Math.max(0, this.#soilMoisture - 85.0);
         if (floodMm > 0.5) {
           c.fillStyle = '#4aa3ff';
-          c.fillText(printSoilMoisture(floodMm) + ' flood', 0, 52);
+          c.fillText(printFloodDepth(floodMm) + ' flood', 0, 52);
           c.fillText('🌊', 20, 65);
         } else {
           c.fillText(printSoilMoisture(this.#soilMoisture), 0, 52);
@@ -16282,7 +16295,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
           c.fillStyle = '#4fc3ff';
           c.strokeStyle = 'rgba(0,0,0,0.65)';
           c.lineWidth = 3;
-          const floodLabel = '🌊 Flood depth ' + printSoilMoisture(sfcFloodMm);
+          const floodLabel = '🌊 Flood depth ' + printFloodDepth(sfcFloodMm);
           c.strokeText(floodLabel, skewTLeft + 4, labelY);
           c.fillText(floodLabel, skewTLeft + 4, labelY);
           labelY += 15;
@@ -16777,7 +16790,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         parcelSfcRow.push([sfcWaterLabel || 'Water Temp', printTemp(sfcWaterTempC), 'water-temp']);
       }
       if (sfcFloodMm != null) {
-        parcelSfcRow.push(['Flood Depth', printSoilMoisture(sfcFloodMm), 'flood']);
+        parcelSfcRow.push(['Flood Depth', printFloodDepth(sfcFloodMm), 'flood']);
       }
       if (sfcSoilMoistureMm != null) {
         parcelSfcRow.push(['Soil Moisture', printSoilMoisture(sfcSoilMoistureMm), 'soil']);
@@ -17782,8 +17795,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         var waterTextureValues = new Float32Array(4);
         gl.readPixels(simXpos, simYpos, 1, 1, gl.RGBA, gl.FLOAT, waterTextureValues);
         const floodMm = Math.max(0, waterTextureValues[2] - 85.0);
-        readoutText = floodMm > 0.05 ? printSoilMoisture(floodMm) : '0';
-        unit = 'ponding';
+        readoutText = floodMm > 0.05 ? printFloodDepth(floodMm) : '0';
+        unit = 'flood depth';
         break;
       }
 
@@ -18663,7 +18676,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
 
   // load shaders
-  const SHADER_ASSET_VERSION = 30; // bump to bust CDN/browser cache after shader edits
+  const SHADER_ASSET_VERSION = 31; // bump to bust CDN/browser cache after shader edits
 
   var commonSource = await loadSourceFile('shaders/common.glsl');
   var commonDisplaySource = await loadSourceFile('shaders/commonDisplay.glsl');
@@ -27878,7 +27891,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
           gl.bindTexture(gl.TEXTURE_2D, waterTexture_1);
           gl.uniform1i(uloc_univ_quantityIndex, 2);
           gl.uniform1f(uloc_univ_floodThreshold, 85.0); // soilFieldCapacity
-          gl.uniform1f(uloc_univ_dispMultiplier, 0.033); // ~30 mm ponding → full scale (matches realistic curve)
+          gl.uniform1f(uloc_univ_dispMultiplier, 0.00005); // 20 m (20000 mm) ponding → full scale
           gl.uniform1i(uloc_univ_colorScaleColumn, 5);
           gl.uniform1i(uloc_univ_useUnipolarScale, 1);
           colorScaleStops = 33;

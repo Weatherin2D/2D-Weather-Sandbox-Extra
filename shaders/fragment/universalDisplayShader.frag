@@ -52,11 +52,11 @@ vec4 sampleQuantityColor(float val)
   return texelFetch(colorScalesTex, ivec2(colorScaleColumn, palIdx), 0);
 }
 
-// Flood palette: steep per-mm opacity — shallow nearly clear, deep solid blue
+// Flood palette: full scale at 20 m ponding; steep curve keeps deep opacities hard to reach
 vec4 floodDepthColor(float depthMm)
 {
   float t = clamp(depthMm * dispMultiplier, 0.0, 1.0);
-  t = pow(t, 1.85); // match realistic flood contrast curve
+  t = pow(t, 1.85); // match realistic flood opacity curve
   float mixAmt = clamp(t, 0.0, 1.0);
   vec3 land = vec3(0.08, 0.09, 0.10);
   vec3 shallow = vec3(0.10, 0.50, 1.0);

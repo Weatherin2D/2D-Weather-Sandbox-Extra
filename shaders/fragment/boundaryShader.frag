@@ -521,19 +521,19 @@ void main()
           float infiltration = min(rainInput, min(maxInfiltrationRate, poreSpace * 0.25 + maxInfiltrationRate * 0.3));
           float runoff = max(rainInput - infiltration, 0.0);
 
-          water[SOIL_MOISTURE] = clamp(water[SOIL_MOISTURE] + infiltration, 0.0, 1000.0);
+          water[SOIL_MOISTURE] = clamp(water[SOIL_MOISTURE] + infiltration, 0.0, soilMoistureMax);
 
           // Rain that cannot infiltrate still wets soil, but standing flood needs heavy rain (slider)
           if (runoff > 0.0)
-            water[SOIL_MOISTURE] = clamp(water[SOIL_MOISTURE] + runoff * 0.35, 0.0, 1000.0);
+            water[SOIL_MOISTURE] = clamp(water[SOIL_MOISTURE] + runoff * 0.35, 0.0, soilMoistureMax);
 
           // Flash flood ponding only once rain intensity clears the threshold
           float rainThresh = max(floodRainThreshold, 0.02);
           float rainOver = max(rainFromAir - rainThresh, 0.0);
           if (rainOver > 0.0 && water[SOIL_MOISTURE] > soilFieldCapacity * 0.55) {
             float flashPond = rainOver * max(floodPondRate, 0.0);
-            water[SOIL_MOISTURE] = max(water[SOIL_MOISTURE],
-                min(soilFieldCapacity + 55.0, soilFieldCapacity + flashPond));
+            // Allow deep ponding over time (full visual opacity at 20 m)
+            water[SOIL_MOISTURE] = clamp(water[SOIL_MOISTURE] + flashPond, 0.0, soilMoistureMax);
           }
 
           if (water[SOIL_MOISTURE] > soilFieldCapacity) { // runoff / ponding from saturated soil
@@ -605,10 +605,11 @@ void main()
             }
 
             if (bestInundation > 0.02) {
-              float targetPonding = 4.0 + bestInundation * 10.0;
-              float targetMoisture = soilFieldCapacity + targetPonding;
+              // Map surge inundation toward metre-scale ponding (cell ~ tens of m → mm)
+              float targetPonding = 50.0 + bestInundation * 2800.0;
+              float targetMoisture = min(soilFieldCapacity + targetPonding, soilMoistureMax);
               water[SOIL_MOISTURE] = max(water[SOIL_MOISTURE],
-                  min(targetMoisture, water[SOIL_MOISTURE] + bestInundation * 1.15 + 0.4));
+                  min(targetMoisture, water[SOIL_MOISTURE] + bestInundation * 180.0 + 8.0));
             }
           }
 

@@ -406,7 +406,7 @@ void main()
           if (wall[DISTANCE] == 0 && !isAnyWaterType(wall[TYPE]) && texture(wallTex, texCoordX0Yp)[DISTANCE] != 0) {
             float floodBrush = userInputValues[BRUSH_INTENSITY] * 20.0;
             water[SOIL_MOISTURE] = max(water[SOIL_MOISTURE], soilFieldCapacity);
-            water[SOIL_MOISTURE] = clamp(water[SOIL_MOISTURE] + floodBrush, 0.0, 1000.0);
+            water[SOIL_MOISTURE] = clamp(water[SOIL_MOISTURE] + floodBrush, 0.0, soilMoistureMax);
             water[SUSTAINED_MOISTURE] = clamp(water[SUSTAINED_MOISTURE] + floodBrush * sustainedMoistureGain * 0.5, 0.0, 100.0);
           }
           break;
