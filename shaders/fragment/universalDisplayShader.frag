@@ -52,11 +52,12 @@ vec4 sampleQuantityColor(float val)
   return texelFetch(colorScalesTex, ivec2(colorScaleColumn, palIdx), 0);
 }
 
-// Flood palette: full scale at 20 m; 50% mix at 5 m (matches realistic opacity curve)
+// Flood palette: full scale at 25 m; 50% mix at 5 m (matches realistic opacity curve)
 vec4 floodDepthColor(float depthMm)
 {
   float t = clamp(depthMm * dispMultiplier, 0.0, 1.0);
-  t = pow(t, 0.5); // (5/20)^0.5 = 0.5
+  // (5/25)^k = 0.5 → k = log(0.5)/log(0.2)
+  t = pow(t, log(0.5) / log(5.0 / 25.0));
   float mixAmt = clamp(t, 0.0, 1.0);
   vec3 land = vec3(0.08, 0.09, 0.10);
   vec3 shallow = vec3(0.10, 0.50, 1.0);

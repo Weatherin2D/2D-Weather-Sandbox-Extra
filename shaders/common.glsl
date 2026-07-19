@@ -20,8 +20,9 @@ precision highp isampler2D;
 
 #define soilFieldCapacity 85.0       // mm; soil pore space before runoff
 #define maxInfiltrationRate 1.2      // mm per iteration; caps burst infiltration from downpours
-#define soilMoistureMax 25000.0      // mm; allows deep standing flood (~20 m+ ponding)
-#define floodFullOpacityDepthM 20.0  // metres of ponding for full floodwater opacity (50% at 5 m)
+#define soilMoistureMax 100000.0     // mm; flood height can exceed visual full-opacity depth (~100 m pack limit)
+#define floodFullOpacityDepthM 25.0  // metres where floodwater opacity reaches 100% (50% at 5 m)
+#define floodHalfOpacityDepthM 5.0   // metres where floodwater opacity reaches 50%
 #define sustainedMoistureGain 0.12   // fraction of infiltrated rain that builds long-term climate moisture
 #define sustainedMoistureDecay 0.00002 // mm per iteration; climate moisture memory (was 0.00015 — drained greenness too fast)
 #define minVegetationMoisture 12.0   // mm sustained moisture required for vegetation growth
