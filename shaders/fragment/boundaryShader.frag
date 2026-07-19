@@ -499,7 +499,11 @@ void main()
       case WALLTYPE_LAND:                                                                                     // no break,can also be fire or urban:
       case 10: case 11: case 12: case 13: case 14: case 15: case 16: case 17: // custom base slots
         {
-          float rainInput = precipDeposition[RAIN_DEPOSITION] * 0.1;
+          // Droplet ground-hits are sparse and often zero when precip is stride-skipped.
+          // Near-surface air PRECIPITATION persists between hits and drives natural wetting/floods.
+          float rainFromDrops = precipDeposition[RAIN_DEPOSITION] * 2.0;
+          float rainFromAir = max(waterX0Yp[PRECIPITATION], 0.0) * 0.55;
+          float rainInput = rainFromDrops + rainFromAir;
           float poreSpace = max(soilFieldCapacity - water[SOIL_MOISTURE], 0.0);
           float infiltration = min(rainInput, min(maxInfiltrationRate, poreSpace * 0.25 + maxInfiltrationRate * 0.3));
           float runoff = max(rainInput - infiltration, 0.0);
@@ -510,11 +514,19 @@ void main()
           if (runoff > 0.0)
             water[SOIL_MOISTURE] = clamp(water[SOIL_MOISTURE] + runoff, 0.0, 1000.0);
 
+          // Intense rain on already-wet soil jumps to ponding so floods appear during storms
+          if (rainFromAir > 0.12 && water[SOIL_MOISTURE] > soilFieldCapacity * 0.65) {
+            float flashPond = (rainFromAir - 0.12) * 14.0;
+            water[SOIL_MOISTURE] = max(water[SOIL_MOISTURE],
+                min(soilFieldCapacity + 40.0, soilFieldCapacity + flashPond));
+          }
+
           if (water[SOIL_MOISTURE] > soilFieldCapacity) { // runoff / ponding from saturated soil
             float excess = water[SOIL_MOISTURE] - soilFieldCapacity;
-            // Slow soak-in by default; sunlight speeds drainage via evaporation-driven loss
+            // Slow soak-in; hold ponding while rain is still falling
             float sunSoak = max(lightAboveSurface[SUNLIGHT] * cos(colSunAngle), 0.0) / standardSunBrightness;
-            float drain = min(excess * (0.0012 + sunSoak * 0.006), 0.12);
+            float raining = smoothstep(0.05, 0.35, rainFromAir);
+            float drain = min(excess * (0.0012 + sunSoak * 0.006) * (1.0 - raining * 0.85), 0.12);
             water[SOIL_MOISTURE] -= drain;
           }
 
@@ -589,12 +601,13 @@ void main()
 
         float evaporation = calcEvaporation(realTempAboveSurface, waterAboveSurface[TOTAL], vegetationInfluence(wall[VEGETATION]), water[SOIL_MOISTURE]) * 0.10;
 
-        // Sunlight accelerates ponded-water loss into vapor (soil moisture drawn down faster when sunny)
+        // Sunlight accelerates soil drying; keep ponding while rain is active
         {
           float excessEvap = max(water[SOIL_MOISTURE] - soilFieldCapacity, 0.0);
           float sunEvap = max(lightAboveSurface[SUNLIGHT] * cos(colSunAngle), 0.0) / standardSunBrightness;
+          float rainingEvap = smoothstep(0.05, 0.35, max(waterX0Yp[PRECIPITATION], 0.0));
           if (excessEvap > 0.0)
-            evaporation *= (1.0 + sunEvap * 3.0);
+            evaporation *= (1.0 + sunEvap * 3.0) * (1.0 - rainingEvap * 0.9);
           else
             evaporation *= (1.0 + sunEvap * 0.75);
         }
