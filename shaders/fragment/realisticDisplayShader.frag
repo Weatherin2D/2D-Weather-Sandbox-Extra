@@ -125,12 +125,12 @@ bool isFloodTintLandType(int wallType)
       || isCustomBase(wallType) || isCustomOverlay(wallType);
 }
 
-// Ponding depth above field capacity (mm). 0 on water/ice bodies.
+// Standing flood height (mm), stored separately from soil moisture.
 float floodPondingMm()
 {
   if (!isFloodTintLandType(wall[TYPE]))
     return 0.0;
-  return max(water[SOIL_MOISTURE] - soilFieldCapacity, 0.0);
+  return getFloodHeightMm(water[TOTAL]);
 }
 
 // Floodwater mix: ponding mm → depth in metres; full opacity only at 20 m.

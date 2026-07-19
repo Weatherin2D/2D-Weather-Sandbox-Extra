@@ -86,6 +86,27 @@ precision highp isampler2D;
 #define WATER_MARKER_FRESH 1003.0
 #define WATER_MARKER_ICE 1004.0
 
+// Standing flood depth on land walls is packed into TOTAL above WATER_MARKER_LAND.
+// Keeps the land marker band below SALT (1002): floodMm * scale < 1.0 → up to 100000 mm.
+#define FLOOD_HEIGHT_SCALE 1.0e-5
+
+bool isLandWaterMarker(float total)
+{
+  return total >= WATER_MARKER_LAND && total < WATER_MARKER_SALT;
+}
+
+float getFloodHeightMm(float total)
+{
+  if (!isLandWaterMarker(total))
+    return 0.0;
+  return clamp((total - WATER_MARKER_LAND) / FLOOD_HEIGHT_SCALE, 0.0, soilMoistureMax);
+}
+
+float encodeLandWithFlood(float floodMm)
+{
+  return WATER_MARKER_LAND + clamp(floodMm, 0.0, soilMoistureMax) * FLOOD_HEIGHT_SCALE;
+}
+
 // wall texture: RGBA8I
 #define TYPE 0 //             walltype:
 

@@ -402,12 +402,11 @@ void main()
             water[SUSTAINED_MOISTURE] = clamp(water[SUSTAINED_MOISTURE] + moistureBrush * sustainedMoistureGain, 0.0, 100.0);
           }
           break;
-        case 31: // floodwater — raise soil above field capacity (standing ponding)
+        case 31: // floodwater — add standing flood height (does not change soil moisture)
           if (wall[DISTANCE] == 0 && !isAnyWaterType(wall[TYPE]) && texture(wallTex, texCoordX0Yp)[DISTANCE] != 0) {
             float floodBrush = userInputValues[BRUSH_INTENSITY] * 20.0;
-            water[SOIL_MOISTURE] = max(water[SOIL_MOISTURE], soilFieldCapacity);
-            water[SOIL_MOISTURE] = clamp(water[SOIL_MOISTURE] + floodBrush, 0.0, soilMoistureMax);
-            water[SUSTAINED_MOISTURE] = clamp(water[SUSTAINED_MOISTURE] + floodBrush * sustainedMoistureGain * 0.5, 0.0, 100.0);
+            float floodMm = getFloodHeightMm(water[TOTAL]) + floodBrush;
+            water[TOTAL] = encodeLandWithFlood(floodMm);
           }
           break;
         case 21:                                               // add snow
@@ -522,10 +521,10 @@ void main()
             float moistureBrush = userInputValues[BRUSH_INTENSITY] * 10.0;
             water[SOIL_MOISTURE] += moistureBrush;
             water[SUSTAINED_MOISTURE] = clamp(water[SUSTAINED_MOISTURE] + moistureBrush * sustainedMoistureGain, 0.0, 100.0);
-          } else if (userInputType == 31) { // remove floodwater / dry ponding (invert)
+          } else if (userInputType == 31) { // remove floodwater only (invert) — never dries soil
             float floodBrush = userInputValues[BRUSH_INTENSITY] * 20.0; // negative when inverted
-            water[SOIL_MOISTURE] = max(water[SOIL_MOISTURE] + floodBrush, 0.0);
-            water[SUSTAINED_MOISTURE] = clamp(water[SUSTAINED_MOISTURE] + floodBrush * sustainedMoistureGain * 0.5, 0.0, 100.0);
+            float floodMm = max(getFloodHeightMm(water[TOTAL]) + floodBrush, 0.0);
+            water[TOTAL] = encodeLandWithFlood(floodMm);
           } else if (userInputType == 21) {
             water[SNOW] += userInputValues[BRUSH_INTENSITY] * 0.5; // remove snow / ice thickness
           } else if (userInputType == 25 || userInputType == 26) {
@@ -562,8 +561,8 @@ void main()
       water[TOTAL] = WATER_MARKER_FRESH;
     else if (wall[TYPE] == WALLTYPE_ICE)
       water[TOTAL] = WATER_MARKER_ICE;
-    else // any type of land wall
-      water[TOTAL] = WATER_MARKER_LAND;
+    else // land: preserve packed standing flood height in TOTAL
+      water[TOTAL] = encodeLandWithFlood(getFloodHeightMm(water[TOTAL]));
 
   } else { // no wall
            //   water[CLOUD] = max(water[TOTAL] - maxWater(realTemp), 0.0); // recalculate cloud water

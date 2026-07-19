@@ -1491,6 +1491,23 @@ function printSoilMoisture(soilMoisture_mm)
     return soilMoisture_mm.toFixed(1) + ' mm';
 }
 
+const WATER_MARKER_LAND_JS = 1001.0;
+const WATER_MARKER_SALT_JS = 1002.0;
+const FLOOD_HEIGHT_SCALE_JS = 1.0e-5;
+
+/** Decode standing flood height (mm) packed into land water-marker TOTAL. */
+function getFloodHeightMmFromTotal(total)
+{
+  if (!Number.isFinite(total) || total < WATER_MARKER_LAND_JS || total >= WATER_MARKER_SALT_JS)
+    return 0;
+  return Math.max(0, (total - WATER_MARKER_LAND_JS) / FLOOD_HEIGHT_SCALE_JS);
+}
+
+function isLandWaterMarkerTotal(total)
+{
+  return Number.isFinite(total) && total >= 1000.5 && total < WATER_MARKER_SALT_JS;
+}
+
 /** Standing flood depth from ponding mm (1 mm ponding = 1 mm water). */
 function printFloodDepth(ponding_mm)
 {
@@ -3674,7 +3691,8 @@ class Weatherstation
   #relativeHumd = 0; // %
   #velocity = 0;     // ms
   #mslpHpa = 1013.25; // diagnostic mean sea-level pressure
-  #soilMoisture = 0; // mm
+  #soilMoisture = 0; // mm (0–field capacity; separate from flood)
+  #floodHeightMm = 0; // mm standing flood height
   #snowHeight = 0;   // cm
   #airQuality = 0;   // AQI
   #waterTemperature = 0;
@@ -4077,7 +4095,7 @@ class Weatherstation
       return;
     }
 
-    if (waterTextureValues[0 + 0] > 1001.5) { // water wall
+    if (waterTextureValues[0 + 0] >= WATER_MARKER_SALT_JS) { // water / ice wall
       this.#waterTemperature = KtoC(baseTextureValues[0 + 3]);
     } else {
       this.#waterTemperature = -100.;
@@ -4096,8 +4114,9 @@ class Weatherstation
     }
 
 
-    if (waterTextureValues[0] > 1000.5 && waterTextureValues[0] < 1001.5) { // on land surface
+    if (isLandWaterMarkerTotal(waterTextureValues[0])) { // on land surface (flood packed in TOTAL)
       this.#soilMoisture = waterTextureValues[2];
+      this.#floodHeightMm = getFloodHeightMmFromTotal(waterTextureValues[0]);
       this.#snowHeight = waterTextureValues[3];
 
       if (!this.#isOnLand) {
@@ -4109,7 +4128,8 @@ class Weatherstation
         this.#historyChart.data.datasets[6].reallyHidden = true;
       }
 
-    } else if (waterTextureValues[0] > 1001.5) { // on water surface
+    } else if (waterTextureValues[0] >= WATER_MARKER_SALT_JS) { // on water surface
+      this.#floodHeightMm = 0;
       if (!this.#isOnWater) {
         this.clearChart();
         this.#isOnWater = true;
@@ -4119,11 +4139,13 @@ class Weatherstation
         this.#historyChart.data.datasets[6].reallyHidden = false;
       }
     } else { // in air
+      this.#floodHeightMm = 0;
       if (this.#isOnLand || this.#isOnWater) {
         this.clearChart();
         this.#isOnLand = false;
         this.#isOnWater = false;
         this.#soilMoisture = 0;
+        this.#floodHeightMm = 0;
         this.#snowHeight = 0;
         this.#waterTemperature = -10.0;
         this.#historyChart.data.datasets[4].reallyHidden = true;
@@ -4289,8 +4311,8 @@ class Weatherstation
       c.fillText(this.#mslpHpa.toFixed(0) + ' hPa', 72, 40);
       c.font = '12px Arial';
 
-      if (this.#soilMoisture > 0.) {
-        const floodMm = Math.max(0, this.#soilMoisture - 85.0);
+      if (this.#floodHeightMm > 0.5 || this.#soilMoisture > 0.) {
+        const floodMm = this.#floodHeightMm;
         if (floodMm > 0.5) {
           c.fillStyle = '#4aa3ff';
           c.fillText(printFloodDepth(floodMm) + ' flood', 0, 52);
@@ -15158,11 +15180,11 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       if (sfcIsLand) {
         const soilMm = waterTextureValues[4 * sfcWallY + 2];
         const snowCm = waterTextureValues[4 * sfcWallY + 3];
-        if (Number.isFinite(soilMm) && soilMm > 0.05) {
+        const totalMarker = waterTextureValues[4 * sfcWallY + 0];
+        if (Number.isFinite(soilMm) && soilMm > 0.05)
           sfcSoilMoistureMm = soilMm;
-          const flood = Math.max(0, soilMm - 85.0);
-          if (flood > 0.1) sfcFloodMm = flood;
-        }
+        const flood = getFloodHeightMmFromTotal(totalMarker);
+        if (flood > 0.1) sfcFloodMm = flood;
         if (Number.isFinite(snowCm) && snowCm > 0.05)
           sfcSnowCm = snowCm;
       }
@@ -17794,7 +17816,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         gl.readBuffer(gl.COLOR_ATTACHMENT1);
         var waterTextureValues = new Float32Array(4);
         gl.readPixels(simXpos, simYpos, 1, 1, gl.RGBA, gl.FLOAT, waterTextureValues);
-        const floodMm = Math.max(0, waterTextureValues[2] - 85.0);
+        const floodMm = getFloodHeightMmFromTotal(waterTextureValues[0]);
         readoutText = floodMm > 0.05 ? printFloodDepth(floodMm) : '0';
         unit = 'flood depth';
         break;
@@ -18676,7 +18698,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
 
   // load shaders
-  const SHADER_ASSET_VERSION = 31; // bump to bust CDN/browser cache after shader edits
+  const SHADER_ASSET_VERSION = 32; // bump to bust CDN/browser cache after shader edits
 
   var commonSource = await loadSourceFile('shaders/common.glsl');
   var commonDisplaySource = await loadSourceFile('shaders/commonDisplay.glsl');
@@ -27886,12 +27908,13 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
           colorScaleStops = 33;
           break;
         case 'DISP_FLOOD':
-          // Ponded water depth = max(0, soilMoisture - fieldCapacity); lives on land walls
+          // Standing flood height packed in land TOTAL above WATER_MARKER_LAND
           gl.activeTexture(gl.TEXTURE0);
           gl.bindTexture(gl.TEXTURE_2D, waterTexture_1);
-          gl.uniform1i(uloc_univ_quantityIndex, 2);
-          gl.uniform1f(uloc_univ_floodThreshold, 85.0); // soilFieldCapacity
-          gl.uniform1f(uloc_univ_dispMultiplier, 0.00005); // 20 m (20000 mm) ponding → full scale
+          gl.uniform1i(uloc_univ_quantityIndex, 0);
+          gl.uniform1f(uloc_univ_floodThreshold, 1001.0); // WATER_MARKER_LAND
+          // encoded = floodMm * 1e-5; full opacity at 20 m → multiplier 5.0
+          gl.uniform1f(uloc_univ_dispMultiplier, 5.0);
           gl.uniform1i(uloc_univ_colorScaleColumn, 5);
           gl.uniform1i(uloc_univ_useUnipolarScale, 1);
           colorScaleStops = 33;

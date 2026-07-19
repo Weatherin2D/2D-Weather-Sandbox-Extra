@@ -87,7 +87,7 @@ const ControlHelp = (function() {
     },
     TOOL_FLOOD: {
       title: 'Floodwater',
-      body: 'Spawn standing floodwater on land by saturating soil past field capacity (ponding). Hold Ctrl (or invert) to drain floodwater. Paint on the land surface only.',
+      body: 'Add standing flood height on land (separate from soil moisture). Soil only gains moisture as floodwater soaks in or evaporates. Hold Ctrl (or invert) to remove flood height only — soil moisture is left unchanged. Paint on the land surface only.',
       keys: '',
     },
     TOOL_VEG_GRASS: {
