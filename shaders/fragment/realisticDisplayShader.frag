@@ -133,8 +133,7 @@ float floodPondingMm()
   return getFloodHeightMm(water[TOTAL]);
 }
 
-// Floodwater mix: ponding mm → depth in metres; full opacity only at 20 m.
-// Steep curve keeps 75–100% hard to reach (shallow stays translucent).
+// Floodwater mix: ponding mm → depth in metres; 50% at 5 m, 100% at 20 m.
 // floodVizStrength = Display "Floodwater Opacity" slider (0–1) scales the whole curve.
 float floodSheetOpacity(float depth)
 {
@@ -146,7 +145,8 @@ float floodSheetOpacity(float depth)
   float depthFade = 1.0 - smoothstep(0.0, 1.1, max(depth, 0.0));
   float floodDepthM = floodDepth * 0.001; // mm → metres
   float t = clamp(floodDepthM / floodFullOpacityDepthM, 0.0, 1.0);
-  float amount = pow(t, 1.85); // harder to reach high opacity
+  // (5/20)^0.5 = 0.5 → half opacity at 5 m; full at 20 m
+  float amount = pow(t, 0.5);
   float a = amount * clamp(floodVizStrength, 0.0, 1.0);
   return clamp(a, 0.0, 1.0) * depthFade;
 }
