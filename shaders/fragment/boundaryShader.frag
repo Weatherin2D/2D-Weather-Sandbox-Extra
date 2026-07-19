@@ -42,6 +42,7 @@ uniform float iterNum; // used as seed for random function
 
 uniform float dynamicWaterTemperature;
 uniform float meltingHeat;
+uniform float stormSurgeStrength; // 0–2; scales onshore-wind coastal inundation
 
 layout(location = 0) out vec4 base;
 layout(location = 1) out vec4 water;
@@ -75,6 +76,17 @@ float calcEvaporation(float T, float W, float V, float M)                       
 }
 
 float calcFireIntensity(int veg, float moist, float precip) { return max(vegetationInfluence(veg) * 0.00032 - moist * 0.00020 - precip * 0.02, 0.); }
+
+// How many cells this sample sits above an ocean surface (0 = same height, negative = below ocean top).
+// Large value means not an ocean column.
+float cellsAboveOceanAt(vec2 uv)
+{
+  ivec4 w = texture(wallTex, uv);
+  if (w[TYPE] != WALLTYPE_WATER)
+    return 1e6;
+  // Wall ocean: VERT 0 at surface, negative below. Air above ocean: VERT = height above surface.
+  return float(w[VERT_DISTANCE]);
+}
 
 void main()
 {
@@ -504,6 +516,56 @@ void main()
             float sunSoak = max(lightAboveSurface[SUNLIGHT] * cos(colSunAngle), 0.0) / standardSunBrightness;
             float drain = min(excess * (0.0012 + sunSoak * 0.006), 0.12);
             water[SOIL_MOISTURE] -= drain;
+          }
+
+          // Coastal storm surge: strong onshore wind over adjacent ocean inundates low land
+          if (stormSurgeStrength > 0.001) {
+            float bestCellsAbove = 1e6;
+            float bestOnshore = 0.0;
+
+            // Ocean to the left → onshore wind is +VX
+            float leftAbove = cellsAboveOceanAt(texCoordXmY0);
+            if (leftAbove < 1e5) {
+              vec2 windUvL = texCoordXmY0;
+              ivec4 wL = texture(wallTex, windUvL);
+              if (wL[DISTANCE] == 0)
+                windUvL += vec2(0.0, texelSize.y);
+              float windUL = texture(baseTex, windUvL)[VX];
+              float onshoreL = max(windUL, 0.0);
+              if (leftAbove < bestCellsAbove || (leftAbove == bestCellsAbove && onshoreL > bestOnshore)) {
+                bestCellsAbove = leftAbove;
+                bestOnshore = onshoreL;
+              }
+            }
+
+            // Ocean to the right → onshore wind is -VX
+            float rightAbove = cellsAboveOceanAt(texCoordXpY0);
+            if (rightAbove < 1e5) {
+              vec2 windUvR = texCoordXpY0;
+              ivec4 wR = texture(wallTex, windUvR);
+              if (wR[DISTANCE] == 0)
+                windUvR += vec2(0.0, texelSize.y);
+              float windUR = texture(baseTex, windUvR)[VX];
+              float onshoreR = max(-windUR, 0.0);
+              if (rightAbove < bestCellsAbove || (rightAbove == bestCellsAbove && onshoreR > bestOnshore)) {
+                bestCellsAbove = rightAbove;
+                bestOnshore = onshoreR;
+              }
+            }
+
+            if (bestCellsAbove < 1e5) {
+              // VX~0.05 light breeze; ~0.25+ storm — map to 0–4.5 cells of runup
+              float windScale = bestOnshore * 10.0;
+              float surgeCells = clamp((windScale - 0.45) / 3.2, 0.0, 1.0) * 4.5 * stormSurgeStrength;
+              if (bestCellsAbove <= surgeCells) {
+                float inundation = clamp(surgeCells - bestCellsAbove, 0.0, 5.0);
+                float targetPonding = 4.0 + inundation * 10.0; // mm above field capacity
+                float targetMoisture = soilFieldCapacity + targetPonding;
+                // Build/hold ponding while surge is active (outruns slow drain)
+                water[SOIL_MOISTURE] = max(water[SOIL_MOISTURE],
+                    min(targetMoisture, water[SOIL_MOISTURE] + inundation * 1.2 + 0.35));
+              }
+            }
           }
 
           // Same-frame quench: fire dies as soon as standing floodwater builds up

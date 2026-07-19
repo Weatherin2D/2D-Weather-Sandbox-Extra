@@ -133,7 +133,7 @@ float floodPondingMm()
   return max(water[SOIL_MOISTURE] - soilFieldCapacity, 0.0);
 }
 
-// Floodwater mix: strong per-mm contrast — shallow nearly clear, deep nearly opaque.
+// Floodwater mix: ~3 mm faintly visible, ~12 mm clearly blue.
 // floodVizStrength = Display "Floodwater Opacity" slider (0–1) scales the whole curve.
 float floodSheetOpacity(float depth)
 {
@@ -143,17 +143,16 @@ float floodSheetOpacity(float depth)
   if (floodDepth <= 0.0)
     return 0.0;
   float depthFade = 1.0 - smoothstep(0.0, 1.1, max(depth, 0.0));
-  // Wide dynamic range: ~2 mm faint, ~10 mm medium, ~30 mm solid
-  float amount = clamp(floodDepth / 30.0, 0.0, 1.0);
-  amount = pow(amount, 1.85); // steep curve so depth differences read clearly
+  float amount = clamp(floodDepth / 12.0, 0.0, 1.0);
+  amount = pow(amount, 0.9);
   float a = amount * clamp(floodVizStrength, 0.0, 1.0);
   return clamp(a, 0.0, 0.98) * depthFade;
 }
 
 vec3 floodWaterColor()
 {
-  // Muted water blue — lighting/shadows darken this further (not a neon unlit glow)
-  return vec3(0.04, 0.22, 0.42);
+  // Readable water blue under lit/shadowed mixes
+  return vec3(0.08, 0.38, 0.62);
 }
 
 vec3 getLandColor(float depth)
@@ -604,6 +603,8 @@ void main()
           onLight += vec3(0., 1.0, 0.) * 5000.0;
         }
 
+        opacity = 1.0;
+        applyFloodWaterSheet(0.0);
         break;
       }
 
@@ -680,6 +681,17 @@ void main()
       // combine based on wind direction
       float waterLevel = 0.8 + waveSignalL * max(-windSpeed, 0.) + waveSignalR * max(windSpeed, 0.);
 
+      // Storm surge visual: raise ocean surface when strong wind blows onshore onto adjacent land
+      if (wall[TYPE] == WALLTYPE_WATER && wall[VERT_DISTANCE] == 0) {
+        float onshoreVis = 0.0;
+        if (wallXpY0[DISTANCE] == 0 && !isAnyWaterType(wallXpY0[TYPE]))
+          onshoreVis = max(onshoreVis, max(windSpeed, 0.0));
+        if (wallXmY0[DISTANCE] == 0 && !isAnyWaterType(wallXmY0[TYPE]))
+          onshoreVis = max(onshoreVis, max(-windSpeed, 0.0));
+        waterLevel += clamp((onshoreVis - 0.5) * 0.06, 0.0, 0.22);
+        waterLevel = clamp(waterLevel, 0.15, 0.98);
+      }
+
       if (wall[VERT_DISTANCE] == 0 && fract(fragCoord.y) > waterLevel) { // air
         vec2 airFC = fragCoord + vec2(0., 0.5);
         vec2 airUV = airFC * texelSize;
@@ -709,13 +721,15 @@ void main()
 
       if (wallXmY0[DISTANCE] == 0 && !isAnyWaterType(wallXmY0[TYPE]) && (fragCoord.y < 1. || !isAnyWaterType(wallX0Ym[TYPE]))) { // wall to the left and below
         if (localX + localY < 1.0) {
-          // Shore slope uses neighboring land look — never flood-tint from the water cell's soil channel
+          // Shore slope uses neighboring land look + that land's flood ponding
           opacity = 1.0;
           ivec4 landWall = wallXmY0;
           vec4 landWater = texture(waterTex, texCoordXmY0);
           wall = landWall;
           water = landWater;
-          color = getLandColor(float(-wall[VERT_DISTANCE]) - localY);
+          float shoreDepth = float(-wall[VERT_DISTANCE]) - localY;
+          color = getLandColor(shoreDepth);
+          applyFloodWaterSheet(shoreDepth);
           shadowLight = minShadowLight;
         }
       }
@@ -726,7 +740,9 @@ void main()
           vec4 landWater = texture(waterTex, texCoordXpY0);
           wall = landWall;
           water = landWater;
-          color = getLandColor(float(-wall[VERT_DISTANCE]) - localY);
+          float shoreDepth = float(-wall[VERT_DISTANCE]) - localY;
+          color = getLandColor(shoreDepth);
+          applyFloodWaterSheet(shoreDepth);
           shadowLight = minShadowLight;
         }
       }
@@ -1011,14 +1027,14 @@ void main()
     opacity = mix(opacity, max(opacity, 0.4), fogAmt * 0.45);
   }
 
-  // Soft wet highlight only — keep flood tint lit/shadowed (do not re-apply unlit neon blue)
+  // Soft wet highlight — keep flood tint lit/shadowed so ponding stays visible after lighting
   if (wall[DISTANCE] == 0 && isFloodTintLandType(wall[TYPE]) && floodPondingMm() > 0.0) {
     float depthLit = float(-wall[VERT_DISTANCE]) - fract(fragCoord.y);
     float floodA = floodSheetOpacity(max(depthLit, 0.0));
     if (floodA > 0.0) {
-      float sunLit = clamp(max(lightIntensity, shadowLight), 0.05, 1.0);
-      vec3 shadowedFlood = floodWaterColor() * sunLit;
-      finalColor = mix(finalColor, shadowedFlood, clamp(floodA * 0.35 * sunLit, 0.0, 0.55));
+      float sunLit = clamp(max(lightIntensity, shadowLight), 0.08, 1.0);
+      vec3 shadowedFlood = floodWaterColor() * mix(0.55, 1.0, sunLit);
+      finalColor = mix(finalColor, shadowedFlood, clamp(floodA * 0.65 * sunLit, 0.0, 0.75));
     }
   }
 

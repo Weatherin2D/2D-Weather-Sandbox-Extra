@@ -270,6 +270,7 @@ const ControlHelp = (function() {
     displaySeaBreezes: 'Show sea-breeze markers and radius overlays.',
     enableAutoSeaBreeze: 'Automatically drive breezes at land–water coasts across the domain.',
     autoSeaBreezeStrength: 'Strength of automatic coastline sea/land breeze forcing.',
+    stormSurgeStrength: 'How strongly onshore wind piles ocean water onto low coasts (0 = off, 1 = default, 2 = extreme). Floods coastal land as standing water.',
     displayMeteogram: 'Show the time-height meteogram for the active weather station (or double-click a station). Includes surface wind/MSLP/precip and a convective strip (CAPE, CIN, SRH, precip).',
     surfacePressure: 'Sea-level baseline (hPa) for diagnostic MSLP. Fluid solver pressure is unchanged.',
     pressureThermalScale: 'How strongly warm/cool columns shift displayed MSLP (hPa per °C). Warm air lowers MSLP.',

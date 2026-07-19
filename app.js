@@ -735,6 +735,7 @@ const guiControls_default = {
   displaySeaBreezes : true,
   enableAutoSeaBreeze : false,
   autoSeaBreezeStrength : 0.6,
+  stormSurgeStrength : 1.0, // 0–2; onshore-wind coastal inundation multiplier
   // Meteorological MSLP (display/stations). Fluid base[PRESSURE] stays dimensionless.
   surfacePressure : 1013.25,       // sea-level baseline hPa
   pressureThermalScale : 1.5,      // hPa per °C column warmth (warm → lower MSLP)
@@ -10422,6 +10423,8 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     guiControls.enableAutoSeaBreeze = guiControls_default.enableAutoSeaBreeze;
   if (guiControls.autoSeaBreezeStrength === undefined)
     guiControls.autoSeaBreezeStrength = guiControls_default.autoSeaBreezeStrength;
+  if (guiControls.stormSurgeStrength === undefined)
+    guiControls.stormSurgeStrength = guiControls_default.stormSurgeStrength;
   if (guiControls.floodWaterOpacity === undefined) {
     const legacy = guiControls.floodVizStrength;
     if (Number.isFinite(legacy))
@@ -11408,6 +11411,12 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     advancedSimulation.add(guiControls, 'enableSeaBreezes').name('Enable Sea Breezes');
     advancedSimulation.add(guiControls, 'enableAutoSeaBreeze').name('Auto Sea Breeze (coasts)');
     advancedSimulation.add(guiControls, 'autoSeaBreezeStrength', 0, 2, 0.05).name('Auto Sea Breeze Strength');
+    advancedSimulation.add(guiControls, 'stormSurgeStrength', 0, 2, 0.05)
+      .onChange(function() {
+        gl.useProgram(boundaryProgram);
+        gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'stormSurgeStrength'), guiControls.stormSurgeStrength);
+      })
+      .name('Storm Surge Strength');
     advancedSimulation.add(guiControls, 'surfacePressure', 950, 1050, 0.25).name('MSLP Baseline (hPa)');
     advancedSimulation.add(guiControls, 'pressureThermalScale', 0, 4, 0.05).name('MSLP Thermal Scale');
     advancedSimulation.add(guiControls, 'pressureDynamicScale', 0, 40, 0.5).name('MSLP Dynamic Scale');
@@ -22029,6 +22038,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'meltingHeat'), guiControls.meltingHeat);
   gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'dynamicWaterTemperature'), guiControls.dynamicWaterTemperature ? 1.0 : 0.0);
   gl.uniform1i(gl.getUniformLocation(boundaryProgram, 'latitudeBasedTemperature'), guiControls.latitudeBasedTemperature ? 1 : 0);
+  gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'stormSurgeStrength'),
+               guiControls.stormSurgeStrength != null ? guiControls.stormSurgeStrength : 1.0);
 
   gl.useProgram(curlProgram);
   gl.uniform2f(gl.getUniformLocation(curlProgram, 'texelSize'), texelSizeX, texelSizeY);
