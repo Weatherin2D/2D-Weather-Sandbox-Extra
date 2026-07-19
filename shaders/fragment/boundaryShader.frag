@@ -42,7 +42,12 @@ uniform float iterNum; // used as seed for random function
 
 uniform float dynamicWaterTemperature;
 uniform float meltingHeat;
-uniform float stormSurgeStrength; // 0–2; scales onshore-wind coastal inundation
+uniform float stormSurgeStrength;      // 0–2; scales onshore-wind coastal inundation
+uniform float stormSurgeWindThreshold; // windScale units; higher = needs stronger onshore wind
+uniform float stormSurgeMaxCells;      // max ocean runup height in cells
+uniform float stormSurgeInlandReach;   // how many land cells inland surge can reach
+uniform float floodRainThreshold;      // air PRECIPITATION intensity required to flash-flood
+uniform float floodPondRate;           // ponding mm build rate once rain exceeds threshold
 
 layout(location = 0) out vec4 base;
 layout(location = 1) out vec4 water;
@@ -86,6 +91,14 @@ float cellsAboveOceanAt(vec2 uv)
     return 1e6;
   // Wall ocean: VERT 0 at surface, negative below. Air above ocean: VERT = height above surface.
   return float(w[VERT_DISTANCE]);
+}
+
+bool isSurgeFloodLandType(int wallType)
+{
+  return wallType == WALLTYPE_LAND || wallType == WALLTYPE_FIRE
+      || wallType == WALLTYPE_URBAN || wallType == WALLTYPE_SUBURBAN
+      || wallType == WALLTYPE_INDUSTRIAL || wallType == WALLTYPE_RUNWAY
+      || isCustomBase(wallType);
 }
 
 void main()
@@ -510,73 +523,92 @@ void main()
 
           water[SOIL_MOISTURE] = clamp(water[SOIL_MOISTURE] + infiltration, 0.0, 1000.0);
 
-          // Heavy rain that cannot infiltrate becomes standing water (flash flood ponding)
+          // Rain that cannot infiltrate still wets soil, but standing flood needs heavy rain (slider)
           if (runoff > 0.0)
-            water[SOIL_MOISTURE] = clamp(water[SOIL_MOISTURE] + runoff, 0.0, 1000.0);
+            water[SOIL_MOISTURE] = clamp(water[SOIL_MOISTURE] + runoff * 0.35, 0.0, 1000.0);
 
-          // Intense rain on already-wet soil jumps to ponding so floods appear during storms
-          if (rainFromAir > 0.12 && water[SOIL_MOISTURE] > soilFieldCapacity * 0.65) {
-            float flashPond = (rainFromAir - 0.12) * 14.0;
+          // Flash flood ponding only once rain intensity clears the threshold
+          float rainThresh = max(floodRainThreshold, 0.02);
+          float rainOver = max(rainFromAir - rainThresh, 0.0);
+          if (rainOver > 0.0 && water[SOIL_MOISTURE] > soilFieldCapacity * 0.55) {
+            float flashPond = rainOver * max(floodPondRate, 0.0);
             water[SOIL_MOISTURE] = max(water[SOIL_MOISTURE],
-                min(soilFieldCapacity + 40.0, soilFieldCapacity + flashPond));
+                min(soilFieldCapacity + 55.0, soilFieldCapacity + flashPond));
           }
 
           if (water[SOIL_MOISTURE] > soilFieldCapacity) { // runoff / ponding from saturated soil
             float excess = water[SOIL_MOISTURE] - soilFieldCapacity;
-            // Slow soak-in; hold ponding while rain is still falling
+            // Slow soak-in; hold ponding while heavy rain continues
             float sunSoak = max(lightAboveSurface[SUNLIGHT] * cos(colSunAngle), 0.0) / standardSunBrightness;
-            float raining = smoothstep(0.05, 0.35, rainFromAir);
+            float raining = smoothstep(rainThresh * 0.5, rainThresh + 0.25, rainFromAir);
             float drain = min(excess * (0.0012 + sunSoak * 0.006) * (1.0 - raining * 0.85), 0.12);
             water[SOIL_MOISTURE] -= drain;
           }
 
-          // Coastal storm surge: strong onshore wind over adjacent ocean inundates low land
+          // Coastal storm surge: onshore wind over ocean inundates low land and spreads inland
           if (stormSurgeStrength > 0.001) {
-            float bestCellsAbove = 1e6;
-            float bestOnshore = 0.0;
+            float bestInundation = 0.0;
+            float windThresh = max(stormSurgeWindThreshold, 0.05);
+            float maxCells = clamp(stormSurgeMaxCells, 0.5, 12.0);
+            const int MAX_SURGE_SCAN = 24;
+            int reach = int(clamp(stormSurgeInlandReach, 1.0, float(MAX_SURGE_SCAN)) + 0.5);
 
-            // Ocean to the left → onshore wind is +VX
-            float leftAbove = cellsAboveOceanAt(texCoordXmY0);
-            if (leftAbove < 1e5) {
-              vec2 windUvL = texCoordXmY0;
-              ivec4 wL = texture(wallTex, windUvL);
-              if (wL[DISTANCE] == 0)
-                windUvL += vec2(0.0, texelSize.y);
-              float windUL = texture(baseTex, windUvL)[VX];
-              float onshoreL = max(windUL, 0.0);
-              if (leftAbove < bestCellsAbove || (leftAbove == bestCellsAbove && onshoreL > bestOnshore)) {
-                bestCellsAbove = leftAbove;
-                bestOnshore = onshoreL;
+            for (int d = 1; d <= MAX_SURGE_SCAN; d++) {
+              if (d > reach)
+                break;
+              float dist = float(d);
+
+              // Ocean to the left → onshore wind is +VX
+              vec2 uvL = texCoord + vec2(-dist * texelSize.x, 0.0);
+              float leftAbove = cellsAboveOceanAt(uvL);
+              if (leftAbove < 1e5) {
+                vec2 windUvL = uvL;
+                ivec4 wL = texture(wallTex, windUvL);
+                if (wL[DISTANCE] == 0)
+                  windUvL += vec2(0.0, texelSize.y);
+                float onshoreL = max(texture(baseTex, windUvL)[VX], 0.0);
+                float windScaleL = onshoreL * 10.0;
+                float surgeCellsL = clamp((windScaleL - windThresh) / 3.2, 0.0, 1.0) * maxCells * stormSurgeStrength;
+                // Inland distance spends surge height so far shores need stronger storms
+                float effectiveL = surgeCellsL - dist * 0.55;
+                if (leftAbove <= effectiveL)
+                  bestInundation = max(bestInundation, clamp(effectiveL - leftAbove, 0.0, 6.0));
+              }
+
+              // Ocean to the right → onshore wind is -VX
+              vec2 uvR = texCoord + vec2(dist * texelSize.x, 0.0);
+              float rightAbove = cellsAboveOceanAt(uvR);
+              if (rightAbove < 1e5) {
+                vec2 windUvR = uvR;
+                ivec4 wR = texture(wallTex, windUvR);
+                if (wR[DISTANCE] == 0)
+                  windUvR += vec2(0.0, texelSize.y);
+                float onshoreR = max(-texture(baseTex, windUvR)[VX], 0.0);
+                float windScaleR = onshoreR * 10.0;
+                float surgeCellsR = clamp((windScaleR - windThresh) / 3.2, 0.0, 1.0) * maxCells * stormSurgeStrength;
+                float effectiveR = surgeCellsR - dist * 0.55;
+                if (rightAbove <= effectiveR)
+                  bestInundation = max(bestInundation, clamp(effectiveR - rightAbove, 0.0, 6.0));
               }
             }
 
-            // Ocean to the right → onshore wind is -VX
-            float rightAbove = cellsAboveOceanAt(texCoordXpY0);
-            if (rightAbove < 1e5) {
-              vec2 windUvR = texCoordXpY0;
-              ivec4 wR = texture(wallTex, windUvR);
-              if (wR[DISTANCE] == 0)
-                windUvR += vec2(0.0, texelSize.y);
-              float windUR = texture(baseTex, windUvR)[VX];
-              float onshoreR = max(-windUR, 0.0);
-              if (rightAbove < bestCellsAbove || (rightAbove == bestCellsAbove && onshoreR > bestOnshore)) {
-                bestCellsAbove = rightAbove;
-                bestOnshore = onshoreR;
-              }
+            // Spread from already-inundated land neighbors (pushes surge inland along low ground)
+            float neighPond = 0.0;
+            if (wallXmY0[VERT_DISTANCE] == 0 && isSurgeFloodLandType(wallXmY0[TYPE]))
+              neighPond = max(neighPond, max(texture(waterTex, texCoordXmY0)[SOIL_MOISTURE] - soilFieldCapacity, 0.0));
+            if (wallXpY0[VERT_DISTANCE] == 0 && isSurgeFloodLandType(wallXpY0[TYPE]))
+              neighPond = max(neighPond, max(texture(waterTex, texCoordXpY0)[SOIL_MOISTURE] - soilFieldCapacity, 0.0));
+            if (neighPond > 4.0) {
+              float spreadPond = max(neighPond - 2.5, 0.0) * (0.55 + 0.25 * stormSurgeStrength);
+              float spreadInund = spreadPond / 10.0;
+              bestInundation = max(bestInundation, clamp(spreadInund, 0.0, 5.0));
             }
 
-            if (bestCellsAbove < 1e5) {
-              // VX~0.05 light breeze; ~0.25+ storm — map to 0–4.5 cells of runup
-              float windScale = bestOnshore * 10.0;
-              float surgeCells = clamp((windScale - 0.45) / 3.2, 0.0, 1.0) * 4.5 * stormSurgeStrength;
-              if (bestCellsAbove <= surgeCells) {
-                float inundation = clamp(surgeCells - bestCellsAbove, 0.0, 5.0);
-                float targetPonding = 4.0 + inundation * 10.0; // mm above field capacity
-                float targetMoisture = soilFieldCapacity + targetPonding;
-                // Build/hold ponding while surge is active (outruns slow drain)
-                water[SOIL_MOISTURE] = max(water[SOIL_MOISTURE],
-                    min(targetMoisture, water[SOIL_MOISTURE] + inundation * 1.2 + 0.35));
-              }
+            if (bestInundation > 0.02) {
+              float targetPonding = 4.0 + bestInundation * 10.0;
+              float targetMoisture = soilFieldCapacity + targetPonding;
+              water[SOIL_MOISTURE] = max(water[SOIL_MOISTURE],
+                  min(targetMoisture, water[SOIL_MOISTURE] + bestInundation * 1.15 + 0.4));
             }
           }
 
@@ -605,7 +637,8 @@ void main()
         {
           float excessEvap = max(water[SOIL_MOISTURE] - soilFieldCapacity, 0.0);
           float sunEvap = max(lightAboveSurface[SUNLIGHT] * cos(colSunAngle), 0.0) / standardSunBrightness;
-          float rainingEvap = smoothstep(0.05, 0.35, max(waterX0Yp[PRECIPITATION], 0.0));
+          float rainEvapThresh = max(floodRainThreshold, 0.02);
+          float rainingEvap = smoothstep(rainEvapThresh * 0.5, rainEvapThresh + 0.25, max(waterX0Yp[PRECIPITATION], 0.0) * 0.55);
           if (excessEvap > 0.0)
             evaporation *= (1.0 + sunEvap * 3.0) * (1.0 - rainingEvap * 0.9);
           else
