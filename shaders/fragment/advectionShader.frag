@@ -404,7 +404,7 @@ void main()
           break;
         case 31: // floodwater — add standing flood height (does not change soil moisture)
           if (wall[DISTANCE] == 0 && !isAnyWaterType(wall[TYPE]) && texture(wallTex, texCoordX0Yp)[DISTANCE] != 0) {
-            float floodBrush = userInputValues[BRUSH_INTENSITY] * 20.0;
+            float floodBrush = userInputValues[BRUSH_INTENSITY] * 200.0;
             float floodMm = getFloodHeightMm(water[TOTAL]) + floodBrush;
             water[TOTAL] = encodeLandWithFlood(floodMm);
           }
@@ -522,7 +522,7 @@ void main()
             water[SOIL_MOISTURE] += moistureBrush;
             water[SUSTAINED_MOISTURE] = clamp(water[SUSTAINED_MOISTURE] + moistureBrush * sustainedMoistureGain, 0.0, 100.0);
           } else if (userInputType == 31) { // remove floodwater only (invert) — never dries soil
-            float floodBrush = userInputValues[BRUSH_INTENSITY] * 20.0; // negative when inverted
+            float floodBrush = userInputValues[BRUSH_INTENSITY] * 200.0; // negative when inverted
             float floodMm = max(getFloodHeightMm(water[TOTAL]) + floodBrush, 0.0);
             water[TOTAL] = encodeLandWithFlood(floodMm);
           } else if (userInputType == 21) {
