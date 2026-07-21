@@ -739,6 +739,8 @@ const guiControls_default = {
   stormSurgeWindThreshold : 0.55, // windScale units; higher = needs stronger onshore wind
   stormSurgeMaxCells : 5.0, // max surge runup height in cells
   stormSurgeInlandReach : 10.0, // land cells inland surge can reach
+  enableFlooding : true, // natural rain → standing flood
+  enableStormSurge : true, // coastal storm-surge inundation
   floodRainThreshold : 0.42, // air precip intensity needed for flash floods (higher = heavier rain)
   floodPondRate : 12.0, // ponding build rate once rain exceeds threshold
   // Meteorological MSLP (display/stations). Fluid base[PRESSURE] stays dimensionless.
@@ -1500,7 +1502,11 @@ function getFloodHeightMmFromTotal(total)
 {
   if (!Number.isFinite(total) || total < WATER_MARKER_LAND_JS || total >= WATER_MARKER_SALT_JS)
     return 0;
-  return Math.max(0, (total - WATER_MARKER_LAND_JS) / FLOOD_HEIGHT_SCALE_JS);
+  const mm = Math.max(0, (total - WATER_MARKER_LAND_JS) / FLOOD_HEIGHT_SCALE_JS);
+  // Match shader FLOOD_HEIGHT_NOISE_MM — ignore float32 ghosts around the land marker
+  if (mm < 40)
+    return 0;
+  return mm;
 }
 
 function isLandWaterMarkerTotal(total)
@@ -10471,6 +10477,10 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     guiControls.stormSurgeMaxCells = guiControls_default.stormSurgeMaxCells;
   if (guiControls.stormSurgeInlandReach === undefined)
     guiControls.stormSurgeInlandReach = guiControls_default.stormSurgeInlandReach;
+  if (guiControls.enableFlooding === undefined)
+    guiControls.enableFlooding = guiControls_default.enableFlooding;
+  if (guiControls.enableStormSurge === undefined)
+    guiControls.enableStormSurge = guiControls_default.enableStormSurge;
   if (guiControls.floodRainThreshold === undefined)
     guiControls.floodRainThreshold = guiControls_default.floodRainThreshold;
   if (guiControls.floodPondRate === undefined)
@@ -11464,6 +11474,8 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     var floodingSurgeFolder = advancedSimulation.addFolder('Flooding & Storm Surge');
     function uploadFloodSurgeUniforms() {
       gl.useProgram(boundaryProgram);
+      gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'enableFlooding'), guiControls.enableFlooding ? 1.0 : 0.0);
+      gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'enableStormSurge'), guiControls.enableStormSurge ? 1.0 : 0.0);
       gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'stormSurgeStrength'), guiControls.stormSurgeStrength);
       gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'stormSurgeWindThreshold'), guiControls.stormSurgeWindThreshold);
       gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'stormSurgeMaxCells'), guiControls.stormSurgeMaxCells);
@@ -11471,6 +11483,8 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'floodRainThreshold'), guiControls.floodRainThreshold);
       gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'floodPondRate'), guiControls.floodPondRate);
     }
+    floodingSurgeFolder.add(guiControls, 'enableFlooding').onChange(uploadFloodSurgeUniforms).name('Enable Flooding');
+    floodingSurgeFolder.add(guiControls, 'enableStormSurge').onChange(uploadFloodSurgeUniforms).name('Enable Storm Surge');
     floodingSurgeFolder.add(guiControls, 'stormSurgeStrength', 0, 2, 0.05)
       .onChange(uploadFloodSurgeUniforms).name('Storm Surge Strength');
     floodingSurgeFolder.add(guiControls, 'stormSurgeWindThreshold', 0.05, 2.0, 0.05)
@@ -18698,7 +18712,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
 
   // load shaders
-  const SHADER_ASSET_VERSION = 35; // bump to bust CDN/browser cache after shader edits
+  const SHADER_ASSET_VERSION = 36; // bump to bust CDN/browser cache after shader edits
 
   var commonSource = await loadSourceFile('shaders/common.glsl');
   var commonDisplaySource = await loadSourceFile('shaders/commonDisplay.glsl');
@@ -22116,6 +22130,10 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
                guiControls.floodRainThreshold != null ? guiControls.floodRainThreshold : 0.42);
   gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'floodPondRate'),
                guiControls.floodPondRate != null ? guiControls.floodPondRate : 12.0);
+  gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'enableFlooding'),
+               guiControls.enableFlooding === false ? 0.0 : 1.0);
+  gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'enableStormSurge'),
+               guiControls.enableStormSurge === false ? 0.0 : 1.0);
 
   gl.useProgram(curlProgram);
   gl.uniform2f(gl.getUniformLocation(curlProgram, 'texelSize'), texelSizeX, texelSizeY);

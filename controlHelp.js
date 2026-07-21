@@ -274,6 +274,8 @@ const ControlHelp = (function() {
     stormSurgeWindThreshold: 'Onshore wind strength needed before storm surge starts. Higher = only strong storms surge.',
     stormSurgeMaxCells: 'Maximum surge runup height in terrain cells when wind is extreme.',
     stormSurgeInlandReach: 'How far inland (in cells) surge can push from the ocean and via flooded neighbors.',
+    enableFlooding: 'Allow heavy rain and runoff to create standing floodwater on land.',
+    enableStormSurge: 'Allow strong onshore winds to push ocean water onto low coasts as storm surge.',
     floodRainThreshold: 'Rain intensity required for flash flooding. Higher = only heavier rainfall ponds on land.',
     floodPondRate: 'How quickly standing floodwater builds once rain exceeds the flood rain threshold.',
     displayMeteogram: 'Show the time-height meteogram for the active weather station (or double-click a station). Includes surface wind/MSLP/precip and a convective strip (CAPE, CIN, SRH, precip).',

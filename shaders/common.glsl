@@ -90,6 +90,8 @@ precision highp isampler2D;
 // Standing flood depth on land walls is packed into TOTAL above WATER_MARKER_LAND.
 // Keeps the land marker band below SALT (1002): floodMm * scale < 1.0 → up to 100000 mm.
 #define FLOOD_HEIGHT_SCALE 1.0e-5
+// Float32 around 1001 has ~0.00012 ULP (~12 mm at this scale). Ignore smaller "phantom" floods.
+#define FLOOD_HEIGHT_NOISE_MM 40.0
 
 bool isLandWaterMarker(float total)
 {
@@ -100,11 +102,17 @@ float getFloodHeightMm(float total)
 {
   if (!isLandWaterMarker(total))
     return 0.0;
-  return clamp((total - WATER_MARKER_LAND) / FLOOD_HEIGHT_SCALE, 0.0, soilMoistureMax);
+  float mm = (total - WATER_MARKER_LAND) / FLOOD_HEIGHT_SCALE;
+  // Kill float-precision ghosts (often ~12–20 mm on the bottom land layer)
+  if (mm < FLOOD_HEIGHT_NOISE_MM)
+    return 0.0;
+  return clamp(mm, 0.0, soilMoistureMax);
 }
 
 float encodeLandWithFlood(float floodMm)
 {
+  if (floodMm < FLOOD_HEIGHT_NOISE_MM)
+    return WATER_MARKER_LAND;
   return WATER_MARKER_LAND + clamp(floodMm, 0.0, soilMoistureMax) * FLOOD_HEIGHT_SCALE;
 }
 

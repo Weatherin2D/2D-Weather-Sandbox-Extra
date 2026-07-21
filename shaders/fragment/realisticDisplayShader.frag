@@ -125,10 +125,12 @@ bool isFloodTintLandType(int wallType)
       || isCustomBase(wallType) || isCustomOverlay(wallType);
 }
 
-// Standing flood height (mm), stored separately from soil moisture.
+// Standing flood height (mm) on the land surface only — never underground.
 float floodPondingMm()
 {
   if (!isFloodTintLandType(wall[TYPE]))
+    return 0.0;
+  if (wall[DISTANCE] != 0 || wall[VERT_DISTANCE] != 0)
     return 0.0;
   return getFloodHeightMm(water[TOTAL]);
 }

@@ -48,6 +48,8 @@ uniform float stormSurgeMaxCells;      // max ocean runup height in cells
 uniform float stormSurgeInlandReach;   // how many land cells inland surge can reach
 uniform float floodRainThreshold;      // air PRECIPITATION intensity required to flash-flood
 uniform float floodPondRate;           // ponding mm build rate once rain exceeds threshold
+uniform float enableFlooding;          // 0/1 — natural rain→flood ponding
+uniform float enableStormSurge;        // 0/1 — coastal storm-surge inundation
 
 layout(location = 0) out vec4 base;
 layout(location = 1) out vec4 water;
@@ -466,6 +468,9 @@ void main()
       water.ba = texture(waterTex, texCoordX0Yp).ba;                       // soil moisture and snow is copied from above
       water[SUSTAINED_MOISTURE] = texture(waterTex, texCoordX0Yp)[SUSTAINED_MOISTURE];
       wall[VEGETATION] = wallX0Yp[VEGETATION];                             // vegetation is copied from above
+      // Flood height lives only on the surface — wipe packed flood from underground land
+      if (!isAnyWaterType(wall[TYPE]) && isLandWaterMarker(water[TOTAL]))
+        water[TOTAL] = WATER_MARKER_LAND;
 
       if (wallX0Yp[DISTANCE] == 0) {                                       // if above is wall
         if (!isAnyWaterType(wallX0Yp[TYPE])) {                             // above is not water
@@ -535,17 +540,20 @@ void main()
           // Rain infiltrates into soil only up to field capacity
           water[SOIL_MOISTURE] = clamp(water[SOIL_MOISTURE] + infiltration, 0.0, soilFieldCapacity);
 
-          // Runoff / flash rain become standing flood — not soil moisture
-          if (runoff > 0.0)
-            floodMm += runoff * 0.35;
-
           float rainThresh = max(floodRainThreshold, 0.02);
-          float rainOver = max(rainFromAir - rainThresh, 0.0);
-          if (rainOver > 0.0 && water[SOIL_MOISTURE] > soilFieldCapacity * 0.55)
-            floodMm += rainOver * max(floodPondRate, 0.0);
 
-          // Coastal storm surge: onshore wind over ocean inundates low land and spreads inland
-          if (stormSurgeStrength > 0.001) {
+          // Natural flooding: runoff / heavy rain become standing flood (toggleable)
+          if (enableFlooding > 0.5) {
+            if (runoff > 0.0)
+              floodMm += runoff * 0.35;
+
+            float rainOver = max(rainFromAir - rainThresh, 0.0);
+            if (rainOver > 0.0 && water[SOIL_MOISTURE] > soilFieldCapacity * 0.55)
+              floodMm += rainOver * max(floodPondRate, 0.0);
+          }
+
+          // Coastal storm surge (toggleable)
+          if (enableStormSurge > 0.5 && stormSurgeStrength > 0.001) {
             float bestInundation = 0.0;
             float windThresh = max(stormSurgeWindThreshold, 0.05);
             float maxCells = clamp(stormSurgeMaxCells, 0.5, 12.0);

@@ -561,8 +561,10 @@ void main()
       water[TOTAL] = WATER_MARKER_FRESH;
     else if (wall[TYPE] == WALLTYPE_ICE)
       water[TOTAL] = WATER_MARKER_ICE;
-    else // land: preserve packed standing flood height in TOTAL
+    else if (wall[VERT_DISTANCE] == 0) // surface land: preserve packed standing flood height
       water[TOTAL] = encodeLandWithFlood(getFloodHeightMm(water[TOTAL]));
+    else // underground land never stores flood (avoids float ghosts on the bottom layer)
+      water[TOTAL] = WATER_MARKER_LAND;
 
   } else { // no wall
            //   water[CLOUD] = max(water[TOTAL] - maxWater(realTemp), 0.0); // recalculate cloud water
