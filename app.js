@@ -593,6 +593,7 @@ const guiControls_default = {
   exposure : 1.0,
   saturation : 1.0,
   contrast : 1.0,
+  bloomStrength : 1.0,
   greenHueStartThreshold : 0.8,
   greenHueEndThreshold : 1.8,
   greenHueStrength : 0.8,
@@ -10848,12 +10849,21 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     };
 
     guiControls.openSkyEditor = function() {
-      const panel = document.getElementById('skyPanel');
-      if (panel) {
-        panel.style.display = 'block';
-        if (typeof refreshSkyEditor === 'function')
-          refreshSkyEditor();
+      if (window.ShaderMenu && window.ShaderMenu.menu)
+        window.ShaderMenu.menu.openShaderMenu('sky');
+      else {
+        const panel = document.getElementById('skyPanel');
+        if (panel) {
+          panel.style.display = 'block';
+          if (typeof refreshSkyEditor === 'function')
+            refreshSkyEditor();
+        }
       }
+    };
+
+    guiControls.openShaderMenu = function() {
+      if (window.ShaderMenu && window.ShaderMenu.menu)
+        window.ShaderMenu.menu.openShaderMenu();
     };
 
     guiControls.openUserInteraction = function() {
@@ -11781,6 +11791,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     datGui.add(guiControls, 'download').name('Save Simulation to File');
     datGui.add(guiControls, 'openColorScaleEditor').name('Open Color Scale Editor');
     datGui.add(guiControls, 'openKeybindEditor').name('Open Keybind Editor');
+    datGui.add(guiControls, 'openShaderMenu').name('Open Shader Menu');
     datGui.add(guiControls, 'openSkyEditor').name('Open Sky Editor');
     datGui.add(guiControls, 'openUserInteraction').name('Open User Interaction');
     datGui.add(guiControls, 'openCustomToolCreator').name('Open Custom Tool Creator');
@@ -17394,6 +17405,11 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       onDown() { toggleSoundingFreeze(); } },
     { id: 'graphUnfreeze', name: 'Unfreeze sounding graph (follow cursor)', category: 'Graph & UI', defaultCode: null,
       onDown() { guiControls.graphFixedPosition = false; } },
+    { id: 'openShaderMenu', name: 'Open Shader Menu', category: 'Graph & UI', defaultCode: null,
+      onDown() {
+        if (guiControls.openShaderMenu)
+          guiControls.openShaderMenu();
+      } },
     { id: 'openAllRadarMenus', name: 'Open all radar menus', category: 'Radar', defaultCode: null,
       onDown() {
         for (let i = 0; i < radars.length; i++) {
@@ -18781,7 +18797,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
 
   // load shaders
-  const SHADER_ASSET_VERSION = 38; // bump to bust CDN/browser cache after shader edits
+  const SHADER_ASSET_VERSION = 40; // bump to bust CDN/browser cache after shader edits
 
   var commonSource = await loadSourceFile('shaders/common.glsl');
   var commonDisplaySource = await loadSourceFile('shaders/commonDisplay.glsl');
@@ -18830,11 +18846,28 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   const precipTypeDisplayShader = await loadShader('precipTypeDisplayShader.frag');
   const precipDisplayShader = await loadShader('precipDisplayShader.frag');
   const universalDisplayShader = await loadShader('universalDisplayShader.frag');
-  const skyBackgroundDisplayShader = await loadShader('skyBackgroundDisplayShader.frag');
-  let realisticDisplayShader = await loadShader('realisticDisplayShader.frag');
+  function peekCustomShaderSource(stage)
+  {
+    try {
+      const raw = localStorage.getItem('weatherSandboxCustomShaders_v1');
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed[stage] === 'string' && parsed[stage].length > 0)
+        return parsed[stage];
+    } catch (e) { /* ignore */ }
+    return null;
+  }
+  const skyCustomSrc = peekCustomShaderSource('sky');
+  const realisticCustomSrc = peekCustomShaderSource('realistic');
+  const postCustomSrc = peekCustomShaderSource('post');
+  const skyBackgroundDisplayShader = await loadShader('skyBackgroundDisplayShader.frag',
+    skyCustomSrc ? { sourceOverride : skyCustomSrc } : undefined);
+  let realisticDisplayShader = await loadShader('realisticDisplayShader.frag',
+    realisticCustomSrc ? { sourceOverride : realisticCustomSrc } : undefined);
   const IRtempDisplayShader = await loadShader('IRtempDisplayShader.frag');
 
-  const postProcessingShader = await loadShader('postProcessingShader.frag');
+  const postProcessingShader = await loadShader('postProcessingShader.frag',
+    postCustomSrc ? { sourceOverride : postCustomSrc } : undefined);
   const isolateBrightPartsShader = await loadShader('isolateBrightPartsShader.frag');
   const bloomBlurShader = await loadShader('bloomBlurShader.frag');
 
@@ -19387,6 +19420,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   const A380GearTexture = gl.createTexture();
   const surfaceTextureMap = gl.createTexture();
   const customSurfaceAtlas = gl.createTexture();
+  const customSkyTex = gl.createTexture();
+  const customSunTex = gl.createTexture();
   // Placeholder 1×1 so sampler is valid before any custom tools load
   gl.bindTexture(gl.TEXTURE_2D, customSurfaceAtlas);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
@@ -19396,6 +19431,22 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([0, 0, 0, 0]));
   if (window.UserInteraction && window.UserInteraction.atlas)
     window.UserInteraction.atlas.setGL(gl, customSurfaceAtlas);
+  if (window.ShaderMenu && window.ShaderMenu.textures) {
+    window.ShaderMenu.textures.setGL(gl, customSkyTex, customSunTex);
+    // Ensure placeholders for sky/sun samplers
+    gl.bindTexture(gl.TEXTURE_2D, customSkyTex);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([0, 0, 0, 0]));
+    gl.bindTexture(gl.TEXTURE_2D, customSunTex);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([0, 0, 0, 0]));
+  }
   const colorScalesTexture = gl.createTexture();
 
   const lightningTextures = [];
@@ -19986,6 +20037,111 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   }
 
   loadSkySettings();
+
+  // ---- Shader Menu: clouds / rain / lightning harmony (display-only) ----
+  const CLOUDS_RAIN_STORAGE_KEY = 'weatherSandboxCloudsRain_v1';
+  let cloudsRainSettings = (window.ShaderMenu && window.ShaderMenu.packs)
+    ? window.ShaderMenu.packs.getCloudsRainDefaults()
+    : {
+      cloudBrightTint : [ 1, 1, 1 ],
+      cloudDarkTint : [ 0.45, 0.58, 0.85 ],
+      rainShaftTint : [ 0.85, 0.88, 0.92 ],
+      snowShaftTint : [ 0.95, 0.97, 1.0 ],
+      cloudLightResponse : 1.0,
+      cloudShadowStrength : 0.45,
+      shaftBacklight : 0.35,
+      cloudDensityScale : 1.0,
+      cloudOpacityMult : 1.0,
+      rainOpacityMult : 1.0,
+      cloudSoftness : 1.0,
+      shaftSpecular : 0.25,
+      skyReflectAmount : 0.15,
+      refractDistort : 0.0,
+      rainbowStrength : 1.0,
+      lightningCloudFill : 1.0,
+      lightningShaftGlow : 1.0,
+      sheetFlashMix : 1.0,
+      lightningTintMode : 'neutral',
+      lightningTint : [ 0.70, 0.57, 1.0 ],
+      flashSoftClip : 1.0,
+      lightningBloomCoupling : 1.0,
+    };
+
+  function loadCloudsRainSettings()
+  {
+    try {
+      const raw = localStorage.getItem(CLOUDS_RAIN_STORAGE_KEY);
+      if (!raw)
+        return;
+      const parsed = JSON.parse(raw);
+      if (window.ShaderMenu && window.ShaderMenu.packs)
+        cloudsRainSettings = window.ShaderMenu.packs.mergeCloudsRain(parsed);
+      else
+        cloudsRainSettings = Object.assign({}, cloudsRainSettings, parsed);
+    } catch (e) { /* ignore */ }
+  }
+
+  function saveCloudsRainSettings()
+  {
+    try {
+      localStorage.setItem(CLOUDS_RAIN_STORAGE_KEY, JSON.stringify(cloudsRainSettings));
+    } catch (e) { /* ignore */ }
+  }
+
+  function lightningTintModeToFloat(mode)
+  {
+    if (mode === 'matchClouds') return 1.0;
+    if (mode === 'custom') return 2.0;
+    return 0.0;
+  }
+
+  function uploadCloudsRainUniforms()
+  {
+    if (!realisticDisplayProgram)
+      return;
+    const cr = cloudsRainSettings;
+    gl.useProgram(realisticDisplayProgram);
+    const u3 = (name, v) => {
+      const loc = gl.getUniformLocation(realisticDisplayProgram, name);
+      if (loc && v) gl.uniform3fv(loc, v);
+    };
+    const u1 = (name, v) => {
+      const loc = gl.getUniformLocation(realisticDisplayProgram, name);
+      if (loc) gl.uniform1f(loc, v);
+    };
+    u3('cloudBrightTint', cr.cloudBrightTint);
+    u3('cloudDarkTint', cr.cloudDarkTint);
+    u3('rainShaftTint', cr.rainShaftTint);
+    u3('snowShaftTint', cr.snowShaftTint);
+    u1('cloudLightResponse', cr.cloudLightResponse);
+    u1('cloudShadowStrength', cr.cloudShadowStrength);
+    u1('shaftBacklight', cr.shaftBacklight);
+    u1('cloudDensityScale', cr.cloudDensityScale);
+    u1('cloudOpacityMult', cr.cloudOpacityMult);
+    u1('rainOpacityMult', cr.rainOpacityMult);
+    u1('cloudSoftness', cr.cloudSoftness);
+    u1('shaftSpecular', cr.shaftSpecular);
+    u1('skyReflectAmount', cr.skyReflectAmount);
+    u1('refractDistort', cr.refractDistort);
+    u1('rainbowStrength', cr.rainbowStrength);
+    u1('lightningCloudFill', cr.lightningCloudFill);
+    u1('lightningShaftGlow', cr.lightningShaftGlow);
+    u1('sheetFlashMix', cr.sheetFlashMix);
+    u1('lightningTintMode', lightningTintModeToFloat(cr.lightningTintMode));
+    u3('lightningTint', cr.lightningTint);
+    u1('flashSoftClip', cr.flashSoftClip);
+    u1('lightningBloomCoupling', cr.lightningBloomCoupling);
+  }
+
+  function resetCloudsRainSettings()
+  {
+    if (window.ShaderMenu && window.ShaderMenu.packs)
+      cloudsRainSettings = window.ShaderMenu.packs.getCloudsRainDefaults();
+    saveCloudsRainSettings();
+    uploadCloudsRainUniforms();
+  }
+
+  loadCloudsRainSettings();
 
 
   // ========================= Color Scale System =========================
@@ -22390,6 +22546,10 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   gl.uniform1i(gl.getUniformLocation(skyBackgroundDisplayProgram, 'planeTexR'), 12);
   gl.uniform1i(gl.getUniformLocation(skyBackgroundDisplayProgram, 'planeGearTex'), 10);
   gl.uniform1i(gl.getUniformLocation(skyBackgroundDisplayProgram, 'sunColumnTex'), 11);
+  gl.uniform1i(gl.getUniformLocation(skyBackgroundDisplayProgram, 'customSkyTex'), 13);
+  gl.uniform1i(gl.getUniformLocation(skyBackgroundDisplayProgram, 'customSunTex'), 14);
+  gl.uniform1f(gl.getUniformLocation(skyBackgroundDisplayProgram, 'useCustomSkyTex'), 0.0);
+  gl.uniform1f(gl.getUniformLocation(skyBackgroundDisplayProgram, 'useCustomSunTex'), 0.0);
 
   gl.useProgram(universalDisplayProgram);
   gl.uniform2f(gl.getUniformLocation(universalDisplayProgram, 'resolution'), sim_res_x, sim_res_y);
@@ -22425,6 +22585,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     guiControls.floodWaterOpacity != null ? guiControls.floodWaterOpacity
       : (guiControls.floodVizStrength != null ? guiControls.floodVizStrength : 0.75));
   gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'fogHazeStrength'), guiControls.fogHazeStrength != null ? guiControls.fogHazeStrength : 0.0);
+  uploadCloudsRainUniforms();
 
   if (lightningIllumProgram) {
     gl.useProgram(lightningIllumProgram);
@@ -22476,7 +22637,155 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
 
   buildColorScaleEditor();
   buildKeybindEditor();
-  buildSkyEditor();
+  // Sky controls live in Shader Menu (Sky tab). Legacy buildSkyEditor kept in source for reference.
+  if (window.ShaderMenu && window.ShaderMenu.menu) {
+    function uploadAppearanceUniforms()
+    {
+      if (!postProcessingProgram)
+        return;
+      gl.useProgram(postProcessingProgram);
+      if (postProc_exposure_loc !== null) {
+        gl.uniform1f(postProc_exposure_loc, guiControls.exposure);
+        gl.uniform1f(postProc_saturation_loc, guiControls.saturation);
+        gl.uniform1f(postProc_contrast_loc, guiControls.contrast);
+        if (postProc_bloomStrength_loc !== null)
+          gl.uniform1f(postProc_bloomStrength_loc, guiControls.bloomStrength ?? 1.0);
+      }
+      if (realisticDisplayProgram) {
+        gl.useProgram(realisticDisplayProgram);
+        gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'floodVizStrength'), guiControls.floodWaterOpacity);
+        gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'fogHazeStrength'), guiControls.fogHazeStrength);
+        gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'smoothClouds'), guiControls.smoothClouds !== false ? 1.0 : 0.0);
+        gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'minShadowLight'), guiControls.minShadowLight);
+        gl.uniform1i(gl.getUniformLocation(realisticDisplayProgram, 'enableRainbows'), guiControls.enableRainbows !== false ? 1 : 0);
+      }
+      if (skyBackgroundDisplayProgram) {
+        gl.useProgram(skyBackgroundDisplayProgram);
+        gl.uniform1f(gl.getUniformLocation(skyBackgroundDisplayProgram, 'minShadowLight'), guiControls.minShadowLight);
+      }
+    }
+
+    function applyAppearanceFromPack(appearance)
+    {
+      if (!appearance) return;
+      const keys = [ 'exposure', 'saturation', 'contrast', 'bloomStrength', 'enableRainbows',
+        'smoothClouds', 'floodWaterOpacity', 'fogHazeStrength', 'minShadowLight' ];
+      for (let i = 0; i < keys.length; i++) {
+        const k = keys[i];
+        if (appearance[k] !== undefined)
+          guiControls[k] = appearance[k];
+      }
+      if (guiControls.floodWaterOpacity != null)
+        guiControls.floodVizStrength = guiControls.floodWaterOpacity;
+      uploadAppearanceUniforms();
+    }
+
+    if (window.ShaderMenu.runtime) {
+      window.ShaderMenu.runtime.init({
+        gl : gl,
+        getStockSource : async function(stage) {
+          const map = {
+            post : 'postProcessingShader.frag',
+            sky : 'skyBackgroundDisplayShader.frag',
+            realistic : 'realisticDisplayShader.frag',
+          };
+          const name = map[stage];
+          if (!name) return '';
+          const url = 'shaders/fragment/' + name + '?v=' + SHADER_ASSET_VERSION;
+          const res = await fetch(url);
+          return await res.text();
+        },
+        recompileStage : async function(stage, sourceString) {
+          // Validate compile only; edited sources persist in localStorage.
+          // Reload the page to use custom GLSL in the live pipeline.
+          try {
+            let src = sourceString;
+            if (src.includes('#include "common.glsl"') && typeof commonSource === 'string')
+              src = src.replace('#include "common.glsl"', commonSource);
+            if (src.includes('#include "commonDisplay.glsl"') && typeof commonDisplaySource === 'string')
+              src = src.replace('#include "commonDisplay.glsl"', commonDisplaySource);
+            if (src.includes('#include "lightningV2.glsl"') && typeof lightningV2Source === 'string')
+              src = src.replace('#include "lightningV2.glsl"', lightningV2Source);
+            const shader = gl.createShader(gl.FRAGMENT_SHADER);
+            gl.shaderSource(shader, src);
+            gl.compileShader(shader);
+            if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+              const infoLog = gl.getShaderInfoLog(shader);
+              gl.deleteShader(shader);
+              return { ok : false, error : infoLog || 'Compile failed' };
+            }
+            gl.deleteShader(shader);
+            return { ok : true, message : 'Compiled OK. Reload the page to apply.' };
+          } catch (e) {
+            return { ok : false, error : (e && e.message) ? e.message : String(e) };
+          }
+        },
+      });
+    }
+
+    window.ShaderMenu.menu.buildShaderMenu({
+      getGuiControls : () => guiControls,
+      getSkySettings : () => skySettings,
+      setSkySettings : (obj) => {
+        skySettings = Object.assign(cloneSkySettings(SKY_SETTINGS_DEFAULTS), obj || {});
+      },
+      getSkyDefaults : () => cloneSkySettings(SKY_SETTINGS_DEFAULTS),
+      saveSkySettings : saveSkySettings,
+      uploadSkyUniforms : uploadSkyUniforms,
+      resetSkySettings : resetSkySettingsToDefaults,
+      getCloudsRain : () => cloudsRainSettings,
+      setCloudsRain : (obj) => {
+        if (window.ShaderMenu && window.ShaderMenu.packs)
+          cloudsRainSettings = window.ShaderMenu.packs.mergeCloudsRain(obj);
+        else
+          cloudsRainSettings = Object.assign({}, cloudsRainSettings, obj || {});
+        saveCloudsRainSettings();
+        uploadCloudsRainUniforms();
+      },
+      resetCloudsRain : resetCloudsRainSettings,
+      uploadCloudsRainUniforms : uploadCloudsRainUniforms,
+      uploadAppearanceUniforms : uploadAppearanceUniforms,
+      applyAppearanceFromPack : applyAppearanceFromPack,
+      onSkyTimeChange : {
+        onUpdateTimeOfDaySlider : function() {
+          if (typeof onUpdateTimeOfDaySlider === 'function') onUpdateTimeOfDaySlider();
+        },
+        updateSunlight : function() {
+          if (typeof updateSunlight === 'function') updateSunlight();
+        },
+        uploadClimateUniforms : function() {
+          if (typeof uploadClimateUniforms === 'function') uploadClimateUniforms();
+        },
+        enableRealtimeMode : function() {
+          if (typeof enableRealtimeMode === 'function') enableRealtimeMode();
+        },
+        resetRealtimeClockState : function() {
+          if (typeof resetRealtimeClockState === 'function') resetRealtimeClockState();
+        },
+      },
+      skyVec3ToHex : skyVec3ToHex,
+      skyHexToVec3 : skyHexToVec3,
+      getGl : () => gl,
+      getStockShaderSource : async function(stage) {
+        const map = {
+          post : 'postProcessingShader.frag',
+          sky : 'skyBackgroundDisplayShader.frag',
+          realistic : 'realisticDisplayShader.frag',
+        };
+        const name = map[stage];
+        if (!name) return '';
+        const res = await fetch('shaders/fragment/' + name + '?v=' + SHADER_ASSET_VERSION);
+        return await res.text();
+      },
+      recompileStage : async function(stage, source) {
+        if (window.ShaderMenu && window.ShaderMenu.runtime) {
+          window.ShaderMenu.runtime.setEditedSource(stage, source);
+          return window.ShaderMenu.runtime.applyStage(stage);
+        }
+        return { ok : false, error : 'Runtime not ready' };
+      },
+    });
+  }
   if (typeof buildUserInteractionMenu === 'function')
     buildUserInteractionMenu();
   else if (window.UserInteraction && window.UserInteraction.menu)
@@ -27519,6 +27828,10 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       gl.bindTexture(gl.TEXTURE_2D, sunColumnTexture);
       gl.activeTexture(gl.TEXTURE12);
       gl.bindTexture(gl.TEXTURE_2D, A380_R_Texture);
+      gl.activeTexture(gl.TEXTURE13);
+      gl.bindTexture(gl.TEXTURE_2D, customSkyTex);
+      gl.activeTexture(gl.TEXTURE14);
+      gl.bindTexture(gl.TEXTURE_2D, customSunTex);
 
       gl.useProgram(skyBackgroundDisplayProgram);
       gl.uniform2f(uloc_sky_aspectRatios, sim_aspect, canvas_aspect);
@@ -27528,6 +27841,13 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       if (uloc_sky_visualQuality !== null)
         gl.uniform1f(uloc_sky_visualQuality, Math.min(sunlightVisualQuality, realisticVisualQuality));
       uploadSkyUniforms();
+      {
+        const texApi = window.ShaderMenu && window.ShaderMenu.textures;
+        const useSky = texApi && texApi.hasSky() ? 1.0 : 0.0;
+        const useSun = texApi && texApi.hasSun() ? 1.0 : 0.0;
+        gl.uniform1f(gl.getUniformLocation(skyBackgroundDisplayProgram, 'useCustomSkyTex'), useSky);
+        gl.uniform1f(gl.getUniformLocation(skyBackgroundDisplayProgram, 'useCustomSunTex'), useSun);
+      }
 
       // NPC traffic planes → same sky A380 path as airplane mode
       let trafficCount = 0;
@@ -29071,7 +29391,9 @@ drawNukeOverlay();
 
     let filename = 'shaders/' + type + '/' + nameIn;
 
-    var shaderSource = await loadSourceFile(filename);
+    var shaderSource = (opts && typeof opts.sourceOverride === 'string' && opts.sourceOverride.length)
+      ? opts.sourceOverride
+      : await loadSourceFile(filename);
     if (shaderSource.includes('#include "common.glsl"')) {
       const beforeCommon = shaderSource.split('#include "common.glsl"')[0];
       if (!/\bdryLapse\b/.test(beforeCommon)) {

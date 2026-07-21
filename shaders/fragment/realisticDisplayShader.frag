@@ -65,6 +65,30 @@ uniform float visualQuality;
 
 uniform int ltUseLegacyStyle;
 
+// Shader Menu - clouds / rain shafts / lightning harmony (display-only)
+uniform vec3 cloudBrightTint;
+uniform vec3 cloudDarkTint;
+uniform vec3 rainShaftTint;
+uniform vec3 snowShaftTint;
+uniform float cloudLightResponse;
+uniform float cloudShadowStrength;
+uniform float shaftBacklight;
+uniform float cloudDensityScale;
+uniform float cloudOpacityMult;
+uniform float rainOpacityMult;
+uniform float cloudSoftness;
+uniform float shaftSpecular;
+uniform float skyReflectAmount;
+uniform float refractDistort;
+uniform float rainbowStrength;
+uniform float lightningCloudFill;
+uniform float lightningShaftGlow;
+uniform float sheetFlashMix;
+uniform float lightningTintMode; // 0=neutral 1=matchClouds 2=custom
+uniform vec3 lightningTint;
+uniform float flashSoftClip;
+uniform float lightningBloomCoupling;
+
 out vec4 fragmentColor;
 
 #include "common.glsl"
@@ -446,17 +470,49 @@ float normalizedSunlightAt(vec2 tc)
   return smoothSunlightSample(lightTex, tc, texelSize, visualQuality) / standardSunBrightness;
 }
 
-vec4 computeCloudSmokeColor(float cloudwater, float precip, float smokeAmt, float localLightIntensity)
+vec3 tintLightningVolume(vec3 lightRgb, vec3 matchTint)
 {
-  vec3 cloudCol = vec3(1.0 / (cloudwater * 0.005 + 1.0));
+  if (lightningTintMode < 0.5)
+    return lightRgb;
+  if (lightningTintMode < 1.5)
+    return lightRgb * mix(vec3(1.0), matchTint, 0.72);
+  return lightRgb * lightningTint;
+}
 
-  float cloudDensity = max(cloudwater * 13.6, 0.0);
-  float totalDensity = cloudDensity + precip * 0.8;
+vec3 softClipFlash(vec3 lightRgb)
+{
+  float clip = max(flashSoftClip, 0.05);
+  return lightRgb / (vec3(1.0) + lightRgb * (0.35 / clip));
+}
+
+vec4 computeCloudSmokeColor(float cloudwater, float precip, float smokeAmt, float localLightIntensity, float rainSnowFactor)
+{
+  float densScale = max(cloudDensityScale, 0.01);
+  float soft = clamp(cloudSoftness, 0.15, 2.5);
+
+  vec3 baseCloud = vec3(1.0 / (cloudwater * 0.005 + 1.0)) * cloudBrightTint;
+  vec3 precipTint = mix(snowShaftTint, rainShaftTint, clamp(rainSnowFactor, 0.0, 1.0));
+  float precipWeight = clamp(precip * 0.8 * densScale, 0.0, 8.0);
+  float cloudWeight = max(cloudwater * 13.6 * densScale, 0.0);
+  float totalDensity = cloudWeight + precipWeight;
   float cloudOpacity = clamp(1.0 - (1.0 / (1. + totalDensity)), 0.0, 1.0);
+  cloudOpacity = pow(cloudOpacity, 1.0 / soft);
+  cloudOpacity *= mix(cloudOpacityMult, rainOpacityMult, clamp(precipWeight / max(totalDensity, 1e-4), 0.0, 1.0));
+  cloudOpacity = clamp(cloudOpacity, 0.0, 1.0);
 
   float thickCloudMask = smoothstep(0.45, 0.90, cloudOpacity);
-  float cloudShadow = (1.0 - smoothstep(0.06, 0.22, localLightIntensity)) * thickCloudMask;
-  cloudCol = mix(cloudCol, cloudCol * vec3(0.45, 0.58, 0.85), cloudShadow * 0.45);
+  float lit = pow(clamp(localLightIntensity, 0.0, 1.5), mix(1.0, 0.65, cloudLightResponse)) * mix(0.55, 1.35, cloudLightResponse);
+  float cloudShadow = (1.0 - smoothstep(0.06, 0.22, lit)) * thickCloudMask;
+  vec3 cloudCol = mix(baseCloud, baseCloud * cloudDarkTint, cloudShadow * cloudShadowStrength);
+
+  // Precip shafts take shaft tint and optional sky-ish reflection + sun backlight
+  float shaftAmt = clamp(precipWeight / max(totalDensity, 1e-4), 0.0, 1.0);
+  vec3 shaftCol = mix(cloudCol, precipTint, shaftAmt * 0.85);
+  shaftCol = mix(shaftCol, precipTint * vec3(0.75, 0.82, 0.95), skyReflectAmount * shaftAmt);
+  shaftCol += precipTint * shaftBacklight * lit * shaftAmt * 0.35;
+  float spec = pow(clamp(lit, 0.0, 1.0), 4.0) * shaftSpecular * shaftAmt;
+  shaftCol += vec3(spec);
+  cloudCol = mix(cloudCol, shaftCol, shaftAmt);
 
   const vec3 smokeThinCol = vec3(0.8, 0.51, 0.26);
   const vec3 smokeThickCol = vec3(0., 0., 0.);
@@ -469,8 +525,8 @@ vec4 computeCloudSmokeColor(float cloudwater, float precip, float smokeAmt, floa
   shadowLight += fireIntensity * 2.5;
 
   float outOpacity = 1. - (1. - smokeOpacity) * (1. - cloudOpacity);
-  vec3 outColor = (smokeOrFireCol * smokeOpacity / outOpacity)
-    + (cloudCol * cloudOpacity * (1. - smokeOpacity) / outOpacity);
+  vec3 outColor = (smokeOrFireCol * smokeOpacity / max(outOpacity, 1e-4))
+    + (cloudCol * cloudOpacity * (1. - smokeOpacity) / max(outOpacity, 1e-4));
 
   return vec4(outColor, outOpacity);
 }
@@ -487,22 +543,25 @@ void applyAirLightning(vec2 uv, float cloudwater, float precip, float cloudDensi
   float nightFactor = clamp(map_range(abs(sunAngle), 60. * deg2rad, 90. * deg2rad, 0., 1.), 0., 1.);
   float ltCloudPierce = 1.0 + clamp(cloudDensity * 0.22, 0.0, 5.5);
 
+  // Bolt cores stay mostly stock-bright; volume fill is vibe-sensitive.
   if (lightningData[INTENSITY] > 1.0) {
     emittedLight += displayLightning(lightningPos, lightningTime, currentLightningIntensity) * ltCloudPierce;
   }
 
   vec3 ltBolts = ltRenderStrikeBolts(uv, aspectRatios[0], cloudwater);
   emittedLight += ltBolts * ltCloudPierce;
+
   vec3 ltIllum = ltComputeStrikeIllumination(uv, aspectRatios[0], cloudwater, precip, nightFactor);
-  onLight += ltIllum;
+  ltIllum = tintLightningVolume(ltIllum, cloudBrightTint) * lightningCloudFill;
+  onLight += softClipFlash(ltIllum);
 
   const float lightningOnLightBrightness = 0.004;
 
   vec2 dist = vec2(lightningPos.x - uv.x, max((abs(lightningPos.y / 2. - uv.y) - 0.1), 0.));
   dist.x *= aspectRatios[0];
   float lightningOnLight = lightningOnLightBrightness / (pow(length(dist), 2.) + 0.03);
-  lightningOnLight *= currentLightningIntensity;
-  onLight += vec3(lightningOnLight);
+  lightningOnLight *= currentLightningIntensity * lightningCloudFill;
+  onLight += softClipFlash(tintLightningVolume(vec3(lightningOnLight), cloudBrightTint));
 }
 
 
@@ -549,6 +608,10 @@ void main()
   if (texCoord.y >= 0.0 && texCoord.y <= 1.0) {
     ltGetICCCFlash(texCoord, aspectRatios[0], cloudwater, precipF, nightFactor, icccEmit, icccCloud, icccSurf);
     ltGetPrecipBoltShafts(texCoord, aspectRatios[0], precipF, nightFactor, precipBoltShafts);
+    icccEmit = softClipFlash(tintLightningVolume(icccEmit, cloudBrightTint)) * sheetFlashMix;
+    icccCloud = softClipFlash(tintLightningVolume(icccCloud, cloudBrightTint)) * sheetFlashMix;
+    icccSurf = softClipFlash(tintLightningVolume(icccSurf, rainShaftTint)) * sheetFlashMix;
+    precipBoltShafts = softClipFlash(tintLightningVolume(precipBoltShafts, rainShaftTint)) * lightningShaftGlow;
     emittedLight += icccEmit;
   }
 
@@ -708,7 +771,11 @@ void main()
             : bilerpWallVis(waterTex, wallTex, airBnd));
         float airCloud = airWater[CLOUD];
         float airPrecip = airWater[PRECIPITATION];
-        vec4 airColor = computeCloudSmokeColor(airCloud, airPrecip, airWater[SMOKE], normalizedSunlightAt(airUV));
+        vec4 airBaseSample = smoothClouds > 0.5
+          ? smoothBilerpWallVis(baseTex, wallTex, airBnd)
+          : texture(baseTex, airBnd * texelSize);
+        float airRainSnow = map_rangeC(KtoC(potentialToRealT(airBaseSample[TEMPERATURE])), 0.0, 5.0, 0.0, 1.0);
+        vec4 airColor = computeCloudSmokeColor(airCloud, airPrecip, airWater[SMOKE], normalizedSunlightAt(airUV), airRainSnow);
         opacity = airColor.a;
         color = airColor.rgb;
         applyAirLightning(airUV, airCloud, airPrecip, max(airCloud * 13.6, 0.0));
@@ -762,9 +829,21 @@ void main()
     }
   } else { // air
 
-    vec4 airColor = computeCloudSmokeColor(cloudwater, water[PRECIPITATION], water[SMOKE], lightIntensity);
+    float rainSnowFactorAir = map_rangeC(KtoC(realTemp), 0.0, 5.0, 0.0, 1.0);
+    vec4 airColor = computeCloudSmokeColor(cloudwater, water[PRECIPITATION], water[SMOKE], lightIntensity, rainSnowFactorAir);
     opacity = airColor.a;
     color = airColor.rgb;
+
+    // Subtle refraction warp behind dense precip/cloud (display approx)
+    if (refractDistort > 0.001 && airColor.a > 0.08) {
+      float warp = refractDistort * clamp(airColor.a, 0.0, 1.0) * 0.012;
+      vec2 warpUV = texCoord + vec2(sin(texCoord.y * 40.0 + iterNum * 0.02) * warp,
+                                    cos(texCoord.x * 28.0) * warp * 0.55);
+      warpUV = clamp(warpUV, vec2(0.0), vec2(1.0));
+      vec3 skyHint = texture(ambientLightTex, warpUV).rgb;
+      color = mix(color, color * 0.85 + skyHint * rainShaftTint * 0.35, clamp(refractDistort * airColor.a, 0.0, 0.45));
+    }
+
     applyAirLightning(texCoord, cloudwater, water[PRECIPITATION], max(cloudwater * 13.6, 0.0));
 
 
@@ -779,9 +858,9 @@ void main()
 
     float waveLength = map_range(angle, 40.0, 42.0, 400., 700.);
 
-    float rainSnowFactor = map_rangeC(KtoC(realTemp), 0.0, 5.0, 0.0, 1.0); // only rain if above freezing
+    float rainSnowFactor = rainSnowFactorAir;
 
-    vec3 rainbowCol = spectral_zucconi(waveLength) * min(pow(lightIntensity, 2.0) * 1.9, 1.0) * min(water[PRECIPITATION] * 3.0, 1.0) * rainSnowFactor * 0.7;
+    vec3 rainbowCol = spectral_zucconi(waveLength) * min(pow(lightIntensity, 2.0) * 1.9, 1.0) * min(water[PRECIPITATION] * 3.0, 1.0) * rainSnowFactor * 0.7 * rainbowStrength;
 
     emittedLight += rainbowCol;
     opacity = max(opacity - length(rainbowCol), 0.); // remove some white rain to prevent overbrightening and increase color saturation
@@ -1011,7 +1090,7 @@ void main()
 
   finalLight += sunColor(scatering) * shadowLight + onLight;
 
-  // June 8 flash spill compositing
+  // June 8 flash spill compositing (harmony-scaled earlier)
   if (wall[DISTANCE] == 0)
     finalLight += icccSurf + precipBoltShafts;
   else if (texCoord.y > 0.0 && texCoord.y <= 1.0)
@@ -1022,7 +1101,8 @@ void main()
   opacity += min(length(emittedLight) * 0.1, 0.2);
   opacity = clamp(opacity, 0.0, 1.0);
   vec3 litBase = max(color * finalLight, 0.);
-  vec3 safeEmitted = emittedLight / (vec3(1.0) + emittedLight * 0.2);
+  float emitCoupling = mix(1.0, lightningBloomCoupling, 0.65);
+  vec3 safeEmitted = (emittedLight * emitCoupling) / (vec3(1.0) + emittedLight * (0.2 / max(flashSoftClip, 0.05)));
   float boltAmt = clamp(length(safeEmitted) * 2.8, 0.0, 1.0);
   vec3 finalColor = mix(litBase + safeEmitted, max(litBase, safeEmitted * 1.4), boltAmt * 0.82);
 
@@ -1033,7 +1113,7 @@ void main()
     float cool = 1.0 - smoothstep(2.0, 18.0, KtoC(realTemp));
     float moist = smoothstep(0.72, 1.05, rhFog) + smoothstep(0.15, 1.5, water[CLOUD]) * 0.35;
     float fogAmt = clamp(fogHazeStrength * nearSfc * moist * cool, 0.0, 0.9);
-    vec3 fogCol = vec3(0.72, 0.78, 0.88) * max(max(lightIntensity, shadowLight), 0.15);
+    vec3 fogCol = mix(vec3(0.72, 0.78, 0.88), rainShaftTint, 0.35) * max(max(lightIntensity, shadowLight), 0.15);
     finalColor = mix(finalColor, fogCol, fogAmt * 0.7);
     opacity = mix(opacity, max(opacity, 0.4), fogAmt * 0.45);
   }

@@ -55,6 +55,11 @@ uniform float iterNum;
 
 uniform float simHeight;
 
+uniform sampler2D customSkyTex;
+uniform sampler2D customSunTex;
+uniform float useCustomSkyTex;
+uniform float useCustomSunTex;
+
 uniform vec2 planeDirectionAndGearPos; // player: x=dirLeft(1/0), y=gearPos
 
 uniform vec3 planePos; // player: xy=norm, z=angle
@@ -175,6 +180,22 @@ vec3 renderSun(vec2 uv, vec2 center, float scatter, float horizonLine, out float
   float dist = length(d);
   float angle = atan(d.y, d.x);
   float horizonClip = smoothstep(horizonLine - 0.001, horizonLine + 0.001, uv.y);
+
+  if (useCustomSunTex > 0.5) {
+    // Sample custom sun disc in local UV (-1..1 mapped to 0..1)
+    const float discR = 0.045;
+    vec2 local = d / discR;
+    float inside = 1.0 - smoothstep(0.92, 1.08, length(local));
+    if (inside > 0.001) {
+      vec2 sunUV = clamp(local * 0.5 + 0.5, 0.0, 1.0);
+      vec4 sunSample = texture(customSunTex, sunUV);
+      float a = sunSample.a * inside * horizonClip;
+      emit = a * (1.4 + scatter * 0.6);
+      return sunSample.rgb * a * (1.2 + scatter * 0.5);
+    }
+    emit = 0.0;
+    return vec3(0.0);
+  }
 
   // Warm gold palette — keep saturation, avoid clipping to white.
   vec3 coreWhite = vec3(1.0, 0.94, 0.72);
@@ -299,6 +320,15 @@ void main()
   // Day and twilight both must finish black at the top of the skybox.
   float zenithBlack = smoothstep(0.62, 2.0, skyHeight);
   mixedCol = mix(mixedCol, vec3(0.0), zenithBlack);
+
+  // Optional custom sky gradient / panorama strip (v = sky height)
+  if (useCustomSkyTex > 0.5) {
+    float u = fract(texCoord.x + 0.5);
+    float v = clamp(skyHeight, 0.0, 1.0);
+    vec3 customSky = texture(customSkyTex, vec2(u, 1.0 - v)).rgb;
+    mixedCol = mix(mixedCol, customSky, 0.92);
+    mixedCol = mix(mixedCol, vec3(0.0), zenithBlack * 0.35);
+  }
 
   // Star field - only visible at night (sun below horizon)
   vec3 starColor = vec3(0.0);

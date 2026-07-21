@@ -199,6 +199,8 @@ const ControlHelp = (function() {
     displayAirports: 'Show airport icons on the map.',
     openUserInteraction: 'Open the searchable User Interaction menu — browse tools by category, create custom scripted tools, and import/export them.',
     openCustomToolCreator: 'Open the Custom Tool Creator directly — make brush, place, or terrain tools with scripts, textures, and parameters.',
+    openShaderMenu: 'Open the Shader Menu — preset look packs, clouds/rain tinting, sky editor, custom sky/sun textures, and advanced GLSL overrides for the realistic view.',
+    openSkyEditor: 'Opens the Shader Menu on the Sky tab (sky colours, sun path, stars, twilight).',
     timeOfDay: 'Time in hours (0–24). Noon is 12:00. Drives sun position when day/night cycle is on.',
     dayNightCycle: 'Automatically advance time and move the sun. Turn off to set sun angle manually.',
     accelerateNight: 'Speed through nighttime faster than daytime for shorter nights.',
