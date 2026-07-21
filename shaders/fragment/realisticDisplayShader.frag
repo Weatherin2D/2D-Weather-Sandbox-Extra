@@ -719,14 +719,17 @@ void main()
           color = vec3(0.0, 0.42, 0.82); // salt water — deeper blue
       }
 
-      // draw 45° slopes under water
-
+      // Beach slope only when land surface meets water surface (same elevation).
+      // Do not draw into water beside underwater land — that creates a jutting
+      // "nose" under cliffs where the shore is higher than the waterline.
       float localX = fract(fragCoord.x);
       float localY = fract(fragCoord.y);
 
-      if (wallXmY0[DISTANCE] == 0 && !isAnyWaterType(wallXmY0[TYPE]) && (fragCoord.y < 1. || !isAnyWaterType(wallX0Ym[TYPE]))) { // wall to the left and below
+      if (wall[VERT_DISTANCE] == 0
+          && wallXmY0[DISTANCE] == 0 && wallXmY0[VERT_DISTANCE] == 0 && !isAnyWaterType(wallXmY0[TYPE])
+          && (fragCoord.y < 1. || !isAnyWaterType(wallX0Ym[TYPE]))) {
+        // Land surface to the left — soft 45° beach into this water cell
         if (localX + localY < 1.0) {
-          // Shore slope uses neighboring land look + that land's flood ponding
           opacity = 1.0;
           ivec4 landWall = wallXmY0;
           vec4 landWater = texture(waterTex, texCoordXmY0);
@@ -738,7 +741,10 @@ void main()
           shadowLight = minShadowLight;
         }
       }
-      if (wallXpY0[DISTANCE] == 0 && !isAnyWaterType(wallXpY0[TYPE]) && (fragCoord.y < 1. || !isAnyWaterType(wallX0Ym[TYPE]))) { // wall to the right and below
+      if (wall[VERT_DISTANCE] == 0
+          && wallXpY0[DISTANCE] == 0 && wallXpY0[VERT_DISTANCE] == 0 && !isAnyWaterType(wallXpY0[TYPE])
+          && (fragCoord.y < 1. || !isAnyWaterType(wallX0Ym[TYPE]))) {
+        // Land surface to the right — soft 45° beach into this water cell
         if (localY - localX < 0.0) {
           opacity = 1.0;
           ivec4 landWall = wallXpY0;
