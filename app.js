@@ -22727,7 +22727,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       getGuiControls : () => guiControls,
       getSkySettings : () => skySettings,
       setSkySettings : (obj) => {
-        skySettings = Object.assign(cloneSkySettings(SKY_SETTINGS_DEFAULTS), obj || {});
+        // Keep existing sky fields when applying a partial update.
+        skySettings = Object.assign(cloneSkySettings(SKY_SETTINGS_DEFAULTS), skySettings, obj || {});
       },
       getSkyDefaults : () => cloneSkySettings(SKY_SETTINGS_DEFAULTS),
       saveSkySettings : saveSkySettings,
@@ -22735,10 +22736,13 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       resetSkySettings : resetSkySettingsToDefaults,
       getCloudsRain : () => cloudsRainSettings,
       setCloudsRain : (obj) => {
+        // Merge into the CURRENT settings so single-field UI edits keep prior values.
+        // Pack apply still works: packs pass a full cloudsRain object that overwrites all keys.
+        const patched = Object.assign({}, cloudsRainSettings, obj || {});
         if (window.ShaderMenu && window.ShaderMenu.packs)
-          cloudsRainSettings = window.ShaderMenu.packs.mergeCloudsRain(obj);
+          cloudsRainSettings = window.ShaderMenu.packs.mergeCloudsRain(patched);
         else
-          cloudsRainSettings = Object.assign({}, cloudsRainSettings, obj || {});
+          cloudsRainSettings = patched;
         saveCloudsRainSettings();
         uploadCloudsRainUniforms();
       },

@@ -551,7 +551,9 @@
     const syncArr = [];
 
     function setCR(partial) {
-      if (deps && typeof deps.setCloudsRain === 'function') deps.setCloudsRain(partial);
+      const cur = cloudsRainS();
+      const next = Object.assign({}, cur, partial || {});
+      if (deps && typeof deps.setCloudsRain === 'function') deps.setCloudsRain(next);
     }
 
     const colours = addGroup(sectionEl, 'Colours');
