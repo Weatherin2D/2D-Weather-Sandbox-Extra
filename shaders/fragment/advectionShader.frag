@@ -398,7 +398,7 @@ void main()
         case 20:                                                                                                      // add soil moisture
           if (wall[DISTANCE] == 0 && !isAnyWaterType(wall[TYPE]) && texture(wallTex, texCoordX0Yp)[DISTANCE] != 0) { // if land wall and no wall above
             float moistureBrush = userInputValues[BRUSH_INTENSITY] * 10.0;
-            water[SOIL_MOISTURE] += moistureBrush;
+            water[SOIL_MOISTURE] = clamp(water[SOIL_MOISTURE] + moistureBrush, 0.0, soilFieldCapacity);
             water[SUSTAINED_MOISTURE] = clamp(water[SUSTAINED_MOISTURE] + moistureBrush * sustainedMoistureGain, 0.0, 100.0);
           }
           break;

@@ -1496,6 +1496,9 @@ function printSoilMoisture(soilMoisture_mm)
 const WATER_MARKER_LAND_JS = 1001.0;
 const WATER_MARKER_SALT_JS = 1002.0;
 const FLOOD_HEIGHT_SCALE_JS = 1.0e-5;
+const FLOOD_HEIGHT_NOISE_MM_JS = 40.0;
+const SOIL_FIELD_CAPACITY_JS = 85.0;
+const SOIL_MOISTURE_MAX_JS = 100000.0;
 
 /** Decode standing flood height (mm) packed into land water-marker TOTAL. */
 function getFloodHeightMmFromTotal(total)
@@ -1504,14 +1507,73 @@ function getFloodHeightMmFromTotal(total)
     return 0;
   const mm = Math.max(0, (total - WATER_MARKER_LAND_JS) / FLOOD_HEIGHT_SCALE_JS);
   // Match shader FLOOD_HEIGHT_NOISE_MM — ignore float32 ghosts around the land marker
-  if (mm < 40)
+  if (mm < FLOOD_HEIGHT_NOISE_MM_JS)
     return 0;
   return mm;
+}
+
+function encodeLandWithFloodJs(floodMm)
+{
+  if (!Number.isFinite(floodMm) || floodMm < FLOOD_HEIGHT_NOISE_MM_JS)
+    return WATER_MARKER_LAND_JS;
+  const mm = Math.min(Math.max(floodMm, 0), SOIL_MOISTURE_MAX_JS);
+  return WATER_MARKER_LAND_JS + mm * FLOOD_HEIGHT_SCALE_JS;
 }
 
 function isLandWaterMarkerTotal(total)
 {
   return Number.isFinite(total) && total >= 1000.5 && total < WATER_MARKER_SALT_JS;
+}
+
+function isFloodLandWallTypeJs(wallType)
+{
+  const t = wallType | 0;
+  return t === 1 || t === 3 || t === 4 || t === 5 || t === 6 || t === 7
+      || (t >= 10 && t <= 25);
+}
+
+/**
+ * Repair flood/soil packing for save/load.
+ * Legacy saves stored ponding as soil above field capacity; newer saves pack flood in TOTAL.
+ * If both are present, keep TOTAL flood and drop stale soil excess (avoids ~2× depth on reload).
+ */
+function sanitizeFloodWaterTexture(waterTexF32, wallTexI8, resX, resY)
+{
+  if (!waterTexF32 || !wallTexI8 || !resX || !resY)
+    return;
+  const cellCount = resX * resY;
+  const n = Math.min(cellCount, (waterTexF32.length / 4) | 0, (wallTexI8.length / 4) | 0);
+  for (let i = 0; i < n; i++) {
+    const o = i * 4;
+    const wallType = wallTexI8[o];
+    const dist = wallTexI8[o + 1];
+    const vertDist = wallTexI8[o + 2];
+    if (dist !== 0 || !isFloodLandWallTypeJs(wallType))
+      continue;
+
+    let soil = waterTexF32[o + 2];
+    if (!Number.isFinite(soil) || soil < 0)
+      soil = 0;
+
+    // Underground land never stores standing flood
+    if (vertDist !== 0) {
+      if (isLandWaterMarkerTotal(waterTexF32[o]))
+        waterTexF32[o] = WATER_MARKER_LAND_JS;
+      waterTexF32[o + 2] = Math.min(soil, SOIL_FIELD_CAPACITY_JS);
+      continue;
+    }
+
+    let floodMm = getFloodHeightMmFromTotal(waterTexF32[o]);
+    if (soil > SOIL_FIELD_CAPACITY_JS) {
+      const excess = soil - SOIL_FIELD_CAPACITY_JS;
+      // Only migrate legacy soil-ponding when TOTAL has no packed flood yet
+      if (floodMm < FLOOD_HEIGHT_NOISE_MM_JS)
+        floodMm += excess;
+      soil = SOIL_FIELD_CAPACITY_JS;
+    }
+    waterTexF32[o + 2] = soil;
+    waterTexF32[o] = encodeLandWithFloodJs(floodMm);
+  }
 }
 
 /** Standing flood depth from ponding mm (1 mm ponding = 1 mm water). */
@@ -7728,6 +7790,8 @@ async function loadSnapshotFromDecompressed(decompressed, version, inPlaceApplyF
     }
   }
 
+  sanitizeFloodWaterTexture(waterTexF32, wallTexI8, sim_res_x, sim_res_y);
+
   if (inPlaceApplyFn)
     await inPlaceApplyFn(baseTexF32, waterTexF32, wallTexI8, precipArray);
   else {
@@ -8076,6 +8140,7 @@ window.loadData = async function()
       }
 
       try {
+        sanitizeFloodWaterTexture(waterTexF32, wallTexI8, sim_res_x, sim_res_y);
         await mainScript(baseTexF32, waterTexF32, wallTexI8, precipArray);
       } catch (e) {
         console.error('Failed to load save file', e);
@@ -10479,8 +10544,12 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     guiControls.stormSurgeInlandReach = guiControls_default.stormSurgeInlandReach;
   if (guiControls.enableFlooding === undefined)
     guiControls.enableFlooding = guiControls_default.enableFlooding;
+  else
+    guiControls.enableFlooding = !!guiControls.enableFlooding;
   if (guiControls.enableStormSurge === undefined)
     guiControls.enableStormSurge = guiControls_default.enableStormSurge;
+  else
+    guiControls.enableStormSurge = !!guiControls.enableStormSurge;
   if (guiControls.floodRainThreshold === undefined)
     guiControls.floodRainThreshold = guiControls_default.floodRainThreshold;
   if (guiControls.floodPondRate === undefined)
@@ -18712,7 +18781,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
 
   // load shaders
-  const SHADER_ASSET_VERSION = 36; // bump to bust CDN/browser cache after shader edits
+  const SHADER_ASSET_VERSION = 37; // bump to bust CDN/browser cache after shader edits
 
   var commonSource = await loadSourceFile('shaders/common.glsl');
   var commonDisplaySource = await loadSourceFile('shaders/commonDisplay.glsl');
@@ -26050,6 +26119,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     gl.readBuffer(gl.COLOR_ATTACHMENT2);
     let wallTextureValues = new Int8Array(4 * sim_res_x * sim_res_y);
     gl.readPixels(0, 0, sim_res_x, sim_res_y, gl.RGBA_INTEGER, gl.BYTE, wallTextureValues);
+    sanitizeFloodWaterTexture(waterTextureValues, wallTextureValues, sim_res_x, sim_res_y);
 
     let precipBufferValues = new ArrayBuffer(rainDrops.length * Float32Array.BYTES_PER_ELEMENT);
     gl.bindBuffer(gl.ARRAY_BUFFER, precipVertexBuffer_0);
@@ -26079,6 +26149,15 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     }
 
     const guiControlsForSave = Object.assign({}, guiControls);
+    // Explicitly persist flood/surge toggles and rates with the save file
+    guiControlsForSave.enableFlooding = !!guiControls.enableFlooding;
+    guiControlsForSave.enableStormSurge = !!guiControls.enableStormSurge;
+    guiControlsForSave.stormSurgeStrength = guiControls.stormSurgeStrength;
+    guiControlsForSave.stormSurgeWindThreshold = guiControls.stormSurgeWindThreshold;
+    guiControlsForSave.stormSurgeMaxCells = guiControls.stormSurgeMaxCells;
+    guiControlsForSave.stormSurgeInlandReach = guiControls.stormSurgeInlandReach;
+    guiControlsForSave.floodRainThreshold = guiControls.floodRainThreshold;
+    guiControlsForSave.floodPondRate = guiControls.floodPondRate;
     const embeddedRadars = buildSavedRadarTowersForGuiControls();
     if (embeddedRadars)
       guiControlsForSave.__savedRadarTowers = embeddedRadars;
@@ -26145,6 +26224,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     gl.readBuffer(gl.COLOR_ATTACHMENT2);
     const wallTextureValues = new Int8Array(cellCount * 4);
     gl.readPixels(0, 0, sim_res_x, sim_res_y, gl.RGBA_INTEGER, gl.BYTE, wallTextureValues);
+    sanitizeFloodWaterTexture(waterTextureValues, wallTextureValues, sim_res_x, sim_res_y);
 
     const precipBufferValues = new Float32Array(precipFloatCount);
     gl.bindBuffer(gl.ARRAY_BUFFER, precipVertexBuffer_0);
@@ -26215,6 +26295,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     const baseTexF32 = readF32(cellCount * 4);
     const waterTexF32 = readF32(cellCount * 4);
     const wallTexI8 = readI8(cellCount * 4);
+    sanitizeFloodWaterTexture(waterTexF32, wallTexI8, resX, resY);
     const precipArray = readF32(precipFloatCount);
     const lightTexF32 = readF32(cellCount * 4);
     const emittedTexF32 = readF32(cellCount * 4);
@@ -28777,6 +28858,7 @@ drawNukeOverlay();
         gl.readBuffer(gl.COLOR_ATTACHMENT2);
         let wallTextureValues = new Int8Array(4 * sim_res_x * sim_res_y);
         gl.readPixels(0, 0, sim_res_x, sim_res_y, gl.RGBA_INTEGER, gl.BYTE, wallTextureValues);
+        sanitizeFloodWaterTexture(waterTextureValues, wallTextureValues, sim_res_x, sim_res_y);
 
         let precipBufferValues = new ArrayBuffer(rainDrops.length * Float32Array.BYTES_PER_ELEMENT);
         gl.bindBuffer(gl.ARRAY_BUFFER, precipVertexBuffer_0);
@@ -28808,6 +28890,15 @@ drawNukeOverlay();
 
 
         const guiControlsForSave = Object.assign({}, guiControls);
+        // Explicitly persist flood/surge toggles and rates with the save file
+        guiControlsForSave.enableFlooding = !!guiControls.enableFlooding;
+        guiControlsForSave.enableStormSurge = !!guiControls.enableStormSurge;
+        guiControlsForSave.stormSurgeStrength = guiControls.stormSurgeStrength;
+        guiControlsForSave.stormSurgeWindThreshold = guiControls.stormSurgeWindThreshold;
+        guiControlsForSave.stormSurgeMaxCells = guiControls.stormSurgeMaxCells;
+        guiControlsForSave.stormSurgeInlandReach = guiControls.stormSurgeInlandReach;
+        guiControlsForSave.floodRainThreshold = guiControls.floodRainThreshold;
+        guiControlsForSave.floodPondRate = guiControls.floodPondRate;
         const embeddedRadars = buildSavedRadarTowersForGuiControls();
         if (embeddedRadars)
           guiControlsForSave.__savedRadarTowers = embeddedRadars;

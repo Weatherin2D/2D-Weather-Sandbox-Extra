@@ -522,9 +522,13 @@ void main()
         {
           // Standing flood height is separate from soil moisture (packed in TOTAL).
           float floodMm = getFloodHeightMm(water[TOTAL]);
-          // Migrate legacy saves that stored ponding as soil above field capacity
+          // Legacy saves stored ponding as soil above field capacity. If TOTAL already
+          // has packed flood, soil excess is a stale duplicate — do not add again
+          // (that was doubling depths on save/reload, e.g. 18 m → 36 m).
           if (water[SOIL_MOISTURE] > soilFieldCapacity) {
-            floodMm += water[SOIL_MOISTURE] - soilFieldCapacity;
+            float soilExcess = water[SOIL_MOISTURE] - soilFieldCapacity;
+            if (floodMm < FLOOD_HEIGHT_NOISE_MM)
+              floodMm += soilExcess;
             water[SOIL_MOISTURE] = soilFieldCapacity;
           }
 
