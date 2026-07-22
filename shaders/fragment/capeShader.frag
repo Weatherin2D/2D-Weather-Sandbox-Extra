@@ -14,6 +14,7 @@ uniform vec2 texelSize;
 uniform float dryLapse;
 uniform float simHeight;
 uniform float evapHeat;
+uniform float surfacePressure; // MSL baseline hPa (Phase B hydrostatic CAPE)
 
 layout(location = 0) out float cape;
 
@@ -66,6 +67,8 @@ void main()
 {
   float dzR = simHeight / resolution.y;
   float dryLapseM = 9.76 / 1000.0;
+  float g = 9.80665;
+  float Rd = 287.05;
 
   // Find surface
   int surfaceY = 0;
@@ -81,10 +84,14 @@ void main()
   float sfcTempC  = KtoC(sfcBase[TEMPERATURE] - sfcCoord.y * dryLapse);
   float sfcTdC    = KtoC(dewpoint(clamp(sfcWater[TOTAL], 0.0, maxWater(CtoK(sfcTempC)) * 1.05)));
   float sfcAlt    = float(surfaceY) * dzR;
-  float p0        = pressureFromAlt(sfcAlt);
-  float mixW      = mixingRatioKg(min(sfcTdC, sfcTempC), p0);
+  // Hydrostatic column: start near ISA station pressure, then integrate with virtual T.
+  float p0Isa     = pressureFromAlt(sfcAlt);
+  float pSfc      = (surfacePressure > 100.0 ? surfacePressure : 1013.25) * (p0Isa / 1013.25);
+  float p         = pSfc;
+  float mixW      = mixingRatioKg(min(sfcTdC, sfcTempC), p);
 
   float prevT  = sfcTempC;
+  float prevEnvTk = CtoK(sfcTempC);
   bool saturated = sfcTempC <= sfcTdC + 0.05;
   float totalCape = 0.0;
   bool pastLfc = false;
@@ -94,8 +101,14 @@ void main()
     float texY   = (float(y) + 0.5) * texelSize.y;
     vec4 envBase = texture(baseTex, vec2(texCoord.x, texY));
     float envTk  = envBase[TEMPERATURE] - texY * dryLapse;
-    float alt    = float(y) * dzR;
-    float p      = pressureFromAlt(alt);
+    float envTdC = KtoC(dewpoint(texture(waterTex, vec2(texCoord.x, texY))[TOTAL]));
+    float envW = mixingRatioKg(envTdC, max(p, 50.0));
+    float prevW = mixingRatioKg(KtoC(dewpoint(texture(waterTex, vec2(texCoord.x, (float(y - 1) + 0.5) * texelSize.y))[TOTAL])), max(p, 50.0));
+    float tv0 = prevEnvTk * (1.0 + 0.6077 * prevW);
+    float tv1 = envTk * (1.0 + 0.6077 * envW);
+    float tv = 0.5 * (tv0 + tv1);
+    p = p * exp(-g * dzR / (Rd * max(tv, 150.0)));
+    p = clamp(p, 20.0, 1080.0);
 
     if (!saturated) {
       prevT -= dryLapseM * dzR;
@@ -109,7 +122,6 @@ void main()
     }
 
     float parcelW = saturated ? mixingRatioKg(prevT, p) : mixW;
-    float envW = mixingRatioKg(KtoC(dewpoint(texture(waterTex, vec2(texCoord.x, texY))[TOTAL])), p);
     float parcelTv = CtoK(prevT) * (1.0 + 0.6077 * parcelW);
     float envTv = envTk * (1.0 + 0.6077 * envW);
     float buoy = 9.81 * (parcelTv - envTv) / max(envTv, 1.0);
@@ -117,6 +129,8 @@ void main()
     if (buoy > 0.02) pastLfc = true;
     if (pastLfc && buoy > 0.0) totalCape += buoy * dzR;
     if (pastLfc && buoy <= 0.02 && totalCape > 50.0) break;
+
+    prevEnvTk = envTk;
   }
 
   cape = totalCape;

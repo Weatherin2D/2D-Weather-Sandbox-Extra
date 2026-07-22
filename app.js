@@ -749,6 +749,12 @@ const guiControls_default = {
   pressureThermalScale : 1.5,      // hPa per °C column warmth (warm → lower MSLP)
   pressureDynamicScale : 20.0,     // hPa per unit near-surface fluid pressure
   pressureSynopticScale : 8.0,     // hPa amplitude at synoptic L/H center (strength=1)
+  useHydrostaticCapePressure : true, // Phase B: hydrostatic P(z) for CAPE/skew-T (solver unchanged)
+  // Replay / forecast
+  recordIntervalSimSec : 60,       // keyframe every N sim-seconds while recording
+  replayMaxKeyframes : 120,        // ring-buffer cap during live recording
+  replayPlaybackSpeed : 1,         // scrub play speed multiplier
+  forecastLeadHours : 3,           // free-run forecast lead time
   floodVizStrength : 0.75, // legacy alias; kept in sync with floodWaterOpacity
   floodWaterOpacity : 0.75, // Display: floodwater opacity (0 = hidden, 1 = full)
   fogHazeStrength : 0.0, // realistic-view near-surface fog/haze strength
@@ -1767,14 +1773,84 @@ function skewAltMFromHpa(hpa)
   return (1.0 - Math.pow(hpa / 1013.25, 1.0 / 5.25588)) / 2.25577e-5;
 }
 
-/** ISA barometric pressure (hPa) from altitude — used for CAPE/skew-T vertical coords. */
+/** ISA barometric pressure (hPa) from altitude — fallback CAPE/skew-T vertical coords. */
 function isaPressureHpa(altM)
 {
   return 1013.25 * Math.pow(1.0 - 2.25577e-5 * Math.max(0, altM), 5.25588);
 }
 
+/** Active hydrostatic column for CAPE/skew-T (null → ISA). Fluid PRESSURE untouched. */
+var _hydrostaticColumn = null;
+
+/**
+ * Build hydrostatic P(z) from surface pressure + temperature (virtual T if dew given).
+ * Call before CAPE/parcel work; clear with endHydrostaticPressureColumn().
+ */
+function beginHydrostaticPressureColumn(envTempsC, envDewC, isFluid, surfaceLevel, simResY, dz, sfcPressHpa)
+{
+  if (!(dz > 0) || !envTempsC || simResY < 2) {
+    _hydrostaticColumn = null;
+    return;
+  }
+  const pByY = new Float32Array(simResY);
+  for (let i = 0; i < simResY; i++)
+    pByY[i] = NaN;
+
+  let y0 = surfaceLevel | 0;
+  while (y0 < simResY && isFluid && !isFluid[y0])
+    y0++;
+  if (y0 >= simResY) {
+    _hydrostaticColumn = null;
+    return;
+  }
+
+  let p = Number.isFinite(sfcPressHpa) ? sfcPressHpa : 1013.25;
+  pByY[y0] = p;
+  const g = 9.80665;
+  const Rd = 287.05;
+  for (let y = y0 + 1; y < simResY; y++) {
+    if (isFluid && !isFluid[y]) {
+      pByY[y] = p;
+      continue;
+    }
+    const t0 = envTempsC[y - 1];
+    const t1 = envTempsC[y];
+    if (!Number.isFinite(t0) || !Number.isFinite(t1)) {
+      pByY[y] = p;
+      continue;
+    }
+    let tv0 = CtoK(t0);
+    let tv1 = CtoK(t1);
+    if (envDewC) {
+      const w0 = mixingRatioKgFromDewpoint(envDewC[y - 1], p);
+      const w1 = mixingRatioKgFromDewpoint(envDewC[y], Math.max(p * 0.98, 50));
+      tv0 = virtualTemperatureK(tv0, w0);
+      tv1 = virtualTemperatureK(tv1, w1);
+    }
+    const tv = 0.5 * (tv0 + tv1);
+    p = p * Math.exp(-g * dz / (Rd * Math.max(tv, 150)));
+    pByY[y] = clamp(p, 20, 1080);
+  }
+  for (let y = 0; y < y0; y++)
+    pByY[y] = pByY[y0];
+  _hydrostaticColumn = { dz: dz, pByY: pByY, y0: y0 };
+}
+
+function endHydrostaticPressureColumn()
+{
+  _hydrostaticColumn = null;
+}
+
 function skewHpaFromAltM(altM)
 {
+  if (_hydrostaticColumn && _hydrostaticColumn.pByY && _hydrostaticColumn.dz > 0) {
+    const y = Math.round(Math.max(0, altM) / _hydrostaticColumn.dz);
+    if (y >= 0 && y < _hydrostaticColumn.pByY.length) {
+      const p = _hydrostaticColumn.pByY[y];
+      if (Number.isFinite(p))
+        return p;
+    }
+  }
   return isaPressureHpa(altM);
 }
 
@@ -2268,6 +2344,34 @@ function computeColumnSoundingMetrics(envTempsC, envDewC, isFluid, vxRaw, vyRaw,
 
   const sfcAltM = surfaceLevel * dz;
 
+  // Phase B: hydrostatic P(z) for CAPE/skew-T; fluid solver PRESSURE unchanged.
+  const useHydro = !(guiControls && guiControls.useHydrostaticCapePressure === false);
+  if (useHydro) {
+    const prelimSfcP = computeMslpHpa({
+      envTempsC,
+      isFluid,
+      fluidPressure: options && options.fluidPressure,
+      surfaceLevel,
+      simResY,
+      dz,
+      simX: options && options.columnX,
+      simY: options && Number.isFinite(options.columnY) ? options.columnY : surfaceLevel,
+    });
+    beginHydrostaticPressureColumn(envTempsC, envDewC, isFluid, surfaceLevel, simResY, dz, prelimSfcP);
+  }
+
+  let metricsResult = null;
+  try {
+    metricsResult = computeColumnSoundingMetricsBody(
+      envTempsC, envDewC, isFluid, vxRaw, vyRaw, waterArr, simResY, dz, options, surfaceLevel, sfcAltM, lite);
+  } finally {
+    endHydrostaticPressureColumn();
+  }
+  return metricsResult;
+}
+
+function computeColumnSoundingMetricsBody(envTempsC, envDewC, isFluid, vxRaw, vyRaw, waterArr, simResY, dz, options, surfaceLevel, sfcAltM, lite)
+{
   const sbProfile = computeParcelProfileForColumn(
     envTempsC[surfaceLevel], envDewC[surfaceLevel], surfaceLevel, simResY, dz);
   const sbMetrics = computeCAPEForColumn(
@@ -10523,6 +10627,16 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     guiControls.pressureDynamicScale = guiControls_default.pressureDynamicScale;
   if (guiControls.pressureSynopticScale === undefined)
     guiControls.pressureSynopticScale = guiControls_default.pressureSynopticScale;
+  if (guiControls.useHydrostaticCapePressure === undefined)
+    guiControls.useHydrostaticCapePressure = guiControls_default.useHydrostaticCapePressure;
+  if (guiControls.recordIntervalSimSec === undefined)
+    guiControls.recordIntervalSimSec = guiControls_default.recordIntervalSimSec;
+  if (guiControls.replayMaxKeyframes === undefined)
+    guiControls.replayMaxKeyframes = guiControls_default.replayMaxKeyframes;
+  if (guiControls.replayPlaybackSpeed === undefined)
+    guiControls.replayPlaybackSpeed = guiControls_default.replayPlaybackSpeed;
+  if (guiControls.forecastLeadHours === undefined)
+    guiControls.forecastLeadHours = guiControls_default.forecastLeadHours;
   if (guiControls.enableDrylines === undefined)
     guiControls.enableDrylines = guiControls_default.enableDrylines;
   if (guiControls.displayDrylines === undefined)
@@ -11536,6 +11650,52 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     };
     advanced_folder.add(guiControls, 'loadScenarioPack').name('Load Scenario Pack');
 
+    // Replay / Forecast
+    var replayFolder = advanced_folder.addFolder('Replay & Forecast');
+    guiControls.startReplayRecording = function() {
+      if (window.WeatherSandbox && window.WeatherSandbox.replay)
+        window.WeatherSandbox.replay.startRecording();
+      else
+        alert('Replay module not loaded');
+    };
+    guiControls.stopReplayRecording = function() {
+      if (window.WeatherSandbox && window.WeatherSandbox.replay)
+        window.WeatherSandbox.replay.stopRecording(true);
+    };
+    guiControls.loadReplayFile = function() {
+      if (window.WeatherSandbox && window.WeatherSandbox.replay)
+        window.WeatherSandbox.replay.loadFromFileInput();
+    };
+    guiControls.exportReplaySession = function() {
+      if (window.WeatherSandbox && window.WeatherSandbox.replay)
+        window.WeatherSandbox.replay.exportCurrentSession();
+    };
+    guiControls.exitReplayMode = function() {
+      if (window.WeatherSandbox && window.WeatherSandbox.replay)
+        window.WeatherSandbox.replay.exitReplayOrForecast();
+    };
+    guiControls.runForecastNow = function() {
+      if (window.WeatherSandbox && window.WeatherSandbox.replay)
+        window.WeatherSandbox.replay.startForecast(guiControls.forecastLeadHours);
+      else
+        alert('Forecast module not loaded');
+    };
+    replayFolder.add(guiControls, 'startReplayRecording').name('Start Recording');
+    replayFolder.add(guiControls, 'stopReplayRecording').name('Stop & Save Replay');
+    replayFolder.add(guiControls, 'loadReplayFile').name('Load Replay / Forecast');
+    replayFolder.add(guiControls, 'exportReplaySession').name('Export Current Session');
+    replayFolder.add(guiControls, 'exitReplayMode').name('Exit Replay / Forecast');
+    replayFolder.add(guiControls, 'recordIntervalSimSec', 5, 300, 5).name('Record Interval (sim-s)');
+    replayFolder.add(guiControls, 'replayMaxKeyframes', 20, 400, 10).name('Max Keyframes');
+    replayFolder.add(guiControls, 'replayPlaybackSpeed', 0.25, 8, 0.25)
+      .onChange(function() {
+        if (window.WeatherSandbox && window.WeatherSandbox.replay)
+          window.WeatherSandbox.replay.setPlaybackSpeed(guiControls.replayPlaybackSpeed);
+      })
+      .name('Playback Speed');
+    replayFolder.add(guiControls, 'forecastLeadHours', 0.25, 6, 0.25).name('Forecast Lead (h)');
+    replayFolder.add(guiControls, 'runForecastNow').name('Forecast Now');
+
     var advancedSimulation = advanced_folder.addFolder('Simulation');
     advancedSimulation.add(guiControls, 'coriolisStrength', 0.0, 0.02, 0.0005)
       .onChange(function() {
@@ -11576,10 +11736,20 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       .onChange(uploadFloodSurgeUniforms).name('Flood Rain Threshold');
     floodingSurgeFolder.add(guiControls, 'floodPondRate', 1, 30, 0.5)
       .onChange(uploadFloodSurgeUniforms).name('Flood Pond Rate');
-    advancedSimulation.add(guiControls, 'surfacePressure', 950, 1050, 0.25).name('MSLP Baseline (hPa)');
+    advancedSimulation.add(guiControls, 'surfacePressure', 950, 1050, 0.25)
+      .onChange(function() {
+        if (typeof capeProgram !== 'undefined' && capeProgram) {
+          gl.useProgram(capeProgram);
+          gl.uniform1f(gl.getUniformLocation(capeProgram, 'surfacePressure'),
+            Number.isFinite(guiControls.surfacePressure) ? guiControls.surfacePressure : 1013.25);
+        }
+      })
+      .name('MSLP Baseline (hPa)');
     advancedSimulation.add(guiControls, 'pressureThermalScale', 0, 4, 0.05).name('MSLP Thermal Scale');
     advancedSimulation.add(guiControls, 'pressureDynamicScale', 0, 40, 0.5).name('MSLP Dynamic Scale');
     advancedSimulation.add(guiControls, 'pressureSynopticScale', 0, 20, 0.25).name('MSLP Synoptic Scale');
+    advancedSimulation.add(guiControls, 'useHydrostaticCapePressure')
+      .name('Hydrostatic CAPE P(z)');
     advancedSimulation.add(guiControls, 'IterPerFrame', 0.1, 50, 0.1)
       .onChange(function() {
         guiControls.auto_IterPerFrame = false;
@@ -14883,9 +15053,9 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         const vel = rawVelocityTo_ms(velRaw) * 3.6; // Convert to km/h
         const angle = Math.atan2(baseTextureValues[4 * y + 1], baseTextureValues[4 * y]) * 180 / Math.PI;
         
-        // ISA pressure for sounding export vertical coordinate (CAPE still uses ISA P(z))
+    // ISA pressure for sounding export vertical coordinate (CAPE uses hydrostatic P(z) when enabled)
         const alt = y * dz;
-        const p = isaPressureHpa(alt);
+        const p = skewHpaFromAltM(alt);
 
         // Estimate wet bulb (simplified)
         const tw = temp - (100 - rh) / 5;
@@ -15294,7 +15464,26 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         if (agl < -20) return 'Sfc';
         return printAltitude(Math.round(Math.max(0, agl)));
       };
-      const altToHpa = (alt_m) => 1013.25 * Math.pow(1.0 - 2.25577e-5 * alt_m, 5.25588);
+      // Phase B: hydrostatic P(z) for skew-T CAPE (ISA fallback if toggled off).
+      const soundingUseHydro = !(guiControls && guiControls.useHydrostaticCapePressure === false);
+      if (soundingUseHydro && !lightSkewT) {
+        const fluidPressure = new Float32Array(sim_res_y);
+        for (let y = 0; y < sim_res_y; y++)
+          fluidPressure[y] = baseTextureValues[4 * y + 2];
+        const prelimSfcP = computeMslpHpa({
+          envTempsC,
+          isFluid: columnIsFluid,
+          fluidPressure,
+          surfaceLevel,
+          simResY: sim_res_y,
+          dz,
+          simX: simXpos,
+          simY: surfaceLevel,
+        });
+        beginHydrostaticPressureColumn(
+          envTempsC, envDewC, columnIsFluid, surfaceLevel, sim_res_y, dz, prelimSfcP);
+      }
+      const altToHpa = (alt_m) => skewHpaFromAltM(alt_m);
       const parcelProfile = computeParcelProfile(envTempsC[surfaceLevel], envDewC[surfaceLevel], surfaceLevel);
       const soundingMetrics = lightSkewT
         ? { cape: 0, cinh: NaN, lclAlt: NaN, lfcAlt: NaN, elAlt: NaN }
@@ -16973,6 +17162,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       }
 
       this._railContentRight = railContentRight;
+      endHydrostaticPressureColumn();
     }, // end of draw()
   };
   soundingGraph.init();
@@ -22376,6 +22566,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   gl.uniform1f(gl.getUniformLocation(capeProgram, 'dryLapse'), dryLapse);
   gl.uniform1f(gl.getUniformLocation(capeProgram, 'simHeight'), guiControls.simHeight);
   gl.uniform1f(gl.getUniformLocation(capeProgram, 'evapHeat'), guiControls.evapHeat);
+  gl.uniform1f(gl.getUniformLocation(capeProgram, 'surfacePressure'),
+    Number.isFinite(guiControls.surfacePressure) ? guiControls.surfacePressure : 1013.25);
 
   gl.useProgram(chargeProgram);
   gl.uniform2f(gl.getUniformLocation(chargeProgram, 'resolution'), sim_res_x, sim_res_y);
@@ -26703,7 +26895,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     window.enforceMultiplayerGuardrails();
   };
 
-  window.__applyTextureSyncInPlace = function(
+    window.__applyTextureSyncInPlace = function(
     baseTexF32, waterTexF32, wallTexI8, precipArray, lightTexF32, emittedTexF32, chargeTexF32)
   {
     gl.bindTexture(gl.TEXTURE_2D, baseTexture_0);
@@ -26745,6 +26937,87 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     }
     window.enforceMultiplayerGuardrails();
   };
+
+  // Wire simulation replay / forecast hooks (full-state keyframes + charge/light).
+  if (window.WeatherSandbox && window.WeatherSandbox.replay) {
+    window.WeatherSandbox.replay.registerHooks({
+      getResolution: function() { return { x: sim_res_x, y: sim_res_y }; },
+      getTimePerIterationHours: function() { return timePerIteration; },
+      getRecordIntervalSimSec: function() {
+        return Math.max(5, Number(guiControls.recordIntervalSimSec) || 60);
+      },
+      getMaxKeyframes: function() {
+        return Math.max(10, Number(guiControls.replayMaxKeyframes) || 120);
+      },
+      capturePayload: function() { return buildTextureSyncBuffer(); },
+      applyPayload: function(buf) { applyTextureSyncFromBuffer(buf); },
+      getMeta: function() {
+        return {
+          iterNum: iterNum,
+          simDateTimeMs: simDateTime ? simDateTime.getTime() : 0,
+          sunAngle: guiControls.sunAngle,
+          timeOfDay: guiControls.timeOfDay,
+          month: guiControls.month,
+        };
+      },
+      applyMeta: function(meta) {
+        if (!meta) return;
+        if (meta.iterNum != null) iterNum = meta.iterNum | 0;
+        if (Number.isFinite(meta.sunAngle)) guiControls.sunAngle = meta.sunAngle;
+        if (Number.isFinite(meta.timeOfDay)) guiControls.timeOfDay = meta.timeOfDay;
+        if (Number.isFinite(meta.month)) guiControls.month = meta.month;
+        if (Number.isFinite(meta.simDateTimeMs) && meta.simDateTimeMs > 0)
+          simDateTime = new Date(meta.simDateTimeMs);
+        if (typeof updateSunlight === 'function' && !guiControls.dayNightCycle)
+          updateSunlight(0);
+      },
+      onModeChange: function(mode) {
+        if (mode === 'replay' || mode === 'forecastView')
+          guiControls.paused = true;
+      },
+      prepareForecastRun: function() {
+        const prev = {
+          iterPerFrame: guiControls.IterPerFrame,
+          autoIter: guiControls.auto_IterPerFrame,
+          paused: guiControls.paused,
+        };
+        guiControls.paused = false;
+        guiControls.auto_IterPerFrame = false;
+        guiControls.realtimeMode = false;
+        guiControls.slowMotion = false;
+        guiControls.IterPerFrame = Math.min(40, Math.max(20, getMaxAutoIterPerFrame()));
+        return prev;
+      },
+      restoreSimSpeed: function(iterPerFrame, autoIter, paused) {
+        if (Number.isFinite(iterPerFrame)) guiControls.IterPerFrame = iterPerFrame;
+        if (autoIter != null) guiControls.auto_IterPerFrame = !!autoIter;
+        if (paused != null) guiControls.paused = !!paused;
+      },
+      onForecastComplete: function() {
+        guiControls.paused = true;
+        guiControls.auto_IterPerFrame = false;
+      },
+      buildForecastMeteogram: function(sess) {
+        if (!window.WeatherSandbox || !window.WeatherSandbox.meteogram) return;
+        if (!weatherStations || !weatherStations.length) return;
+        const station = weatherStations[0];
+        window.WeatherSandbox.meteogram.clearStation(station);
+        const pk = window.pako;
+        for (let i = 0; i < sess.keyframes.length; i++) {
+          const kf = sess.keyframes[i];
+          let raw = kf.compressed;
+          if (pk && pk.inflate) raw = pk.inflate(raw);
+          const buf = raw.buffer.slice(raw.byteOffset, raw.byteOffset + raw.byteLength);
+          applyTextureSyncFromBuffer(buf);
+          if (kf.meta && kf.meta.iterNum != null) iterNum = kf.meta.iterNum | 0;
+          station.measure();
+        }
+        window.WeatherSandbox.meteogram.openForStation(station);
+        guiControls.displayMeteogram = true;
+      },
+    });
+    window.WeatherSandbox.replay.setPlaybackSpeed(guiControls.replayPlaybackSpeed || 1);
+  }
 
   window.onMultiplayerSyncMeta = function(meta)
   {
@@ -27224,7 +27497,9 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       // guiControls.IterPerFrame = 1.0 / timePerIteration * 3600 / 60.0;
 
 
-      if (!guiControls.paused && !isMultiplayerPeer()) { // Simulation part
+      if (!guiControls.paused && !isMultiplayerPeer()
+          && !(window.WeatherSandbox && window.WeatherSandbox.replay
+              && window.WeatherSandbox.replay.isPhysicsBlocked())) { // Simulation part
 
         let balloonSimIters = 0;
 
@@ -27619,7 +27894,9 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
 
       } // end of simulation part
       else if (guiControls.paused && !isMultiplayerPeer() && leftMousePressed &&
-               (inputType > 0 || isPaintingCustomBrushTool())) {
+               (inputType > 0 || isPaintingCustomBrushTool())
+               && !(window.WeatherSandbox && window.WeatherSandbox.replay
+                    && window.WeatherSandbox.replay.isPhysicsBlocked())) {
         // Edit while paused: apply brush without advancing weather
         if (isPaintingCustomBrushTool())
           applyPausedBrushEdit(getLocalCustomBrushPayload());
@@ -28345,6 +28622,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         case 'DISP_PRESSURE':
           // Fluid Pressure display: base[PRESSURE] is dimensionless (not meteorological hPa).
           // For MSLP in hPa use Sounding: MSLP (DISP_SFC_PRES).
+          // CAPE/skew-T use hydrostatic P(z) when useHydrostaticCapePressure is on.
           gl.uniform1i(uloc_univ_quantityIndex, 2);
           gl.uniform1f(uloc_univ_dispMultiplier, 1.0);
           gl.uniform1i(uloc_univ_colorScaleColumn, 22);
@@ -29075,7 +29353,10 @@ drawNukeOverlay();
     // waiting for the 1-second FPS counter. This reacts in ~5 frames rather than ~60.
     if (!guiControls.paused && guiControls.auto_IterPerFrame
         && !airplaneMode && !guiControls.slowMotion && !guiControls.realtimeMode
-        && !multiplayerHostMode && !multiplayerPeerMode) {
+        && !multiplayerHostMode && !multiplayerPeerMode
+        && !(window.WeatherSandbox && window.WeatherSandbox.replay
+            && (window.WeatherSandbox.replay.isForecastRunning()
+                || window.WeatherSandbox.replay.isPhysicsBlocked()))) {
       // Target: keep smoothedFrameMs close to TARGET_FRAME_MS (28 ms = ~35 fps headroom).
       // Cut aggressively when over budget; grow quickly when under so spare display LOD
       // budget becomes simulation throughput (iters/sec).
@@ -29096,6 +29377,15 @@ drawNukeOverlay();
 
     if (!SETUP_MODE && !guiControls.paused && !isMultiplayerPeer())
       simRuntimeFrames++;
+
+    if (window.WeatherSandbox && window.WeatherSandbox.replay) {
+      const rp = window.WeatherSandbox.replay;
+      if (rp.isRecording())
+        rp.maybeCaptureDuringRecord(iterNum);
+      if (rp.isForecastRunning())
+        rp.tickForecast(iterNum);
+      rp.tickPlayback(smoothedFrameMs || 16);
+    }
 
     frameNum++;
   requestAnimationFrame(draw);

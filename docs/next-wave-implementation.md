@@ -159,7 +159,7 @@ PR3  Meteogram panel              ✓
 PR4  Procedural terrain           ✓
 PR5  Scenario packs               ✓
 PR6  Roadmap polish (precip×Y, lake depth, albedo, mobile precip) ✓
-PR7  MSLP Phase B (optional hydrostatic CAPE) — not required for plan close-out
+PR7  MSLP Phase B (hydrostatic CAPE P(z)) — implemented via `useHydrostaticCapePressure` / `beginHydrostaticPressureColumn` (fluid solver PRESSURE unchanged)
 ```
 
 ## Roadmap polish (plan “Already on the roadmap”) — IMPLEMENTED

@@ -522,9 +522,14 @@
 
     if (footer) {
       const mins = Math.round((nT - 1)); // ~1 sample/min
+      const forecastHint = (global.WeatherSandbox && global.WeatherSandbox.replay
+        && (global.WeatherSandbox.replay.getMode() === 'forecastView'
+          || global.WeatherSandbox.replay.getMode() === 'forecastRun'))
+        ? ' · Forecast valid-time series'
+        : '';
       footer.textContent = 'History: ' + nT + ' samples (~' + mins + ' sim-min)'
         + (nT >= MIN_HISTORY_FOR_HOUR ? ' — ≥1 hour ready' : ' — building toward 1 sim-hour')
-        + ' · Hover plot to scrub';
+        + ' · Hover plot to scrub' + forecastHint;
     }
   }
 
