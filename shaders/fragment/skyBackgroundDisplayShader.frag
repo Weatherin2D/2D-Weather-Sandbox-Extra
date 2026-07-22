@@ -282,7 +282,6 @@ void main()
   const float SUN_DISC_RADIUS = 0.036;
   float sunDiscVis = smoothstep(-SUN_DISC_RADIUS * 1.12, SUN_DISC_RADIUS * 0.10, sunRiseAmount);
   float sunVisibility = (1.0 - smoothstep(1.30, 1.55, sunAngleRad)) * sunDiscVis;
-  bool isMorning = hourAngleRad < 0.0;
 
   float sat = map_rangeC(texCoord.y, 0., 2.5, skyDaySatLow, skyDaySatHigh);
   float val = pow(map_rangeC(texCoord.y, 0., 3.2, skyDayValLow, skyDayValHigh), skyDayValPow);
@@ -290,15 +289,15 @@ void main()
 
   float skyHeight = clamp((texCoord.y - horizonLine) / max(1.0 - horizonLine, 0.01), 0.0, 1.0);
 
-  float twilightAmt = 0.0;
-  if (isMorning) {
-    twilightAmt = max(
-      smoothstep(0.03, 0.16, sunRiseAmount) * (1.0 - smoothstep(0.16, 0.38, sunRiseAmount)),
-      smoothstep(1.32, 1.50, abs(localSunAngle)) * smoothstep(0.02, 0.10, sunRiseAmount) * 0.85);
-  } else {
-    twilightAmt = smoothstep(0.05, 0.48, scatter) * (1.0 - smoothstep(0.04, 0.30, sunRiseAmount));
-    twilightAmt = max(twilightAmt, smoothstep(1.22, 1.50, abs(localSunAngle)) * smoothstep(0.02, 0.14, sunRiseAmount));
-  }
+  // Soft morning/evening mix — hard isMorning bool caused vertical seams under multi-lat
+  float morningW = 1.0 - smoothstep(-0.18, 0.18, hourAngleRad);
+  float twilightMorning =
+    max(smoothstep(0.03, 0.16, sunRiseAmount) * (1.0 - smoothstep(0.16, 0.38, sunRiseAmount)),
+        smoothstep(1.32, 1.50, abs(localSunAngle)) * smoothstep(0.02, 0.10, sunRiseAmount) * 0.85);
+  float twilightEvening =
+    max(smoothstep(0.05, 0.48, scatter) * (1.0 - smoothstep(0.04, 0.30, sunRiseAmount)),
+        smoothstep(1.22, 1.50, abs(localSunAngle)) * smoothstep(0.02, 0.14, sunRiseAmount));
+  float twilightAmt = mix(twilightEvening, twilightMorning, morningW);
   twilightAmt = clamp(twilightAmt, 0.0, 1.0);
 
   // Warm gold at horizon → twilight bands → black zenith (never leave warm color at the top).
@@ -316,19 +315,31 @@ void main()
   sunWarmth *= 1.0 - smoothstep(0.48, 0.88, skyHeight);
   twilightSky = mix(twilightSky, vec3(0.88, 0.62, 0.24), sunWarmth * twilightAmt * 0.55);
 
-  vec3 mixedCol = mix(daySky, twilightSky, smoothstep(0.0, 0.82, twilightAmt));
+  // Custom sky texture: use as day base + softly tint into twilight (never replace after the mix).
+  // Avoid fract() wrap on U — that caused hard vertical seams when the strip wasn't seamless.
+  if (useCustomSkyTex > 0.5) {
+    float v = clamp(skyHeight, 0.0, 1.0);
+    float vTex = 1.0 - v;
+    // Vertical gradient core (stable) + light clamped panorama detail (no wrap)
+    vec3 customGrad = texture(customSkyTex, vec2(0.5, vTex)).rgb;
+    float uClamped = clamp(texCoord.x, 0.001, 0.999);
+    vec3 customPan = texture(customSkyTex, vec2(uClamped, vTex)).rgb;
+    vec3 customSky = mix(customGrad, customPan, 0.28);
+
+    daySky = mix(daySky, customSky, 0.92);
+
+    // During sunset/sunrise, warm the custom colors into the twilight palette instead of fighting it
+    vec3 customWarm = customSky * mix(vec3(1.0), vec3(1.2, 0.72, 0.42), clamp(scatter * 0.9 + twilightAmt * 0.35, 0.0, 1.0));
+    customWarm = mix(customWarm, twilightSky, 0.35);
+    twilightSky = mix(twilightSky, customWarm, 0.55);
+  }
+
+  // Wide smoothstep so multi-lat columns blend day↔twilight without hard pillars
+  float twilightBlend = smoothstep(0.0, 1.0, twilightAmt);
+  vec3 mixedCol = mix(daySky, twilightSky, twilightBlend);
   // Day and twilight both must finish black at the top of the skybox.
   float zenithBlack = smoothstep(0.62, 2.0, skyHeight);
   mixedCol = mix(mixedCol, vec3(0.0), zenithBlack);
-
-  // Optional custom sky gradient / panorama strip (v = sky height)
-  if (useCustomSkyTex > 0.5) {
-    float u = fract(texCoord.x + 0.5);
-    float v = clamp(skyHeight, 0.0, 1.0);
-    vec3 customSky = texture(customSkyTex, vec2(u, 1.0 - v)).rgb;
-    mixedCol = mix(mixedCol, customSky, 0.92);
-    mixedCol = mix(mixedCol, vec3(0.0), zenithBlack * 0.35);
-  }
 
   // Star field - only visible at night (sun below horizon)
   vec3 starColor = vec3(0.0);
@@ -424,19 +435,18 @@ void main()
   vec3 burntOrange = skyHorizonBurntOrange;
   vec3 gold = skyHorizonGold;
   vec3 paleGold = skyHorizonPaleGold;
-  vec3 hazeCol;
-  float hazeBoost = 0.0;
 
-  if (isMorning) {
-    float riseT = smoothstep(0.02, 0.20, sunRiseAmount);
-    hazeCol = mix(deepRed, mix(gold, paleGold, smoothstep(0.08, 0.18, sunRiseAmount)), riseT);
-    hazeBoost = max(smoothstep(0.0, 0.08, sunRiseAmount), (1.0 - smoothstep(0.10, 0.30, sunRiseAmount)) * smoothstep(0.04, 0.14, sunRiseAmount));
-  } else {
-    float setT = 1.0 - smoothstep(0.05, 0.26, sunRiseAmount);
-    hazeCol = mix(paleGold, mix(gold, mix(burntOrange, deepRed, smoothstep(0.25, 1.0, setT)), smoothstep(0.0, 0.5, setT)), smoothstep(0.0, 0.4, setT));
-    hazeBoost = smoothstep(0.02, 0.92, scatter) * (1.0 - smoothstep(0.02, 0.32, sunRiseAmount));
-    hazeBoost = max(hazeBoost, smoothstep(1.24, 1.50, sunAngleRad) * smoothstep(0.02, 0.14, sunRiseAmount));
-  }
+  float hazeBoostMorning = max(smoothstep(0.0, 0.08, sunRiseAmount), (1.0 - smoothstep(0.10, 0.30, sunRiseAmount)) * smoothstep(0.04, 0.14, sunRiseAmount));
+  float riseT = smoothstep(0.02, 0.20, sunRiseAmount);
+  vec3 hazeColMorning = mix(deepRed, mix(gold, paleGold, smoothstep(0.08, 0.18, sunRiseAmount)), riseT);
+
+  float setT = 1.0 - smoothstep(0.05, 0.26, sunRiseAmount);
+  vec3 hazeColEvening = mix(paleGold, mix(gold, mix(burntOrange, deepRed, smoothstep(0.25, 1.0, setT)), smoothstep(0.0, 0.5, setT)), smoothstep(0.0, 0.4, setT));
+  float hazeBoostEvening = smoothstep(0.02, 0.92, scatter) * (1.0 - smoothstep(0.02, 0.32, sunRiseAmount));
+  hazeBoostEvening = max(hazeBoostEvening, smoothstep(1.24, 1.50, sunAngleRad) * smoothstep(0.02, 0.14, sunRiseAmount));
+
+  vec3 hazeCol = mix(hazeColEvening, hazeColMorning, morningW);
+  float hazeBoost = mix(hazeBoostEvening, hazeBoostMorning, morningW);
 
   float hazeStrength = clamp(twilightAmt * 0.85 + hazeBoost * bandMask, 0.0, 1.0);
   hazeStrength *= smoothstep(0.18, 0.55, scatter + twilightAmt * 0.35);
@@ -470,9 +480,9 @@ void main()
     celestialCol += sunCol * sunVisibility;
     celestialEmit += vec3(0.92, 0.72, 0.38) * sunEmitStrength * sunVisibility * 0.65;
     float setBlend = 1.0 - smoothstep(0.04, 0.24, sunRiseAmount);
-    vec3 glowTint = isMorning
-      ? mix(vec3(0.95, 0.30, 0.10), vec3(0.92, 0.72, 0.38), smoothstep(0.02, 0.14, sunRiseAmount))
-      : mix(vec3(0.92, 0.72, 0.38), vec3(0.95, 0.42, 0.12), smoothstep(0.1, 0.85, setBlend));
+    vec3 glowTintMorning = mix(vec3(0.95, 0.30, 0.10), vec3(0.92, 0.72, 0.38), smoothstep(0.02, 0.14, sunRiseAmount));
+    vec3 glowTintEvening = mix(vec3(0.92, 0.72, 0.38), vec3(0.95, 0.42, 0.12), smoothstep(0.1, 0.85, setBlend));
+    vec3 glowTint = mix(glowTintEvening, glowTintMorning, morningW);
     float aboveHorizon = smoothstep(horizonLine + 0.008, horizonLine + 0.04, texCoord.y);
     float skyGlow = smoothSunGlow(texCoord, sunCenter, 0.06, 0.65) * sunVisibility * (0.18 + scatter * 0.42);
     skyGlow *= aboveHorizon;
