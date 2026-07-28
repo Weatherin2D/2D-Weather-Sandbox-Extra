@@ -59,14 +59,8 @@ void main()
     palletteIndex = clamp(palletteIndex, 0, 130);
     fragmentColor = texelFetch(colorScalesTex, ivec2(0, palletteIndex), 0);
 
-    // Cosmetic high-pressure tint. surfacePressure is MSL baseline (hPa);
-    // base[PRESSURE] is dimensionless fluid pressure (same scale as MSLP Dynamic Scale default 20).
-    float pressureHpa = surfacePressure + base[2] * 20.0;
-    if (pressureHpa >= 1020.0) {
-      float intensity = smoothstep(1020.0, 1040.0, pressureHpa);
-      fragmentColor = mix(fragmentColor, vec4(1.0, 0.0, 0.0, 1.0), intensity * 0.5);
-    }
-
+    // Keep the temperature display neutral so pressure-driven changes do not
+    // introduce an artificial red hue over time.
     drawVectorField(base.xy, displayVectorField);
   }
 
