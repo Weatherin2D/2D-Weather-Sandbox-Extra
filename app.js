@@ -568,6 +568,11 @@ const guiControls_default = {
   soundingForcing : 0.0,
   sunIntensity : 1.0,
   waterTemperature : 25.0, // °C
+  maxWaterTemperatureC : 100.0,
+  freshwaterFreezePointC : 0.0,
+  saltwaterFreezePointC : -1.8,
+  enableFreshwaterFreezing : true,
+  enableSaltwaterFreezing : true,
   dynamicWaterTemperature : true,
   landEvaporation : 0.00005,
   waterEvaporation : 0.0001,
@@ -11259,6 +11264,37 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         gl.uniform1f(gl.getUniformLocation(lightingProgram, 'waterTemperature'), CtoK(guiControls.waterTemperature));
       })
       .name('Lake / Sea Temperature (°C)');
+
+    water_folder.add(guiControls, 'maxWaterTemperatureC', 40.0, 100.0, 1.0)
+      .onChange(function() {
+        gl.useProgram(advectionProgram);
+        gl.uniform1f(gl.getUniformLocation(advectionProgram, 'maxWaterTemperatureC'), guiControls.maxWaterTemperatureC);
+        gl.useProgram(boundaryProgram);
+        gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'maxWaterTemperatureC'), guiControls.maxWaterTemperatureC);
+      })
+      .name('Max Water Temperature (°C)');
+
+    water_folder.add(guiControls, 'enableFreshwaterFreezing').name('Enable Freshwater Freezing').onChange(function() {
+      gl.useProgram(boundaryProgram);
+      gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'enableFreshwaterFreezing'), guiControls.enableFreshwaterFreezing ? 1.0 : 0.0);
+    });
+    water_folder.add(guiControls, 'freshwaterFreezePointC', -10.0, 10.0, 0.1)
+      .onChange(function() {
+        gl.useProgram(boundaryProgram);
+        gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'freshwaterFreezePointC'), guiControls.freshwaterFreezePointC);
+      })
+      .name('Freshwater Freeze Point (°C)');
+
+    water_folder.add(guiControls, 'enableSaltwaterFreezing').name('Enable Saltwater Freezing').onChange(function() {
+      gl.useProgram(boundaryProgram);
+      gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'enableSaltwaterFreezing'), guiControls.enableSaltwaterFreezing ? 1.0 : 0.0);
+    });
+    water_folder.add(guiControls, 'saltwaterFreezePointC', -10.0, 10.0, 0.1)
+      .onChange(function() {
+        gl.useProgram(boundaryProgram);
+        gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'saltwaterFreezePointC'), guiControls.saltwaterFreezePointC);
+      })
+      .name('Saltwater Freeze Point (°C)');
 
     water_folder.add(guiControls, 'dynamicWaterTemperature').name('Dynamic Water Temperature').onChange(function() {
       gl.useProgram(boundaryProgram);
@@ -22483,6 +22519,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   gl.uniform1f(gl.getUniformLocation(advectionProgram, 'dryLapse'), dryLapse);
   gl.uniform1f(gl.getUniformLocation(advectionProgram, 'waterTemperature'),
                CtoK(guiControls.waterTemperature)); // can be changed by GUI input
+  gl.uniform1f(gl.getUniformLocation(advectionProgram, 'maxWaterTemperatureC'), guiControls.maxWaterTemperatureC);
 
   gl.uniform4fv(gl.getUniformLocation(advectionProgram, 'realWorldSounding_Tv'), realWorldSounding_T);
   gl.uniform4fv(gl.getUniformLocation(advectionProgram, 'realWorldSounding_Wv'), realWorldSounding_W);
@@ -22526,6 +22563,11 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'lightEffectScale'), 1.0);
   gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'waterTemperature'),
                CtoK(guiControls.waterTemperature)); // can be changed by GUI input
+  gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'maxWaterTemperatureC'), guiControls.maxWaterTemperatureC);
+  gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'freshwaterFreezePointC'), guiControls.freshwaterFreezePointC);
+  gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'saltwaterFreezePointC'), guiControls.saltwaterFreezePointC);
+  gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'enableFreshwaterFreezing'), guiControls.enableFreshwaterFreezing ? 1.0 : 0.0);
+  gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'enableSaltwaterFreezing'), guiControls.enableSaltwaterFreezing ? 1.0 : 0.0);
   gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'dryLapse'), dryLapse);
   // gl.uniform1fv(gl.getUniformLocation(boundaryProgram, 'initial_T'), initial_T);
   gl.uniform4fv(gl.getUniformLocation(boundaryProgram, 'initial_Tv'), initial_T);

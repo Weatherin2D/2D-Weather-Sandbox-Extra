@@ -1,0 +1,17 @@
+const assert = require('assert');
+const fs = require('fs');
+const path = require('path');
+
+const appPath = path.join(__dirname, '..', 'app.js');
+const boundaryShaderPath = path.join(__dirname, '..', 'shaders', 'fragment', 'boundaryShader.frag');
+const advectionShaderPath = path.join(__dirname, '..', 'shaders', 'fragment', 'advectionShader.frag');
+
+const appSource = fs.readFileSync(appPath, 'utf8');
+const boundaryShader = fs.readFileSync(boundaryShaderPath, 'utf8');
+const advectionShader = fs.readFileSync(advectionShaderPath, 'utf8');
+
+assert.ok(appSource.includes('freshwaterFreezePointC') && appSource.includes('saltwaterFreezePointC'), 'app.js should expose freshwater and saltwater freeze-point controls');
+assert.ok(boundaryShader.includes('freshwaterFreezePointC') && boundaryShader.includes('saltwaterFreezePointC'), 'boundary shader should read freshwater and saltwater freeze-point uniforms');
+assert.ok(advectionShader.includes('maxWaterTemperatureC') && boundaryShader.includes('maxWaterTemperatureC'), 'water shaders should use a configurable max water temperature');
+
+console.log('Water controls regression test passed');

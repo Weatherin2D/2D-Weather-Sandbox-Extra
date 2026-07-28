@@ -41,6 +41,11 @@ uniform int latitudeBasedTemperature;
 uniform float iterNum; // used as seed for random function
 
 uniform float dynamicWaterTemperature;
+uniform float maxWaterTemperatureC;
+uniform float freshwaterFreezePointC;
+uniform float saltwaterFreezePointC;
+uniform float enableFreshwaterFreezing;
+uniform float enableSaltwaterFreezing;
 uniform float meltingHeat;
 uniform float stormSurgeStrength;      // 0–2; scales onshore-wind coastal inundation
 uniform float stormSurgeWindThreshold; // windScale units; higher = needs stronger onshore wind
@@ -806,14 +811,23 @@ void main()
             base[TEMPERATURE] += netWaterHeating / waterHeatCapacity * waterTempUpdateInterval;
           }
 
-          base[TEMPERATURE] = clamp(base[TEMPERATURE], CtoK(-5.0), CtoK(maxWaterTemp));
+          base[TEMPERATURE] = clamp(base[TEMPERATURE], CtoK(-5.0), CtoK(maxWaterTemperatureC));
 
           float waterTempC = KtoC(base[TEMPERATURE]);
           float salinity = salinityForWallType(wall[TYPE], water[SALINITY]);
           float freezeC = waterFreezeTempC(salinity);
           float airTempC = KtoC(potentialToRealT(texture(baseTex, texCoordX0Yp)[TEMPERATURE], texCoordX0Yp.y));
 
-          if (waterTempC < freezeC || airTempC < freezeC) {
+          float freezeEnabled = 1.0;
+          if (wall[TYPE] == WALLTYPE_FRESH_WATER) {
+            freezeEnabled = enableFreshwaterFreezing;
+            freezeC = freshwaterFreezePointC;
+          } else if (wall[TYPE] == WALLTYPE_WATER) {
+            freezeEnabled = enableSaltwaterFreezing;
+            freezeC = saltwaterFreezePointC;
+          }
+
+          if (freezeEnabled > 0.5 && (waterTempC < freezeC || airTempC < freezeC)) {
             float coldness = max(freezeC - waterTempC, 0.0) + max(freezeC - airTempC, 0.0) * 0.75;
             float freezeProgress = max(coldness, 0.1) * waterFreezeRate;
             water[SNOW] = min(water[SNOW] + freezeProgress, minIceFormThickness);
@@ -837,6 +851,11 @@ void main()
             iceThickness += precipDeposition[RAIN_DEPOSITION] * 0.05; // freezing rain adds to ice sheet
           float salinity = salinityForWallType(wall[TYPE], water[SALINITY]);
           float freezeC = waterFreezeTempC(salinity);
+          if (wall[TYPE] == WALLTYPE_ICE && water[SALINITY] < 1.0) {
+            freezeC = freshwaterFreezePointC;
+          } else if (wall[TYPE] == WALLTYPE_ICE && water[SALINITY] >= 1.0) {
+            freezeC = saltwaterFreezePointC;
+          }
 
           if (dynamicWaterTemperature >= 1.0 && mod(iterNum, waterTempUpdateInterval) < 0.5) {
             float numNeighbors = 0.;

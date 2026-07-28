@@ -43,6 +43,7 @@ uniform float globalDrying;
 uniform float globalHeating;
 uniform float soundingForcing;
 uniform float waterTemperature;
+uniform float maxWaterTemperatureC;
 uniform float iterNum;
 uniform int brushOnlyMode; // 1 = copy fields + apply brush only (pause-edit; no advection/physics)
 
@@ -289,7 +290,7 @@ void main()
     if (userInputType == 1) {                                              // temperature
       base[3] += userInputValues[BRUSH_INTENSITY];
       if (isAnyWaterType(wall[TYPE]) && wall[DISTANCE] == 0)               // water / ice wall
-        base[3] = clamp(base[TEMPERATURE], CtoK(-30.0), CtoK(maxWaterTemp));
+        base[3] = clamp(base[TEMPERATURE], CtoK(-30.0), CtoK(maxWaterTemperatureC));
     } else if (userInputType == 2) {                                       // water
 
 
