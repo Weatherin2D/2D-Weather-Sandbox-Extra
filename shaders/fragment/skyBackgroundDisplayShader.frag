@@ -276,9 +276,12 @@ void main()
   float sunHoriz = 0.5 + skySunHorizAmplitude * sin(hourAngleRad);
   float sunVert = horizonLine + skySunVertScale * sin(clamp(sunElevRad, -PI * 0.5, PI * 0.5));
   vec2 sunCenter = vec2(sunHoriz, sunVert);
-  float scatter = clamp(map_range(localSunAngle, 75.0 * deg2rad, 90.0 * deg2rad, 0.0, 1.0), 0.0, 1.0);
-  float sunRiseAmount = sunVert - horizonLine;
   float sunAngleRad = abs(localSunAngle);
+  float scatter = clamp(map_range(sunAngleRad, 75.0 * deg2rad, 88.0 * deg2rad, 0.0, 1.0), 0.0, 1.0);
+  // Kill residual sunset red once the sun is fully gone.
+  float deepNightSky = clamp(map_range(sunAngleRad, 88.0 * deg2rad, 96.0 * deg2rad, 0.0, 1.0), 0.0, 1.0);
+  scatter *= (1.0 - deepNightSky);
+  float sunRiseAmount = sunVert - horizonLine;
   const float SUN_DISC_RADIUS = 0.036;
   float sunDiscVis = smoothstep(-SUN_DISC_RADIUS * 1.12, SUN_DISC_RADIUS * 0.10, sunRiseAmount);
   float sunVisibility = (1.0 - smoothstep(1.30, 1.55, sunAngleRad)) * sunDiscVis;
@@ -299,6 +302,8 @@ void main()
         smoothstep(1.22, 1.50, abs(localSunAngle)) * smoothstep(0.02, 0.14, sunRiseAmount));
   float twilightAmt = mix(twilightEvening, twilightMorning, morningW);
   twilightAmt = clamp(twilightAmt, 0.0, 1.0);
+  // Absolutely no sun → no warm twilight wash on sky/clouds.
+  twilightAmt *= (1.0 - deepNightSky);
 
   // Warm gold at horizon → twilight bands → black zenith (never leave warm color at the top).
   vec3 horizonWarm = mix(skyTwilightHorizon, skyHorizonGold, clamp(scatter * 0.95, 0.0, 1.0)) * 0.78;

@@ -1,14 +1,19 @@
-# Next Wave — Concrete Implementation Plan
+# Next Wave — Shipped (archive)
+
+**Status:** All items below are implemented. This document is kept as a historical design record.
+
+For active work, see [`TODO.md`](../TODO.md) (In Progress / Future).
 
 **Lane chosen:** Recommended next wave (physics authenticity + tools that reuse existing systems).
 
-**Order:**
+**Order (all done):**
 
-1. Realistic atmospheric pressure (this document — fully scoped)
-2. Dryline + sea-breeze tools
-3. Meteogram / time-height panel
-4. Procedural terrain generator
-5. Scenario packs
+1. Realistic atmospheric pressure — shipped (Phase A MSLP + Phase B hydrostatic CAPE toggle)
+2. Dryline + sea-breeze tools — shipped
+3. Meteogram / time-height panel — shipped
+4. Procedural terrain generator — shipped
+5. Scenario packs — shipped
+6. Replay / free-run forecast — shipped (see also Advanced → Replay & Forecast)
 
 ---
 

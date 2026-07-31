@@ -1,0 +1,152 @@
+/* Shared floating overlay chrome (meteogram, replay bar, shader menu, …) */
+:root {
+  --ws-overlay-bg: #13131f;
+  --ws-overlay-bg-soft: rgba(10, 14, 22, 0.92);
+  --ws-overlay-border: #252540;
+  --ws-overlay-header-bg: linear-gradient(135deg, #191930, #0e0e22);
+  --ws-overlay-text: #eee;
+  --ws-overlay-muted: #889;
+  --ws-overlay-control-bg: #1c1c30;
+  --ws-overlay-radius: 12px;
+  --ws-overlay-shadow: 0 8px 32px rgba(0, 0, 0, 0.75);
+  --ws-overlay-font: Arial, sans-serif;
+  --ws-z-panel: 1200;
+  --ws-z-shader: 10000;
+  --ws-z-replay: 10050;
+}
+
+.ws-overlay-panel {
+  position: fixed;
+  display: none;
+  flex-direction: column;
+  background: var(--ws-overlay-bg);
+  border: 1px solid var(--ws-overlay-border);
+  border-radius: var(--ws-overlay-radius);
+  box-shadow: var(--ws-overlay-shadow);
+  color: var(--ws-overlay-text);
+  font-family: var(--ws-overlay-font);
+  font-size: 12px;
+  overflow: hidden;
+  z-index: var(--ws-z-panel);
+}
+
+.ws-overlay-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: var(--ws-overlay-header-bg);
+  border-bottom: 1px solid var(--ws-overlay-border);
+  cursor: move;
+  user-select: none;
+  flex-shrink: 0;
+}
+
+.ws-overlay-title {
+  font-weight: 700;
+  font-size: 13px;
+  color: var(--ws-overlay-text);
+  flex: 1;
+  min-width: 0;
+}
+
+.ws-overlay-controls {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.ws-overlay-panel select,
+.ws-overlay-panel button,
+.ws-overlay-btn {
+  background: var(--ws-overlay-control-bg);
+  color: #ddd;
+  border: 1px solid #333;
+  border-radius: 6px;
+  padding: 4px 8px;
+  cursor: pointer;
+  font: inherit;
+}
+
+.ws-overlay-close {
+  background: rgba(255, 255, 255, 0.07);
+  border: none;
+  color: #777;
+  cursor: pointer;
+  font-size: 12px;
+  padding: 3px 8px;
+  border-radius: 5px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.ws-overlay-close:hover {
+  background: rgba(220, 60, 60, 0.35);
+  color: #fff;
+}
+
+.ws-overlay-footer {
+  padding: 6px 12px;
+  color: var(--ws-overlay-muted);
+  border-top: 1px solid #1c1c30;
+  font-size: 11px;
+}
+
+.ws-overlay-bar {
+  position: fixed;
+  left: 50%;
+  bottom: 12px;
+  transform: translateX(-50%);
+  z-index: var(--ws-z-replay);
+  display: none;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 14px;
+  background: var(--ws-overlay-bg-soft);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 10px;
+  color: var(--ws-overlay-text);
+  font: 12px/1.3 var(--ws-overlay-font);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.45);
+  min-width: 420px;
+  max-width: 90vw;
+}
+
+.ws-overlay-bar .ws-overlay-btn {
+  padding: 4px 10px;
+}
+
+.ws-overlay-bar input[type="range"] {
+  flex: 1;
+  min-width: 160px;
+}
+
+.ws-overlay-bar .ws-overlay-status {
+  white-space: nowrap;
+  opacity: 0.9;
+}
+
+/* Feature layout hooks (chrome comes from shared classes above) */
+#meteogramPanel {
+  right: 16px;
+  bottom: 16px;
+  width: 660px;
+  max-width: calc(100vw - 24px);
+}
+
+#meteogramPanel canvas {
+  display: block;
+  width: 100%;
+  height: auto;
+  background: #0a0a14;
+  cursor: crosshair;
+}
+
+#shaderMenuPanel {
+  top: 50px;
+  right: 420px;
+  width: 540px;
+  max-height: 92vh;
+  z-index: var(--ws-z-shader);
+}

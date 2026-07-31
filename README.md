@@ -10,13 +10,24 @@ This is a fork of 2D Weather Sandbox. It is provided as-is; behavior may differ 
 
 Previously called "Weather_Sim_4"
 
-This projects aims to produce a semirealistic two-dimensional, realtime, interactive simulation of the weather in earth's troposphere.
+This project aims to produce a semirealistic two-dimensional, realtime, interactive simulation of the weather in earth's troposphere.
 
+### What's in this fork
+
+- **Scenario packs** — one-click event days (dryline, lake-effect, sea-breeze, fire weather, monsoon)
+- **Procedural terrain** — seeded mountains, coastlines, and valleys
+- **Dryline & sea-breeze tools** — synoptic moisture/thermal boundaries
+- **Meteogram** — time-height panel from weather stations (double-click a station)
+- **Replay & forecast** — record keyframes, scrub playback, free-run forecast then restore IC
+- **Shader Menu** — look packs, cloud/rain controls, custom sky textures
+- **Flood / storm-surge viz** — standing water depth and `DISP_FLOOD`
+- **Diagnostic MSLP** — thermal + dynamic + synoptic surface pressure (hPa); optional hydrostatic CAPE `P(z)`
+- **Multiplayer** — local co-op via `npm start` (still WIP)
 
 ## Clouds and precipitation
 Simulating clouds and precipitation are the main objectives of this project.
 All the equations relating to water phase change are simplified versions of the real ones, to improve performance and ease programming.
-Precipitation is simulated using discrete particles but can be viualized as both partiles and smooth realistic looking curtains.
+Precipitation is simulated using discrete particles but can be visualized as both particles and smooth realistic looking curtains.
 
 Forming Cell:
 ![Screenshot (7)](https://user-images.githubusercontent.com/42830240/232745061-25c860c3-8c52-4704-86af-bcba13f74cd6.png)
@@ -49,7 +60,7 @@ Due to the two-dimensional nature of the simulation, it cannot simulate 3D vorti
 
 
 # Example: low intensity cell analysis
-Warm moist air is rising into the cloud on the right condensing water and releasing heat until it eventually rises well above the freezing level and forming ice (snow), realeasing even more heat. The snow grows until it descents down under the freezing level and melts into rain, absorbing heat and creating a downdraft. Below the cloud level some of the rain evaporates, absorbing even more heat and strengtening the downward motion. Near the surface the air spreads out sideways and in this case mostly to the right, creating a small low level cold front. This cold front pushes even more warm air up.
+Warm moist air is rising into the cloud on the right condensing water and releasing heat until it eventually rises well above the freezing level and forming ice (snow), releasing even more heat. The snow grows until it descends down under the freezing level and melts into rain, absorbing heat and creating a downdraft. Below the cloud level some of the rain evaporates, absorbing even more heat and strengthening the downward motion. Near the surface the air spreads out sideways and in this case mostly to the right, creating a small low level cold front. This cold front pushes even more warm air up.
 ![Schermopname (92)_LI](https://user-images.githubusercontent.com/42830240/173361271-23383858-f0d3-485d-91b9-21e0d3c75211.jpg)
 The dew points and cape are very low in this example, but it's just enough to form a nice stable cell.
 ![Naamloos](https://user-images.githubusercontent.com/42830240/173365013-cdea3b40-f470-4390-a8fa-b8d93025d893.png)

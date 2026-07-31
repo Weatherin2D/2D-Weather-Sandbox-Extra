@@ -61,7 +61,11 @@ void main()
     vec4 water = texture(waterTex, texCoord);
     ivec4 wall = texture(wallTex, texCoord);
 
-    float scatering = clamp(map_range(abs(colSunAngle), 75. * deg2rad, 90. * deg2rad, 0., 1.), 0., 1.); // how red the sunlight is
+    // Sunset red peaks near dusk, then clears in deep night (no persistent red cloud light).
+    float absColSun = abs(colSunAngle);
+    float scatering = clamp(map_range(absColSun, 75. * deg2rad, 88. * deg2rad, 0., 1.), 0., 1.);
+    float deepNight = clamp(map_range(absColSun, 88. * deg2rad, 96. * deg2rad, 0., 1.), 0., 1.);
+    scatering *= (1.0 - deepNight);
     vec3 sunlightColor = sunColor(scatering);
 
     if (wall[DISTANCE] != 0) {                                                                          // is not wall

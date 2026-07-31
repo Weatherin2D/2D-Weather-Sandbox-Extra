@@ -155,11 +155,12 @@
 
     panelEl = document.createElement('div');
     panelEl.id = 'meteogramPanel';
+    panelEl.className = 'ws-overlay-panel';
     panelEl.setAttribute('aria-label', 'Meteogram');
     panelEl.innerHTML = [
-      '<div class="meteogram-header" id="meteogramDragHandle">',
-      '  <span class="meteogram-title">Meteogram</span>',
-      '  <div class="meteogram-controls">',
+      '<div class="ws-overlay-header meteogram-header" id="meteogramDragHandle">',
+      '  <span class="ws-overlay-title meteogram-title">Meteogram</span>',
+      '  <div class="ws-overlay-controls meteogram-controls">',
       '    <select id="meteogramField">',
       '      <option value="temp">Temperature</option>',
       '      <option value="dew">Dewpoint</option>',
@@ -167,41 +168,12 @@
       '      <option value="wind">Wind Speed</option>',
       '      <option value="cloud">Cloud Water</option>',
       '    </select>',
-      '    <button type="button" id="meteogramClose" title="Close">✕</button>',
+      '    <button type="button" class="ws-overlay-close" id="meteogramClose" title="Close">✕</button>',
       '  </div>',
       '</div>',
       '<canvas id="meteogramCanvas" width="640" height="480"></canvas>',
-      '<div class="meteogram-footer" id="meteogramFooter">Double-click a weather station to attach. Hover to scrub time.</div>',
+      '<div class="ws-overlay-footer meteogram-footer" id="meteogramFooter">Double-click a weather station to attach. Hover to scrub time.</div>',
     ].join('');
-
-    const style = document.createElement('style');
-    style.textContent = [
-      '#meteogramPanel {',
-      '  position: fixed; right: 16px; bottom: 16px; z-index: 1200;',
-      '  display: none; flex-direction: column;',
-      '  width: 660px; max-width: calc(100vw - 24px);',
-      '  background: #13131f; border: 1px solid #252540; border-radius: 12px;',
-      '  box-shadow: 0 8px 32px rgba(0,0,0,0.75); color: #fff;',
-      '  font-family: Arial, sans-serif; font-size: 12px;',
-      '  overflow: hidden;',
-      '}',
-      '#meteogramPanel .meteogram-header {',
-      '  display: flex; justify-content: space-between; align-items: center;',
-      '  padding: 8px 12px; background: linear-gradient(135deg,#191930,#0e0e22);',
-      '  border-bottom: 1px solid #252540; cursor: move; user-select: none;',
-      '}',
-      '#meteogramPanel .meteogram-title { font-weight: 700; font-size: 13px; }',
-      '#meteogramPanel .meteogram-controls { display: flex; gap: 8px; align-items: center; }',
-      '#meteogramPanel select, #meteogramPanel button {',
-      '  background: #1c1c30; color: #ddd; border: 1px solid #333; border-radius: 6px;',
-      '  padding: 4px 8px; cursor: pointer;',
-      '}',
-      '#meteogramPanel canvas { display: block; width: 100%; height: auto; background: #0a0a14; cursor: crosshair; }',
-      '#meteogramPanel .meteogram-footer {',
-      '  padding: 6px 12px; color: #889; border-top: 1px solid #1c1c30; font-size: 11px;',
-      '}',
-    ].join('\n');
-    document.head.appendChild(style);
     document.body.appendChild(panelEl);
 
     canvasEl = panelEl.querySelector('#meteogramCanvas');

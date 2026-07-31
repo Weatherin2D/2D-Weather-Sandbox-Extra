@@ -101,17 +101,6 @@
     const styleEl = document.createElement('style');
     styleEl.id = 'shm-styles';
     styleEl.textContent = `
-      #shaderMenuPanel{display:none;position:fixed;top:50px;right:420px;width:540px;
-        background:#13131f;border:1px solid #252540;border-radius:10px;
-        z-index:10000;font-family:Arial,sans-serif;color:#eee;max-height:92vh;
-        overflow:hidden;box-shadow:0 8px 32px rgba(0,0,0,0.75);}
-      .shm-hdr{display:flex;align-items:center;gap:8px;padding:11px 15px;
-        background:linear-gradient(135deg,#191930,#0e0e22);
-        border-bottom:1px solid #252540;cursor:move;user-select:none;flex-shrink:0;}
-      .shm-hdr span{font-size:14px;font-weight:700;flex:1;}
-      .shm-close{background:rgba(255,255,255,0.07);border:none;color:#777;cursor:pointer;
-        font-size:12px;padding:3px 8px;border-radius:5px;line-height:1;flex-shrink:0;}
-      .shm-close:hover{background:rgba(220,60,60,0.35);color:#fff;}
       .shm-body{padding:14px 15px 16px;overflow-y:auto;max-height:calc(92vh - 46px);
         scrollbar-width:thin;scrollbar-color:#252540 #0d0d18;}
       .shm-body::-webkit-scrollbar{width:4px;}
@@ -1243,9 +1232,10 @@
 
     panel = document.createElement('div');
     panel.id = 'shaderMenuPanel';
+    panel.className = 'ws-overlay-panel';
     panel.innerHTML =
-      '<div class="shm-hdr"><span>Shader Menu</span>' +
-        '<button type="button" class="shm-close" title="Close">X</button></div>' +
+      '<div class="ws-overlay-header shm-hdr"><span class="ws-overlay-title">Shader Menu</span>' +
+        '<button type="button" class="ws-overlay-close shm-close" title="Close">✕</button></div>' +
       '<div class="shm-body">' +
         '<div class="shm-tabs" id="shm-tabs"></div>' +
         '<div class="shm-section active" id="shm-sec-packs"></div>' +
@@ -1256,8 +1246,8 @@
         '<div class="shm-section" id="shm-sec-glsl"></div>' +
       '</div>';
     document.body.appendChild(panel);
-    makeDraggable(panel, '.shm-hdr');
-    panel.querySelector('.shm-close').onclick = function() { closeShaderMenu(); };
+    makeDraggable(panel, '.ws-overlay-header');
+    panel.querySelector('.ws-overlay-close').onclick = function() { closeShaderMenu(); };
 
     tabRefreshers.packs = buildPacksTab(panel.querySelector('#shm-sec-packs'));
     tabRefreshers.look = buildLookTab(panel.querySelector('#shm-sec-look'));

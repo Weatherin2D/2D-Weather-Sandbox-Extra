@@ -73,19 +73,30 @@
 - [x] Make heating of sloped surfaces accurate
 - [x] Display Solar and IR power in weather stations
 
-# In Progress
-
-
-# Future:
-- [x] Add Option to reset atmosphere while keeping terain
+# Shipped (formerly Future)
+- [x] Add Option to reset atmosphere while keeping terrain
 - [x] Allow editing while simulation paused
 - [x] Add forces to simulate coriolis effect and pressure systems to make weather more dynamic
 - [x] Improve Lake/Sea depth visualization, show the water depth under sim area and add 45 deg slopes underwater
 - [x] Add realistic albedo's for different surface types
 - [x] Make behaviour of precipitation scale with the vertical resolution to fix unrealistic behavior at resolution lower than 300
-- [x] Improve terain generation
+- [x] Improve terrain generation
 - [x] Make precipitation work on all mobile devices
-- [x] Simulate realistic atmospheric pressure
+- [x] Simulate realistic atmospheric pressure (diagnostic MSLP + optional hydrostatic CAPE P(z))
 - [x] Add sounds
 - [x] Add weather balloons
 - [x] Flash-flood / runoff visualization (standing water tint + DISP_FLOOD)
+- [x] Dryline + sea-breeze tools
+- [x] Meteogram / time-height panel
+- [x] Scenario packs
+- [x] Simulation replay + free-run forecast
+
+# In Progress
+- [ ] Project polish pass (docs sync, shared overlay CSS, Advanced GUI labels)
+
+# Future:
+- [ ] Harden multiplayer (desync, lag, reconnect)
+- [ ] Optional weak synoptic write-back into fluid PRESSURE (display-only MSLP stays default)
+- [ ] Extract more logic out of app.js into focused modules
+- [ ] Evaluate custom UI to replace cluttered dat.GUI
+- [ ] More scenario packs / community share format

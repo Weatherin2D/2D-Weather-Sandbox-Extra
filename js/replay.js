@@ -293,18 +293,12 @@
     if (typeof document === 'undefined' || !document.body) return;
     var bar = document.createElement('div');
     bar.id = 'wsReplayBar';
-    bar.style.cssText = [
-      'position:fixed', 'left:50%', 'bottom:12px', 'transform:translateX(-50%)',
-      'z-index:10050', 'display:none', 'align-items:center', 'gap:10px',
-      'padding:8px 14px', 'background:rgba(10,14,22,0.88)', 'border:1px solid rgba(255,255,255,0.18)',
-      'border-radius:10px', 'color:#eee', 'font:12px/1.3 Arial,sans-serif',
-      'box-shadow:0 6px 24px rgba(0,0,0,0.45)', 'min-width:420px', 'max-width:90vw',
-    ].join(';');
+    bar.className = 'ws-overlay-bar';
     bar.innerHTML =
-      '<button type="button" id="wsReplayPlay" style="cursor:pointer;padding:4px 10px;">Play</button>' +
-      '<input type="range" id="wsReplayScrub" min="0" max="0" value="0" step="1" style="flex:1;min-width:160px;">' +
-      '<span id="wsReplayStatus" style="white-space:nowrap;opacity:0.9;">—</span>' +
-      '<button type="button" id="wsReplayExit" style="cursor:pointer;padding:4px 10px;">Exit</button>';
+      '<button type="button" class="ws-overlay-btn" id="wsReplayPlay">Play</button>' +
+      '<input type="range" id="wsReplayScrub" min="0" max="0" value="0" step="1">' +
+      '<span class="ws-overlay-status" id="wsReplayStatus">—</span>' +
+      '<button type="button" class="ws-overlay-btn" id="wsReplayExit">Exit</button>';
     document.body.appendChild(bar);
     ui.bar = bar;
     ui.scrub = bar.querySelector('#wsReplayScrub');

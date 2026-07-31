@@ -79,11 +79,15 @@
     dryLightningFrequency: 0.25,
     sheetLightningFrequency: 2.5,
 
+    enableLightning: true,
+    ltSdfQuality: 'Balanced',
+    ltDrawSdfBolts: true,
+
     lightningBrightness: 0.48,
     lightningContrast: 0.9,
     channelThickness: 1.05,
-    branchDensity: 1.25,
-    branchLength: 1.15,
+    branchDensity: 1.45,
+    branchLength: 1.35,
     flashDuration: 1.0,
     channelGlowDuration: 1.0,
     bloomStrength: 0.7,
@@ -106,7 +110,7 @@
     cloudToCloudChannelVisibility: 1.0,
     spiderChannelVisibility: 1.05,
     anvilChannelVisibility: 1.0,
-    cloudLightningBranchDensity: 0.9,
+    cloudLightningBranchDensity: 1.2,
     cloudLightningBranchLength: 0.45,
     cloudLightningOpacity: 1.0,
     cloudObscurationStrength: 0.55,
@@ -285,7 +289,7 @@
     Ultra: { maxActiveBolts: 12, maxBranchCount: 64, gpuEffectQuality: 1.2, maxIlluminationRadius: 1.3 },
   };
 
-  const MAX_SHADER_STRIKES = 8;
+  const MAX_SHADER_STRIKES = 16;
 
   function shaderRand(n) {
     return Math.sin(n) * 43758.5453123 - Math.floor(Math.sin(n) * 43758.5453123);
@@ -328,6 +332,8 @@
   };
 
   function getEffectiveFrequency(controls, typeKey, stormFactor, profile) {
+    if (controls.enableLightning === false)
+      return 0;
     const personality = getTypeFrequencyMult(profile, typeKey);
     if (controls.useRealisticLightningRatios) {
       const ratio = REALISTIC_RATIOS[typeKey] || 1;
@@ -471,6 +477,37 @@
       minPotential: (0.30 + cloudTh * 0.40) * scale,
       minRawCloud: (controls.chargeMinCloudDensity ?? 0.32) * (0.88 + cloudTh * 0.48) * scale,
     };
+  }
+
+  /** Min cloud density for in-cloud channel pathing (IC/CC/spider/anvil). */
+  function cloudPathMinCloud(controls, channelId) {
+    const t = getSpawnThresholds(controls || {}, channelId || 'intracloud');
+    return Math.max(0.08, (t.minRawCloud || 0.2) * 0.45);
+  }
+
+  function isCloudChannelType(ltType) {
+    return ltType === LT.INTRACLOUD || ltType === LT.CLOUD_TO_CLOUD
+      || ltType === LT.SPIDER || ltType === LT.ANVIL_CRAWLER || ltType === LT.SHEET;
+  }
+
+  /** Walk dest back toward origin until cloud gate passes. */
+  function snapDestToCloud(cache, ox, oy, destX, destY, minCloud) {
+    if (!cache || !cache.data)
+      return { destX, destY };
+    if (readCloud(cache, destX, destY) >= minCloud)
+      return { destX, destY };
+    let bx = destX;
+    let by = destY;
+    for (let i = 1; i <= 10; i++) {
+      const t = 1.0 - i * 0.09;
+      const tx = ox + (destX - ox) * t;
+      const ty = oy + (destY - oy) * t;
+      if (readCloud(cache, tx, ty) >= minCloud)
+        return { destX: tx, destY: ty };
+      bx = tx;
+      by = ty;
+    }
+    return { destX: bx, destY: by };
   }
 
   function isSimInCloudLayer(simX, simY, simResX, simResY, allowGround) {
@@ -664,24 +701,35 @@
   function scaleBoltProfile(seed, ltType) {
     const r = shaderRand(seed + 211);
     const h = shaderRand(seed + 313);
-    let lenScale = 0.48 + r * 1.05;
-    let heightScale = 0.4 + h * 0.9;
-    let branchScale = 0.7 + shaderRand(seed + 419) * 0.65;
+    let lenScale = 0.58 + r * 1.15;
+    let heightScale = 0.45 + h * 1.05;
+    let branchScale = 0.78 + shaderRand(seed + 419) * 0.72;
     if (ltType === LT.SPIDER)
-      lenScale *= 0.85 + shaderRand(seed + 521) * 0.4;
+      lenScale *= 0.95 + shaderRand(seed + 521) * 0.45;
     if (ltType === LT.ANVIL_CRAWLER)
-      lenScale *= 0.7 + shaderRand(seed + 523) * 0.55;
+      lenScale *= 0.85 + shaderRand(seed + 523) * 0.60;
     if (ltType === LT.SHEET) {
-      lenScale *= 0.55 + shaderRand(seed + 525) * 0.9;
-      heightScale *= 1.1;
+      lenScale *= 0.65 + shaderRand(seed + 525) * 1.0;
+      heightScale *= 1.2;
+    }
+    if (ltType === LT.INTRACLOUD) {
+      lenScale *= 0.70 + shaderRand(seed + 527) * 0.55;
+      heightScale *= 0.85 + shaderRand(seed + 529) * 0.45;
+    }
+    if (ltType === LT.CLOUD_TO_CLOUD) {
+      lenScale *= 0.90 + shaderRand(seed + 531) * 0.55;
+      heightScale *= 0.70 + shaderRand(seed + 533) * 0.50;
     }
     return { lenScale, heightScale, branchScale };
   }
 
   function rollPrecipOnlyStrike(seed, ltType, controls) {
+    // IC/CC are visible bolt channels — never hide them as precip-only shafts.
+    if (ltType === LT.INTRACLOUD || ltType === LT.CLOUD_TO_CLOUD)
+      return false;
     const base = controls.precipOnlyLightningChance ?? 0.38;
     let p = base;
-    if (ltType === LT.INTRACLOUD || ltType === LT.CLOUD_TO_CLOUD || ltType === LT.SHEET)
+    if (ltType === LT.SHEET)
       p = Math.min(0.62, base + 0.12);
     else if (ltType === LT.SPIDER || ltType === LT.ANVIL_CRAWLER)
       p = Math.min(0.55, base + 0.08);
@@ -758,8 +806,10 @@
       const yDelta = Math.abs(ty - oy);
       if (yDelta < minYDelta)
         continue;
+      const minCloud = opts.minCloud ?? 0.08;
       let score = scoreCloudCell(cache, tx, ty, {
         simResX, simResY, originCharge, preferOpposite: true,
+        minCloud,
         minDistFrom: { x: ox, y: oy }, minDistFrac: (opts.minDistFrac ?? 0.06) * 0.5,
         anvilBias: opts.anvilBias,
       });
@@ -771,22 +821,34 @@
     }
 
     if (bestDest.score < 0) {
+      const minCloud = opts.minCloud ?? 0.08;
       const span = ensureMinimumSpan(ox, oy, ox, oy, simResX, simResY,
         opts.minDistFrac ?? 0.08, horizontal, {
           vertFrac: 0.12 + shaderRand(seed + 99) * 0.28,
           slopeSign: shaderRand(seed + 107) > 0.5 ? 1 : -1,
           lenScale: opts.lenScale ?? 1,
+          cache,
+          minCloud,
         });
       let fx = span.destX;
       let fy = span.destY;
-      let fchg = readCharge(cache, fx, fy);
-      for (let j = 0; j < 8 && !chargesOppose(originCharge, fchg); j++) {
-        const tx = clamp(fx + (shaderRand(seed + j * 43) - 0.5) * simResX * 0.08, 0, simResX - 1);
+      // Prefer in-cloud samples near the span target; never keep clear air.
+      let bestCloud = { x: fx, y: fy, score: scoreCloudCell(cache, fx, fy, { simResX, simResY, minCloud }) };
+      for (let j = 0; j < 12; j++) {
+        const tx = clamp(fx + (shaderRand(seed + j * 43) - 0.5) * simResX * 0.10, 0, simResX - 1);
         const ty = clamp(fy + (shaderRand(seed + j * 47) - 0.5) * simResY * 0.12, simResY * 0.06, simResY * 0.92);
-        const chg = readCharge(cache, tx, ty);
-        if (chargesOppose(originCharge, chg)) { fx = tx; fy = ty; fchg = chg; break; }
+        const score = scoreCloudCell(cache, tx, ty, { simResX, simResY, minCloud, originCharge, preferOpposite: true });
+        if (score > bestCloud.score) bestCloud = { x: tx, y: ty, score };
       }
-      bestDest = { x: fx, y: fy, score: 1, charge: fchg };
+      if (bestCloud.score < 0) {
+        const snapped = snapDestToCloud(cache, ox, oy, fx, fy, minCloud);
+        fx = snapped.destX;
+        fy = snapped.destY;
+      } else {
+        fx = bestCloud.x;
+        fy = bestCloud.y;
+      }
+      bestDest = { x: fx, y: fy, score: 1, charge: readCharge(cache, fx, fy) };
     }
 
     return {
@@ -854,6 +916,7 @@
     const steps = opts.steps || 20;
     const horizontal = opts.horizontal || false;
     const originCharge = opts.originCharge;
+    const minCloud = opts.minCloud ?? 0.08;
 
     for (let step = 0; step < steps; step++) {
       const t = (step + 1) / steps;
@@ -872,13 +935,14 @@
         const nx = clamp(cx + Math.cos(theta) * stepX, 0, simResX - 1);
         const ny = clamp(cy + Math.sin(theta) * stepY, simResY * 0.08, simResY * 0.92);
         const score = scoreCloudCell(cache, nx, ny, {
-          minCloud: 0.04, simResX, simResY, originCharge,
+          minCloud, simResX, simResY, originCharge,
           towardX: targetX, towardY: targetY, towardWeight: 0.65,
           anvilBias: horizontal,
         });
         if (score > best.score) best = { x: nx, y: ny, score };
       }
-      if (best.score < 0.03) break;
+      // Stay in cloud — do not step into clear air toward a distant dest.
+      if (best.score < 0) break;
       cx = best.x;
       cy = best.y;
       points.push({ x: cx, y: cy });
@@ -888,11 +952,12 @@
   }
 
   function usesBentPath(ltType, opts) {
-    return ltType === LT.SHEET || ltType === LT.STROBE || !!(opts && opts.strobeBurst);
+    return ltType === LT.SHEET || ltType === LT.STROBE || ltType === LT.INTRACLOUD
+      || ltType === LT.CLOUD_TO_CLOUD || !!(opts && opts.strobeBurst);
   }
 
   /** Point C between A and B, offset off the straight chord into charged cloud. */
-  function findPathMidpoint(cache, ax, ay, bx, by, originCharge, eventId, slot, simResX, simResY, seed) {
+  function findPathMidpoint(cache, ax, ay, bx, by, originCharge, eventId, slot, simResX, simResY, seed, minCloud) {
     const mx = (ax + bx) * 0.5;
     const my = (ay + by) * 0.5;
     const dx = bx - ax;
@@ -904,6 +969,7 @@
     const side = shaderRand(seed + 613) > 0.5 ? 1 : -1;
     let cx = mx + perpX * len * offsetFrac * side;
     let cy = my + perpY * len * offsetFrac * side;
+    const gate = minCloud ?? 0.08;
 
     if (cache) {
       let best = { x: cx, y: cy, score: -1 };
@@ -911,35 +977,83 @@
         const tx = clamp(cx + (shaderRand(seed + i * 29) - 0.5) * simResX * 0.08, 0, simResX - 1);
         const ty = clamp(cy + (shaderRand(seed + i * 31) - 0.5) * simResY * 0.10, simResY * 0.06, simResY * 0.92);
         const score = scoreCloudCell(cache, tx, ty, {
-          minCloud: 0.04, simResX, simResY, originCharge,
+          minCloud: gate, simResX, simResY, originCharge,
           towardX: mx, towardY: my, towardWeight: 0.55,
           anvilBias: true,
         });
         if (score > best.score) best = { x: tx, y: ty, score };
       }
       if (best.score > 0) { cx = best.x; cy = best.y; }
+      else {
+        const snapped = snapDestToCloud(cache, mx, my, cx, cy, gate);
+        cx = snapped.destX;
+        cy = snapped.destY;
+      }
     }
     return { x: cx, y: cy };
   }
 
   function buildPathViaMidpoint(cache, ox, oy, destX, destY, eventId, slot, simResX, simResY, opts) {
     const seed = eventId * 29 + slot * 401 + ox * 0.01;
+    const minCloud = opts.minCloud ?? 0.08;
     const mid = findPathMidpoint(cache, ox, oy, destX, destY, opts.originCharge,
-      eventId, slot, simResX, simResY, seed);
+      eventId, slot, simResX, simResY, seed, minCloud);
     const totalSteps = opts.steps || 14;
     const stepsA = Math.max(4, Math.floor(totalSteps * 0.52));
     const stepsB = Math.max(4, Math.floor(totalSteps * 0.52));
     const pathA = findChargedPath(cache, ox, oy, mid.x, mid.y, eventId, slot, simResX, simResY, {
-      ...opts, steps: stepsA,
+      ...opts, steps: stepsA, minCloud,
     });
     const pathB = findChargedPath(cache, mid.x, mid.y, destX, destY, eventId, slot + 791, simResX, simResY, {
-      ...opts, steps: stepsB,
+      ...opts, steps: stepsB, minCloud,
     });
     const points = pathA.points.concat(pathB.points.slice(1));
     return {
       points,
       destX: pathB.destX,
       destY: pathB.destY,
+      midX: mid.x,
+      midY: mid.y,
+      viaMidpoint: true,
+    };
+  }
+
+  /** Resolve IC/CC path; fall back to bent chord if charge pathfinding collapses. */
+  function resolveCloudBoltPath(cache, ox, oy, spanDestX, spanDestY, eventId, slot, simResX, simResY, pathOpts) {
+    const minCloud = pathOpts.minCloud ?? 0.08;
+    const snappedSpan = snapDestToCloud(cache, ox, oy, spanDestX, spanDestY, minCloud);
+    spanDestX = snappedSpan.destX;
+    spanDestY = snappedSpan.destY;
+    const path = buildPathViaMidpoint(
+      cache, ox, oy, spanDestX, spanDestY, eventId, slot, simResX, simResY,
+      { ...pathOpts, minCloud });
+    const plen = pathLengthNorm(path.points || [], simResX, simResY);
+    if (path.points && path.points.length >= 2 && plen >= 0.02) {
+      return {
+        points: path.points,
+        destX: path.destX,
+        destY: path.destY,
+        midX: path.midX,
+        midY: path.midY,
+        viaMidpoint: true,
+      };
+    }
+    const mid = findPathMidpoint(
+      cache, ox, oy, spanDestX, spanDestY, pathOpts.originCharge,
+      eventId, slot, simResX, simResY, eventId * 29 + slot * 401 + 911, minCloud);
+    const lastGood = path.points && path.points.length
+      ? path.points[path.points.length - 1]
+      : { x: ox, y: oy };
+    const destSnap = snapDestToCloud(cache, ox, oy, spanDestX, spanDestY, minCloud);
+    const useDest = destSnap.destX;
+    const useDestY = destSnap.destY;
+    // Prefer last in-cloud path point over forcing a clear-air span dest.
+    const finalDestX = readCloud(cache, useDest, useDestY) >= minCloud ? useDest : lastGood.x;
+    const finalDestY = readCloud(cache, useDest, useDestY) >= minCloud ? useDestY : lastGood.y;
+    return {
+      points: [{ x: ox, y: oy }, { x: mid.x, y: mid.y }, { x: finalDestX, y: finalDestY }],
+      destX: finalDestX,
+      destY: finalDestY,
       midX: mid.x,
       midY: mid.y,
       viaMidpoint: true,
@@ -953,46 +1067,213 @@
     const len = Math.hypot(dx, dy);
     const minLen = simResX * minFrac * (spanOpts.lenScale ?? 1);
     const minYDelta = simResY * (spanOpts.minYDeltaFrac ?? (horizontal ? 0.04 : 0.03));
-    if (len >= minLen && Math.abs(dy) >= minYDelta)
-      return { destX, destY };
-    if (horizontal) {
-      const dirSign = dx >= 0 ? 1 : (dx < 0 ? -1 : (shaderRand(ox * 0.01 + oy) > 0.5 ? 1 : -1));
-      const slopeSign = spanOpts.slopeSign ?? (dy >= 0 ? 1 : -1);
-      const vertFrac = spanOpts.vertFrac ?? 0.10 + shaderRand(ox * 0.02 + oy) * 0.32;
-      return {
-        destX: clamp(ox + dirSign * minLen, 0, simResX - 1),
-        destY: clamp(oy + slopeSign * Math.max(minLen * vertFrac, minYDelta), simResY * 0.06, simResY * 0.92),
-      };
+    let outX = destX;
+    let outY = destY;
+    if (!(len >= minLen && Math.abs(dy) >= minYDelta)) {
+      if (horizontal) {
+        const dirSign = dx >= 0 ? 1 : (dx < 0 ? -1 : (shaderRand(ox * 0.01 + oy) > 0.5 ? 1 : -1));
+        const slopeSign = spanOpts.slopeSign ?? (dy >= 0 ? 1 : -1);
+        const vertFrac = spanOpts.vertFrac ?? 0.10 + shaderRand(ox * 0.02 + oy) * 0.32;
+        outX = clamp(ox + dirSign * minLen, 0, simResX - 1);
+        outY = clamp(oy + slopeSign * Math.max(minLen * vertFrac, minYDelta), simResY * 0.06, simResY * 0.92);
+      } else {
+        const angle = Math.atan2(dy || -0.12, dx || 0.1);
+        outX = clamp(ox + Math.cos(angle) * minLen, 0, simResX - 1);
+        outY = clamp(oy + Math.sin(angle) * minLen * 0.35, simResY * 0.06, simResY * 0.92);
+      }
     }
-    const angle = Math.atan2(dy || -0.12, dx || 0.1);
-    return {
-      destX: clamp(ox + Math.cos(angle) * minLen, 0, simResX - 1),
-      destY: clamp(oy + Math.sin(angle) * minLen * 0.35, simResY * 0.06, simResY * 0.92),
-    };
+    if (spanOpts.cache && spanOpts.minCloud != null) {
+      const snapped = snapDestToCloud(spanOpts.cache, ox, oy, outX, outY, spanOpts.minCloud);
+      outX = snapped.destX;
+      outY = snapped.destY;
+    }
+    return { destX: outX, destY: outY };
   }
 
-  function buildBoltBranches(routePoints, seed, branchCount, simResX, branchScale) {
+  /**
+   * Multi-level geometric branches. Tips are cloud-gated when cache is provided.
+   * Returns { x,y,ex,ey, level, intensity }.
+   */
+  function buildBoltBranches(routePoints, seed, branchCount, simResX, branchScale, opts) {
+    opts = opts || {};
     branchScale = branchScale ?? 1;
     const branches = [];
     if (!routePoints || routePoints.length < 2) return branches;
     const pathLen = routePoints.length;
-    for (let b = 0; b < branchCount; b++) {
-      const attachIdx = 1 + Math.floor(shaderRand(seed + b * 17) * (pathLen - 2));
+    const density = opts.branchDensity ?? 1;
+    const lengthMul = opts.branchLength ?? 1;
+    const cache = opts.cache;
+    const minCloud = opts.minCloud ?? 0.08;
+    const simResY = opts.simResY || simResX * 0.5;
+    const primaryCount = Math.max(4, Math.min(8, Math.round(branchCount * density)));
+
+    // Branch length from full trunk path length (not densified step spacing).
+    let totalPathLen = 0;
+    for (let i = 1; i < pathLen; i++) {
+      totalPathLen += Math.hypot(
+        routePoints[i].x - routePoints[i - 1].x,
+        routePoints[i].y - routePoints[i - 1].y);
+    }
+    totalPathLen = Math.max(totalPathLen, simResX * 0.08);
+
+    const tryTip = (px, py, ang, blen, vertBias) => {
+      let ex = px + Math.cos(ang) * blen;
+      let ey = py + Math.sin(ang) * blen * vertBias;
+      if (!cache) return { ex, ey, ok: true };
+      // Shorten to last in-cloud point instead of hard-rejecting the fork.
+      let lastOk = null;
+      for (let t = 1; t >= 0.02; t -= 0.08) {
+        const tx = px + (ex - px) * t;
+        const ty = py + (ey - py) * t;
+        if (scoreCloudCell(cache, tx, ty, { simResX, simResY, minCloud }) >= 0) {
+          lastOk = { ex: tx, ey: ty, ok: true };
+          break;
+        }
+      }
+      if (lastOk) {
+        const got = Math.hypot(lastOk.ex - px, lastOk.ey - py);
+        if (got < blen * 0.02) return { ex, ey, ok: false };
+        return lastOk;
+      }
+      return { ex, ey, ok: false };
+    };
+
+    for (let b = 0; b < primaryCount; b++) {
+      const attachIdx = 1 + Math.floor(shaderRand(seed + b * 17) * Math.max(1, pathLen - 2));
       const p = routePoints[clamp(attachIdx, 0, pathLen - 1)];
       const next = routePoints[clamp(attachIdx + 1, 0, pathLen - 1)];
       const segAngle = Math.atan2(next.y - p.y, next.x - p.x);
       const ang = segAngle + (shaderRand(seed + b * 31) - 0.5) * 1.8;
-      const segLen = Math.hypot(next.x - p.x, next.y - p.y);
-      const blen = Math.min(segLen * (0.06 + shaderRand(seed + b * 43) * 0.20) * branchScale,
-        simResX * 0.028 * branchScale);
-      const vertBias = 0.25 + shaderRand(seed + b * 53) * 0.55;
+      const blen = Math.min(
+        totalPathLen * (0.12 + shaderRand(seed + b * 43) * 0.23) * branchScale * lengthMul,
+        simResX * 0.18 * branchScale * lengthMul);
+      const vertBias = 0.35 + shaderRand(seed + b * 53) * 0.65;
+      const tip = tryTip(p.x, p.y, ang, blen, vertBias);
+      if (!tip.ok) continue;
+
+      // Mid-knot for 2-segment zig-zag packing.
+      const mdx = tip.ex - p.x;
+      const mdy = tip.ey - p.y;
+      const mlen = Math.max(Math.hypot(mdx, mdy), 1e-3);
+      const mpx = -mdy / mlen;
+      const mpy = mdx / mlen;
+      const moff = (shaderRand(seed + b * 59) - 0.5) * blen * 0.28;
+      let mx = p.x + mdx * 0.5 + mpx * moff;
+      let my = p.y + mdy * 0.5 + mpy * moff;
+      if (cache && scoreCloudCell(cache, mx, my, { simResX, simResY, minCloud }) < 0) {
+        mx = p.x + mdx * 0.5;
+        my = p.y + mdy * 0.5;
+      }
+
       branches.push({
         x: p.x, y: p.y,
-        ex: p.x + Math.cos(ang) * blen,
-        ey: p.y + Math.sin(ang) * blen * vertBias,
+        ex: tip.ex, ey: tip.ey,
+        mx, my,
+        level: 0,
+        intensity: 0.72 + shaderRand(seed + b * 61) * 0.2,
       });
+
+      // Level-1 secondaries off ~45% of primary tips.
+      if (shaderRand(seed + b * 71) < 0.45) {
+        const subCount = 1 + (shaderRand(seed + b * 73) > 0.5 ? 1 : 0);
+        for (let s = 0; s < subCount; s++) {
+          const sang = ang + (shaderRand(seed + b * 79 + s * 13) - 0.5) * 1.4;
+          const slen = blen * (0.35 + shaderRand(seed + b * 83 + s) * 0.35);
+          const stip = tryTip(tip.ex, tip.ey, sang, slen, 0.5 + shaderRand(seed + b * 89 + s) * 0.5);
+          if (!stip.ok) continue;
+          branches.push({
+            x: tip.ex, y: tip.ey,
+            ex: stip.ex, ey: stip.ey,
+            level: 1,
+            intensity: 0.42 + shaderRand(seed + b * 97 + s) * 0.18,
+          });
+          // Level-2 wisps off ~25% of L1 tips.
+          if (shaderRand(seed + b * 101 + s * 7) < 0.25) {
+            const wang = sang + (shaderRand(seed + b * 103 + s) - 0.5) * 1.2;
+            const wlen = slen * (0.30 + shaderRand(seed + b * 107 + s) * 0.30);
+            const wtip = tryTip(stip.ex, stip.ey, wang, wlen, 0.45 + shaderRand(seed + b * 109 + s) * 0.4);
+            if (!wtip.ok) continue;
+            branches.push({
+              x: stip.ex, y: stip.ey,
+              ex: wtip.ex, ey: wtip.ey,
+              level: 2,
+              intensity: 0.28 + shaderRand(seed + b * 113 + s) * 0.12,
+            });
+          }
+        }
+      }
     }
     return branches;
+  }
+
+  /**
+   * Perpendicular micro-jitter for ragged bolt paths.
+   * Keeps endpoints fixed; cloud-gates midpoints when cache/minCloud provided.
+   */
+  function jitterRoutePoints(points, seed, simResX, simResY, ampFrac, cache, minCloud) {
+    if (!points || points.length < 3) return points ? points.slice() : [];
+    const amp = simResX * (ampFrac != null ? ampFrac : 0.008);
+    const out = [{ x: points[0].x, y: points[0].y }];
+    for (let i = 1; i < points.length - 1; i++) {
+      const prev = points[i - 1];
+      const next = points[i + 1];
+      const dx = next.x - prev.x;
+      const dy = next.y - prev.y;
+      const len = Math.max(Math.hypot(dx, dy), 1e-3);
+      const px = -dy / len;
+      const py = dx / len;
+      const off = (shaderRand(seed + i * 19.7) - 0.5) * 2.0 * amp
+        + (shaderRand(seed + i * 41.3) - 0.5) * amp * 0.55;
+      let nx = points[i].x + px * off;
+      let ny = points[i].y + py * off;
+      nx = clamp(nx, 0, simResX - 1);
+      ny = clamp(ny, simResY * 0.06, simResY * 0.92);
+      if (cache && minCloud != null && readCloud(cache, nx, ny) < minCloud) {
+        // Keep original if jitter left the cloud.
+        nx = points[i].x;
+        ny = points[i].y;
+      }
+      out.push({ x: nx, y: ny });
+    }
+    out.push({ x: points[points.length - 1].x, y: points[points.length - 1].y });
+    return out;
+  }
+
+  /** Resample route to K cloud-validated knots for GPU polyline packing. */
+  function resampleRouteKnots(routePoints, knotCount, cache, minCloud, simResX, simResY) {
+    if (!routePoints || routePoints.length < 2)
+      return routePoints ? routePoints.slice() : [];
+    const n = Math.max(2, Math.min(knotCount || 4, routePoints.length));
+    if (routePoints.length <= n)
+      return routePoints.slice();
+    const knots = [];
+    for (let k = 0; k < n; k++) {
+      const t = k / (n - 1);
+      const idx = Math.min(routePoints.length - 1, Math.round(t * (routePoints.length - 1)));
+      let p = routePoints[idx];
+      if (cache && minCloud != null && k > 0 && k < n - 1) {
+        const score = scoreCloudCell(cache, p.x, p.y, { simResX, simResY, minCloud });
+        if (score < 0) {
+          // Search nearby route points for in-cloud substitute.
+          for (let d = 1; d < 6; d++) {
+            const a = routePoints[clamp(idx - d, 0, routePoints.length - 1)];
+            const b = routePoints[clamp(idx + d, 0, routePoints.length - 1)];
+            if (scoreCloudCell(cache, a.x, a.y, { simResX, simResY, minCloud }) >= 0) { p = a; break; }
+            if (scoreCloudCell(cache, b.x, b.y, { simResX, simResY, minCloud }) >= 0) { p = b; break; }
+          }
+        }
+      }
+      knots.push({ x: p.x, y: p.y });
+    }
+    // Deduplicate consecutive identical knots.
+    const out = [knots[0]];
+    for (let i = 1; i < knots.length; i++) {
+      if (Math.hypot(knots[i].x - out[out.length - 1].x, knots[i].y - out[out.length - 1].y) > 0.5)
+        out.push(knots[i]);
+    }
+    if (out.length < 2)
+      out.push(routePoints[routePoints.length - 1]);
+    return out;
   }
 
   function pathLengthNorm(points, simResX, simResY) {
@@ -1034,7 +1315,7 @@
   }
 
   /**
-   * V2.6 — IC / CC diffuse flash only (no bolt channels).
+   * Sheet (and legacy flash) placement — diffuse cloud glow, no bolt channels.
    * 50% in-front of cloud layer, 50% behind.
    */
   function buildFlashPlacement(ltType, pick, cache, eventId, slot, simResX, simResY, seed, controls, opts) {
@@ -1116,12 +1397,9 @@
     };
   }
 
-  function isFlashOnlyType(ltType, strobeBurst) {
-    if (ltType === LT.INTRACLOUD || ltType === LT.CLOUD_TO_CLOUD)
-      return true;
-    if (strobeBurst && ltType === LT.SHEET)
-      return true;
-    return false;
+  function isFlashOnlyType(ltType, _strobeBurst) {
+    // IC/CC use bolt channels; sheet stays diffuse flash.
+    return ltType === LT.SHEET;
   }
 
   function isStrobeChannel(channelId) {
@@ -1228,9 +1506,12 @@
    */
   function buildBoltGeometry(ltType, pick, cache, profile, eventId, slot, simResX, simResY, controls, opts) {
     opts = opts || {};
+    controls = controls || {};
     if (isFlashOnlyType(ltType)) return null;
     const seed = eventId * 29 + slot * 401 + pick.originX * 0.01;
     const boltProfile = scaleBoltProfile(seed, ltType);
+    const cloudType = isCloudChannelType(ltType);
+    const pathMinCloud = cloudType ? cloudPathMinCloud(controls, 'intracloud') : 0.04;
     let ox = pick.originX;
     let oy = pick.originY;
     let originCharge = pick.chargeVal ?? readCharge(cache, ox, oy);
@@ -1259,6 +1540,7 @@
         horizontal: true,
         anvilBias: true,
         requireOpposite: true,
+        minCloud: pathMinCloud,
         lenScale: boltProfile.lenScale * (small ? 0.55 : 1),
         minDistFrac: small ? 0.05 : (isSpider ? 0.08 : 0.06) * boltProfile.lenScale,
         maxDistFrac: small ? 0.18 : (isSpider ? 0.62 : 0.48) * boltProfile.lenScale,
@@ -1277,12 +1559,13 @@
         slopeSign: pair.destY >= oy ? 1 : -1,
         lenScale: boltProfile.lenScale,
         minYDeltaFrac: (small ? 0.03 : 0.05) * boltProfile.heightScale,
+        cache, minCloud: pathMinCloud,
       });
       destX = span.destX;
       destY = span.destY;
       const pathOpts = {
-        steps: small ? 8 : Math.floor((isSpider ? 18 : 14) * (0.75 + boltProfile.lenScale * 0.35)),
-        horizontal: true, originCharge,
+        steps: small ? 12 : Math.floor((isSpider ? 28 : 22) * (0.75 + boltProfile.lenScale * 0.35)),
+        horizontal: true, originCharge, minCloud: pathMinCloud,
       };
       const path = usesBentPath(ltType, opts)
         ? buildPathViaMidpoint(cache, ox, oy, destX, destY, eventId, slot, simResX, simResY, pathOpts)
@@ -1296,38 +1579,91 @@
         viaMidpoint = true;
       }
     } else if (ltType === LT.CLOUD_TO_CLOUD) {
+      horizontal = true;
       branchCount = 4;
-      const destCell = findOpposingChargeCell(cache, pick, eventId, slot, simResX, simResY, 0.08);
-      destX = destCell.x;
-      destY = destCell.y;
-      const span = ensureMinimumSpan(ox, oy, destX, destY, simResX, simResY, 0.12, false);
-      destX = span.destX;
-      destY = span.destY;
-      const path = findChargedPath(cache, ox, oy, destX, destY, eventId, slot, simResX, simResY, {
-        steps: 14, originCharge,
+      const pair = findChargedEndpointPair(cache, pick, eventId, slot, simResX, simResY, {
+        horizontal: true,
+        requireOpposite: true,
+        minCloud: pathMinCloud,
+        lenScale: boltProfile.lenScale,
+        minDistFrac: 0.10 * boltProfile.lenScale,
+        maxDistFrac: 0.42 * boltProfile.lenScale,
+        minYDeltaFrac: 0.03 * boltProfile.heightScale,
+        maxYDeltaFrac: 0.22 * boltProfile.heightScale,
+        samples: 36,
       });
+      ox = pair.originX;
+      oy = pair.originY;
+      originCharge = pair.originCharge;
+      destX = pair.destX;
+      destY = pair.destY;
+      const span = ensureMinimumSpan(ox, oy, destX, destY, simResX, simResY,
+        0.12 * boltProfile.lenScale, true, {
+          vertFrac: 0.08 + shaderRand(seed + 83) * 0.28 * boltProfile.heightScale,
+          slopeSign: destY >= oy ? 1 : -1,
+          lenScale: boltProfile.lenScale,
+          minYDeltaFrac: 0.03 * boltProfile.heightScale,
+          cache, minCloud: pathMinCloud,
+        });
+      const spanDestX = span.destX;
+      const spanDestY = span.destY;
+      const path = resolveCloudBoltPath(
+        cache, ox, oy, spanDestX, spanDestY, eventId, slot, simResX, simResY,
+        { steps: 28, horizontal: true, originCharge, minCloud: pathMinCloud });
       routePoints = path.points;
       destX = path.destX;
       destY = path.destY;
+      midX = path.midX;
+      midY = path.midY;
+      viaMidpoint = true;
     } else if (ltType === LT.INTRACLOUD) {
-      branchCount = 3;
-      const destCell = findOpposingChargeCell(cache, pick, eventId, slot, simResX, simResY, 0.05);
-      destX = destCell.x;
-      destY = destCell.y;
-      const span = ensureMinimumSpan(ox, oy, destX, destY, simResX, simResY, 0.06, false);
-      destX = span.destX;
-      destY = span.destY;
-      const path = findChargedPath(cache, ox, oy, destX, destY, eventId, slot, simResX, simResY, {
-        steps: 12, originCharge,
+      horizontal = Math.abs(shaderRand(seed + 41) - 0.5) > 0.12;
+      branchCount = 4;
+      const pair = findChargedEndpointPair(cache, pick, eventId, slot, simResX, simResY, {
+        horizontal,
+        requireOpposite: true,
+        minCloud: pathMinCloud,
+        lenScale: boltProfile.lenScale,
+        minDistFrac: 0.05 * boltProfile.lenScale,
+        maxDistFrac: 0.28 * boltProfile.lenScale,
+        minYDeltaFrac: 0.025 * boltProfile.heightScale,
+        maxYDeltaFrac: 0.18 * boltProfile.heightScale,
+        samples: 28,
       });
+      ox = pair.originX;
+      oy = pair.originY;
+      originCharge = pair.originCharge;
+      destX = pair.destX;
+      destY = pair.destY;
+      const span = ensureMinimumSpan(ox, oy, destX, destY, simResX, simResY,
+        0.07 * boltProfile.lenScale, horizontal, {
+          vertFrac: 0.06 + shaderRand(seed + 85) * 0.22 * boltProfile.heightScale,
+          slopeSign: destY >= oy ? 1 : -1,
+          lenScale: boltProfile.lenScale,
+          minYDeltaFrac: 0.025 * boltProfile.heightScale,
+          cache, minCloud: pathMinCloud,
+        });
+      const spanDestX = span.destX;
+      const spanDestY = span.destY;
+      const path = resolveCloudBoltPath(
+        cache, ox, oy, spanDestX, spanDestY, eventId, slot, simResX, simResY, {
+          steps: 26,
+          horizontal: Math.abs(spanDestX - ox) > Math.abs(spanDestY - oy) * 0.85,
+          originCharge,
+          minCloud: pathMinCloud,
+        });
       routePoints = path.points;
       destX = path.destX;
       destY = path.destY;
+      midX = path.midX;
+      midY = path.midY;
+      viaMidpoint = true;
     } else if (ltType === LT.SHEET) {
       branchCount = Math.max(2, Math.floor(3 * boltProfile.branchScale + shaderRand(seed + 9)));
       const pair = findChargedEndpointPair(cache, pick, eventId, slot, simResX, simResY, {
         horizontal: shaderRand(seed + 61) > 0.35,
         anvilBias: true,
+        minCloud: pathMinCloud,
         lenScale: boltProfile.lenScale,
         minDistFrac: 0.05 * boltProfile.lenScale,
         maxDistFrac: 0.38 * boltProfile.lenScale,
@@ -1345,13 +1681,15 @@
           vertFrac: 0.12 + shaderRand(seed + 71) * 0.35 * boltProfile.heightScale,
           slopeSign: destY >= oy ? 1 : -1,
           lenScale: boltProfile.lenScale,
+          cache, minCloud: pathMinCloud,
         });
       destX = span.destX;
       destY = span.destY;
       const pathOpts = {
-        steps: Math.floor(12 + boltProfile.lenScale * 8),
+        steps: Math.floor(18 + boltProfile.lenScale * 12),
         horizontal: Math.abs(destX - ox) > Math.abs(destY - oy) * 1.2,
         originCharge,
+        minCloud: pathMinCloud,
       };
       const path = buildPathViaMidpoint(cache, ox, oy, destX, destY, eventId, slot, simResX, simResY, pathOpts);
       routePoints = path.points;
@@ -1366,7 +1704,7 @@
       destX = destCell.x;
       destY = destCell.y;
       const path = findChargedPath(cache, ox, oy, destX, destY, eventId, slot, simResX, simResY, {
-        steps: 12, originCharge,
+        steps: 18, originCharge,
       });
       routePoints = path.points;
       destX = path.destX;
@@ -1380,7 +1718,7 @@
       destX = span.destX;
       destY = span.destY;
       const path = findChargedPath(cache, ox, oy, destX, destY, eventId, slot, simResX, simResY, {
-        steps: 18, horizontal: true, originCharge,
+        steps: 28, horizontal: true, originCharge,
       });
       routePoints = path.points;
       destX = path.destX;
@@ -1398,7 +1736,84 @@
       return null;
     }
 
-    const branches = buildBoltBranches(routePoints, seed, branchCount, simResX, boltProfile.branchScale);
+    // Densify short routes so CG/simple chords can receive ragged mid-jitter.
+    if (routePoints.length === 2) {
+      const a = routePoints[0];
+      const b = routePoints[1];
+      const denser = [a];
+      const densifyN = ltType === LT.CG || ltType === LT.CG_POSITIVE ? 8 : 5;
+      for (let k = 1; k < densifyN; k++) {
+        const t = k / densifyN;
+        denser.push({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t });
+      }
+      denser.push(b);
+      routePoints = denser;
+    }
+    // Ragged micro-jitter on the trunk (cloud-gated for in-cloud types).
+    routePoints = jitterRoutePoints(
+      routePoints, seed + 1201, simResX, simResY,
+      cloudType ? 0.010 : 0.008,
+      cloudType ? cache : null,
+      cloudType ? pathMinCloud : null);
+    // IC/CC fractal look needs dense CPU knots (≥10) so SDF segments stay jagged.
+    if (cloudType && routePoints.length < 10) {
+      const target = 10;
+      const denser = [routePoints[0]];
+      for (let k = 1; k < target; k++) {
+        const t = k / target;
+        const f = t * (routePoints.length - 1);
+        const i0 = Math.floor(f);
+        const i1 = Math.min(i0 + 1, routePoints.length - 1);
+        const u = f - i0;
+        const a = routePoints[i0];
+        const b = routePoints[i1];
+        denser.push({ x: a.x + (b.x - a.x) * u, y: a.y + (b.y - a.y) * u });
+      }
+      denser.push(routePoints[routePoints.length - 1]);
+      routePoints = denser;
+      routePoints = jitterRoutePoints(
+        routePoints, seed + 1403, simResX, simResY,
+        0.006, cache, pathMinCloud);
+    }
+    if (routePoints.length >= 2) {
+      destX = routePoints[routePoints.length - 1].x;
+      destY = routePoints[routePoints.length - 1].y;
+      ox = routePoints[0].x;
+      oy = routePoints[0].y;
+    }
+    if (viaMidpoint && routePoints.length >= 3) {
+      const midIdx = Math.floor(routePoints.length * 0.5);
+      midX = routePoints[midIdx].x;
+      midY = routePoints[midIdx].y;
+    }
+
+    let branches = buildBoltBranches(routePoints, seed, branchCount, simResX, boltProfile.branchScale, {
+      cache: cloudType ? cache : null,
+      minCloud: pathMinCloud,
+      simResY,
+      branchDensity: controls.branchDensity ?? controls.cloudLightningBranchDensity ?? 1,
+      branchLength: controls.branchLength ?? controls.cloudLightningBranchLength ?? 1,
+    });
+    // Ensure L0 branches carry a mid-knot for 2-segment GPU zig-zag packing.
+    for (let bi = 0; bi < branches.length; bi++) {
+      const br = branches[bi];
+      if ((br.level || 0) > 0) continue;
+      if (Number.isFinite(br.mx) && Number.isFinite(br.my)) continue;
+      const dx = br.ex - br.x;
+      const dy = br.ey - br.y;
+      const len = Math.max(Math.hypot(dx, dy), 1e-3);
+      const px = -dy / len;
+      const py = dx / len;
+      const off = (shaderRand(seed + bi * 53 + 331) - 0.5) * simResX * 0.012;
+      let jx = (br.x + br.ex) * 0.5 + px * off;
+      let jy = (br.y + br.ey) * 0.5 + py * off;
+      if (cloudType && cache && readCloud(cache, jx, jy) < pathMinCloud) {
+        jx = (br.x + br.ex) * 0.5;
+        jy = (br.y + br.ey) * 0.5;
+      }
+      br.mx = jx;
+      br.my = jy;
+    }
     const pathNorm = pathLengthNorm(routePoints, simResX, simResY);
     const cloud = readCloud(cache, ox, oy);
     const pierce = controls.cloudObscurationStrength ?? 0.55;
@@ -1546,9 +1961,11 @@
       || ltType === LT.UPWARD || ltType === LT.BOLT_FROM_BLUE;
   }
 
-  /** V2.6 — all types render with the CG bolt texture asset. */
+  /** Prefer cleaner trunk atlas variants for cloud channels (geometric branches supply forks). */
   function boltTextureIndexForType(ltType, seed) {
     if (ltType === LT.CG_POSITIVE) return Math.floor(shaderRand(seed + 5) * 2);
+    if (isCloudChannelType(ltType))
+      return Math.floor(shaderRand(seed + 1) * 2); // variants 0–1: cleaner trunk
     return Math.floor(shaderRand(seed + 1) * 4);
   }
 
@@ -1600,189 +2017,51 @@
     };
   }
 
-  function buildSpawnToolsFolder(parentFolder, callbacks) {
-    if (!callbacks.forceSpawnLightningType || !callbacks.forceSpawnAllLightningTypes)
-      return;
-    const spawnFolder = parentFolder.addFolder('Spawn Tools');
-    const actions = {
-      'Spawn All Types': () => callbacks.forceSpawnAllLightningTypes(),
-    };
-    for (const ltType of SPAWNABLE_LT_TYPES) {
-      const label = LT_NAMES[ltType] || ('Type ' + ltType);
-      actions['Spawn ' + label] = () => callbacks.forceSpawnLightningType(ltType);
-    }
-    spawnFolder.add(actions, 'Spawn All Types');
-    for (const ltType of SPAWNABLE_LT_TYPES) {
-      const label = LT_NAMES[ltType] || ('Type ' + ltType);
-      spawnFolder.add(actions, 'Spawn ' + label);
-    }
-    return spawnFolder;
-  }
-
   function buildLightningV2GUI(datGui, controls, callbacks) {
     const folder = datGui.addFolder('Lightning');
-    const presetCtrl = folder.add(controls, 'lightningPreset', Object.keys(PRESETS))
-      .name('Preset').onChange(name => {
-        if (name !== 'Custom') {
-          applyPreset(controls, name);
-          callbacks.onSettingsChanged();
-        }
-      });
-
-    const freqFolder = folder.addFolder('Frequency');
+    const onChanged = () => {
+      controls.lightningPreset = 'Custom';
+      if (callbacks && callbacks.onSettingsChanged)
+        callbacks.onSettingsChanged();
+    };
     const onFreqChanged = () => {
       controls.useRealisticLightningRatios = false;
-      controls.lightningPreset = 'Custom';
-      callbacks.onSettingsChanged();
+      onChanged();
     };
-    const addFreqSlider = (obj, prop, min, max, step, label) => {
-      freqFolder.add(obj, prop, min, max, step).name(label).onChange(onFreqChanged);
-    };
-    freqFolder.add(controls, 'globalLightningMultiplier', 0, 3, 0.05).name('Global Multiplier')
-      .onChange(() => { controls.lightningPreset = 'Custom'; callbacks.onSettingsChanged(); });
-    freqFolder.add(controls, 'useRealisticLightningRatios').name('Realistic Ratios')
-      .onChange(() => { controls.lightningPreset = 'Custom'; callbacks.onSettingsChanged(); });
-    addFreqSlider(controls, 'intracloudFrequency', 0, 100, 0.5, 'Intracloud');
-    addFreqSlider(controls, 'cloudToCloudFrequency', 0, 100, 0.5, 'Cloud-to-Cloud');
-    addFreqSlider(controls, 'cloudToGroundFrequency', 0, 100, 0.5, 'Cloud-to-Ground');
-    addFreqSlider(controls, 'positiveCgFrequency', 0, 5, 0.05, 'Positive CG');
-    addFreqSlider(controls, 'spiderLightningFrequency', 0, 5, 0.05, 'Spider');
-    addFreqSlider(controls, 'anvilCrawlerFrequency', 0, 5, 0.05, 'Anvil Crawler');
-    addFreqSlider(controls, 'upwardLightningFrequency', 0, 2, 0.02, 'Upward');
-    addFreqSlider(controls, 'boltFromBlueFrequency', 0, 2, 0.02, 'Bolt From Blue');
-    addFreqSlider(controls, 'dryLightningFrequency', 0, 5, 0.05, 'Dry Lightning');
-    addFreqSlider(controls, 'sheetLightningFrequency', 0, 20, 0.1, 'Sheet');
 
-    const visualFolder = folder.addFolder('Visual');
-    visualFolder.add(controls, 'lightningBrightness', 0.1, 3, 0.05).name('Brightness');
-    visualFolder.add(controls, 'lightningContrast', 0.1, 3, 0.05).name('Contrast');
-    visualFolder.add(controls, 'channelThickness', 0.25, 4, 0.05).name('Channel Thickness');
-    visualFolder.add(controls, 'branchDensity', 0.1, 3, 0.05).name('Branch Density');
-    visualFolder.add(controls, 'branchLength', 0.1, 3, 0.05).name('Branch Length');
-    visualFolder.add(controls, 'flashDuration', 0.2, 3, 0.05).name('Flash Duration');
-    visualFolder.add(controls, 'channelGlowDuration', 0.1, 3, 0.05).name('Channel Glow');
-    visualFolder.add(controls, 'bloomStrength', 0, 3, 0.05).name('Bloom Strength');
-    visualFolder.add(controls, 'glowStrength', 0, 3, 0.05).name('Glow Strength');
-    visualFolder.add(controls, 'atmosphericIlluminationStrength', 0, 3, 0.05).name('Atmospheric');
-    visualFolder.add(controls, 'cloudIlluminationStrength', 0, 3, 0.05).name('Cloud');
-    visualFolder.add(controls, 'rainShaftIlluminationStrength', 0, 3, 0.05).name('Rain Shaft');
-    visualFolder.add(controls, 'terrainIlluminationStrength', 0, 3, 0.05).name('Terrain');
-    visualFolder.add(controls, 'nighttimeFlashStrength', 0, 3, 0.05).name('Night Flash');
-    visualFolder.add(controls, 'daytimeFlashStrength', 0, 2, 0.05).name('Day Flash');
-    visualFolder.add(controls, 'ltEnableBloom').name('Enable Bloom');
-    visualFolder.add(controls, 'ltEnableAtmosphericLighting').name('Atmospheric Lighting');
-    visualFolder.add(controls, 'ltEnableCloudIllumination').name('Cloud Illumination');
-    visualFolder.add(controls, 'ltEnableRainShaftIllumination').name('Rain Shaft Illumination');
-    visualFolder.add(controls, 'ltEnableTerrainIllumination').name('Terrain Illumination');
-    visualFolder.add(controls, 'ltEnablePersistentChannelGlow').name('Persistent Channel Glow');
-    visualFolder.add(controls, 'ltEnableVolumetricCloudFlashing').name('Volumetric Cloud Flash');
+    // Flat controls only — frequency, look, performance, force spawn.
+    if (controls.enableLightning == null) controls.enableLightning = true;
+    if (controls.ltDrawSdfBolts == null) controls.ltDrawSdfBolts = true;
+    if (!controls.ltSdfQuality) controls.ltSdfQuality = 'Balanced';
 
-    const cloudChFolder = folder.addFolder('Cloud Channels');
-    const onCloudChChanged = () => { controls.lightningPreset = 'Custom'; callbacks.onSettingsChanged(); };
-    cloudChFolder.add(controls, 'intracloudChannelVisibility', 0, 2, 0.05).name('Intracloud Visibility')
-      .onChange(onCloudChChanged);
-    cloudChFolder.add(controls, 'cloudToCloudChannelVisibility', 0, 2, 0.05).name('CC Visibility')
-      .onChange(onCloudChChanged);
-    cloudChFolder.add(controls, 'spiderChannelVisibility', 0, 2, 0.05).name('Spider Visibility')
-      .onChange(onCloudChChanged);
-    cloudChFolder.add(controls, 'anvilChannelVisibility', 0, 2, 0.05).name('Anvil Visibility')
-      .onChange(onCloudChChanged);
-    cloudChFolder.add(controls, 'cloudLightningBranchDensity', 0.2, 3, 0.05).name('Cloud Branch Density')
-      .onChange(onCloudChChanged);
-    cloudChFolder.add(controls, 'cloudLightningBranchLength', 0.2, 3, 0.05).name('Cloud Branch Length')
-      .onChange(onCloudChChanged);
-    cloudChFolder.add(controls, 'cloudLightningOpacity', 0.2, 2, 0.05).name('Cloud Channel Opacity')
-      .onChange(onCloudChChanged);
-    cloudChFolder.add(controls, 'cloudObscurationStrength', 0, 1.5, 0.05).name('Cloud Pierce')
-      .onChange(onCloudChChanged);
-    cloudChFolder.add(controls, 'channelIllumRatio', 0.1, 1.5, 0.05).name('Channel/Illum Balance')
-      .onChange(onCloudChChanged);
-    cloudChFolder.add(controls, 'precipOnlyLightningChance', 0, 1, 0.02).name('Precip-Only Chance')
-      .onChange(onCloudChChanged);
+    folder.add(controls, 'enableLightning').name('Enable Lightning').onChange(onChanged);
+    folder.add(controls, 'globalLightningMultiplier', 0, 100, 0.5).name('Frequency').onChange(onFreqChanged);
+    folder.add(controls, 'cloudToGroundFrequency', 0, 100, 0.5).name('Cloud-to-Ground').onChange(onFreqChanged);
+    folder.add(controls, 'intracloudFrequency', 0, 100, 0.5).name('Intracloud').onChange(onFreqChanged);
+    folder.add(controls, 'spiderLightningFrequency', 0, 100, 0.5).name('Spider').onChange(onFreqChanged);
 
-    const behaviorFolder = folder.addFolder('Behavior');
-    behaviorFolder.add(controls, 'chargeGenerationRate', 0, 5, 0.05).name('Charge Generation')
-      .onChange(callbacks.setChargeGenerationUniforms);
-    behaviorFolder.add(controls, 'chargeMinCloudDensity', 0.05, 0.7, 0.01).name('Min Cloud Density')
-      .onChange(callbacks.setChargeGenerationUniforms);
-    behaviorFolder.add(controls, 'chargeStormCoreThreshold', 0.1, 0.8, 0.01).name('Storm Core Threshold')
-      .onChange(callbacks.setChargeGenerationUniforms);
-    behaviorFolder.add(controls, 'leaderSpeed', 0.2, 3, 0.05).name('Leader Speed');
-    behaviorFolder.add(controls, 'returnStrokeProbability', 0, 1, 0.05).name('Return Stroke Prob');
-    behaviorFolder.add(controls, 'maxReturnStrokes', 1, 8, 1).name('Max Return Strokes');
-    behaviorFolder.add(controls, 'electricalBurstFrequency', 0, 2, 0.05).name('Burst Frequency');
-    behaviorFolder.add(controls, 'electricalBurstIntensity', 0.2, 3, 0.05).name('Burst Intensity');
-    behaviorFolder.add(controls, 'chargeDissipationRate', 0.2, 3, 0.05).name('Charge Dissipation');
-    behaviorFolder.add(controls, 'chargeTransportStrength', 0, 3, 0.05).name('Charge Transport');
-    behaviorFolder.add(controls, 'groundConductivityInfluence', 0, 3, 0.05).name('Conductivity Influence');
-    behaviorFolder.add(controls, 'terrainInfluence', 0, 3, 0.05).name('Terrain Influence');
-    behaviorFolder.add(controls, 'stormOrganizationInfluence', 0, 3, 0.05).name('Storm Organization');
-    behaviorFolder.add(controls, 'lightningClusteringStrength', 0, 1, 0.05).name('Clustering Strength');
-    behaviorFolder.add(controls, 'lightningSpawnStrictness', 0.6, 2.0, 0.05).name('Spawn Strictness')
-      .onChange(() => { controls.lightningPreset = 'Custom'; callbacks.onSettingsChanged(); });
-    behaviorFolder.add(controls, 'enableChargeTransport').name('Charge Transport');
-    behaviorFolder.add(controls, 'enableGroundConductivity').name('Ground Conductivity');
-    behaviorFolder.add(controls, 'enableElectricalBurstCycles').name('Electrical Bursts');
-    behaviorFolder.add(controls, 'enableLightningClustering').name('Lightning Clustering');
-    behaviorFolder.add(controls, 'enableTerrainTargeting').name('Terrain Targeting');
-    behaviorFolder.add(controls, 'enableDynamicStormElectricalEvolution').name('Dynamic Evolution');
+    folder.add(controls, 'lightningBrightness', 0.1, 3, 0.05).name('Brightness').onChange(onChanged);
+    folder.add(controls, 'lightningContrast', 0.1, 3, 0.05).name('Contrast').onChange(onChanged);
+    folder.add(controls, 'glowStrength', 0, 3, 0.05).name('Glow').onChange(onChanged);
+    folder.add(controls, 'flashDuration', 0.2, 3, 0.05).name('Flash Duration').onChange(onChanged);
 
-    const thunderFolder = folder.addFolder('Thunder');
-    thunderFolder.add(controls, 'enableThunder').name('Enable Thunder');
-    thunderFolder.add(controls, 'thunderVolume', 0, 3, 0.05).name('Volume');
-    thunderFolder.add(controls, 'thunderDelayMultiplier', 0.2, 3, 0.05).name('Delay Multiplier');
-    thunderFolder.add(controls, 'thunderDuration', 0.2, 3, 0.05).name('Duration');
-    thunderFolder.add(controls, 'thunderBassStrength', 0, 3, 0.05).name('Bass Strength');
-    thunderFolder.add(controls, 'thunderDistanceAttenuation', 0, 3, 0.05).name('Distance Attenuation');
-    thunderFolder.add(controls, 'enableDistanceBasedThunderDelay').name('Distance Delay');
-    thunderFolder.add(controls, 'enableRollingThunder').name('Rolling Thunder');
-    thunderFolder.add(controls, 'enableThunderEchoes').name('Thunder Echoes');
+    folder.add(controls, 'enableThunder').name('Thunder').onChange(onChanged);
+    folder.add(controls, 'thunderVolume', 0, 3, 0.05).name('Thunder Volume').onChange(onChanged);
 
-    const perfFolder = folder.addFolder('Performance');
-    perfFolder.add(controls, 'lightningPerformanceTier', ['Low', 'Medium', 'High', 'Ultra', 'Custom'])
-      .name('Quality Tier').onChange(() => {
-        if (controls.lightningPerformanceTier !== 'Custom')
-          applyPerformanceTier(controls);
-      });
-    perfFolder.add(controls, 'maxActiveLightningEvents', 4, 500, 1).name('Max Events');
-    perfFolder.add(controls, 'maxActiveBolts', 1, 500, 1).name('Max Bolts');
-    perfFolder.add(controls, 'maxBranchCount', 8, 500, 4).name('Max Branches');
-    perfFolder.add(controls, 'maxIlluminationRadius', 0.2, 2, 0.05).name('Illumination Radius');
-    perfFolder.add(controls, 'lightningLODDistance', 0.2, 3, 0.05).name('LOD Distance');
-    perfFolder.add(controls, 'gpuEffectQuality', 0.2, 2, 0.05).name('GPU Effect Quality');
-    perfFolder.add(controls, 'dynamicLOD').name('Dynamic LOD');
-    perfFolder.add(controls, 'adaptiveLightningQuality').name('Adaptive Quality');
-    perfFolder.add(controls, 'performanceAutoScaling').name('Auto Scaling');
+    folder.add(controls, 'ltSdfQuality', ['Fast', 'Balanced', 'Full']).name('Bolt Quality').onChange(onChanged);
+    folder.add(controls, 'ltDrawSdfBolts').name('Draw Bolts').onChange(onChanged);
 
-    const debugFolder = folder.addFolder('Debug');
-    debugFolder.add(controls, 'debugShowChargeField').name('Charge Field');
-    debugFolder.add(controls, 'debugShowChargeGradient').name('Charge Gradient');
-    debugFolder.add(controls, 'debugShowLightningPotential').name('Potential Field');
-    debugFolder.add(controls, 'debugShowConductivityMap').name('Conductivity Map');
-    debugFolder.add(controls, 'debugShowStrikeOrigins').name('Strike Origins');
-    debugFolder.add(controls, 'debugShowStrikeDestinations').name('Strike Destinations');
-    debugFolder.add(controls, 'debugShowLightningTypeLabels').name('Type Labels');
-    debugFolder.add(controls, 'debugShowElectricalBurstRegions').name('Burst Regions');
-    debugFolder.add(controls, 'debugShowActiveLightningEvents').name('Active Events');
-    debugFolder.add(controls, 'debugShowThunderRadius').name('Thunder Radius');
-    debugFolder.add(controls, 'debugShowPerformanceMetrics').name('Performance Metrics');
-    debugFolder.add(controls, 'debugShowSurfaceCharge').name('Surface Charge');
-    debugFolder.add(controls, 'debugShowChargeOrganization').name('Charge Organization');
-    debugFolder.add(controls, 'debugShowSpiderRoutes').name('Spider Routes');
-    debugFolder.add(controls, 'debugShowAnvilRoutes').name('Anvil Routes');
-    debugFolder.add(controls, 'debugShowCloudPaths').name('Cloud Paths');
-    debugFolder.add(controls, 'debugShowLightningProbability').name('Probability Field');
-    debugFolder.add(controls, 'debugShowChannelVisibilityMask').name('Channel Visibility Mask');
-    debugFolder.add(controls, 'debugShowCloudObscurationMask').name('Cloud Obscuration Mask');
-    debugFolder.add(controls, 'debugShowGeneratedCloudPath').name('Generated Cloud Path');
-    debugFolder.add(controls, 'debugShowRenderedCloudPath').name('Rendered Cloud Path');
-    debugFolder.add(controls, 'debugShowBoltGeometryStats').name('Bolt Geometry Stats');
-    debugFolder.add(controls, 'debugShowBoltDiagnostics').name('Bolt Diagnostics Panel');
-
-    buildSpawnToolsFolder(folder, callbacks);
+    if (callbacks && callbacks.forceSpawnLightningType) {
+      const actions = {
+        'Force CG': () => callbacks.forceSpawnLightningType(LT.CG),
+        'Force Spider': () => callbacks.forceSpawnLightningType(LT.SPIDER),
+      };
+      folder.add(actions, 'Force CG');
+      folder.add(actions, 'Force Spider');
+    }
 
     folder.open();
-    return { folder, presetCtrl };
+    return { folder, presetCtrl: null };
   }
 
   const MIN_LIGHTNING_FIRE_INTENSITY = 0.002;
@@ -1899,6 +2178,10 @@
     PRESETS,
     PERFORMANCE_TIERS,
     MAX_SHADER_STRIKES,
+    cloudPathMinCloud,
+    isCloudChannelType,
+    isCgStrikeType,
+    resampleRouteKnots,
     applyPreset,
     applyPerformanceTier,
     getEffectiveFrequency,
