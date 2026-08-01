@@ -291,22 +291,15 @@ void main()
       base[3] += userInputValues[BRUSH_INTENSITY];
       if (isAnyWaterType(wall[TYPE]) && wall[DISTANCE] == 0)               // water / ice wall
         base[3] = clamp(base[TEMPERATURE], CtoK(-30.0), CtoK(maxWaterTemperatureC));
-    } else if (userInputType == 2) {                                       // water
-
-
-      //     if ()
-
+    } else if (userInputType == 2 && wall[DISTANCE] != 0) { // water vapor / cloud — air cells only (land TOTAL packs flood height)
       float cloudWaterChange = userInputValues[BRUSH_INTENSITY]; // positive intensity
-      // float vaporChange = max(userInputValues[BRUSH_INTENSITY]);
-
 
       if (water[CLOUD] > 0.0) {                // add as liquid
         water[CLOUD] += cloudWaterChange;
         water[CLOUD] = max(water[CLOUD], 0.0); // prevent negative cloudwater
-      }                                        // else {                                 // add as gas
+      }
       water[TOTAL] += cloudWaterChange;
       water[TOTAL] = max(water[TOTAL], 0.0);
-      // }
 
     } else if (userInputType == 3 && wall[DISTANCE] != 0) { // smoke, only apply if not wall
       water[SMOKE] += userInputValues[BRUSH_INTENSITY];

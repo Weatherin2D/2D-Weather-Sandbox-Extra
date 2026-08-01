@@ -1223,11 +1223,8 @@ void main()
 #define maxTreeHeight 40.       // height in meters when vegetation max = 127
 #define maxBuildingHeight 400.  // height in meters upto wich the urban texture reaches
 
-      // Surface facade detail is sub-pixel when zoomed out — skip expensive texture paths.
-      // Zoom-only: throttled visualQuality often stays ≤0.55 at default 3000×300, which hid trees.
-      bool showSurfaceDetail = view[2] / resolution.x > 0.0025;
-
-      if (showSurfaceDetail && isCustomTerrain(wallX0Ym[TYPE])) {
+      // Surface facade detail (urban, industrial, suburban, trees) stays visible at all zoom levels.
+      if (isCustomTerrain(wallX0Ym[TYPE])) {
         float heightAboveGround = localY + float(wall[VERT_DISTANCE] - 1);
         float urbanTexHeightNorm = maxBuildingHeight / cellHeight;
         float urbanTexCoordX = mod(fragCoord.x, resolution.x) * texAspect / urbanTexHeightNorm;
@@ -1244,7 +1241,7 @@ void main()
           color = texCol.rgb;
           opacity = texCol.a;
         }
-      } else if (showSurfaceDetail && wallX0Ym[TYPE] == WALLTYPE_URBAN) {
+      } else if (wallX0Ym[TYPE] == WALLTYPE_URBAN) {
 
         float heightAboveGround = localY + float(wall[VERT_DISTANCE] - 1);
 
@@ -1272,7 +1269,7 @@ void main()
           color = texCol.rgb;
           opacity = texCol.a;
         }
-      } else if (showSurfaceDetail && wallX0Ym[TYPE] == WALLTYPE_INDUSTRIAL) {
+      } else if (wallX0Ym[TYPE] == WALLTYPE_INDUSTRIAL) {
 
         float heightAboveGround = localY + float(wall[VERT_DISTANCE] - 1);
 
@@ -1300,7 +1297,7 @@ void main()
           color = texCol.rgb;
           opacity = texCol.a;
         }
-      } else if (wallX0Ym[TYPE] == WALLTYPE_SUBURBAN && showSurfaceDetail) {
+      } else if (wallX0Ym[TYPE] == WALLTYPE_SUBURBAN) {
 
         float heightAboveGround = localY + float(wall[VERT_DISTANCE] - 1);
         float suburbanTexHeightNorm = maxSuburbanBuildingHeight / cellHeight;
@@ -1323,7 +1320,7 @@ void main()
       }
 
 
-      if (showSurfaceDetail && wall[VERT_DISTANCE] == 1) {                                                 // 1 above surface
+      if (wall[VERT_DISTANCE] == 1) {                                                 // 1 above surface
                                                                                       //  if (wallX0Ym[VERT_DISTANCE] == 0) {
 
         float treeTexHeightNorm = maxTreeHeight / cellHeight;                         // example: 40 / 120 = 0.333

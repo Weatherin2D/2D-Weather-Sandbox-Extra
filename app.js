@@ -11675,6 +11675,95 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       .name('Risk/Sounding Update Freq');
     displayOverlays.add(guiControls, 'showGraph').onChange(hideOrShowGraph).name('Show Sounding Graph').listen();
     displayOverlays.add(guiControls, 'realDewPoint').name('Show Real Dew Point');
+    displayOverlays.add(guiControls, 'displaySynopticSystems')
+      .onChange(function() {
+        displaySynopticSystems = guiControls.displaySynopticSystems;
+        for (let i = 0; i < synopticSystems.length; i++)
+          synopticSystems[i].setHidden(!displaySynopticSystems);
+      })
+      .name('Show Synoptic Systems');
+    displayOverlays.add(guiControls, 'displayDrylines')
+      .onChange(function() {
+        if (window.WeatherSandbox && window.WeatherSandbox.synopticBoundaries)
+          window.WeatherSandbox.synopticBoundaries.setDisplayDrylines(guiControls.displayDrylines);
+      })
+      .name('Show Drylines');
+    displayOverlays.add(guiControls, 'displaySeaBreezes')
+      .onChange(function() {
+        if (window.WeatherSandbox && window.WeatherSandbox.synopticBoundaries)
+          window.WeatherSandbox.synopticBoundaries.setDisplaySeaBreezes(guiControls.displaySeaBreezes);
+      })
+      .name('Show Sea Breezes');
+    displayOverlays.add(guiControls, 'fogHazeStrength', 0.0, 2.0, 0.05)
+      .onChange(function() {
+        gl.useProgram(realisticDisplayProgram);
+        gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'fogHazeStrength'), guiControls.fogHazeStrength);
+      })
+      .name('Fog / Haze Strength');
+    displayOverlays.add(guiControls, 'stormTrackOverlay')
+      .onChange(function() {
+        if (!guiControls.stormTrackOverlay && stormTrackCanvas)
+          stormTrackCanvas.style.display = 'none';
+      })
+      .name('Storm Track Overlay');
+    displayOverlays.add(guiControls, 'outflowOverlay')
+      .onChange(function() {
+        if (!guiControls.outflowOverlay && outflowOverlayCanvas)
+          outflowOverlayCanvas.style.display = 'none';
+        if (!guiControls.outflowOverlay)
+          clearOutflowFronts();
+      })
+      .name('Outflow / Gust Front Overlay');
+    displayOverlays.add(guiControls, 'enableVectorField').name('Vector Field');
+    displayOverlays.add(guiControls, 'displayWeatherStations')
+      .onChange(function() {
+        displayWeatherStations = guiControls.displayWeatherStations;
+        for (i = 0; i < weatherStations.length; i++) {
+          weatherStations[i].setHidden(!displayWeatherStations);
+        }
+      })
+      .name('Weather Stations');
+    displayOverlays.add(guiControls, 'displayMeteogram')
+      .onChange(function() {
+        if (window.WeatherSandbox && window.WeatherSandbox.meteogram)
+          window.WeatherSandbox.meteogram.syncVisibilityFromGui();
+      })
+      .name('Meteogram Panel')
+      .listen();
+    displayOverlays.add(guiControls, 'displayRadars')
+      .onChange(function() {
+        displayRadars = guiControls.displayRadars;
+        for (i = 0; i < radars.length; i++) {
+          radars[i].setHidden(!displayRadars);
+        }
+      })
+      .name('Radars');
+    displayOverlays.add(guiControls, 'displayAirmassGenerators')
+      .onChange(function() {
+        displayAirmassGenerators = guiControls.displayAirmassGenerators;
+        for (i = 0; i < airmassGenerators.length; i++) {
+          airmassGenerators[i].setHidden(!displayAirmassGenerators);
+        }
+      })
+      .name('Airmass Generators');
+    displayOverlays.add(guiControls, 'displayWeatherBalloons')
+      .onChange(function() {
+        displayWeatherBalloons = guiControls.displayWeatherBalloons;
+        for (i = 0; i < weatherBalloons.length; i++) {
+          weatherBalloons[i].setHidden(!displayWeatherBalloons);
+        }
+      })
+      .name('Weather Balloons');
+    displayOverlays.add(guiControls, 'airplaneMode')
+      .onChange(function() {
+        airplaneMode = guiControls.airplaneMode;
+        if (airplaneMode) {
+          airplane.enableAirplaneMode(false);
+        } else {
+          airplane.disableAirplaneMode();
+        }
+      })
+      .name('Airplane Mode');
     displayOverlays.add(guiControls, 'showControlHelp')
       .name('Show Control Help')
       .onChange(function() {
@@ -11901,97 +11990,6 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
           guiControls.soundingMode ? 999.0 : guiControls.dragMultiplier);
       })
       .name('Sounding Mode');
-
-    var advancedOverlays = advanced_folder.addFolder('Overlays');
-    advancedOverlays.add(guiControls, 'displaySynopticSystems')
-      .onChange(function() {
-        displaySynopticSystems = guiControls.displaySynopticSystems;
-        for (let i = 0; i < synopticSystems.length; i++)
-          synopticSystems[i].setHidden(!displaySynopticSystems);
-      })
-      .name('Show Synoptic Systems');
-    advancedOverlays.add(guiControls, 'displayDrylines')
-      .onChange(function() {
-        if (window.WeatherSandbox && window.WeatherSandbox.synopticBoundaries)
-          window.WeatherSandbox.synopticBoundaries.setDisplayDrylines(guiControls.displayDrylines);
-      })
-      .name('Show Drylines');
-    advancedOverlays.add(guiControls, 'displaySeaBreezes')
-      .onChange(function() {
-        if (window.WeatherSandbox && window.WeatherSandbox.synopticBoundaries)
-          window.WeatherSandbox.synopticBoundaries.setDisplaySeaBreezes(guiControls.displaySeaBreezes);
-      })
-      .name('Show Sea Breezes');
-    advancedOverlays.add(guiControls, 'fogHazeStrength', 0.0, 2.0, 0.05)
-      .onChange(function() {
-        gl.useProgram(realisticDisplayProgram);
-        gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'fogHazeStrength'), guiControls.fogHazeStrength);
-      })
-      .name('Fog / Haze Strength');
-    advancedOverlays.add(guiControls, 'stormTrackOverlay')
-      .onChange(function() {
-        if (!guiControls.stormTrackOverlay && stormTrackCanvas)
-          stormTrackCanvas.style.display = 'none';
-      })
-      .name('Storm Track Overlay');
-    advancedOverlays.add(guiControls, 'outflowOverlay')
-      .onChange(function() {
-        if (!guiControls.outflowOverlay && outflowOverlayCanvas)
-          outflowOverlayCanvas.style.display = 'none';
-        if (!guiControls.outflowOverlay)
-          clearOutflowFronts();
-      })
-      .name('Outflow / Gust Front Overlay');
-    advancedOverlays.add(guiControls, 'enableVectorField').name('Vector Field');
-    advancedOverlays.add(guiControls, 'displayWeatherStations')
-      .onChange(function() {
-        displayWeatherStations = guiControls.displayWeatherStations;
-        for (i = 0; i < weatherStations.length; i++) {
-          weatherStations[i].setHidden(!displayWeatherStations);
-        }
-      })
-      .name('Weather Stations');
-    advancedOverlays.add(guiControls, 'displayMeteogram')
-      .onChange(function() {
-        if (window.WeatherSandbox && window.WeatherSandbox.meteogram)
-          window.WeatherSandbox.meteogram.syncVisibilityFromGui();
-      })
-      .name('Meteogram Panel')
-      .listen();
-    advancedOverlays.add(guiControls, 'displayRadars')
-      .onChange(function() {
-        displayRadars = guiControls.displayRadars;
-        for (i = 0; i < radars.length; i++) {
-          radars[i].setHidden(!displayRadars);
-        }
-      })
-      .name('Radars');
-    advancedOverlays.add(guiControls, 'displayAirmassGenerators')
-      .onChange(function() {
-        displayAirmassGenerators = guiControls.displayAirmassGenerators;
-        for (i = 0; i < airmassGenerators.length; i++) {
-          airmassGenerators[i].setHidden(!displayAirmassGenerators);
-        }
-      })
-      .name('Airmass Generators');
-    advancedOverlays.add(guiControls, 'displayWeatherBalloons')
-      .onChange(function() {
-        displayWeatherBalloons = guiControls.displayWeatherBalloons;
-        for (i = 0; i < weatherBalloons.length; i++) {
-          weatherBalloons[i].setHidden(!displayWeatherBalloons);
-        }
-      })
-      .name('Weather Balloons');
-    advancedOverlays.add(guiControls, 'airplaneMode')
-      .onChange(function() {
-        airplaneMode = guiControls.airplaneMode;
-        if (airplaneMode) {
-          airplane.enableAirplaneMode(false);
-        } else {
-          airplane.disableAirplaneMode();
-        }
-      })
-      .name('Airplane Mode');
 
     var advancedAudio = advanced_folder.addFolder('Audio & Effects');
     advancedAudio.add(guiControls, 'sound').name('Enable Sound').onChange(function() {

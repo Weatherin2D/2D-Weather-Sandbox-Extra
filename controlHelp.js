@@ -17,7 +17,7 @@ const ControlHelp = (function() {
     },
     TOOL_WATER: {
       title: 'Water Vapor / Cloud',
-      body: 'Add or remove moisture and cloud water. Essential for building clouds, fog, and storms. Combine with the temperature tool to trigger convection.',
+      body: 'Add or remove moisture and cloud water in the air (dew point / vapor). Essential for building clouds, fog, and storms. Works in fluid cells only — not on land (use Floodwater for standing water). Combine with the temperature tool to trigger convection.',
       keys: 'W',
     },
     TOOL_PRECIP: {
@@ -52,12 +52,12 @@ const ControlHelp = (function() {
     },
     TOOL_WALL_URBAN: {
       title: 'Urban',
-      body: 'Dense city surfaces. Heats quickly during the day and can enhance local convection and storms.',
+      body: 'Dense city surfaces with building facades. Heats quickly during the day and can enhance local convection and storms. Building detail stays visible at all zoom levels.',
       keys: '1',
     },
     TOOL_WALL_SUBURBAN: {
       title: 'Suburban',
-      body: 'Lighter built-up areas between city and countryside. Moderate heat retention and evaporation.',
+      body: 'Lighter built-up areas with house silhouettes between city and countryside. Moderate heat retention and evaporation. Houses stay visible when zoomed out.',
       keys: '2',
     },
     TOOL_WALL_RUNWAY: {
@@ -67,7 +67,7 @@ const ControlHelp = (function() {
     },
     TOOL_WALL_INDUSTRIAL: {
       title: 'Industrial',
-      body: 'Industrial zones with distinct surface properties. Can act as localized heat sources.',
+      body: 'Industrial zones with building facades and distinct surface properties. Can act as localized heat sources. Facade detail stays visible at all zoom levels.',
       keys: '4',
     },
     TOOL_WALL_FIRE: {
@@ -97,7 +97,7 @@ const ControlHelp = (function() {
     },
     TOOL_VEG_FOREST: {
       title: 'Forest',
-      body: 'Paint forest canopy. Stronger evaporation and fuel for larger fires than grass.',
+      body: 'Paint forest canopy. Stronger evaporation and fuel for larger fires than grass. Tree sprites stay visible at all zoom levels in the realistic view.',
       keys: 'S',
     },
     TOOL_WALL_SNOW: {
@@ -249,7 +249,12 @@ const ControlHelp = (function() {
     highResPerformanceMode: 'Aggressive high-resolution mode: fewer droplets, stricter iteration caps, and heavier pass throttling.',
     showDebugOverlay: 'Minecraft-style F3 debug HUD — FPS, frame time, resolution, camera, quality, and sim stats. Toggle with F3.',
     applyPerformancePreset: 'One-click aggressive speed settings for high resolutions (reduced precip, skip CAPE, lightning Performance tier, auto scaling). Curl/vorticity stay on for turbulent flow.',
-    enableVectorField: 'Overlay wind arrows in the realistic view when zoomed in.',
+    enableVectorField: 'Overlay wind arrows in the realistic view.',
+    displayWeatherStations: 'Show or hide placed weather station markers and their charts.',
+    displayRadars: 'Show or hide placed radar markers and range rings.',
+    displayAirmassGenerators: 'Show or hide placed airmass generator markers.',
+    displayWeatherBalloons: 'Show or hide weather balloon markers and ascent paths.',
+    realDewPoint: 'On the sounding graph, show dew point from vapor only (exclude cloud water).',
     skipLightingCalculation: 'Skip the radiation/lighting pass for a large performance gain. Shadows and radiative heating/cooling freeze.',
     skipCurlCalculation: 'Skip vorticity calculation — faster but less turbulent flow. Leave off for realistic swirling clouds (legacy behavior).',
     skipCAPECalculation: 'Skip CAPE calculation — faster storm thermodynamics.',
@@ -327,13 +332,13 @@ const ControlHelp = (function() {
     Precipitation: 'Rain, snow, and hail formation thresholds and behavior.',
     Radar: 'On-map radar overlay, world radar, and lightning icons.',
     Lightning: 'Lightning appearance, frequency, and storm electrification.',
-    Display: 'Visual modes, camera, color grading, and units.',
+    Display: 'Visual modes, camera, color grading, overlays, and units.',
     Camera: 'Pan speed, horizontal wrapping, and smooth camera motion.',
-    Appearance: 'Exposure, color grading, clouds, droplets, and shadow lighting.',
+    Appearance: 'Exposure, color grading, clouds, droplets, floodwater opacity, and shadow lighting.',
     Stars: 'Night-sky star visibility, density, and light contribution.',
-    Overlays: 'On-screen overlays — soundings, stations, radars, and markers.',
+    Overlays: 'All on-screen overlay toggles — soundings, risk bars, synoptic markers, storm tracks, stations, radars, meteogram, fog/haze, vector field, and help.',
     Units: 'Clock format and measurement units for distance, speed, and temperature.',
-    Advanced: 'Performance toggles, precipitation, and simulation speed.',
+    Advanced: 'Performance toggles, precipitation, replay/forecast, and simulation speed.',
     Simulation: 'Coriolis, synoptic systems, iteration speed, and sounding mode.',
     'Audio & Effects': 'Sound and bloom post-processing.',
     Performance: 'Speed and quality tradeoffs — presets, skip toggles, and resource limits.',
