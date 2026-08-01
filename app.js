@@ -10920,6 +10920,17 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'freezingRate'), guiControls.freezingRate);
     gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'meltingRate'), guiControls.meltingRate);
     gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'evapRate'), guiControls.evapRate);
+    // Lightning spawn uniforms: also uploaded each precip frame (ulocs may not exist yet here).
+    gl.uniform1i(gl.getUniformLocation(precipitationProgram, 'lightningEnabled'),
+      guiControls.enableLightning !== false ? 1 : 0);
+    gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'lightningChanceMult'),
+      Math.max(guiControls.globalLightningMultiplier || 0, 0));
+    gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'lightningCgWeight'),
+      Math.max(guiControls.cloudToGroundFrequency || 0, 0));
+    gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'lightningSpiderWeight'),
+      Math.max(guiControls.spiderLightningFrequency || 0, 0));
+    gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'lightningIcWeight'),
+      Math.max(guiControls.intracloudFrequency || 0, 0));
     gl.useProgram(postProcessingProgram);
     if (postProc_exposure_loc !== null) {
       gl.uniform1f(postProc_exposure_loc, guiControls.exposure);
@@ -23211,9 +23222,28 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   const uloc_precip_iterNum            = gl.getUniformLocation(precipitationProgram,     'iterNum');
   const uloc_precip_inactiveDroplets   = gl.getUniformLocation(precipitationProgram,     'inactiveDroplets');
   const uloc_precip_enableLegacyParticleLightning = gl.getUniformLocation(precipitationProgram, 'enableLegacyParticleLightning');
+  const uloc_precip_lightningEnabled   = gl.getUniformLocation(precipitationProgram,     'lightningEnabled');
+  const uloc_precip_lightningChanceMult = gl.getUniformLocation(precipitationProgram,    'lightningChanceMult');
+  const uloc_precip_lightningCgWeight  = gl.getUniformLocation(precipitationProgram,     'lightningCgWeight');
+  const uloc_precip_lightningSpiderWeight = gl.getUniformLocation(precipitationProgram,  'lightningSpiderWeight');
+  const uloc_precip_lightningIcWeight  = gl.getUniformLocation(precipitationProgram,     'lightningIcWeight');
   const uloc_precip_userInputValues    = gl.getUniformLocation(precipitationProgram,     'userInputValues');
   const uloc_precip_userInputType      = gl.getUniformLocation(precipitationProgram,     'userInputType');
   const uloc_precip_wrapHorizontally   = gl.getUniformLocation(precipitationProgram,     'wrapHorizontally');
+
+  function uploadPrecipLightningSpawnUniforms()
+  {
+    if (uloc_precip_lightningEnabled)
+      gl.uniform1i(uloc_precip_lightningEnabled, guiControls.enableLightning !== false ? 1 : 0);
+    if (uloc_precip_lightningChanceMult)
+      gl.uniform1f(uloc_precip_lightningChanceMult, Math.max(guiControls.globalLightningMultiplier || 0, 0));
+    if (uloc_precip_lightningCgWeight)
+      gl.uniform1f(uloc_precip_lightningCgWeight, Math.max(guiControls.cloudToGroundFrequency || 0, 0));
+    if (uloc_precip_lightningSpiderWeight)
+      gl.uniform1f(uloc_precip_lightningSpiderWeight, Math.max(guiControls.spiderLightningFrequency || 0, 0));
+    if (uloc_precip_lightningIcWeight)
+      gl.uniform1f(uloc_precip_lightningIcWeight, Math.max(guiControls.intracloudFrequency || 0, 0));
+  }
   const uloc_lightningLocation_iterNum = gl.getUniformLocation(lightningLocationProgram, 'iterNum');
 
   // bloom blur
@@ -24002,6 +24032,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     // Charge-based V2 spawn/types — independent of classic texture rendering.
     if (isForcedLightningActive() || forcedLightningQueue.length > 0)
       return true;
+    if (guiControls.enableLightning === false)
+      return false;
     if (guiControls.lightningV2Enabled === false)
       return false;
     if (typeof LightningV2 !== 'undefined') {
@@ -24168,19 +24200,23 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       inten);
   }
 
-  /** Keep forced/procedural strikes visible on Enhanced SDF path while active. */
+  /** Keep active V2/forced strikes visible on Enhanced SDF path (lightningDataTex). */
   function syncProceduralStrikeToLightningDataTexture()
   {
     const st = proceduralLightningState;
     if (!st || st.eventAge < 0 || !st.strikes || st.strikes.length === 0)
       return;
-    // Only overwrite precip ownership while a forced/CPU event is actively flashing.
-    if (st.channelId !== 'forced' && st.channelId !== 'dry' && st.channelId !== 'strobe'
-        && st.channelId !== 'forced-queue')
+    if (guiControls.enableLightning === false)
       return;
+    // While any procedural channel is flashing, own lightningDataTex so Frequency/CG/Spider
+    // settings drive the Enhanced SDF bolts (not only forced/dry/strobe).
     const primary = pickPrimaryProceduralStrike(st.strikes);
     if (!primary) return;
-    const inten = legacyIntensityForStrike(primary);
+    let inten = legacyIntensityForStrike(primary);
+    const isCg = primary.groundStrike || primary.ltType === 5 || primary.ltType === 6
+      || primary.ltType === 9 || primary.ltType === 10;
+    // SDF path: CG needs >1, spider/cloud channel needs >0.5.
+    inten = isCg ? Math.max(inten, 1.35) : Math.max(inten, 0.72);
     if (!(inten > 0.5)) return;
     const nx = (Number.isFinite(primary.originX) ? primary.originX : 0) / sim_res_x;
     const ny = (Number.isFinite(primary.originY) ? primary.originY : 0) / sim_res_y;
@@ -25439,6 +25475,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       proceduralLightningState.strikes = buildProceduralStrikesForEvent(active.eventId, active.channel);
       proceduralLightningState.flashStartMs = performance.now();
       proceduralLightningState.frozenVisualAge = null;
+      // Drive Enhanced SDF bolts from Frequency / CG / Spider / etc. spawn channels.
+      writeStrikeToLightningDataTexture(pickPrimaryProceduralStrike(proceduralLightningState.strikes));
       broadcastHostLightningFlash(active.eventId, active.channel, proceduralLightningState.strikes);
 
       for (let s = 0; s < proceduralLightningState.strikes.length; s++) {
@@ -25729,7 +25767,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     if (uloc_real_ltUseLegacyStyle)
       gl.uniform1i(uloc_real_ltUseLegacyStyle, 0);
 
-    // Always upload SDF visibility uniforms (defaults to 0 in WebGL if skipped → invisible bolts).
+    // Always upload SDF visibility + look uniforms (WebGL defaults to 0 → invisible/flat bolts).
     const sdfQualityName = guiControls.ltSdfQuality || 'Balanced';
     const sdfQualityVal = sdfQualityName === 'Full' ? 2 : (sdfQualityName === 'Fast' ? 0 : 1);
     const drawBoltsVal = (guiControls.ltDrawSdfBolts !== false && guiControls.enableLightning !== false) ? 1 : 0;
@@ -25740,6 +25778,14 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       gl.uniform1i(uloc_real_ltDrawBolts, drawBoltsVal);
     if (uloc_real_ltEnableLightning)
       gl.uniform1i(uloc_real_ltEnableLightning, enableLtVal);
+    if (uloc_real_ltBrightness)
+      gl.uniform1f(uloc_real_ltBrightness, guiControls.lightningBrightness || 1);
+    if (uloc_real_ltContrast)
+      gl.uniform1f(uloc_real_ltContrast, guiControls.lightningContrast || 1);
+    if (uloc_real_ltGlowStrength)
+      gl.uniform1f(uloc_real_ltGlowStrength, guiControls.glowStrength || 1);
+    if (uloc_real_ltFlashDuration)
+      gl.uniform1f(uloc_real_ltFlashDuration, Math.max(getEffectiveLtFlashDuration(), 0.2));
 
     if (!lightningV2InRealisticShader || !uloc_real_ltNumStrikes)
       return;
@@ -28076,6 +28122,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
               // Uniform removed in June 8 precip path; keep upload harmless if present.
               if (uloc_precip_enableLegacyParticleLightning)
                 gl.uniform1f(uloc_precip_enableLegacyParticleLightning, 1.0);
+              uploadPrecipLightningSpawnUniforms();
               // Precipitation brush: spawn/remove droplets under the cursor (type 5)
               if (uloc_precip_userInputType)
                 gl.uniform1i(uloc_precip_userInputType, inputType === 5 ? inputType : -1);

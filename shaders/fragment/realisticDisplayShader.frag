@@ -383,7 +383,9 @@ const float lightningTexAspect = lightningTexRes.x / lightningTexRes.y;
 float calcLightningTime(float startIterNum)
 {
   float lightningTime = iterNum - startIterNum;
-  return lightningTime / 5.0; // 30.0    0. to 1. leader stage, 1. + Flash stage
+  // Flash Duration GUI → ltFlashDuration stretches leader/flash stages.
+  float span = 5.0 * max(ltFlashDuration, 0.2);
+  return lightningTime / span; // 0..1 leader, 1+ flash/decay
 }
 
 float lightningIntensityOverTime(float Tin, vec2 lightningPos, float intensity)
@@ -436,6 +438,9 @@ vec3 displaySpiderLightning(vec2 sampleUV, vec2 lightningPos, float T, float bol
   float flashBright = T < 1.0
       ? 1500.0 * spiderProg
       : max(500.0 / (0.05 + pow(T * 4.0, 2.5)), 0.0);
+  // Brightness / Contrast / Glow from Lightning GUI.
+  flashBright *= max(ltBrightness, 0.05) * max(ltContrast, 0.05);
+  float glowMul = 0.45 + 1.1 * max(ltGlowStrength, 0.0);
   if (flashBright < 0.0001) return vec3(0.0);
 
   bool reduced = lodReduced > 0.5;
@@ -524,7 +529,7 @@ vec3 displaySpiderLightning(vec2 sampleUV, vec2 lightningPos, float T, float bol
     }
   }
 
-  return getLightningColor(boltSeed) * totalGlow * flashBright;
+  return getLightningColor(boltSeed) * totalGlow * flashBright * glowMul;
 }
 
 // sdfQuality: 0 Fast / 1 Balanced / 2 Full — arms only when Full.
@@ -543,6 +548,9 @@ vec3 displayCGLightning(vec2 sampleUV, vec2 lightningPos, float T, float boltSee
   float flashBright = T < 1.0
       ? 1125.0 * spiderProg
       : max(300.0 / (0.05 + pow(T * 4.0, 2.5)), 0.0);
+  // Brightness / Contrast / Glow from Lightning GUI.
+  flashBright *= max(ltBrightness, 0.05) * max(ltContrast, 0.05);
+  float glowMul = 0.45 + 1.1 * max(ltGlowStrength, 0.0);
   if (flashBright < 0.0001) return vec3(0.0);
 
   bool reduced = lodReduced > 0.5;
@@ -691,7 +699,7 @@ vec3 displayCGLightning(vec2 sampleUV, vec2 lightningPos, float T, float boltSee
     }
   }
 
-  return getLightningColor(boltSeed) * totalGlow * flashBright;
+  return getLightningColor(boltSeed) * totalGlow * flashBright * glowMul;
 }
 
 vec3 displayLightning(vec2 pos, float lightningTime, float currentLightningIntensity)
@@ -863,7 +871,9 @@ void applyAirLightning(vec2 uv, float cloudwater, float precip, float cloudDensi
     vec2 ldist = vec2((lightningPos.x - uv.x) * aspectRatios[0], lightningPos.y * 0.5 - uv.y);
     float ldistSq = dot(ldist, ldist);
     float lOnLight = 0.0006 / (ldistSq + 0.008);
-    lOnLight *= currentLightningIntensity * lightningCloudFill;
+    lOnLight *= currentLightningIntensity * lightningCloudFill
+      * max(ltBrightness, 0.05) * max(ltContrast, 0.05)
+      * (0.55 + 0.9 * max(ltGlowStrength, 0.0));
     onLight += softClipFlash(tintLightningVolume(getLightningColor(lightningStartIterNum) * lOnLight, cloudBrightTint));
   }
 

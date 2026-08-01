@@ -48,6 +48,12 @@ uniform float spawnChanceMult;    //
 uniform float snowDensity;        // 0.2 - 0.5
 uniform float fallSpeed;          // 0.0003
 uniform float growthRate0C;       // 0.0005
+// Lightning GUI → precip snow-path storm bolts (writes lightningDataTex for Enhanced SDF).
+uniform int lightningEnabled;           // 0 = never spawn from precip
+uniform float lightningChanceMult;      // globalLightningMultiplier
+uniform float lightningCgWeight;        // cloudToGroundFrequency
+uniform float lightningSpiderWeight;    // spiderLightningFrequency
+uniform float lightningIcWeight;        // intracloudFrequency
 uniform float growthRate_30C;     // 0.01
 uniform float freezingRate;       // 0.0002
 uniform float meltingRate;        // 0.0015
@@ -134,18 +140,32 @@ void main()
 
           float cloudPlusPrecipDensity = water[CLOUD] + water[PRECIPITATION];
 
-          float lightningSpawnChance = max((cloudPlusPrecipDensity - lightningCloudDensityThreshold) * lightningChanceMultiplier, 0.);
+          float lightningSpawnChance = max((cloudPlusPrecipDensity - lightningCloudDensityThreshold) * lightningChanceMultiplier, 0.)
+            * max(lightningChanceMult, 0.0);
 
           const float minIterationsSinceLastLightningBolt = 30.; // 50.
 
-          if (lightningData[START_ITERNUM] < iterNum - minIterationsSinceLastLightningBolt &&
+          if (lightningEnabled != 0 &&
+              lightningData[START_ITERNUM] < iterNum - minIterationsSinceLastLightningBolt &&
               random2d(vec2(base[TEMPERATURE] * 0.2324, water[TOTAL] * 7.7)) < lightningSpawnChance) { // Spawn lightning
             lightningSpawned = true;
             isActive = false;
             gl_PointSize = 1.0;
             feedback.xy = texCoord;
             feedback[START_ITERNUM] = iterNum;
-            feedback[INTENSITY] = clamp(cloudPlusPrecipDensity / 10.0 + (random2d(texCoord) - 0.5), 0.01, 4.0);
+            // Map Frequency GUI weights → SDF intensity: >1 CG bolt, 0.5..1 spider/cloud.
+            float wCg = max(lightningCgWeight, 0.0);
+            float wSp = max(lightningSpiderWeight, 0.0);
+            float wIc = max(lightningIcWeight, 0.0);
+            float wSum = max(wCg + wSp + wIc, 1e-4);
+            float typePick = random2d(texCoord * 1.73 + iterNum * 0.019);
+            float mag = clamp(cloudPlusPrecipDensity / 10.0 + (random2d(texCoord) - 0.5) * 0.35, 0.2, 1.0);
+            if (typePick < wCg / wSum)
+              feedback[INTENSITY] = clamp(1.35 + mag * 1.8, 1.2, 4.0);
+            else if (typePick < (wCg + wSp) / wSum)
+              feedback[INTENSITY] = clamp(0.62 + mag * 0.35, 0.55, 0.95);
+            else
+              feedback[INTENSITY] = clamp(0.58 + mag * 0.30, 0.52, 0.90);
             gl_Position = vec4(vec2(-1. + texelSize.x * 3., -1. + texelSize.y), 0.0, 1.0); // render to bottem left corner (1, 0)
           }
         } else {
