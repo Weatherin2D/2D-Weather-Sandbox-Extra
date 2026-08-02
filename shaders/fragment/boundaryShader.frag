@@ -46,6 +46,7 @@ uniform float freshwaterFreezePointC;
 uniform float saltwaterFreezePointC;
 uniform float enableFreshwaterFreezing;
 uniform float enableSaltwaterFreezing;
+uniform float enableGlacierMelting;
 uniform float meltingHeat;
 uniform float stormSurgeStrength;      // 0–2; scales onshore-wind coastal inundation
 uniform float stormSurgeWindThreshold; // windScale units; higher = needs stronger onshore wind
@@ -902,7 +903,7 @@ void main()
           if (iceTempC < freezeC - 2.0 && int(iterNum) % 50 == 0)
             iceThickness = min(iceThickness + iceGrowthRate, maxIceThickness);
 
-          if (iceThickness > 0.0 && airTempC > freezeC) {
+          if (iceThickness > 0.0 && airTempC > freezeC && (!landIce || enableGlacierMelting > 0.5)) {
             float warmth = max(airTempC - freezeC, 0.0);
             float melting = min(warmth * iceMeltRate, iceThickness);
             iceThickness -= melting;
@@ -924,7 +925,7 @@ void main()
 
           water[SNOW] = max(iceThickness, 0.0);
 
-          if (landIce && airTempC > freezeC && water[SNOW] <= iceCapFormSnowCm) {
+          if (landIce && enableGlacierMelting > 0.5 && airTempC > freezeC && water[SNOW] <= iceCapFormSnowCm) {
             // Glacier melt: back to land with max snow allowed before glacier formation
             wall[TYPE] = WALLTYPE_LAND;
             water[SNOW] = iceCapFormSnowCm;
@@ -933,7 +934,7 @@ void main()
             water[TOTAL] = WATER_MARKER_LAND;
             wall[VEGETATION] = 0;
             base[TEMPERATURE] = 1000.0; // land wall snow-melt feedback marker
-          } else if (water[SNOW] <= 0.1 && airTempC > freezeC) {
+          } else if (!landIce && water[SNOW] <= 0.1 && airTempC > freezeC) {
             wall[TYPE] = liquidWaterTypeFromSalinity(salinity);
             if (wall[TYPE] == WALLTYPE_WATER)
               water[SALINITY] = max(salinity, oceanSalinityPpt);
@@ -942,7 +943,8 @@ void main()
             water[SNOW] = 0.0;
             base[TEMPERATURE] = max(base[TEMPERATURE], CtoK(freezeC + 0.5));
           } else if (water[SNOW] <= 0.1) {
-            water[SNOW] = minIceFormThickness;
+            // Keep a thin remnant; land ice with melting disabled stays glacial
+            water[SNOW] = landIce ? max(water[SNOW], minIceFormThickness) : minIceFormThickness;
           }
 
           wall[VEGETATION] = 0;

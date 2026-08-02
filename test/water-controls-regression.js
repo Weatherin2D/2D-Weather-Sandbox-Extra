@@ -13,5 +13,8 @@ const advectionShader = fs.readFileSync(advectionShaderPath, 'utf8');
 assert.ok(appSource.includes('freshwaterFreezePointC') && appSource.includes('saltwaterFreezePointC'), 'app.js should expose freshwater and saltwater freeze-point controls');
 assert.ok(boundaryShader.includes('freshwaterFreezePointC') && boundaryShader.includes('saltwaterFreezePointC'), 'boundary shader should read freshwater and saltwater freeze-point uniforms');
 assert.ok(advectionShader.includes('maxWaterTemperatureC') && boundaryShader.includes('maxWaterTemperatureC'), 'water shaders should use a configurable max water temperature');
+assert.ok(appSource.includes('enableGlacierFormation') && appSource.includes('enableGlacierMelting'), 'app.js should expose glacier formation and melting toggles');
+assert.ok(advectionShader.includes('enableGlacierFormation'), 'advection shader should gate glacier formation');
+assert.ok(boundaryShader.includes('enableGlacierMelting'), 'boundary shader should gate glacier melting');
 
 console.log('Water controls regression test passed');

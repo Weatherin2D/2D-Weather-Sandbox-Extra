@@ -573,6 +573,8 @@ const guiControls_default = {
   saltwaterFreezePointC : -1.8,
   enableFreshwaterFreezing : true,
   enableSaltwaterFreezing : true,
+  enableGlacierFormation : true,
+  enableGlacierMelting : true,
   dynamicWaterTemperature : true,
   landEvaporation : 0.00005,
   waterEvaporation : 0.0001,
@@ -10786,6 +10788,14 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     guiControls.enableStormSurge = guiControls_default.enableStormSurge;
   else
     guiControls.enableStormSurge = !!guiControls.enableStormSurge;
+  if (guiControls.enableGlacierFormation === undefined)
+    guiControls.enableGlacierFormation = guiControls_default.enableGlacierFormation;
+  else
+    guiControls.enableGlacierFormation = !!guiControls.enableGlacierFormation;
+  if (guiControls.enableGlacierMelting === undefined)
+    guiControls.enableGlacierMelting = guiControls_default.enableGlacierMelting;
+  else
+    guiControls.enableGlacierMelting = !!guiControls.enableGlacierMelting;
   if (guiControls.floodRainThreshold === undefined)
     guiControls.floodRainThreshold = guiControls_default.floodRainThreshold;
   if (guiControls.floodPondRate === undefined)
@@ -11422,6 +11432,15 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'saltwaterFreezePointC'), guiControls.saltwaterFreezePointC);
       })
       .name('Saltwater Freeze Point (°C)');
+
+    water_folder.add(guiControls, 'enableGlacierFormation').name('Enable Glacier Formation').onChange(function() {
+      gl.useProgram(advectionProgram);
+      gl.uniform1f(gl.getUniformLocation(advectionProgram, 'enableGlacierFormation'), guiControls.enableGlacierFormation ? 1.0 : 0.0);
+    });
+    water_folder.add(guiControls, 'enableGlacierMelting').name('Enable Glacier Melting').onChange(function() {
+      gl.useProgram(boundaryProgram);
+      gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'enableGlacierMelting'), guiControls.enableGlacierMelting ? 1.0 : 0.0);
+    });
 
     water_folder.add(guiControls, 'dynamicWaterTemperature').name('Dynamic Water Temperature').onChange(function() {
       gl.useProgram(boundaryProgram);
@@ -22658,6 +22677,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   gl.uniform1f(gl.getUniformLocation(advectionProgram, 'waterTemperature'),
                CtoK(guiControls.waterTemperature)); // can be changed by GUI input
   gl.uniform1f(gl.getUniformLocation(advectionProgram, 'maxWaterTemperatureC'), guiControls.maxWaterTemperatureC);
+  gl.uniform1f(gl.getUniformLocation(advectionProgram, 'enableGlacierFormation'), guiControls.enableGlacierFormation ? 1.0 : 0.0);
 
   gl.uniform4fv(gl.getUniformLocation(advectionProgram, 'realWorldSounding_Tv'), realWorldSounding_T);
   gl.uniform4fv(gl.getUniformLocation(advectionProgram, 'realWorldSounding_Wv'), realWorldSounding_W);
@@ -22706,6 +22726,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'saltwaterFreezePointC'), guiControls.saltwaterFreezePointC);
   gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'enableFreshwaterFreezing'), guiControls.enableFreshwaterFreezing ? 1.0 : 0.0);
   gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'enableSaltwaterFreezing'), guiControls.enableSaltwaterFreezing ? 1.0 : 0.0);
+  gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'enableGlacierMelting'), guiControls.enableGlacierMelting ? 1.0 : 0.0);
   gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'dryLapse'), dryLapse);
   // gl.uniform1fv(gl.getUniformLocation(boundaryProgram, 'initial_T'), initial_T);
   gl.uniform4fv(gl.getUniformLocation(boundaryProgram, 'initial_Tv'), initial_T);

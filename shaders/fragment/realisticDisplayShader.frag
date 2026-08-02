@@ -1143,16 +1143,16 @@ void main()
           color = vec3(0.0, 0.42, 0.82); // salt water — deeper blue
       }
 
-      // Beach slope only when land surface meets water surface (same elevation).
+      // Beach slope only when land/ice surface meets water surface (same elevation).
       // Do not draw into water beside underwater land — that creates a jutting
       // "nose" under cliffs where the shore is higher than the waterline.
       float localX = fract(fragCoord.x);
       float localY = fract(fragCoord.y);
 
       if (wall[VERT_DISTANCE] == 0
-          && wallXmY0[DISTANCE] == 0 && wallXmY0[VERT_DISTANCE] == 0 && !isAnyWaterType(wallXmY0[TYPE])
+          && wallXmY0[DISTANCE] == 0 && wallXmY0[VERT_DISTANCE] == 0 && !isLiquidWaterType(wallXmY0[TYPE])
           && (fragCoord.y < 1. || !isAnyWaterType(wallX0Ym[TYPE]))) {
-        // Land surface to the left — soft 45° beach into this water cell
+        // Land / glacier surface to the left — soft 45° beach into this water cell
         if (localX + localY < 1.0) {
           opacity = 1.0;
           ivec4 landWall = wallXmY0;
@@ -1160,15 +1160,19 @@ void main()
           wall = landWall;
           water = landWater;
           float shoreDepth = float(-wall[VERT_DISTANCE]) - localY;
-          color = getLandColor(shoreDepth);
-          applyFloodWaterSheet(shoreDepth);
+          if (wall[TYPE] == WALLTYPE_ICE)
+            color = getIceColor(water[SNOW]);
+          else {
+            color = getLandColor(shoreDepth);
+            applyFloodWaterSheet(shoreDepth);
+          }
           shadowLight = minShadowLight;
         }
       }
       if (wall[VERT_DISTANCE] == 0
-          && wallXpY0[DISTANCE] == 0 && wallXpY0[VERT_DISTANCE] == 0 && !isAnyWaterType(wallXpY0[TYPE])
+          && wallXpY0[DISTANCE] == 0 && wallXpY0[VERT_DISTANCE] == 0 && !isLiquidWaterType(wallXpY0[TYPE])
           && (fragCoord.y < 1. || !isAnyWaterType(wallX0Ym[TYPE]))) {
-        // Land surface to the right — soft 45° beach into this water cell
+        // Land / glacier surface to the right — soft 45° beach into this water cell
         if (localY - localX < 0.0) {
           opacity = 1.0;
           ivec4 landWall = wallXpY0;
@@ -1176,8 +1180,12 @@ void main()
           wall = landWall;
           water = landWater;
           float shoreDepth = float(-wall[VERT_DISTANCE]) - localY;
-          color = getLandColor(shoreDepth);
-          applyFloodWaterSheet(shoreDepth);
+          if (wall[TYPE] == WALLTYPE_ICE)
+            color = getIceColor(water[SNOW]);
+          else {
+            color = getLandColor(shoreDepth);
+            applyFloodWaterSheet(shoreDepth);
+          }
           shadowLight = minShadowLight;
         }
       }
@@ -1381,30 +1389,38 @@ void main()
       }
 
       if (wall[VERT_DISTANCE] == 1) {
-        // draw 45° slopes
+        // draw 45° slopes (land and glaciers; skip open water)
         ivec4 wallXmY0 = texture(wallTex, texCoordXmY0);
         ivec4 wallXpY0 = texture(wallTex, texCoordXpY0);
 
-        if (wallXmY0[DISTANCE] == 0 && !isAnyWaterType(wall[TYPE])) { // wall to the left and below
+        if (wallXmY0[DISTANCE] == 0 && !isLiquidWaterType(wall[TYPE])) { // wall to the left and below
           if (localX + localY < 1.0) {
             opacity = 1.0;
             water = texture(waterTex, texCoordX0Ym);
             ivec4 savedWall = wall;
             wall = wallX0Ym;
-            color = getLandColor(localY - 0.6);
-            applyFloodWaterSheet(localY - 0.6);
+            if (wall[TYPE] == WALLTYPE_ICE)
+              color = getIceColor(water[SNOW]);
+            else {
+              color = getLandColor(localY - 0.6);
+              applyFloodWaterSheet(localY - 0.6);
+            }
             wall = savedWall;
             shadowLight = minShadowLight; // fire should not light ground
           }
         }
-        if (wallXpY0[DISTANCE] == 0 && !isAnyWaterType(wall[TYPE])) { // wall to the right and below
+        if (wallXpY0[DISTANCE] == 0 && !isLiquidWaterType(wall[TYPE])) { // wall to the right and below
           if (localY - localX < 0.0) {
             opacity = 1.0;
             water = texture(waterTex, texCoordX0Ym);
             ivec4 savedWall = wall;
             wall = wallX0Ym;
-            color = getLandColor(localY - 0.6);
-            applyFloodWaterSheet(localY - 0.6);
+            if (wall[TYPE] == WALLTYPE_ICE)
+              color = getIceColor(water[SNOW]);
+            else {
+              color = getLandColor(localY - 0.6);
+              applyFloodWaterSheet(localY - 0.6);
+            }
             wall = savedWall;
             shadowLight = minShadowLight; // fire should not light ground
           }

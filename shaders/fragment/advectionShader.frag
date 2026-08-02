@@ -44,6 +44,7 @@ uniform float globalHeating;
 uniform float soundingForcing;
 uniform float waterTemperature;
 uniform float maxWaterTemperatureC;
+uniform float enableGlacierFormation;
 uniform float iterNum;
 uniform int brushOnlyMode; // 1 = copy fields + apply brush only (pause-edit; no advection/physics)
 
@@ -250,7 +251,7 @@ void main()
         water[SNOW] -= sublimation;
       }
 
-      if (wall[TYPE] == WALLTYPE_LAND && water[SNOW] > iceCapFormSnowCm && tempC < -8.0 && int(iterNum) % 200 == 0) { // compact deep snow to land ice
+      if (enableGlacierFormation > 0.5 && wall[TYPE] == WALLTYPE_LAND && water[SNOW] > iceCapFormSnowCm && tempC < -8.0 && int(iterNum) % 200 == 0) { // compact deep snow to land ice
         wall[TYPE] = WALLTYPE_ICE;
         water[SALINITY] = landIceSalinityMarker;
       }

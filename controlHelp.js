@@ -212,6 +212,8 @@ const ControlHelp = (function() {
     waterGreenHouseEffect: 'Water-vapor greenhouse effect strength in the radiation model.',
     IR_rate: 'Multiplier on infrared radiative transfer speed.',
     waterTemperature: 'Default temperature of lakes and oceans in °C.',
+    enableGlacierFormation: 'When on, deep cold snow on land can compact into glacier / ice-cap terrain.',
+    enableGlacierMelting: 'When on, land glaciers can thin and melt back into snowy land when warm.',
     dynamicWaterTemperature: 'Let water bodies heat and cool from sunlight and air contact.',
     landEvaporation: 'Moisture added to the air from vegetated land.',
     waterEvaporation: 'Moisture added from open water surfaces.',
