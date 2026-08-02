@@ -477,7 +477,7 @@
                 '<button type="button" class="uie-btn-sm" id="uie-c-tex-upload">Upload PNG</button>' +
                 '<button type="button" class="uie-btn-sm danger" id="uie-c-tex-clear">Clear texture</button>' +
                 '<input type="file" id="uie-c-tex-file" accept="image/png,image/jpeg,.png,.jpg" style="display:none">' +
-                '<div style="font-size:10px;color:#4a5060;line-height:1.35;">Max 8 textured tools. Overlay tools only paint on land. Template is the urban strip from surfaceTextureMap.png.</div>' +
+                '<div style="font-size:10px;color:#4a5060;line-height:1.35;">Max 8 textured tools. Overlay tools only paint on land. Template is the urban strip (top) from surfaceTextureMap.png.</div>' +
               '</div>' +
             '</div>' +
           '</div>' +

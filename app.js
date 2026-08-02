@@ -569,6 +569,7 @@ const guiControls_default = {
   sunIntensity : 1.0,
   waterTemperature : 25.0, // °C
   maxWaterTemperatureC : 100.0,
+  maxSnowAccumulationCm : 4000.0,
   freshwaterFreezePointC : 0.0,
   saltwaterFreezePointC : -1.8,
   enableFreshwaterFreezing : true,
@@ -729,6 +730,8 @@ const guiControls_default = {
   enableStormSurge : true, // coastal storm-surge inundation
   floodRainThreshold : 0.42, // air precip intensity needed for flash floods (higher = heavier rain)
   floodPondRate : 12.0, // ponding build rate once rain exceeds threshold
+  // Natural grass→forest canopy species: Random (50/50), Forest (conifer), Forest 2 (deciduous)
+  forestGrowthSpecies : 'Random (50/50)',
   // Meteorological MSLP (display/stations). Fluid base[PRESSURE] stays dimensionless.
   surfacePressure : 1013.25,       // sea-level baseline hPa
   pressureThermalScale : 1.5,      // hPa per °C column warmth (warm → lower MSLP)
@@ -3142,7 +3145,9 @@ function isLandSurfaceWallType(wallType)
 {
   return wallType === 1 || wallType === 3 || wallType === 4
     || wallType === 5 || wallType === 6 || wallType === 7
-    || wallType === 10 || wallType === 11;
+    || wallType === 10 || wallType === 11
+    || wallType === 26 || wallType === 27 // FOREST2 / FIRE_FOREST2
+    || wallType === 28; // AMERICAN_SUBURBAN
 }
 
 function sampleColumnRainAccumMm(sx, simResX, simResY)
@@ -5500,6 +5505,7 @@ const CUSTOM_WALLTYPE_FROM_INPUT = {
   17: 7,  // SUBURBAN
   15: 5,  // RUNWAY
   16: 6,  // INDUSTRIAL
+  33: 28, // AMERICAN_SUBURBAN
   29: 10, // CUSTOM_BASE slot 0
   30: 18, // CUSTOM_OVERLAY slot 0
 };
@@ -6472,17 +6478,17 @@ function applyCustomToolEntitiesCpu()
           windX: baseData[idx],
           windY: baseData[idx + 1],
           charge: 0,
-          isLand: wallType === 1 || wallType === 4 || wallType === 5 || wallType === 6 || wallType === 7 ? 1 : 0,
+          isLand: wallType === 1 || wallType === 4 || wallType === 5 || wallType === 6 || wallType === 7 || wallType === 26 || wallType === 27 || wallType === 28 ? 1 : 0,
           isWater: wallType === 2 || wallType === 8 ? 1 : 0,
           isFresh: wallType === 8 ? 1 : 0,
           isIce: wallType === 9 ? 1 : 0,
-          isUrban: wallType === 4 || wallType === 7 ? 1 : 0,
+          isUrban: wallType === 4 || wallType === 7 || wallType === 28 ? 1 : 0,
           soilMoisture: waterData[idx + 2],
           snow: 0,
           veg: veg,
           vegGrass: Math.min(veg, CUSTOM_GRASS_VEG_MAX),
           vegForest: Math.max(veg - CUSTOM_GRASS_VEG_MAX, 0),
-          onFire: wallType === 3 ? 1 : 0,
+          onFire: wallType === 3 || wallType === 27 ? 1 : 0,
           intensity: intensity,
           brushRadius: radius,
           invert: 0,
@@ -7260,9 +7266,9 @@ class Nuke
             waterData[index + 3] = Math.min(waterData[index + 3] + guiControls.nukeSmokeAmount * intensity, 2.0);
             
             // Check if there's land/vegetation at this location and ignite it
-            if (guiControls.nukeIgnitionEnabled && wallData[index + 0] === 1) {
-              // Wall type 1 is land with vegetation; change to fire wall type
-              wallData[index + 0] = 3; // Set wall type to FIRE (3)
+            if (guiControls.nukeIgnitionEnabled && (wallData[index + 0] === 1 || wallData[index + 0] === 26)) {
+              // LAND → FIRE (3), FOREST2 (26) → FIRE_FOREST2 (27)
+              wallData[index + 0] = wallData[index + 0] === 26 ? 27 : 3;
               // The fire system will naturally burn out as vegetation is consumed
             }
           }
@@ -9148,14 +9154,14 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
           const Rgain = clamp((sampleWidth_3 - Math.abs(i - sampleWidth_3 * 2)) / sq3, 0., 1.);
           const wType = wallTextureValues[i * 4 + 0];
 
-          if (wType == 1) { // land vegetation
+          if (wType == 1 || wType == 26) { // land / forest2 vegetation
             const vegetationNorm = wallTextureValues[i * 4 + 3] / 127.0;
             forestL += Lgain * vegetationNorm;
             forestR += Rgain * vegetationNorm;
           } else if (wType == 2) { // water
             beachL += Lgain;
             beachR += Rgain;
-          } else if (wType == 4 || wType == 6) { // urban or industrial
+          } else if (wType == 4 || wType == 6 || wType == 28) { // urban, industrial, or American suburban
             urbanL += Lgain;
             urbanR += Rgain;
           }
@@ -10784,6 +10790,8 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     guiControls.enableFlooding = guiControls_default.enableFlooding;
   else
     guiControls.enableFlooding = !!guiControls.enableFlooding;
+  if (guiControls.forestGrowthSpecies === undefined)
+    guiControls.forestGrowthSpecies = guiControls_default.forestGrowthSpecies;
   if (guiControls.enableStormSurge === undefined)
     guiControls.enableStormSurge = guiControls_default.enableStormSurge;
   else
@@ -10796,6 +10804,8 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     guiControls.enableGlacierMelting = guiControls_default.enableGlacierMelting;
   else
     guiControls.enableGlacierMelting = !!guiControls.enableGlacierMelting;
+  if (guiControls.maxSnowAccumulationCm === undefined || !Number.isFinite(guiControls.maxSnowAccumulationCm))
+    guiControls.maxSnowAccumulationCm = guiControls_default.maxSnowAccumulationCm;
   if (guiControls.floodRainThreshold === undefined)
     guiControls.floodRainThreshold = guiControls_default.floodRainThreshold;
   if (guiControls.floodPondRate === undefined)
@@ -10903,6 +10913,16 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       _ltStaticUniformsKey = null;
   }
 
+  function forestGrowthSpeciesUniform()
+  {
+    const v = guiControls.forestGrowthSpecies;
+    if (v === 'Forest' || v === 'Forest (conifer)')
+      return 1.0;
+    if (v === 'Forest 2' || v === 'Forest 2 (deciduous)')
+      return 2.0;
+    return 0.0; // Random (50/50)
+  }
+
   function setGuiUniforms()
   { // set all uniforms to new values
     gl.useProgram(boundaryProgram);
@@ -10912,6 +10932,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'dynamicWaterTemperature'), guiControls.dynamicWaterTemperature ? 1.0 : 0.0);
     gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'evapHeat'), guiControls.evapHeat);
     gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'waterWeight'), guiControls.waterWeight);
+    gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'forestGrowthSpecies'), forestGrowthSpeciesUniform());
     gl.useProgram(velocityProgram);
     gl.uniform1f(gl.getUniformLocation(velocityProgram, 'dragMultiplier'),
       guiControls.soundingMode ? 999.0 : guiControls.dragMultiplier);
@@ -11240,6 +11261,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         'Ice Cap / Glacier' : 'TOOL_WALL_ICE_CAP',
         'Urban' : 'TOOL_WALL_URBAN',
         'Suburban' : 'TOOL_WALL_SUBURBAN',
+        'American Suburban' : 'TOOL_WALL_AMERICAN_SUBURBAN',
         'Runway' : 'TOOL_WALL_RUNWAY',
         'Industrial' : 'TOOL_WALL_INDUSTRIAL',
         'Fire' : 'TOOL_WALL_FIRE',
@@ -11248,6 +11270,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         'Floodwater' : 'TOOL_FLOOD',
         'Grass / Shrub' : 'TOOL_VEG_GRASS',
         'Forest' : 'TOOL_VEG_FOREST',
+        'Forest 2' : 'TOOL_VEG_FOREST2',
         'Snow' : 'TOOL_WALL_SNOW',
         'Wind' : 'TOOL_WIND',
         'Charge' : 'TOOL_CHARGE',
@@ -11441,6 +11464,12 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       gl.useProgram(boundaryProgram);
       gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'enableGlacierMelting'), guiControls.enableGlacierMelting ? 1.0 : 0.0);
     });
+    water_folder.add(guiControls, 'maxSnowAccumulationCm', 0.0, 10000.0, 10.0)
+      .onChange(function() {
+        gl.useProgram(boundaryProgram);
+        gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'maxSnowAccumulationCm'), guiControls.maxSnowAccumulationCm);
+      })
+      .name('Max Snow Accumulation (cm)');
 
     water_folder.add(guiControls, 'dynamicWaterTemperature').name('Dynamic Water Temperature').onChange(function() {
       gl.useProgram(boundaryProgram);
@@ -11491,6 +11520,19 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'waterWeight'), guiControls.waterWeight);
       })
       .name('Water Weight');
+
+    var vegetation_folder = datGui.addFolder('Vegetation');
+    vegetation_folder.add(guiControls, 'forestGrowthSpecies', {
+      'Random (50/50)' : 'Random (50/50)',
+      'Forest' : 'Forest',
+      'Forest 2' : 'Forest 2',
+    })
+      .onChange(function() {
+        gl.useProgram(boundaryProgram);
+        gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'forestGrowthSpecies'), forestGrowthSpeciesUniform());
+      })
+      .name('Natural Forest Type')
+      .listen();
 
     var precipitation_folder = datGui.addFolder('Precipitation');
 
@@ -17725,6 +17767,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       onDown() { setGuiTool('TOOL_VEG_GRASS'); } },
     { id: 'toolVegForest', name: 'Tool: forest', category: 'Tools', defaultCode: null,
       onDown() { setGuiTool('TOOL_VEG_FOREST'); } },
+    { id: 'toolVegForest2', name: 'Tool: forest 2', category: 'Tools', defaultCode: null,
+      onDown() { setGuiTool('TOOL_VEG_FOREST2'); } },
     { id: 'toolWallSnow', name: 'Tool: snow wall', category: 'Tools', defaultCode: 'KeyO',
       onDown() { setGuiTool('TOOL_WALL_SNOW'); } },
     { id: 'toolWind', name: 'Tool: wind', category: 'Tools', defaultCode: 'KeyP',
@@ -17737,6 +17781,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       onDown() { setGuiTool('TOOL_WALL_URBAN'); } },
     { id: 'toolWallSuburban', name: 'Tool: suburban wall', category: 'Tools', defaultCode: 'KeyH',
       onDown() { setGuiTool('TOOL_WALL_SUBURBAN'); } },
+    { id: 'toolWallAmericanSuburban', name: 'Tool: American suburban wall', category: 'Tools', defaultCode: null,
+      onDown() { setGuiTool('TOOL_WALL_AMERICAN_SUBURBAN'); } },
     { id: 'toolWallRunway', name: 'Tool: runway wall', category: 'Tools', defaultCode: 'BracketRight',
       onDown() { setGuiTool('TOOL_WALL_RUNWAY'); } },
     { id: 'toolWallIndustrial', name: 'Tool: industrial wall', category: 'Tools', defaultCode: 'Backslash',
@@ -22722,6 +22768,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'waterTemperature'),
                CtoK(guiControls.waterTemperature)); // can be changed by GUI input
   gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'maxWaterTemperatureC'), guiControls.maxWaterTemperatureC);
+  gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'maxSnowAccumulationCm'), guiControls.maxSnowAccumulationCm);
   gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'freshwaterFreezePointC'), guiControls.freshwaterFreezePointC);
   gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'saltwaterFreezePointC'), guiControls.saltwaterFreezePointC);
   gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'enableFreshwaterFreezing'), guiControls.enableFreshwaterFreezing ? 1.0 : 0.0);
@@ -22750,6 +22797,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
                guiControls.enableFlooding === false ? 0.0 : 1.0);
   gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'enableStormSurge'),
                guiControls.enableStormSurge === false ? 0.0 : 1.0);
+  gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'forestGrowthSpecies'),
+               typeof forestGrowthSpeciesUniform === 'function' ? forestGrowthSpeciesUniform() : 0.0);
 
   gl.useProgram(curlProgram);
   gl.uniform2f(gl.getUniformLocation(curlProgram, 'texelSize'), texelSizeX, texelSizeY);
@@ -24914,9 +24963,10 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       return;
     // Ignite solid ground/structures at the strike column (not water/ice/open air).
     const t = surface.type;
-    if (t === 2 || t === 3 || t === 8 || t === 9 || t === 0)
+    if (t === 2 || t === 3 || t === 8 || t === 9 || t === 0 || t === 27)
       return;
-    setSurfaceWallType(surface.x, surface.y, 3);
+    // FOREST2 (26) → FIRE_FOREST2 (27); everything else → FIRE (3)
+    setSurfaceWallType(surface.x, surface.y, t === 26 ? 27 : 3);
   }
 
   const chargeDischargeUniformData = new Float32Array(16);
@@ -27858,6 +27908,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
           inputType = 14;
         else if (guiControls.tool == 'TOOL_WALL_SUBURBAN')
           inputType = 17;
+        else if (guiControls.tool == 'TOOL_WALL_AMERICAN_SUBURBAN')
+          inputType = 33;
         else if (guiControls.tool == 'TOOL_WALL_RUNWAY')
           inputType = 15;
         else if (guiControls.tool == 'TOOL_WALL_INDUSTRIAL')
@@ -27874,6 +27926,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
           inputType = 27;
         else if (guiControls.tool == 'TOOL_VEG_FOREST')
           inputType = 28;
+        else if (guiControls.tool == 'TOOL_VEG_FOREST2')
+          inputType = 32;
         else if (guiControls.tool == 'TOOL_CHARGE')
           inputType = 23;
         else if (window.WeatherMpProtocol && window.WeatherMpProtocol.isCustomToolId &&

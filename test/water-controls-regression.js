@@ -16,5 +16,8 @@ assert.ok(advectionShader.includes('maxWaterTemperatureC') && boundaryShader.inc
 assert.ok(appSource.includes('enableGlacierFormation') && appSource.includes('enableGlacierMelting'), 'app.js should expose glacier formation and melting toggles');
 assert.ok(advectionShader.includes('enableGlacierFormation'), 'advection shader should gate glacier formation');
 assert.ok(boundaryShader.includes('enableGlacierMelting'), 'boundary shader should gate glacier melting');
+assert.ok(appSource.includes('maxSnowAccumulationCm'), 'app.js should expose max snow accumulation control');
+assert.ok(boundaryShader.includes('maxSnowAccumulationCm'), 'boundary shader should clamp land snow with maxSnowAccumulationCm');
+assert.ok(!boundaryShader.includes('4000.0); // snow accumulation'), 'boundary shader should not hardcode the land snow accumulation cap');
 
 console.log('Water controls regression test passed');

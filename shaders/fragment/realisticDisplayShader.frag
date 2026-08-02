@@ -39,6 +39,8 @@ uniform vec2 aspectRatios; // [0] Sim       [1] canvas
 #define SNOW_FOREST 2
 #define FOREST 3
 #define INDUS 4
+#define FOREST2 5
+#define AMER_SUBURBAN 6
 
 
 uniform vec2 resolution; // sim resolution
@@ -124,7 +126,7 @@ const vec3 dryGrassCol = pow(vec3(0.843, 0.588, 0.294), vec3(GAMMA));
 
 vec4 surfaceTexture(int index, vec2 pos)
 {
-#define numTextures 5.;             // number of textures in the map
+#define numTextures 7.;             // number of textures in the map
   const float texRelHeight = 1. / numTextures;
   pos.y = clamp(pos.y, 0.01, 0.99); // make sure position is within the subtexture
   pos /= numTextures;
@@ -150,7 +152,7 @@ vec4 customSurfaceTexture(int slot, vec2 pos)
 bool isFloodTintLandType(int wallType)
 {
   return wallType == WALLTYPE_LAND || wallType == WALLTYPE_FIRE
-      || wallType == WALLTYPE_URBAN || wallType == WALLTYPE_SUBURBAN
+      || wallType == WALLTYPE_URBAN || wallType == WALLTYPE_SUBURBAN || wallType == WALLTYPE_AMERICAN_SUBURBAN
       || wallType == WALLTYPE_INDUSTRIAL || wallType == WALLTYPE_RUNWAY
       || isCustomBase(wallType) || isCustomOverlay(wallType);
 }
@@ -1033,9 +1035,12 @@ void main()
       }
 
     case WALLTYPE_URBAN:
+    case WALLTYPE_AMERICAN_SUBURBAN:
     case WALLTYPE_INDUSTRIAL:
     case WALLTYPE_FIRE:
+    case WALLTYPE_FIRE_FOREST2:
     case WALLTYPE_LAND:
+    case WALLTYPE_FOREST2:
     case WALLTYPE_SUBURBAN:
     case 10: case 11: case 12: case 13: case 14: case 15: case 16: case 17: // custom base slots
     case 18: case 19: case 20: case 21: case 22: case 23: case 24: case 25: // custom overlay slots
@@ -1237,9 +1242,10 @@ void main()
       float localY = fract(fragCoord.y);
       // ivec4 wallX0Ym = texture(wallTex, texCoordX0Ym);
 
-#define texAspect 2560. / 4096. // height / width of tree texture
+#define texAspect 3584. / 4096. // height / width of surface atlas (7 strips × 512)
 #define maxTreeHeight 40.       // height in meters when vegetation max = 127
 #define maxBuildingHeight 400.  // height in meters upto wich the urban texture reaches
+#define maxAmericanSuburbanHeight 55. // 1–2 story American suburban houses
 
       // Surface facade detail (urban, industrial, suburban, trees) stays visible at all zoom levels.
       if (isCustomTerrain(wallX0Ym[TYPE])) {
@@ -1281,6 +1287,26 @@ void main()
           } else {                             // day time
             texCol.rgb *= vec3(0.8, 0.9, 1.0); // Blueish windows
 
+            if (length(texCol.rgb) < 0.1)
+              texCol.rgb = texture(noiseTex, fragCoord * 0.3).rgb * 0.3;
+          }
+          color = texCol.rgb;
+          opacity = texCol.a;
+        }
+      } else if (wallX0Ym[TYPE] == WALLTYPE_AMERICAN_SUBURBAN) {
+
+        float heightAboveGround = localY + float(wall[VERT_DISTANCE] - 1);
+        float amerTexHeightNorm = maxAmericanSuburbanHeight / cellHeight;
+        float amerTexCoordX = mod(fragCoord.x, resolution.x) * texAspect / amerTexHeightNorm;
+        float amerTexCoordY = 1.0 - (heightAboveGround / amerTexHeightNorm);
+
+        vec4 texCol = surfaceTexture(AMER_SUBURBAN, vec2(amerTexCoordX, amerTexCoordY));
+        if (texCol.a > 0.5) {
+          if (nightTime) {
+            shadowLight = 1.0;
+            texCol.rgb *= vec3(1.0, 0.85, 0.6);
+          } else {
+            texCol.rgb *= vec3(0.95, 0.97, 1.0);
             if (length(texCol.rgb) < 0.1)
               texCol.rgb = texture(noiseTex, fragCoord * 0.3).rgb * 0.3;
           }
@@ -1359,21 +1385,22 @@ void main()
 
         vec4 texCol = vec4(0.0);
         if (wallX0Ym[VEGETATION] > GRASS_VEG_MAX &&
-            (wallX0Ym[TYPE] == WALLTYPE_LAND || wallX0Ym[TYPE] == WALLTYPE_URBAN || wallX0Ym[TYPE] == WALLTYPE_SUBURBAN || isCustomBase(wallX0Ym[TYPE]))) { // forest canopy only
+            (wallX0Ym[TYPE] == WALLTYPE_LAND || wallX0Ym[TYPE] == WALLTYPE_FOREST2 || wallX0Ym[TYPE] == WALLTYPE_URBAN || wallX0Ym[TYPE] == WALLTYPE_AMERICAN_SUBURBAN || wallX0Ym[TYPE] == WALLTYPE_SUBURBAN || isCustomBase(wallX0Ym[TYPE]))) { // forest canopy only
           vec4 surfaceWater = texture(waterTex, texCoordX0Ym);                     // snow on land below
           float snow = surfaceWater[SNOW];
           if (snow * 0.01 / cellHeight > heightAboveGround)
             texCol = vec4(vec3(1.), 1.);                                                                                                                          // show white snow layer above ground
           else {                                                                                                                                                  // display vegetation
             float treeScale = wallX0Ym[TYPE] == WALLTYPE_SUBURBAN ? 0.55 : 1.0;
-            vec4 treeColor = surfaceTexture(FOREST, vec2(treeTexCoordX, treeTexCoordY * treeScale + (1.0 - treeScale) * 0.5));
+            int treeStrip = wallX0Ym[TYPE] == WALLTYPE_FOREST2 ? FOREST2 : FOREST;
+            vec4 treeColor = surfaceTexture(treeStrip, vec2(treeTexCoordX, treeTexCoordY * treeScale + (1.0 - treeScale) * 0.5));
             float treeVegMoist = max(surfaceWater[SUSTAINED_MOISTURE], surfaceWater[SOIL_MOISTURE] * 0.65);
             vec4 vegetationCol = mix(treeColor, vec4(dryGrassCol, 1.), max(0.5 - treeVegMoist * (0.5 / fullGreenSoilMoisture), 0.) * treeColor.a); // green to brown
             if (wallX0Ym[TYPE] == WALLTYPE_SUBURBAN)
               vegetationCol.a *= step(0.82, suburbanHash(floor(suburbanWorldX(fragCoord.x) / suburbanLotWidth) + 53.1));
             texCol = mix(vegetationCol, surfaceTexture(SNOW_FOREST, vec2(treeTexCoordX, treeTexCoordY * treeScale)), min(snow / fullWhiteSnowHeight, 1.0));
           }
-        } else if (wallX0Ym[TYPE] == WALLTYPE_FIRE && wallX0Ym[VEGETATION] > GRASS_VEG_MAX) {
+        } else if (isAnyFireType(wallX0Ym[TYPE]) && wallX0Ym[VEGETATION] > GRASS_VEG_MAX) {
           texCol = surfaceTexture(FIRE_FOREST, vec2(treeTexCoordX, treeTexCoordY));
         }
         if (texCol.a > 0.5) { // if not transparent
@@ -1381,7 +1408,7 @@ void main()
 
           shadowLight = minShadowLight;        // make sure trees are dark at night
 
-          if (wallX0Ym[TYPE] == WALLTYPE_FIRE) // fire below
+          if (isAnyFireType(wallX0Ym[TYPE])) // fire below
             shadowLight = 1.0;
 
           opacity = 1. - (1. - opacity) * (1. - texCol.a); // alpha blending

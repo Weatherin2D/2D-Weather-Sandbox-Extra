@@ -167,6 +167,7 @@
       case 'TOOL_WALL_FIRE': return 13;
       case 'TOOL_WALL_URBAN': return 14;
       case 'TOOL_WALL_SUBURBAN': return 17;
+      case 'TOOL_WALL_AMERICAN_SUBURBAN': return 33;
       case 'TOOL_WALL_RUNWAY': return 15;
       case 'TOOL_WALL_INDUSTRIAL': return 16;
       case 'TOOL_WALL_MOIST': return 20;
@@ -174,6 +175,7 @@
       case 'TOOL_FLOOD': return 31;
       case 'TOOL_VEG_GRASS': return 27;
       case 'TOOL_VEG_FOREST': return 28;
+      case 'TOOL_VEG_FOREST2': return 32;
       case 'TOOL_CHARGE': return 23;
       default: return -1;
     }

@@ -107,11 +107,13 @@ void main()
         switch (wall[TYPE]) {
         case WALLTYPE_RUNWAY:
         case WALLTYPE_URBAN:
+        case WALLTYPE_AMERICAN_SUBURBAN:
         case WALLTYPE_SUBURBAN:
         case WALLTYPE_INDUSTRIAL:
           if (abs(colSunAngle) > 85. * deg2rad)
             reflectedLight.rgb += vec3(1.00, 0.97, 0.57) * 0.03; // Urban area emits light
                                                                  // NOBREAK
+        case WALLTYPE_FOREST2:
         case WALLTYPE_LAND:
           IR_up = IR_emitted(realTemp);                          // Ir emmited upwards from surface. emissivity of surface = 1.0 for simplicity
           net_heating += (IR_down - IR_up) * lightHeatingConst;
@@ -124,6 +126,7 @@ void main()
           net_heating += (IR_down - IR_up) * lightHeatingConst;
           break;
         case WALLTYPE_FIRE:
+        case WALLTYPE_FIRE_FOREST2:
           IR_up = IR_emitted(realTemp + 100.); // fire emits heat
           net_heating = 0.0;
         }

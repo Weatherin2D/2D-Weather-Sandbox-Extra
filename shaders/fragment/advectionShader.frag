@@ -204,7 +204,7 @@ void main()
 
     water = texture(waterTex, texCoord);
 
-    if (wall[TYPE] == WALLTYPE_LAND) { // land
+    if (isLandOrForest2(wall[TYPE])) { // land / deciduous forest land
       base[TEMPERATURE] = 1000.0;      // Set snow melting feedback to 0
     }
 
@@ -251,7 +251,7 @@ void main()
         water[SNOW] -= sublimation;
       }
 
-      if (enableGlacierFormation > 0.5 && wall[TYPE] == WALLTYPE_LAND && water[SNOW] > iceCapFormSnowCm && tempC < -8.0 && int(iterNum) % 200 == 0) { // compact deep snow to land ice
+      if (enableGlacierFormation > 0.5 && isLandOrForest2(wall[TYPE]) && water[SNOW] > iceCapFormSnowCm && tempC < -8.0 && int(iterNum) % 200 == 0) { // compact deep snow to land ice
         wall[TYPE] = WALLTYPE_ICE;
         water[SALINITY] = landIceSalinityMarker;
       }
@@ -365,33 +365,39 @@ void main()
           }
           break;
         case 13:                                                                                                     // set fire
-          if (wall[DISTANCE] == 0 && wall[TYPE] == WALLTYPE_LAND && texture(wallTex, texCoordX0Yp)[DISTANCE] != 0) { // if land wall and no wall above
-            wall[TYPE] = WALLTYPE_FIRE;
+          if (wall[DISTANCE] == 0 && isLandOrForest2(wall[TYPE]) && texture(wallTex, texCoordX0Yp)[DISTANCE] != 0) { // if land wall and no wall above
+            wall[TYPE] = igniteFireType(wall[TYPE]);
             setWall = true;
           }
           break;
         case 14:                                               // set urban
-          if (wall[DISTANCE] == 0 && (wall[TYPE] == WALLTYPE_LAND || wall[TYPE] == WALLTYPE_RUNWAY || wall[TYPE] == WALLTYPE_INDUSTRIAL) &&
+          if (wall[DISTANCE] == 0 && (isLandOrForest2(wall[TYPE]) || wall[TYPE] == WALLTYPE_RUNWAY || wall[TYPE] == WALLTYPE_INDUSTRIAL || wall[TYPE] == WALLTYPE_AMERICAN_SUBURBAN) &&
               texture(wallTex, texCoordX0Yp)[DISTANCE] != 0) { // if land wall and no wall above
             wall[TYPE] = WALLTYPE_URBAN;
           }
           break;
         case 15:                                               // set runway
-          if (wall[DISTANCE] == 0 && (wall[TYPE] == WALLTYPE_LAND || wall[TYPE] == WALLTYPE_URBAN || wall[TYPE] == WALLTYPE_INDUSTRIAL) &&
+          if (wall[DISTANCE] == 0 && (isLandOrForest2(wall[TYPE]) || isUrbanLike(wall[TYPE]) || wall[TYPE] == WALLTYPE_INDUSTRIAL) &&
               texture(wallTex, texCoordX0Yp)[DISTANCE] != 0) { // if land wall and no wall above
             wall[TYPE] = WALLTYPE_RUNWAY;
           }
           break;
         case 16:                                               // set industrial
-          if (wall[DISTANCE] == 0 && (wall[TYPE] == WALLTYPE_LAND || wall[TYPE] == WALLTYPE_URBAN || wall[TYPE] == WALLTYPE_RUNWAY) &&
+          if (wall[DISTANCE] == 0 && (isLandOrForest2(wall[TYPE]) || isUrbanLike(wall[TYPE]) || wall[TYPE] == WALLTYPE_RUNWAY) &&
               texture(wallTex, texCoordX0Yp)[DISTANCE] != 0) { // if land wall and no wall above
             wall[TYPE] = WALLTYPE_INDUSTRIAL;
           }
           break;
         case 17:                                               // set suburban
-          if (wall[DISTANCE] == 0 && (wall[TYPE] == WALLTYPE_LAND || wall[TYPE] == WALLTYPE_RUNWAY || wall[TYPE] == WALLTYPE_INDUSTRIAL) &&
+          if (wall[DISTANCE] == 0 && (isLandOrForest2(wall[TYPE]) || wall[TYPE] == WALLTYPE_RUNWAY || wall[TYPE] == WALLTYPE_INDUSTRIAL || wall[TYPE] == WALLTYPE_AMERICAN_SUBURBAN) &&
               texture(wallTex, texCoordX0Yp)[DISTANCE] != 0) {
             wall[TYPE] = WALLTYPE_SUBURBAN;
+          }
+          break;
+        case 33:                                               // set American suburban (urban-like)
+          if (wall[DISTANCE] == 0 && (isLandOrForest2(wall[TYPE]) || wall[TYPE] == WALLTYPE_RUNWAY || wall[TYPE] == WALLTYPE_INDUSTRIAL || isUrbanLike(wall[TYPE]) || wall[TYPE] == WALLTYPE_SUBURBAN) &&
+              texture(wallTex, texCoordX0Yp)[DISTANCE] != 0) {
+            wall[TYPE] = WALLTYPE_AMERICAN_SUBURBAN;
           }
           break;
 
@@ -410,14 +416,14 @@ void main()
           }
           break;
         case 21:                                               // add snow
-          if (wall[DISTANCE] == 0 && (wall[TYPE] == WALLTYPE_LAND || wall[TYPE] == WALLTYPE_URBAN || wall[TYPE] == WALLTYPE_SUBURBAN || wall[TYPE] == WALLTYPE_INDUSTRIAL || wall[TYPE] == WALLTYPE_ICE) &&
+          if (wall[DISTANCE] == 0 && (isLandOrForest2(wall[TYPE]) || isUrbanLike(wall[TYPE]) || wall[TYPE] == WALLTYPE_SUBURBAN || wall[TYPE] == WALLTYPE_INDUSTRIAL || wall[TYPE] == WALLTYPE_ICE) &&
               texture(wallTex, texCoordX0Yp)[DISTANCE] != 0) { // if land wall and no wall above
             water[SNOW] += userInputValues[BRUSH_INTENSITY] * 0.5;
           }
           break;
         case 22:                                               // grass / shrub (legacy vegetation tool id)
         case 27:                                               // grass / shrub
-          if (wall[DISTANCE] == 0 && (wall[TYPE] == WALLTYPE_LAND || wall[TYPE] == WALLTYPE_FIRE || wall[TYPE] == WALLTYPE_URBAN || wall[TYPE] == WALLTYPE_SUBURBAN || wall[TYPE] == WALLTYPE_INDUSTRIAL || isCustomBase(wall[TYPE])) &&
+          if (wall[DISTANCE] == 0 && (isLandFireOrForest2(wall[TYPE]) || isUrbanLike(wall[TYPE]) || wall[TYPE] == WALLTYPE_SUBURBAN || wall[TYPE] == WALLTYPE_INDUSTRIAL || isCustomBase(wall[TYPE])) &&
               texture(wallTex, texCoordX0Yp)[DISTANCE] != 0) {
             if (wall[VEGETATION] > GRASS_VEG_MAX)
               wall[VEGETATION] = max(wall[VEGETATION] - 1, FOREST_VEG_MIN);
@@ -425,9 +431,28 @@ void main()
               wall[VEGETATION] = min(wall[VEGETATION] + 1, GRASS_VEG_MAX);
           }
           break;
-        case 28:                                               // forest
-          if (wall[DISTANCE] == 0 && (wall[TYPE] == WALLTYPE_LAND || wall[TYPE] == WALLTYPE_FIRE || wall[TYPE] == WALLTYPE_URBAN || wall[TYPE] == WALLTYPE_SUBURBAN || isCustomBase(wall[TYPE])) &&
+        case 28:                                               // forest (conifer)
+          if (wall[DISTANCE] == 0 && (isLandFireOrForest2(wall[TYPE]) || isUrbanLike(wall[TYPE]) || wall[TYPE] == WALLTYPE_SUBURBAN || isCustomBase(wall[TYPE])) &&
               texture(wallTex, texCoordX0Yp)[DISTANCE] != 0) {
+            // Convert deciduous species back to pine land/fire identity
+            if (wall[TYPE] == WALLTYPE_FOREST2)
+              wall[TYPE] = WALLTYPE_LAND;
+            else if (wall[TYPE] == WALLTYPE_FIRE_FOREST2)
+              wall[TYPE] = WALLTYPE_FIRE;
+            if (wall[VEGETATION] <= GRASS_VEG_MAX)
+              wall[VEGETATION] = FOREST_VEG_MIN;
+            else
+              wall[VEGETATION] = min(wall[VEGETATION] + 1, FOREST_VEG_MAX);
+          }
+          break;
+        case 32:                                               // forest 2 (deciduous)
+          if (wall[DISTANCE] == 0 && (isLandFireOrForest2(wall[TYPE]) || isUrbanLike(wall[TYPE]) || wall[TYPE] == WALLTYPE_SUBURBAN || isCustomBase(wall[TYPE])) &&
+              texture(wallTex, texCoordX0Yp)[DISTANCE] != 0) {
+            // Mark deciduous species on land/fire; urban/suburban/custom keep TYPE (pine look there)
+            if (wall[TYPE] == WALLTYPE_LAND || wall[TYPE] == WALLTYPE_FOREST2)
+              wall[TYPE] = WALLTYPE_FOREST2;
+            else if (wall[TYPE] == WALLTYPE_FIRE || wall[TYPE] == WALLTYPE_FIRE_FOREST2)
+              wall[TYPE] = WALLTYPE_FIRE_FOREST2;
             if (wall[VEGETATION] <= GRASS_VEG_MAX)
               wall[VEGETATION] = FOREST_VEG_MIN;
             else
@@ -442,7 +467,7 @@ void main()
         }
         case 30: // custom overlay on land (urban-like gate)
           if (wall[DISTANCE] == 0 &&
-              (wall[TYPE] == WALLTYPE_LAND || isCustomBase(wall[TYPE]) ||
+              (isLandOrForest2(wall[TYPE]) || isCustomBase(wall[TYPE]) ||
                wall[TYPE] == WALLTYPE_RUNWAY || wall[TYPE] == WALLTYPE_INDUSTRIAL ||
                isCustomOverlay(wall[TYPE])) &&
               texture(wallTex, texCoordX0Yp)[DISTANCE] != 0) {
@@ -500,8 +525,8 @@ void main()
         if (wall[DISTANCE] == 0) {           // remove wall only if it is a wall and not bottem layer
 
           if (userInputType == 13) {         // fire
-            if (wall[TYPE] == WALLTYPE_FIRE) // extinguish fire
-              wall[TYPE] = WALLTYPE_LAND;
+            if (isAnyFireType(wall[TYPE])) // extinguish fire
+              wall[TYPE] = extinguishFireType(wall[TYPE]);
           } else if (userInputType == 14) {
             if (wall[TYPE] == WALLTYPE_URBAN) // remove buildings
               wall[TYPE] = WALLTYPE_LAND;
@@ -513,6 +538,9 @@ void main()
               wall[TYPE] = WALLTYPE_LAND;
           } else if (userInputType == 17) {
             if (wall[TYPE] == WALLTYPE_SUBURBAN) // remove suburban
+              wall[TYPE] = WALLTYPE_LAND;
+          } else if (userInputType == 33) {
+            if (wall[TYPE] == WALLTYPE_AMERICAN_SUBURBAN) // remove American suburban
               wall[TYPE] = WALLTYPE_LAND;
           } else if (userInputType == 30) {
             if (isCustomOverlay(wall[TYPE]))
@@ -540,11 +568,23 @@ void main()
             }
           } else if (userInputType == 22 || userInputType == 27) {
             wall[VEGETATION] = max(wall[VEGETATION] - 1, 0);
-          } else if (userInputType == 28) {
+            if (wall[VEGETATION] <= GRASS_VEG_MAX) {
+              if (wall[TYPE] == WALLTYPE_FOREST2)
+                wall[TYPE] = WALLTYPE_LAND;
+              else if (wall[TYPE] == WALLTYPE_FIRE_FOREST2)
+                wall[TYPE] = WALLTYPE_FIRE;
+            }
+          } else if (userInputType == 28 || userInputType == 32) {
             if (wall[VEGETATION] > GRASS_VEG_MAX)
               wall[VEGETATION] = max(wall[VEGETATION] - 1, 0);
             else
               wall[VEGETATION] = 0;
+            if (wall[VEGETATION] <= GRASS_VEG_MAX) {
+              if (wall[TYPE] == WALLTYPE_FOREST2)
+                wall[TYPE] = WALLTYPE_LAND;
+              else if (wall[TYPE] == WALLTYPE_FIRE_FOREST2)
+                wall[TYPE] = WALLTYPE_FIRE;
+            }
           } else if (texCoord.y > texelSize.y) {
             wall[DISTANCE] = 255;                                  // remove wall
             base[VX] = 0.0;                                        // reset all properties to prevent NaN bug
@@ -611,8 +651,8 @@ void main()
 
     if (distFromPlane < 1.5) {
       if (wall[DISTANCE] == 0) {
-        if (wall[TYPE] == WALLTYPE_LAND && wall[VERT_DISTANCE] == 0) // if land surface, set ground on fire
-          wall[TYPE] = WALLTYPE_FIRE;                                // start fire when plane hits the ground
+        if (isLandOrForest2(wall[TYPE]) && wall[VERT_DISTANCE] == 0) // if land surface, set ground on fire
+          wall[TYPE] = igniteFireType(wall[TYPE]);                   // start fire when plane hits the ground
       } else {                                                       // air, create FIRE BALL!
         base[PRESSURE] += 0.05;                                      // pressure wave
         base[TEMPERATURE] = CtoK(50.0);                              // heat

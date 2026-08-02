@@ -37,6 +37,7 @@
     { id: 'TOOL_WALL_ICE_CAP', name: 'Ice Cap / Glacier', category: 'Terrain', kind: 'brush', builtin: true, tags: ['glacier', 'ice'] },
     { id: 'TOOL_WALL_URBAN', name: 'Urban', category: 'Terrain', kind: 'brush', builtin: true, tags: ['city', 'surface'] },
     { id: 'TOOL_WALL_SUBURBAN', name: 'Suburban', category: 'Terrain', kind: 'brush', builtin: true, tags: ['city', 'surface'] },
+    { id: 'TOOL_WALL_AMERICAN_SUBURBAN', name: 'American Suburban', category: 'Terrain', kind: 'brush', builtin: true, tags: ['city', 'surface', 'houses'] },
     { id: 'TOOL_WALL_RUNWAY', name: 'Runway', category: 'Terrain', kind: 'brush', builtin: true, tags: ['paved', 'airport'] },
     { id: 'TOOL_WALL_INDUSTRIAL', name: 'Industrial', category: 'Terrain', kind: 'brush', builtin: true, tags: ['factory', 'surface'] },
     { id: 'TOOL_WALL_FIRE', name: 'Fire', category: 'Terrain', kind: 'brush', builtin: true, tags: ['burn', 'ignite'] },
@@ -45,6 +46,7 @@
     { id: 'TOOL_WALL_SNOW', name: 'Snow', category: 'Terrain', kind: 'brush', builtin: true, tags: ['snow', 'cold'] },
     { id: 'TOOL_VEG_GRASS', name: 'Grass / Shrub', category: 'Vegetation', kind: 'brush', builtin: true, tags: ['plants', 'grass'] },
     { id: 'TOOL_VEG_FOREST', name: 'Forest', category: 'Vegetation', kind: 'brush', builtin: true, tags: ['trees', 'forest'] },
+    { id: 'TOOL_VEG_FOREST2', name: 'Forest 2', category: 'Vegetation', kind: 'brush', builtin: true, tags: ['trees', 'forest', 'deciduous'] },
     { id: 'TOOL_STATION', name: 'Weather Station', category: 'Instruments', kind: 'place', builtin: true, tags: ['station', 'obs'] },
     { id: 'TOOL_BALLOON', name: 'Weather Balloon', category: 'Instruments', kind: 'place', builtin: true, tags: ['sounding', 'balloon'] },
     { id: 'TOOL_RADAR', name: 'Radar Tower', category: 'Instruments', kind: 'place', builtin: true, tags: ['radar'] },
@@ -66,7 +68,7 @@
 
   const TERRAIN_VALUES = [
     'none', 'land', 'fresh', 'sea', 'iceSheet', 'iceCap',
-    'urban', 'suburban', 'runway', 'industrial', 'fire',
+    'urban', 'suburban', 'americanSuburban', 'runway', 'industrial', 'fire',
   ];
 
   let customTools = [];

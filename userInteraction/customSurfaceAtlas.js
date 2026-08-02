@@ -48,7 +48,7 @@
   /** Download a template strip from the builtin urban facade atlas. */
   async function downloadTemplate() {
     const img = await loadImage(BUILTIN_ATLAS_URL);
-    const stripH = Math.floor(img.height / 5);
+    const stripH = Math.floor(img.height / 7);
     const canvas = document.createElement('canvas');
     canvas.width = img.width;
     canvas.height = stripH;

@@ -60,6 +60,11 @@ const ControlHelp = (function() {
       body: 'Lighter built-up areas with house silhouettes between city and countryside. Moderate heat retention and evaporation. Houses stay visible when zoomed out.',
       keys: '2',
     },
+    TOOL_WALL_AMERICAN_SUBURBAN: {
+      title: 'American Suburban',
+      body: 'Cookie-cutter American suburban houses from a texture strip. Behaves like Urban for heating, smog, and vegetation limits, with a lower house skyline. Hold Ctrl to remove.',
+      keys: '',
+    },
     TOOL_WALL_RUNWAY: {
       title: 'Runway',
       body: 'Flat paved surfaces. Very low vegetation and distinct heating characteristics.',
@@ -97,8 +102,13 @@ const ControlHelp = (function() {
     },
     TOOL_VEG_FOREST: {
       title: 'Forest',
-      body: 'Paint forest canopy. Stronger evaporation and fuel for larger fires than grass. Tree sprites stay visible at all zoom levels in the realistic view.',
-      keys: 'S',
+      body: 'Paint conifer forest canopy. Stronger evaporation and fuel for larger fires than grass. Tree sprites stay visible at all zoom levels in the realistic view.',
+      keys: '',
+    },
+    TOOL_VEG_FOREST2: {
+      title: 'Forest 2',
+      body: 'Paint deciduous forest canopy. Same growth, fire, and snow behavior as Forest, with a different tree look. Natural grass→forest growth can also become Forest 2 (see Vegetation → Natural Forest Type). Painting Forest over Forest 2 converts it back to conifers.',
+      keys: '',
     },
     TOOL_WALL_SNOW: {
       title: 'Snow',
@@ -214,6 +224,7 @@ const ControlHelp = (function() {
     waterTemperature: 'Default temperature of lakes and oceans in °C.',
     enableGlacierFormation: 'When on, deep cold snow on land can compact into glacier / ice-cap terrain.',
     enableGlacierMelting: 'When on, land glaciers can thin and melt back into snowy land when warm.',
+    maxSnowAccumulationCm: 'Maximum snow depth that can build up on land tiles from snowfall (centimeters).',
     dynamicWaterTemperature: 'Let water bodies heat and cool from sunlight and air contact.',
     landEvaporation: 'Moisture added to the air from vegetated land.',
     waterEvaporation: 'Moisture added from open water surfaces.',

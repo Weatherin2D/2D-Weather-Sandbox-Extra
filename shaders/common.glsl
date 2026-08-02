@@ -135,6 +135,11 @@ float encodeLandWithFlood(float floodMm)
 #define WALLTYPE_CUSTOM_BASE_LAST 17
 #define WALLTYPE_CUSTOM_OVERLAY 18        // slots 18..25
 #define WALLTYPE_CUSTOM_OVERLAY_LAST 25
+// Deciduous forest species (same physics as land/fire; distinct tree atlas strip)
+#define WALLTYPE_FOREST2 26
+#define WALLTYPE_FIRE_FOREST2 27
+// Texture-based American suburban (urban-like facade physics, own atlas strip)
+#define WALLTYPE_AMERICAN_SUBURBAN 28
 
 #define DISTANCE 1      // manhattan distance to nearest wall                   0 to 127
 #define VERT_DISTANCE 2 // height above/below ground. Surface = 0               -127 to 127
@@ -143,6 +148,15 @@ float encodeLandWithFlood(float floodMm)
 bool isCustomBase(int t) { return t >= WALLTYPE_CUSTOM_BASE && t <= WALLTYPE_CUSTOM_BASE_LAST; }
 bool isCustomOverlay(int t) { return t >= WALLTYPE_CUSTOM_OVERLAY && t <= WALLTYPE_CUSTOM_OVERLAY_LAST; }
 bool isCustomTerrain(int t) { return isCustomBase(t) || isCustomOverlay(t); }
+bool isForest2Land(int t) { return t == WALLTYPE_FOREST2; }
+bool isForest2Fire(int t) { return t == WALLTYPE_FIRE_FOREST2; }
+bool isForest2Species(int t) { return t == WALLTYPE_FOREST2 || t == WALLTYPE_FIRE_FOREST2; }
+bool isAnyFireType(int t) { return t == WALLTYPE_FIRE || t == WALLTYPE_FIRE_FOREST2; }
+bool isLandOrForest2(int t) { return t == WALLTYPE_LAND || t == WALLTYPE_FOREST2; }
+bool isLandFireOrForest2(int t) { return t == WALLTYPE_LAND || t == WALLTYPE_FIRE || isForest2Species(t); }
+bool isUrbanLike(int t) { return t == WALLTYPE_URBAN || t == WALLTYPE_AMERICAN_SUBURBAN; }
+int igniteFireType(int landType) { return landType == WALLTYPE_FOREST2 ? WALLTYPE_FIRE_FOREST2 : WALLTYPE_FIRE; }
+int extinguishFireType(int fireType) { return fireType == WALLTYPE_FIRE_FOREST2 ? WALLTYPE_FOREST2 : WALLTYPE_LAND; }
 int customAtlasSlot(int t)
 {
   if (isCustomBase(t)) return t - WALLTYPE_CUSTOM_BASE;

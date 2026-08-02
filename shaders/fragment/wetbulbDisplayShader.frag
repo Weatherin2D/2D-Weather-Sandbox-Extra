@@ -51,6 +51,7 @@ void main()
       fragmentColor = vec4(0, 0, 0, 1.);
       break;
     case WALLTYPE_LAND:
+    case WALLTYPE_FOREST2:
       fragmentColor = vec4(vec3(0.10), 1.);
       break;
     case WALLTYPE_FRESH_WATER:
@@ -61,6 +62,7 @@ void main()
       fragmentColor = vec4(tempColorPalette[palletteIndex], 1.0);
       break;
     case WALLTYPE_FIRE:
+    case WALLTYPE_FIRE_FOREST2:
       fragmentColor = vec4(1.0, 0.5, 0.0, 1.);
       break;
     }

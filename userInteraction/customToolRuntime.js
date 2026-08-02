@@ -14,6 +14,7 @@
     fire: 13,
     urban: 14,
     suburban: 17,
+    americanSuburban: 33,
     runway: 15,
     industrial: 16,
   };

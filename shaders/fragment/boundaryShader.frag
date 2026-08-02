@@ -42,6 +42,7 @@ uniform float iterNum; // used as seed for random function
 
 uniform float dynamicWaterTemperature;
 uniform float maxWaterTemperatureC;
+uniform float maxSnowAccumulationCm;
 uniform float freshwaterFreezePointC;
 uniform float saltwaterFreezePointC;
 uniform float enableFreshwaterFreezing;
@@ -56,6 +57,8 @@ uniform float floodRainThreshold;      // air PRECIPITATION intensity required t
 uniform float floodPondRate;           // ponding mm build rate once rain exceeds threshold
 uniform float enableFlooding;          // 0/1 — natural rain→flood ponding
 uniform float enableStormSurge;        // 0/1 — coastal storm-surge inundation
+// Natural grass→forest species pick: 0 = random 50/50, 1 = Forest (conifer), 2 = Forest 2 (deciduous)
+uniform float forestGrowthSpecies;
 
 layout(location = 0) out vec4 base;
 layout(location = 1) out vec4 water;
@@ -104,7 +107,8 @@ float cellsAboveOceanAt(vec2 uv)
 bool isSurgeFloodLandType(int wallType)
 {
   return wallType == WALLTYPE_LAND || wallType == WALLTYPE_FIRE
-      || wallType == WALLTYPE_URBAN || wallType == WALLTYPE_SUBURBAN
+      || wallType == WALLTYPE_FOREST2 || wallType == WALLTYPE_FIRE_FOREST2
+      || wallType == WALLTYPE_URBAN || wallType == WALLTYPE_SUBURBAN || wallType == WALLTYPE_AMERICAN_SUBURBAN
       || wallType == WALLTYPE_INDUSTRIAL || wallType == WALLTYPE_RUNWAY
       || isCustomBase(wallType);
 }
@@ -264,7 +268,7 @@ void main()
 
         if (wall[TYPE] == WALLTYPE_INERT) {
           albedoTotal = ALBEDO_INERT;
-        } else if (wall[TYPE] == WALLTYPE_LAND || wall[TYPE] == WALLTYPE_FIRE || isCustomBase(wall[TYPE])) {
+        } else if (isLandFireOrForest2(wall[TYPE]) || isCustomBase(wall[TYPE])) {
           float albedoSoil = map_rangeC(soilMoisture, 0., 20., ALBEDO_DRYSOIL, ALBEDO_WETSOIL);
           albedoSoil = map_rangeC(snowCover, 0.0, fullWhiteSnowHeight, albedoSoil, ALBEDO_SNOW);                         // add snow albedo
           float vegSample = float(wallX0Ym[VEGETATION]);
@@ -275,7 +279,7 @@ void main()
           float vegAlbedo = mix(grassAlbedo, forestAlbedo, forestFrac);
           float vegCover = max(grassFrac * 0.55, forestFrac);
           albedoTotal = mix(albedoSoil, vegAlbedo, clamp(vegCover, 0.0, 1.0));
-        } else if (wall[TYPE] == WALLTYPE_URBAN || isCustomOverlay(wall[TYPE])) {
+        } else if (isUrbanLike(wall[TYPE]) || isCustomOverlay(wall[TYPE])) {
           albedoTotal = ALBEDO_URBAN;
         } else if (wall[TYPE] == WALLTYPE_SUBURBAN) {
           albedoTotal = ALBEDO_SUBURBAN;
@@ -340,7 +344,7 @@ void main()
 
       if (wall[VERT_DISTANCE] == 1) {
         float surfaceDrag = 0.0015; // water or runway
-        if (wall[TYPE] == WALLTYPE_URBAN || isCustomOverlay(wall[TYPE]))
+        if (isUrbanLike(wall[TYPE]) || isCustomOverlay(wall[TYPE]))
           surfaceDrag = 0.040;
         else if (wall[TYPE] == WALLTYPE_SUBURBAN)
           surfaceDrag = 0.012;
@@ -349,7 +353,7 @@ void main()
           float fBio = forestBiomass(wall[VEGETATION]);
           surfaceDrag = map_rangeC(fBio, 0., float(FOREST_VEG_MAX - GRASS_VEG_MAX), 0.0015 + gBio * 0.00004, 0.020);
         }
-        else if (wall[TYPE] == WALLTYPE_LAND || wall[TYPE] == WALLTYPE_FIRE) {
+        else if (isLandFireOrForest2(wall[TYPE])) {
           float gBio = grassBiomass(wall[VEGETATION]);
           float fBio = forestBiomass(wall[VEGETATION]);
           surfaceDrag = map_rangeC(fBio, 0., float(FOREST_VEG_MAX - GRASS_VEG_MAX), 0.0015 + gBio * 0.00004, 0.020);
@@ -393,6 +397,7 @@ void main()
 
       switch (wall[TYPE]) {
       case WALLTYPE_FIRE:
+      case WALLTYPE_FIRE_FOREST2:
         if (wall[VERT_DISTANCE] == 1) { // forest fire & one above surface
           float sfcFlood = getFloodHeightMm(waterInSurface[TOTAL]);
           float fireIntensity = 0.0;
@@ -427,10 +432,12 @@ void main()
         if (wall[TYPE] == WALLTYPE_SUBURBAN)
           water[SMOKE] += 0.0000004;
         // nobreak!
+      case WALLTYPE_AMERICAN_SUBURBAN:
       case WALLTYPE_URBAN:
-        if (wall[TYPE] == WALLTYPE_URBAN)
+        if (isUrbanLike(wall[TYPE]))
           water[SMOKE] += 0.000002; // Urban produces smog
         // nobreak!
+      case WALLTYPE_FOREST2:
       case WALLTYPE_LAND:
         if (wall[VERT_DISTANCE] <= wallVerticalInfluence) {
 
@@ -502,27 +509,30 @@ void main()
       case WALLTYPE_SUBURBAN:
         if (wall[TYPE] == WALLTYPE_SUBURBAN)
           wall[VEGETATION] = min(wall[VEGETATION], 100);
+      case WALLTYPE_AMERICAN_SUBURBAN:
       case WALLTYPE_URBAN:
-        if (wall[TYPE] == WALLTYPE_URBAN)
+        if (isUrbanLike(wall[TYPE]))
           wall[VEGETATION] = min(wall[VEGETATION], 75); // limit vegetation in urban areas
       case WALLTYPE_FIRE:
-        if (wall[TYPE] == WALLTYPE_FIRE) {            // extra check to make sure it's not urban
+      case WALLTYPE_FIRE_FOREST2:
+        if (isAnyFireType(wall[TYPE])) {            // extra check to make sure it's not urban
           float floodExcessFire = getFloodHeightMm(water[TOTAL]);
           // Significant standing floodwater extinguishes fire immediately
           if (floodExcessFire >= significantFloodMm) {
-            wall[TYPE] = WALLTYPE_LAND;
+            wall[TYPE] = extinguishFireType(wall[TYPE]);
           } else {
             float fireIntensity = calcFireIntensity(wall[VEGETATION], water[SOIL_MOISTURE], waterX0Yp[PRECIPITATION]);
 
             if (fireIntensity < minimalFireIntensity) { // fire goes out
-              wall[TYPE] = WALLTYPE_LAND;               // turn off fire
+              wall[TYPE] = extinguishFireType(wall[TYPE]); // turn off fire
             } else if (int(iterNum) % (int(10. / fireIntensity) + 1) == 0) {
               wall[VEGETATION] -= 1;                    // reduce vegetation
               if (wall[VEGETATION] < 10)
-                wall[TYPE] = WALLTYPE_LAND;             // turn off fire
+                wall[TYPE] = extinguishFireType(wall[TYPE]); // turn off fire
             }
           }
         }
+      case WALLTYPE_FOREST2:
       case WALLTYPE_LAND:                                                                                     // no break,can also be fire or urban:
       case 10: case 11: case 12: case 13: case 14: case 15: case 16: case 17: // custom base slots
         {
@@ -634,8 +644,8 @@ void main()
           water[SOIL_MOISTURE] = clamp(water[SOIL_MOISTURE] + soakAmt, 0.0, soilFieldCapacity);
 
           // Same-frame quench: fire dies as soon as standing floodwater builds up
-          if (wall[TYPE] == WALLTYPE_FIRE && floodMm >= significantFloodMm)
-            wall[TYPE] = WALLTYPE_LAND;
+          if (isAnyFireType(wall[TYPE]) && floodMm >= significantFloodMm)
+            wall[TYPE] = extinguishFireType(wall[TYPE]);
 
           // Legacy saves: seed climate moisture from established vegetation, not one-off rain spikes
           if (water[SUSTAINED_MOISTURE] < 0.01 && wall[VEGETATION] > 15)
@@ -646,7 +656,7 @@ void main()
           // Stash flood for evaporation step below (encoded after soil evap)
           water[TOTAL] = encodeLandWithFlood(floodMm);
         }
-        water[SNOW] = clamp(water[SNOW] + precipDeposition[SNOW_DEPOSITION] * snowMassToHeight, 0.0, 4000.0); // snow accumulation in cm
+        water[SNOW] = clamp(water[SNOW] + precipDeposition[SNOW_DEPOSITION] * snowMassToHeight, 0.0, maxSnowAccumulationCm); // snow accumulation in cm
 
 
         vec4 baseAboveSurface = texture(baseTex, texCoordX0Yp);
@@ -690,13 +700,13 @@ void main()
           float totalNeighborSoilMoisture = 0.0;
           float totalNeighborSustainedMoisture = 0.0;
 
-          if (wallXmY0[VERT_DISTANCE] == 0 && (wallXmY0[TYPE] == WALLTYPE_LAND || wallXmY0[TYPE] == WALLTYPE_URBAN)) {
+          if (wallXmY0[VERT_DISTANCE] == 0 && (isLandOrForest2(wallXmY0[TYPE]) || isUrbanLike(wallXmY0[TYPE]))) {
             totalNeighborSnow += texture(waterTex, texCoordXmY0)[SNOW];
             totalNeighborSoilMoisture += texture(waterTex, texCoordXmY0)[SOIL_MOISTURE];
             totalNeighborSustainedMoisture += texture(waterTex, texCoordXmY0)[SUSTAINED_MOISTURE];
             numNeighbors += 1.;
           }
-          if (wallXpY0[VERT_DISTANCE] == 0 && (wallXpY0[TYPE] == WALLTYPE_LAND || wallXpY0[TYPE] == WALLTYPE_URBAN)) {
+          if (wallXpY0[VERT_DISTANCE] == 0 && (isLandOrForest2(wallXpY0[TYPE]) || isUrbanLike(wallXpY0[TYPE]))) {
             totalNeighborSnow += texture(waterTex, texCoordXpY0)[SNOW];
             totalNeighborSoilMoisture += texture(waterTex, texCoordXpY0)[SOIL_MOISTURE];
             totalNeighborSustainedMoisture += texture(waterTex, texCoordXpY0)[SUSTAINED_MOISTURE];
@@ -723,11 +733,30 @@ void main()
 
           if (vegetationGrowthRate > 0 && int(iterNum) % ((100 / vegetationGrowthRate) * 100) == 0) {
             int tempLimit = int(map_rangeC(realTempAboveSurface, CtoK(0.0), CtoK(25.0), 0., float(FOREST_VEG_MAX)));
-            if (wall[VEGETATION] <= GRASS_VEG_MAX) {
+            bool wasForest = isForestVegetation(wall[VEGETATION]);
+
+            if (wall[VEGETATION] < GRASS_VEG_MAX) {
               if (tempLimit > wall[VEGETATION])
                 wall[VEGETATION] = min(wall[VEGETATION] + 1, GRASS_VEG_MAX);
+            } else if (wall[VEGETATION] == GRASS_VEG_MAX) {
+              // Mature grass can promote into forest canopy when climate allows
+              if (tempLimit > FOREST_VEG_MIN && climateMoisture >= minVegetationMoisture * 1.35)
+                wall[VEGETATION] = FOREST_VEG_MIN;
             } else if (tempLimit > wall[VEGETATION]) {
               wall[VEGETATION] = min(wall[VEGETATION] + 1, FOREST_VEG_MAX);
+            }
+
+            // On first transition into forest biomass, pick conifer vs deciduous species
+            if (!wasForest && isForestVegetation(wall[VEGETATION]) && isLandOrForest2(wall[TYPE])) {
+              int mode = int(forestGrowthSpecies + 0.5); // 0 random, 1 forest, 2 forest2
+              if (mode == 2)
+                wall[TYPE] = WALLTYPE_FOREST2;
+              else if (mode == 1)
+                wall[TYPE] = WALLTYPE_LAND;
+              else {
+                float pick = random2d(texCoord * resolution + vec2(iterNum * 0.017, 91.3));
+                wall[TYPE] = pick < 0.5 ? WALLTYPE_FOREST2 : WALLTYPE_LAND;
+              }
             }
           }
 
@@ -751,8 +780,12 @@ void main()
               int diePeriod = int(dieInterval);
               int diePhase = int(random2d(texCoord * vec2(41.7, 173.3)) * float(diePeriod));
 
-              if (diePeriod > 0 && (int(iterNum) + diePhase) % diePeriod == 0)
+              if (diePeriod > 0 && (int(iterNum) + diePhase) % diePeriod == 0) {
                 wall[VEGETATION] = max(wall[VEGETATION] - 1, 0);
+                // Drop deciduous marker once canopy biomass is gone
+                if (!isForestVegetation(wall[VEGETATION]) && wall[TYPE] == WALLTYPE_FOREST2)
+                  wall[TYPE] = WALLTYPE_LAND;
+              }
             }
           }
 
@@ -762,8 +795,11 @@ void main()
           if (getFloodHeightMm(water[TOTAL]) < significantFloodMm
               && subInterval % (int(water[SOIL_MOISTURE] * 0.1 + water[SNOW] * 0.5) + 10) == 0
               && wall[VEGETATION] >= minimalFireVegetation
-              && (wallXmY0[TYPE] == WALLTYPE_FIRE || wallXpY0[TYPE] == WALLTYPE_FIRE || texture(waterTex, texCoordX0Yp)[SMOKE] > 4.5)) {
-            wall[TYPE] = WALLTYPE_FIRE;
+              && (isAnyFireType(wallXmY0[TYPE]) || isAnyFireType(wallXpY0[TYPE]) || texture(waterTex, texCoordX0Yp)[SMOKE] > 4.5)) {
+            if (wall[TYPE] == WALLTYPE_FOREST2)
+              wall[TYPE] = WALLTYPE_FIRE_FOREST2;
+            else if (!isAnyFireType(wall[TYPE]))
+              wall[TYPE] = WALLTYPE_FIRE;
           }
           //}
         }

@@ -171,6 +171,8 @@
         waterData[index + 3] = Math.min(waterData[index + 3] + 1.2 * intensity, 2.0);
         if (wallData[index + 0] === 1)
           wallData[index + 0] = 3; // FIRE
+        else if (wallData[index + 0] === 26)
+          wallData[index + 0] = 27; // FIRE_FOREST2
       }
     }
 

@@ -30,9 +30,11 @@ out vec4 fragmentColor;
 
 bool isLandSurfaceWall(int wallType)
 {
-  // Land / fire / urban / suburban / industrial / runway / custom base — soil moisture lives here
+  // Land / fire / forest2 / urban / suburban / industrial / runway / custom base — soil moisture lives here
   return wallType == 1 || wallType == 3 || wallType == 4 || wallType == 5
       || wallType == 6 || wallType == 7
+      || wallType == WALLTYPE_FOREST2 || wallType == WALLTYPE_FIRE_FOREST2
+      || wallType == WALLTYPE_AMERICAN_SUBURBAN
       || (wallType >= 10 && wallType <= 17);
 }
 
