@@ -1109,7 +1109,7 @@
         }
 
         #soundingReadoutPanel {
-            --panel-w: var(--footer-readout-w, 200px);
+            --panel-w: var(--footer-readout-w, 280px);
             left: var(--footer-readout-left, 0);
         }
 
@@ -1186,6 +1186,18 @@
             color: #406cff;
         }
 
+        .sounding-readout-col .val.flood {
+            color: #4fc3ff;
+        }
+
+        .sounding-readout-col .val.soil {
+            color: #9ad0ff;
+        }
+
+        .sounding-readout-col .val.snow {
+            color: #e8f4ff;
+        }
+
         #soundingReadoutPanel .sounding-readout-cols {
             flex: 1;
             min-height: 0;
@@ -1195,11 +1207,11 @@
 
         #soundingReadoutPanel .sounding-readout-col {
             flex: 1;
-            font-size: 8px;
+            font-size: 10px;
         }
 
         #soundingReadoutPanel .sounding-readout-col .val {
-            font-size: 8px;
+            font-size: 10px;
         }
 
         #soundingParcelPanel {

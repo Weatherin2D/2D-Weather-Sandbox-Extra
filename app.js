@@ -1459,6 +1459,25 @@ function printTemp(tempC)
   }
 }
 
+/** Compact integer tick label for Skew-T temperature axis (no unit suffix). */
+function formatSkewAxisTemp(tempC)
+{
+  if (!Number.isFinite(tempC)) return '';
+  return String(Math.round(convertTempToSelectedUnit(tempC)));
+}
+
+function tempUnitSuffix()
+{
+  switch (guiControls.tempUnit) {
+  case 'TEMP_UNIT_F':
+    return '°F';
+  case 'TEMP_UNIT_K':
+    return 'K';
+  default:
+    return '°C';
+  }
+}
+
 function mmToIn(mm) { return mm * 0.393701; }
 
 function msToKnots(ms) { return ms * 1.94384; };
@@ -12570,8 +12589,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     _capeDisplaySmooth : null,
     _panelWidth : 360,
     _railContentRight : 0,
-    FOOTER_READOUT_MIN : 150,
-    FOOTER_READOUT_MAX : 210,
+    FOOTER_READOUT_MIN : 240,
+    FOOTER_READOUT_MAX : 320,
     FOOTER_PARCEL_MIN : 200,
     FOOTER_PANEL_EDGE : 0,
     FOOTER_CONTROLS_W : 200,
@@ -15329,7 +15348,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
 
       const SOUNDING_HEADER_H = 44;
       const SOUNDING_FOOTER_H = 112;
-      const SOUNDING_AXIS_PAD = 26;
+      const SOUNDING_AXIS_PAD = 32;
       const METRICS_PANEL_W = 268;
       let plotTop = SOUNDING_HEADER_H + 6;
       let plotBottom = this.graphCanvas.height - SOUNDING_FOOTER_H - SOUNDING_AXIS_PAD;
@@ -16470,6 +16489,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         c.lineWidth = 1;
         c.font = '9px Arial';
         c.fillStyle = 'rgba(60, 150, 80, 0.75)';
+        let mixLabelMaxX = null;
+        let mixLabelY = null;
         for (const wGkg of [1, 2, 3, 4, 6, 8, 10, 15, 20]) {
           traceSkewLine((py) => {
             const altM = scrYToAltM(py);
@@ -16481,7 +16502,16 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
           const lx = T_to_Xpos(labelT, labelY);
           if (lx > skewTLeft + 8 && lx < labelMaxX - 16) {
             c.fillText(String(wGkg), lx + 2, labelY - 4);
+            if (mixLabelMaxX === null || lx > mixLabelMaxX) {
+              mixLabelMaxX = lx;
+              mixLabelY = labelY;
+            }
           }
+        }
+        if (mixLabelMaxX !== null && mixLabelY !== null) {
+          c.font = '8px Arial';
+          c.fillStyle = 'rgba(60, 150, 80, 0.7)';
+          c.fillText('g/kg', mixLabelMaxX + 14, mixLabelY - 4);
         }
         c.setLineDash([]);
         }
@@ -16522,18 +16552,31 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         c.strokeStyle = 'rgba(255, 140, 40, 0.55)';
         c.lineWidth = 1;
         c.fillStyle = 'rgba(255, 180, 100, 0.85)';
+        c.font = '10px Arial';
+        c.textAlign = 'center';
+        c.textBaseline = 'top';
+        let rightmostTickX = null;
         for (let T = -40.0; T <= 40.0; T += 10.0) {
           c.beginPath();
           c.moveTo(T_to_Xpos(T, plotBottom), plotBottom);
           c.lineTo(T_to_Xpos(T, plotTop), plotTop);
           c.stroke();
           if (T >= -20.0) {
-            const lx = T_to_Xpos(T, plotBottom) - 18;
-            if (lx > skewTLeft + 4 && lx < labelMaxX - 24) {
-              c.fillText(printTemp(Math.round(T)), lx, plotBottom + 14);
+            const lx = T_to_Xpos(T, plotBottom);
+            if (lx > skewTLeft + 8 && lx < labelMaxX - 8) {
+              c.fillText(formatSkewAxisTemp(T), lx, plotBottom + 4);
+              if (rightmostTickX === null || lx > rightmostTickX) rightmostTickX = lx;
             }
           }
         }
+        if (rightmostTickX !== null) {
+          c.font = '9px Arial';
+          c.fillStyle = 'rgba(255, 180, 100, 0.75)';
+          c.textAlign = 'left';
+          c.fillText(tempUnitSuffix(), rightmostTickX + 10, plotBottom + 5);
+        }
+        c.textAlign = 'left';
+        c.textBaseline = 'alphabetic';
         c.beginPath();
         c.strokeStyle = 'rgba(255, 140, 40, 0.85)';
         c.lineWidth = 2;
@@ -16654,9 +16697,14 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         const markSample = nearestBalloonSample(simYpos);
         if (markSample && markSample.y <= profileDrawMaxY + 0.001) {
           const scrYpos = scrYFromSimY(markSample.y);
+          const tx = T_to_Xpos(markSample.t, scrYpos);
           c.strokeStyle = '#FFF';
           c.lineWidth = 1.0;
-          c.strokeRect(T_to_Xpos(markSample.t, scrYpos), scrYpos, 10, 1);
+          c.strokeRect(tx, scrYpos, 10, 1);
+          c.font = 'bold 11px Arial';
+          c.fillStyle = '#FF6666';
+          c.textAlign = 'left';
+          c.fillText(printTemp(markSample.t), tx + 14, scrYpos + 4);
         }
       } else if (balloonPathSamples && balloonPathSamples.length === 1) {
         const s = balloonPathSamples[0];
@@ -16681,9 +16729,14 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
             c.lineTo(T_to_Xpos(temp, scrYpos), scrYpos);
           }
           if (y == simYpos) {
+            const tx = T_to_Xpos(temp, scrYpos);
             c.strokeStyle = '#FFF';
             c.lineWidth = 1.0;
-            c.strokeRect(T_to_Xpos(temp, scrYpos), scrYpos, 10, 1);
+            c.strokeRect(tx, scrYpos, 10, 1);
+            c.font = 'bold 11px Arial';
+            c.fillStyle = '#FF6666';
+            c.textAlign = 'left';
+            c.fillText(printTemp(temp), tx + 14, scrYpos + 4);
           }
         }
         c.lineWidth = 2.5;
@@ -16721,6 +16774,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         c.stroke();
         c.font = 'bold 11px Arial';
         c.fillStyle = '#406cff';
+        c.textAlign = 'left';
         const sfcIcon = sfcWallType === 9 ? '🧊 ' : '🌊 ';
         c.fillText(sfcIcon + (sfcWaterLabel || 'Water Temp') + ' ' + printTemp(sfcWaterTempC),
           skewTLeft + 4, sfcScrY + 14);
@@ -16764,13 +16818,15 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         const markSample = nearestBalloonSample(simYpos);
         if (markSample && markSample.y <= profileDrawMaxY + 0.001 && Math.abs(markSample.y - simYpos) < 0.75) {
           const scrYpos = scrYFromSimY(markSample.y);
-          const velocity = Math.hypot(markSample.u, markSample.v);
-          c.fillText('' + printAltitude(markSample.altM), skewTLeft + 4, scrYpos + 5);
-          c.fillText('' + printVelocity(velocity), windBarbX - 45, scrYpos + 20);
+          const dx = T_to_Xpos(markSample.d, scrYpos);
           c.strokeStyle = '#FFF';
           c.lineWidth = 1.0;
-          c.strokeRect(T_to_Xpos(markSample.d, scrYpos) - 10, scrYpos, 10, 1);
-          c.fillText('' + printTemp(markSample.d), T_to_Xpos(markSample.d, scrYpos) - 70, scrYpos + 5);
+          c.strokeRect(dx - 10, scrYpos, 10, 1);
+          c.font = 'bold 11px Arial';
+          c.fillStyle = '#66CCFF';
+          c.textAlign = 'right';
+          c.fillText(printTemp(markSample.d), dx - 14, scrYpos + 4);
+          c.textAlign = 'left';
         }
       } else if (balloonPathSamples && balloonPathSamples.length === 1) {
         const s = balloonPathSamples[0];
@@ -16787,15 +16843,15 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
           const dewPoint = envDewC[y];
           const scrYpos = scrYFromSimY(y);
           if (y === simYpos) {
-            const velocity = rawVelocityTo_ms(Math.sqrt(
-              Math.pow(baseTextureValues[4 * y], 2) + Math.pow(baseTextureValues[4 * y + 1], 2)
-            ));
-            c.fillText('' + printAltitude(map_range(y - 1, 0, sim_res_y, 0, guiControls.simHeight)), skewTLeft + 4, scrYpos + 5);
-            c.fillText('' + printVelocity(velocity), windBarbX - 45, scrYpos + 20);
+            const dx = T_to_Xpos(dewPoint, scrYpos);
             c.strokeStyle = '#FFF';
             c.lineWidth = 1.0;
-            c.strokeRect(T_to_Xpos(dewPoint, scrYpos) - 10, scrYpos, 10, 1);
-            c.fillText('' + printTemp(dewPoint), T_to_Xpos(dewPoint, scrYpos) - 70, scrYpos + 5);
+            c.strokeRect(dx - 10, scrYpos, 10, 1);
+            c.font = 'bold 11px Arial';
+            c.fillStyle = '#66CCFF';
+            c.textAlign = 'right';
+            c.fillText(printTemp(dewPoint), dx - 14, scrYpos + 4);
+            c.textAlign = 'left';
           }
           c.lineTo(T_to_Xpos(dewPoint, scrYpos), scrYpos);
         }
@@ -17190,7 +17246,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         readoutCols = [
           [['Pressure', Math.round(hpa) + ' hPa', ''], ['Height', printAltitude(Math.round(hoverSample.altM)), '']],
           [['Temp', printTemp(hoverSample.t), 'temp'], ['Dewpoint', printTemp(hoverSample.d), 'dew'],
-            ['θe', Number.isFinite(te) ? te.toFixed(1) + ' °C' : '—', '']],
+            ['θe', Number.isFinite(te) ? printTemp(te) : '—', '']],
           [['Wind Dir', wDir + '°', ''], ['Wind Spd', printVelocity(Math.hypot(hoverSample.u, hoverSample.v)), ''],
             ['RH', Number.isFinite(rh) ? Math.round(rh) + '%' : '—', '']],
         ];
@@ -17209,7 +17265,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         readoutCols = [
           [['Pressure', Math.round(hpa) + ' hPa', ''], ['Height', printAltitude(Math.round(altAgl)), '']],
           [['Temp', printTemp(tC), 'temp'], ['Dewpoint', printTemp(tdC), 'dew'],
-            ['θe', Number.isFinite(te) ? te.toFixed(1) + ' °C' : '—', '']],
+            ['θe', Number.isFinite(te) ? printTemp(te) : '—', '']],
           [['Wind Dir', wDir + '°', ''], ['Wind Spd', printVelocity(Math.hypot(wU, wV)), ''],
             ['RH', Number.isFinite(rh) ? Math.round(rh) + '%' : '—', '']],
         ];
@@ -17223,25 +17279,27 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         : waterTextureValues[4 * surfaceLevel];
       const sfcThetaE = Number.isFinite(sfcT)
         ? computeThetaEC(sfcT, sfcMixW) - 273.15 : NaN;
-      const parcelSfcRow = [
+      const parcelSfcPrimary = [
         ['Temp', printTemp(sfcT), 'temp'],
         ['Dewpoint', printTemp(sfcD), 'dew'],
-        ['θe', Number.isFinite(sfcThetaE) ? sfcThetaE.toFixed(1) + ' °C' : '—', ''],
+        ['θe', Number.isFinite(sfcThetaE) ? printTemp(sfcThetaE) : '—', ''],
       ];
       if (sfcWaterTempC !== null) {
-        parcelSfcRow.push([sfcWaterLabel || 'Water Temp', printTemp(sfcWaterTempC), 'water-temp']);
+        parcelSfcPrimary.push([sfcWaterLabel || 'Water Temp', printTemp(sfcWaterTempC), 'water-temp']);
       }
+      const parcelSfcExtra = [];
       if (sfcFloodMm != null) {
-        parcelSfcRow.push(['Flood Depth', printFloodDepth(sfcFloodMm), 'flood']);
+        parcelSfcExtra.push(['Flood', printFloodDepth(sfcFloodMm), 'flood']);
       }
       if (sfcSoilMoistureMm != null) {
-        parcelSfcRow.push(['Soil Moisture', printSoilMoisture(sfcSoilMoistureMm), 'soil']);
+        parcelSfcExtra.push(['Soil', printSoilMoisture(sfcSoilMoistureMm), 'soil']);
       }
       if (sfcSnowCm != null) {
-        parcelSfcRow.push(['Snow Depth', printSnowHeight(sfcSnowCm), 'snow']);
+        parcelSfcExtra.push(['Snow', printSnowHeight(sfcSnowCm), 'snow']);
       }
       const parcelCols = [
-        [parcelSfcRow],
+        parcelSfcPrimary,
+        ...(parcelSfcExtra.length ? [parcelSfcExtra] : []),
         [['LCL', altStrAgl(soundingMetrics.lclAlt), ''],
           ['LFC', altStrAgl(soundingMetrics.lfcAlt), ''],
           ['EL', altStrAgl(soundingMetrics.elAlt), '']],
