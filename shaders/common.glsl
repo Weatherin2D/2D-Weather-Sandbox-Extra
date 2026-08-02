@@ -403,6 +403,7 @@ int liquidWaterTypeFromSalinity(float salinityPpt)
 
 // Land glaciers / ice caps use a negative salinity marker so melt restores land + snow,
 // instead of becoming a lake. Frozen lakes/seas keep salinity >= 0 and melt to water.
+// IMPORTANT: advection must NOT clamp SUSTAINED_MOISTURE on ice — that channel is SALINITY.
 bool isLandOriginIce(float salinityPpt) { return salinityPpt < 0.0; }
 
 float dT_saturated(float dTdry,

@@ -212,9 +212,14 @@ void main()
     ivec4 wallX0Yp = texture(wallTex, texCoordX0Yp);
 
     // prevent negative numbers
+    // NOTE: SUSTAINED_MOISTURE and SALINITY share channel 1 — only clamp on land.
+    // Clamping on ice/water would wipe the land-ice salinity marker every frame.
     wall[VEGETATION] = max(wall[VEGETATION], 0);
-    water[SOIL_MOISTURE] = max(water[SOIL_MOISTURE], 0.0);
-    water[SUSTAINED_MOISTURE] = clamp(water[SUSTAINED_MOISTURE], 0.0, 100.0);
+    bool landSurface = !isAnyWaterType(wall[TYPE]);
+    if (landSurface) {
+      water[SOIL_MOISTURE] = max(water[SOIL_MOISTURE], 0.0);
+      water[SUSTAINED_MOISTURE] = clamp(water[SUSTAINED_MOISTURE], 0.0, 100.0);
+    }
 
     if (wallX0Yp[DISTANCE] != 0) { // cell above is not wall, surface layer
 
@@ -224,7 +229,7 @@ void main()
 
       float tempC = KtoC(potentialToRealT(baseX0Yp[TEMPERATURE])); // temperature of cell above
 
-      if (water[SNOW] > 0.0 && tempC > 0.0) {                      // snow melting on ground
+      if (landSurface && water[SNOW] > 0.0 && tempC > 0.0) {       // snow melting on ground
         float melting = min(tempC * snowMeltRate, water[SNOW]);
         water[SNOW] -= melting;
         base[TEMPERATURE] += melting / snowMassToHeight * meltingHeat; // signal snow melting mass, cooling will be applied in pressure shader
@@ -232,7 +237,7 @@ void main()
         water[SUSTAINED_MOISTURE] = clamp(water[SUSTAINED_MOISTURE] + melting * sustainedMoistureGain, 0.0, 100.0);
       }
 
-      if (water[SNOW] > 0.0 && tempC <= 0.0) { // snow sublimation below freezing
+      if (landSurface && water[SNOW] > 0.0 && tempC <= 0.0) { // snow sublimation below freezing
         float vaporDeficit = max(maxWater(CtoK(tempC)) - waterX0Yp[TOTAL], 0.0);
         float sublimation = min(vaporDeficit * snowSublimationRate, water[SNOW]);
         water[SNOW] -= sublimation;
@@ -246,12 +251,11 @@ void main()
       }
 
       if (wall[TYPE] == WALLTYPE_LAND && water[SNOW] > iceCapFormSnowCm && tempC < -8.0 && int(iterNum) % 200 == 0) { // compact deep snow to land ice
-        water[SOIL_MOISTURE] = water[SNOW]; // stash pre-glacier snow depth for melt restore
         wall[TYPE] = WALLTYPE_ICE;
         water[SALINITY] = landIceSalinityMarker;
       }
 
-      if (water[SOIL_MOISTURE] > 0.0 && tempC > 0.0) { // water evaporating from ground
+      if (landSurface && water[SOIL_MOISTURE] > 0.0 && tempC > 0.0) { // water evaporating from ground
         float evaporation = max((maxWater(CtoK(tempC)) - water[TOTAL]) * 0.00001, 0.);
         water[SOIL_MOISTURE] -= evaporation;
       }
@@ -356,7 +360,6 @@ void main()
             wall[TYPE] = WALLTYPE_ICE;
             water[SALINITY] = landIceSalinityMarker;
             water[SNOW] = max(water[SNOW], 50.0 + userInputValues[BRUSH_INTENSITY] * 200.0);
-            water[SOIL_MOISTURE] = water[SNOW]; // stash snow depth for melt restore to land
             setWall = true;
           }
           break;
@@ -486,7 +489,6 @@ void main()
               base[TEMPERATURE] = CtoK(-5.0);
               water[SALINITY] = landIceSalinityMarker;
               water[SNOW] = max(water[SNOW], 50.0 + userInputValues[BRUSH_INTENSITY] * 200.0);
-              water[SOIL_MOISTURE] = water[SNOW]; // stash snow depth for melt restore to land
             } else {
               water[SOIL_MOISTURE] = 25.0;
               water[SUSTAINED_MOISTURE] = 25.0;
@@ -527,11 +529,8 @@ void main()
           } else if (userInputType == 25 || userInputType == 26) {
             if (wall[TYPE] == WALLTYPE_ICE) {
               if (isLandOriginIce(water[SALINITY]) || userInputType == 26) {
-                float priorSnow = water[SOIL_MOISTURE];
-                if (priorSnow < 1.0)
-                  priorSnow = max(water[SNOW], iceCapFormSnowCm);
                 wall[TYPE] = WALLTYPE_LAND;
-                water[SNOW] = priorSnow;
+                water[SNOW] = iceCapFormSnowCm; // max snow before glacier compaction
                 water[SOIL_MOISTURE] = 25.0;
                 water[SUSTAINED_MOISTURE] = 25.0;
               } else {

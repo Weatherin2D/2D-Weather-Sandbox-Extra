@@ -849,28 +849,21 @@ void main()
           iceThickness += precipDeposition[SNOW_DEPOSITION] * snowMassToHeight;
           if (KtoC(base[TEMPERATURE]) <= 0.0)
             iceThickness += precipDeposition[RAIN_DEPOSITION] * 0.05; // freezing rain adds to ice sheet
-          float salinity = salinityForWallType(wall[TYPE], water[SALINITY]);
-          float freezeC = waterFreezeTempC(salinity);
+          // Read raw salinity channel — do not remap land-ice marker through helpers
+          float salinity = water[SALINITY];
+          bool nearLiquid = isLiquidWaterType(wallXmY0[TYPE]) || isLiquidWaterType(wallXpY0[TYPE]);
           bool landIce = isLandOriginIce(salinity);
-          // Legacy unmarked glaciers: thick fresh ice away from open water → treat as land ice
-          if (!landIce && salinity < 1.0 && iceThickness > iceCapFormSnowCm) {
-            bool nearLiquid = isLiquidWaterType(wallXmY0[TYPE]) || isLiquidWaterType(wallXpY0[TYPE]);
-            if (!nearLiquid) {
-              landIce = true;
-              salinity = landIceSalinityMarker;
-              water[SALINITY] = landIceSalinityMarker;
-            }
-          }
-          if (landIce || (wall[TYPE] == WALLTYPE_ICE && water[SALINITY] < 1.0)) {
-            freezeC = freshwaterFreezePointC;
-          } else if (wall[TYPE] == WALLTYPE_ICE && water[SALINITY] >= 1.0) {
-            freezeC = saltwaterFreezePointC;
+          // Thick inland ice (legacy unmarked glaciers / snow-compacted ice) → land ice
+          if (!landIce && salinity < 5.0 && iceThickness > iceCapFormSnowCm && !nearLiquid)
+            landIce = true;
+          if (landIce) {
+            salinity = landIceSalinityMarker;
+            water[SALINITY] = landIceSalinityMarker; // persist every frame
           }
 
-          // Preserve stashed pre-glacier snow depth for land ice (kept in SOIL_MOISTURE)
-          float stashedPreGlacierSnow = landIce ? water[SOIL_MOISTURE] : 0.0;
-          if (landIce && stashedPreGlacierSnow < 1.0)
-            stashedPreGlacierSnow = iceCapFormSnowCm;
+          float freezeC = freshwaterFreezePointC;
+          if (!landIce && salinity >= 1.0)
+            freezeC = saltwaterFreezePointC;
 
           if (dynamicWaterTemperature >= 1.0 && mod(iterNum, waterTempUpdateInterval) < 0.5) {
             float numNeighbors = 0.;
@@ -932,12 +925,9 @@ void main()
           water[SNOW] = max(iceThickness, 0.0);
 
           if (landIce && airTempC > freezeC && water[SNOW] <= iceCapFormSnowCm) {
-            // Glacier melt: restore land with the snow depth from before compaction
-            float priorSnow = stashedPreGlacierSnow;
-            if (priorSnow < 1.0)
-              priorSnow = iceCapFormSnowCm;
+            // Glacier melt: back to land with max snow allowed before glacier formation
             wall[TYPE] = WALLTYPE_LAND;
-            water[SNOW] = priorSnow;
+            water[SNOW] = iceCapFormSnowCm;
             water[SOIL_MOISTURE] = 25.0;
             water[SUSTAINED_MOISTURE] = 25.0;
             water[TOTAL] = WATER_MARKER_LAND;
@@ -956,9 +946,7 @@ void main()
           }
 
           wall[VEGETATION] = 0;
-          if (landIce && wall[TYPE] == WALLTYPE_ICE)
-            water[SOIL_MOISTURE] = max(stashedPreGlacierSnow, iceCapFormSnowCm); // keep stashed prior snow
-          else if (wall[TYPE] == WALLTYPE_ICE)
+          if (wall[TYPE] == WALLTYPE_ICE && !landIce)
             water[SOIL_MOISTURE] = 100.0;
         }
         break;
