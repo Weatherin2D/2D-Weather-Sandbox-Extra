@@ -11364,7 +11364,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
     var water_folder = datGui.addFolder('Water');
 
-    water_folder.add(guiControls, 'waterTemperature', 0.0, 40.0, 0.1)
+    water_folder.add(guiControls, 'waterTemperature', 0.0, 100.0, 0.1)
       .onChange(function() {
         gl.useProgram(advectionProgram);
         gl.uniform1f(gl.getUniformLocation(advectionProgram, 'waterTemperature'), CtoK(guiControls.waterTemperature));
