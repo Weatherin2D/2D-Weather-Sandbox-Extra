@@ -46,6 +46,7 @@ precision highp isampler2D;
 #define iceCapFormSnowCm 80.0        // snow depth before compaction to land ice
 #define maxIceThickness 2000.0       // cm max ice sheet / ice cap thickness
 #define oceanSalinityPpt 35.0        // default ocean salinity (parts per thousand)
+#define landIceSalinityMarker -1.0   // marks land-origin ice (glaciers / ice caps); melts back to land
 
 #define ALBEDO_ICE 0.70
 #define ALBEDO_SNOW 0.80        // above 10 cm of snow cover without vegetation
@@ -399,6 +400,10 @@ int liquidWaterTypeFromSalinity(float salinityPpt)
     return WALLTYPE_FRESH_WATER;
   return WALLTYPE_WATER;
 }
+
+// Land glaciers / ice caps use a negative salinity marker so melt restores land + snow,
+// instead of becoming a lake. Frozen lakes/seas keep salinity >= 0 and melt to water.
+bool isLandOriginIce(float salinityPpt) { return salinityPpt < 0.0; }
 
 float dT_saturated(float dTdry,
                    float dTl) // dTl = temperature difference because of latent heat

@@ -246,8 +246,9 @@ void main()
       }
 
       if (wall[TYPE] == WALLTYPE_LAND && water[SNOW] > iceCapFormSnowCm && tempC < -8.0 && int(iterNum) % 200 == 0) { // compact deep snow to land ice
+        water[SOIL_MOISTURE] = water[SNOW]; // stash pre-glacier snow depth for melt restore
         wall[TYPE] = WALLTYPE_ICE;
-        water[SALINITY] = 0.0;
+        water[SALINITY] = landIceSalinityMarker;
       }
 
       if (water[SOIL_MOISTURE] > 0.0 && tempC > 0.0) { // water evaporating from ground
@@ -353,8 +354,9 @@ void main()
         case 26:                                               // ice cap / glacier
           if (texture(wallTex, texCoordX0Yp)[DISTANCE] != 0) {
             wall[TYPE] = WALLTYPE_ICE;
-            water[SALINITY] = 0.0;
+            water[SALINITY] = landIceSalinityMarker;
             water[SNOW] = max(water[SNOW], 50.0 + userInputValues[BRUSH_INTENSITY] * 200.0);
+            water[SOIL_MOISTURE] = water[SNOW]; // stash snow depth for melt restore to land
             setWall = true;
           }
           break;
@@ -482,8 +484,9 @@ void main()
               water[SNOW] = max(water[SNOW], 5.0 + userInputValues[BRUSH_INTENSITY] * 20.0);
             } else if (userInputSurfaceKind == 4) { // ice cap
               base[TEMPERATURE] = CtoK(-5.0);
-              water[SALINITY] = 0.0;
+              water[SALINITY] = landIceSalinityMarker;
               water[SNOW] = max(water[SNOW], 50.0 + userInputValues[BRUSH_INTENSITY] * 200.0);
+              water[SOIL_MOISTURE] = water[SNOW]; // stash snow depth for melt restore to land
             } else {
               water[SOIL_MOISTURE] = 25.0;
               water[SUSTAINED_MOISTURE] = 25.0;
@@ -522,8 +525,19 @@ void main()
           } else if (userInputType == 21) {
             water[SNOW] += userInputValues[BRUSH_INTENSITY] * 0.5; // remove snow / ice thickness
           } else if (userInputType == 25 || userInputType == 26) {
-            if (wall[TYPE] == WALLTYPE_ICE)
-              wall[TYPE] = liquidWaterTypeFromSalinity(water[SALINITY]);
+            if (wall[TYPE] == WALLTYPE_ICE) {
+              if (isLandOriginIce(water[SALINITY]) || userInputType == 26) {
+                float priorSnow = water[SOIL_MOISTURE];
+                if (priorSnow < 1.0)
+                  priorSnow = max(water[SNOW], iceCapFormSnowCm);
+                wall[TYPE] = WALLTYPE_LAND;
+                water[SNOW] = priorSnow;
+                water[SOIL_MOISTURE] = 25.0;
+                water[SUSTAINED_MOISTURE] = 25.0;
+              } else {
+                wall[TYPE] = liquidWaterTypeFromSalinity(water[SALINITY]);
+              }
+            }
           } else if (userInputType == 22 || userInputType == 27) {
             wall[VEGETATION] = max(wall[VEGETATION] - 1, 0);
           } else if (userInputType == 28) {
