@@ -116,6 +116,8 @@ vec3 emittedLight = vec3(0.); // pure light, like lightning
 float shadowLight;
 
 vec3 onLight; // extra light that lights up objects, just like sunlight and shadowlight
+// Lightning cloud/air fill — kept separate so sunset/sunrise chroma is preserved at compose time.
+vec3 lightningFillLight = vec3(0.);
 
 
 const vec3 bareDrySoilCol = pow(vec3(0.85, 0.60, 0.40), vec3(GAMMA));
@@ -873,7 +875,8 @@ void applyAirLightning(vec2 uv, float cloudwater, float precip, float cloudDensi
     // Soft-clip first, then apply look sliders (same reason as bolt tonemap).
     float ltLook = max(ltBrightness, 0.02) * max(ltContrast, 0.02);
     float ltGlowLook = 0.35 + 0.95 * max(ltGlowStrength, 0.0);
-    onLight += softClipFlash(tintLightningVolume(getLightningColor(lightningStartIterNum) * lOnLight, cloudBrightTint))
+    // Do not dump into onLight — that washes sunset/sunrise cloud colour to white/blue.
+    lightningFillLight += softClipFlash(tintLightningVolume(getLightningColor(lightningStartIterNum) * lOnLight, cloudBrightTint))
       * ltLook * ltGlowLook;
   }
 
@@ -1472,7 +1475,8 @@ void main()
   float deepNight = clamp(map_range(absSunAng, 88. * deg2rad, 96. * deg2rad, 0., 1.), 0., 1.);
   scatering *= (1.0 - deepNight);
 
-  vec3 finalLight = sunColor(scatering) * lightIntensity;
+  vec3 sunTint = sunColor(scatering);
+  vec3 finalLight = sunTint * lightIntensity;
 
 
   if (fract(cursor.w) > 0.5) {                                               // enable flashlight
@@ -1487,7 +1491,17 @@ void main()
   onLight += ambientLight * pow(1. - clamp(-texCoord.y * 15., 0., 1.), 2.5);
 
 
-  finalLight += sunColor(scatering) * shadowLight + onLight;
+  finalLight += sunTint * shadowLight + onLight;
+
+  // Lightning fill: brighten clouds without replacing sunset/sunrise chromaticity.
+  // Day/golden-hour → re-tint flash luminance with sun colour; deep night keeps bolt chroma.
+  {
+    float flashLum = max(dot(lightningFillLight, vec3(0.2126, 0.7152, 0.0722)), 0.0);
+    float sunLum = max(dot(sunTint, vec3(0.2126, 0.7152, 0.0722)), 0.05);
+    vec3 sunChroma = sunTint / sunLum;
+    float preserveSunChroma = 1.0 - deepNight;
+    finalLight += mix(lightningFillLight, sunChroma * flashLum, preserveSunChroma);
+  }
 
   // June 8 flash spill compositing (harmony-scaled earlier)
   if (wall[DISTANCE] == 0)
@@ -1506,8 +1520,8 @@ void main()
   float ltLook = max(ltBrightness, 0.02) * max(ltContrast, 0.02);
   float ltGlowLook = 0.35 + 0.95 * max(ltGlowStrength, 0.0);
   safeEmitted *= ltLook * ltGlowLook;
-  float boltAmt = clamp(length(safeEmitted) * 2.8, 0.0, 1.0);
-  vec3 finalColor = mix(litBase + safeEmitted, max(litBase, safeEmitted * 1.4), boltAmt * 0.82);
+  // Additive bolts only — never replace lit cloud colour with flash (was washing sunset tint).
+  vec3 finalColor = litBase + safeEmitted;
 
   // Near-surface fog / haze in moist cool air (off when fogHazeStrength == 0)
   if (fogHazeStrength > 0.0 && wall[DISTANCE] > 0) {
