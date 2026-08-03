@@ -68,30 +68,32 @@
     useRealisticLightningRatios: false,
 
     globalLightningMultiplier: 1.0,
+    // Flat GUI exposes CG / IC / Spider only — other types stay off so ratios match the sliders.
     intracloudFrequency: 18.0,
-    cloudToCloudFrequency: 8.0,
+    cloudToCloudFrequency: 0.0,
     cloudToGroundFrequency: 1.2,
-    positiveCgFrequency: 0.35,
+    positiveCgFrequency: 0.0,
     spiderLightningFrequency: 1.2,
-    anvilCrawlerFrequency: 0.9,
-    upwardLightningFrequency: 0.08,
-    boltFromBlueFrequency: 0.12,
-    dryLightningFrequency: 0.25,
-    sheetLightningFrequency: 2.5,
+    anvilCrawlerFrequency: 0.0,
+    upwardLightningFrequency: 0.0,
+    boltFromBlueFrequency: 0.0,
+    dryLightningFrequency: 0.0,
+    sheetLightningFrequency: 0.0,
+    strobeLightningFrequency: 0.0,
 
     enableLightning: true,
     ltSdfQuality: 'Balanced',
     ltDrawSdfBolts: true,
 
-    lightningBrightness: 0.48,
-    lightningContrast: 0.9,
+    lightningBrightness: 1.0,
+    lightningContrast: 1.0,
     channelThickness: 1.05,
     branchDensity: 1.45,
     branchLength: 1.35,
     flashDuration: 1.0,
     channelGlowDuration: 1.0,
     bloomStrength: 0.7,
-    glowStrength: 0.45,
+    glowStrength: 0.75,
     atmosphericIlluminationStrength: 0.45,
     cloudIlluminationStrength: 0.28,
     rainShaftIlluminationStrength: 0.5,
@@ -202,8 +204,9 @@
       globalLightningMultiplier: 1.0,
       atmosphericIlluminationStrength: 0.5,
       cloudIlluminationStrength: 0.45,
-      lightningBrightness: 0.62,
-      glowStrength: 0.48,
+      lightningBrightness: 1.0,
+      lightningContrast: 1.0,
+      glowStrength: 0.75,
       nighttimeFlashStrength: 0.6,
       branchDensity: 1.1,
       cloudLightningBranchDensity: 1.3,
@@ -213,9 +216,10 @@
       spiderChannelVisibility: 1.15,
       anvilChannelVisibility: 1.1,
       channelIllumRatio: 0.5,
-      useRealisticLightningRatios: true,
+      // Flat Lightning GUI owns CG/IC/Spider sliders — locked ratios ignore them.
+      useRealisticLightningRatios: false,
       positiveCgFrequency: 0.35,
-      spiderLightningFrequency: 0.35,
+      spiderLightningFrequency: 1.2,
       lightningPerformanceTier: 'High',
     },
     'Cinematic': {
@@ -316,31 +320,27 @@
       Object.assign(controls, tier);
   }
 
-  // Maps each slider's UI range to a common 0–100 strike-rate scale.
+  // All flat-GUI frequency sliders share a 0–100 range — keep scale 1:1 so ratios match the UI.
   const FREQ_UI_SCALE = {
     intracloud: 1,
     cloudToCloud: 1,
-    sheet: 5,
+    sheet: 1,
     cg: 1,
-    cgPositive: 20,
-    spider: 20,
-    anvilCrawler: 20,
-    upward: 50,
-    boltFromBlue: 50,
-    dry: 20,
-    strobe: 8,
+    cgPositive: 1,
+    spider: 1,
+    anvilCrawler: 1,
+    upward: 1,
+    boltFromBlue: 1,
+    dry: 1,
+    strobe: 1,
   };
 
   function getEffectiveFrequency(controls, typeKey, stormFactor, profile) {
     if (controls.enableLightning === false)
       return 0;
     const personality = getTypeFrequencyMult(profile, typeKey);
-    if (controls.useRealisticLightningRatios) {
-      const ratio = REALISTIC_RATIOS[typeKey] || 1;
-      const total = Object.values(REALISTIC_RATIOS).reduce((a, b) => a + b, 0);
-      const base = (ratio / total) * 48 * controls.globalLightningMultiplier;
-      return base * (0.6 + stormFactor * 0.85) * personality;
-    }
+    // Flat Lightning GUI: always honor CG / IC / Spider / Frequency sliders.
+    // (Legacy "realistic ratios" lock ignored while those sliders are exposed.)
     const map = {
       intracloud: controls.intracloudFrequency,
       cloudToCloud: controls.cloudToCloudFrequency,
@@ -356,7 +356,8 @@
     };
     const uiScale = FREQ_UI_SCALE[typeKey] || 1;
     const stormBoost = 0.75 + stormFactor * 0.5;
-    return (map[typeKey] || 0) * uiScale * controls.globalLightningMultiplier * personality * stormBoost;
+    const globalMult = Math.max(controls.globalLightningMultiplier || 0, 0);
+    return (map[typeKey] || 0) * uiScale * globalMult * personality * stormBoost;
   }
 
   function createBurstState() {
@@ -1986,11 +1987,13 @@
   }
 
   function strikeChance(freq, burstIntensity, clustering) {
-    const norm = clamp(freq / 100, 0, 1);
-    let chance = norm * 0.14 + norm * norm * 0.11 + 0.001;
-    chance = Math.min(0.58, chance);
-    chance *= Math.max(0.08, burstIntensity);
-    if (clustering > 0.5) chance *= 1.0 + (clustering - 0.5) * 0.45;
+    // Keep headroom across Frequency 0–100 so the slider stays responsive
+    // (old curve saturated early and lookback made mid/high values identical).
+    const norm = clamp(Math.max(freq, 0) / 100, 0, 1);
+    let chance = norm * 0.035 + norm * norm * 0.025;
+    chance = Math.min(0.18, chance);
+    chance *= Math.max(0.12, burstIntensity);
+    if (clustering > 0.5) chance *= 1.0 + (clustering - 0.5) * 0.35;
     return chance;
   }
 
@@ -2033,6 +2036,17 @@
     if (controls.enableLightning == null) controls.enableLightning = true;
     if (controls.ltDrawSdfBolts == null) controls.ltDrawSdfBolts = true;
     if (!controls.ltSdfQuality) controls.ltSdfQuality = 'Balanced';
+    // Ensure ratio sliders are live (preset may have locked realistic ratios).
+    controls.useRealisticLightningRatios = false;
+    // Hide non-exposed spawn channels so CG/IC/Spider ratios are not diluted.
+    controls.cloudToCloudFrequency = 0;
+    controls.sheetLightningFrequency = 0;
+    controls.positiveCgFrequency = 0;
+    controls.anvilCrawlerFrequency = 0;
+    controls.upwardLightningFrequency = 0;
+    controls.boltFromBlueFrequency = 0;
+    controls.dryLightningFrequency = 0;
+    controls.strobeLightningFrequency = 0;
 
     folder.add(controls, 'enableLightning').name('Enable Lightning').onChange(onChanged);
     folder.add(controls, 'globalLightningMultiplier', 0, 100, 0.5).name('Frequency').onChange(onFreqChanged);
@@ -2040,9 +2054,9 @@
     folder.add(controls, 'intracloudFrequency', 0, 100, 0.5).name('Intracloud').onChange(onFreqChanged);
     folder.add(controls, 'spiderLightningFrequency', 0, 100, 0.5).name('Spider').onChange(onFreqChanged);
 
-    folder.add(controls, 'lightningBrightness', 0.1, 3, 0.05).name('Brightness').onChange(onChanged);
-    folder.add(controls, 'lightningContrast', 0.1, 3, 0.05).name('Contrast').onChange(onChanged);
-    folder.add(controls, 'glowStrength', 0, 3, 0.05).name('Glow').onChange(onChanged);
+    folder.add(controls, 'lightningBrightness', 0.05, 4, 0.05).name('Brightness').onChange(onChanged);
+    folder.add(controls, 'lightningContrast', 0.05, 4, 0.05).name('Contrast').onChange(onChanged);
+    folder.add(controls, 'glowStrength', 0, 4, 0.05).name('Glow').onChange(onChanged);
     folder.add(controls, 'flashDuration', 0.2, 3, 0.05).name('Flash Duration').onChange(onChanged);
 
     folder.add(controls, 'enableThunder').name('Thunder').onChange(onChanged);

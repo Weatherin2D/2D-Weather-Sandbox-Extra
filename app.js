@@ -10973,8 +10973,11 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     // Lightning spawn uniforms: also uploaded each precip frame (ulocs may not exist yet here).
     gl.uniform1i(gl.getUniformLocation(precipitationProgram, 'lightningEnabled'),
       guiControls.enableLightning !== false ? 1 : 0);
-    gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'lightningChanceMult'),
-      Math.max(guiControls.globalLightningMultiplier || 0, 0));
+    {
+      const freq = Math.max(guiControls.globalLightningMultiplier || 0, 0);
+      const precipFreqMult = freq <= 0 ? 0 : Math.min(8, 0.35 + freq * 0.0765);
+      gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'lightningChanceMult'), precipFreqMult);
+    }
     gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'lightningCgWeight'),
       Math.max(guiControls.cloudToGroundFrequency || 0, 0));
     gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'lightningSpiderWeight'),
@@ -23363,8 +23366,11 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   {
     if (uloc_precip_lightningEnabled)
       gl.uniform1i(uloc_precip_lightningEnabled, guiControls.enableLightning !== false ? 1 : 0);
+    // Map Frequency 0–100 onto a clear precip spawn multiplier (0 → off, 1 → baseline, 100 → ~8×).
+    const freq = Math.max(guiControls.globalLightningMultiplier || 0, 0);
+    const precipFreqMult = freq <= 0 ? 0 : Math.min(8, 0.35 + freq * 0.0765);
     if (uloc_precip_lightningChanceMult)
-      gl.uniform1f(uloc_precip_lightningChanceMult, Math.max(guiControls.globalLightningMultiplier || 0, 0));
+      gl.uniform1f(uloc_precip_lightningChanceMult, precipFreqMult);
     if (uloc_precip_lightningCgWeight)
       gl.uniform1f(uloc_precip_lightningCgWeight, Math.max(guiControls.cloudToGroundFrequency || 0, 0));
     if (uloc_precip_lightningSpiderWeight)
@@ -24407,13 +24413,10 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     if (cached != null)
       return cached;
     const burstMult = lightningBurstState.phase === 'burst' ? lightningBurstState.burstIntensity : 0.30;
-    let chance = typeof LightningV2 !== 'undefined'
+    // No hard-coded IC/CC boost — ratio sliders must control relative rates 1:1.
+    const chance = typeof LightningV2 !== 'undefined'
       ? LightningV2.strikeChance(channel.freq(), burstMult, guiControls.lightningClusteringStrength)
       : lightningStrikeChance(channel.freq());
-    if (channel.id === 'intracloud')
-      chance = Math.min(0.92, chance * 2.4);
-    else if (channel.id === 'cc')
-      chance = Math.min(0.88, chance * 1.35);
     lightningFrameCpuCache.channelStrikeChances.set(channel.id, chance);
     return chance;
   }
@@ -24637,7 +24640,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
 
   function findActiveLightningEventJS(frameIter)
   {
-    // June 8 path: 11-iteration lookback with independent per-channel rolls.
+    // Look back only across skipped realtime iters so Frequency stays responsive.
+    // Old fixed 11-iter lookback + high per-channel odds saturated every storm.
     if (!lightningFieldCache)
       return { eventAge: -1, eventId: 0, channel: null };
 
@@ -24645,12 +24649,14 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     if (channels.length === 0)
       return { eventAge: -1, eventId: 0, channel: null };
 
-    const maxLook = 11;
+    const maxLook = Math.max(1, Math.min(8, getLightningIterScale()));
     for (let k = 0; k < maxLook; k++) {
       const startIter = frameIter - k;
       if (startIter < 0)
         break;
 
+      // Weighted pick among channels that rolled this iter (ratios = slider weights).
+      let weightSum = 0;
       const hits = [];
       for (const ch of channels) {
         const strikeChance = getCachedChannelStrikeChance(ch);
@@ -24660,10 +24666,20 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
           continue;
         if (!isStrikeStartChargeValidForChannel(startIter, ch))
           continue;
-        hits.push(ch);
+        const w = Math.max(ch.freq(), 0.0001);
+        hits.push({ ch, w });
+        weightSum += w;
       }
-      if (hits.length > 0) {
-        const pick = hits[Math.floor(shaderRand(startIter * 7.31 + 613.0) * hits.length)];
+      if (hits.length > 0 && weightSum > 0) {
+        let r = shaderRand(startIter * 7.31 + 613.0) * weightSum;
+        let pick = hits[hits.length - 1].ch;
+        for (let i = 0; i < hits.length; i++) {
+          r -= hits[i].w;
+          if (r <= 0) {
+            pick = hits[i].ch;
+            break;
+          }
+        }
         return { eventAge: k, eventId: startIter, channel: pick };
       }
     }
@@ -25736,10 +25752,10 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   function applyLightningV2StaticUniforms(locs, lodVal, channelId)
   {
     if (!locs || locs.ltBrightness == null) return;
-    gl.uniform1f(locs.ltBrightness, guiControls.lightningBrightness || 1);
-    gl.uniform1f(locs.ltContrast, guiControls.lightningContrast || 1);
+    gl.uniform1f(locs.ltBrightness, Number.isFinite(guiControls.lightningBrightness) ? guiControls.lightningBrightness : 1);
+    gl.uniform1f(locs.ltContrast, Number.isFinite(guiControls.lightningContrast) ? guiControls.lightningContrast : 1);
     if (locs.ltFlashDuration) gl.uniform1f(locs.ltFlashDuration, getEffectiveLtFlashDuration());
-    if (locs.ltGlowStrength) gl.uniform1f(locs.ltGlowStrength, guiControls.glowStrength || 1);
+    if (locs.ltGlowStrength) gl.uniform1f(locs.ltGlowStrength, Number.isFinite(guiControls.glowStrength) ? guiControls.glowStrength : 1);
     if (locs.ltAtmosIllum) gl.uniform1f(locs.ltAtmosIllum, guiControls.atmosphericIlluminationStrength || 1);
     if (locs.ltCloudIllum) gl.uniform1f(locs.ltCloudIllum, guiControls.cloudIlluminationStrength || 1);
     if (locs.ltRainIllum) gl.uniform1f(locs.ltRainIllum, guiControls.rainShaftIlluminationStrength || 1);
@@ -25908,11 +25924,11 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     if (uloc_real_ltEnableLightning)
       gl.uniform1i(uloc_real_ltEnableLightning, enableLtVal);
     if (uloc_real_ltBrightness)
-      gl.uniform1f(uloc_real_ltBrightness, guiControls.lightningBrightness || 1);
+      gl.uniform1f(uloc_real_ltBrightness, Number.isFinite(guiControls.lightningBrightness) ? guiControls.lightningBrightness : 1);
     if (uloc_real_ltContrast)
-      gl.uniform1f(uloc_real_ltContrast, guiControls.lightningContrast || 1);
+      gl.uniform1f(uloc_real_ltContrast, Number.isFinite(guiControls.lightningContrast) ? guiControls.lightningContrast : 1);
     if (uloc_real_ltGlowStrength)
-      gl.uniform1f(uloc_real_ltGlowStrength, guiControls.glowStrength || 1);
+      gl.uniform1f(uloc_real_ltGlowStrength, Number.isFinite(guiControls.glowStrength) ? guiControls.glowStrength : 1);
     if (uloc_real_ltFlashDuration)
       gl.uniform1f(uloc_real_ltFlashDuration, Math.max(getEffectiveLtFlashDuration(), 0.2));
 
@@ -25986,14 +26002,14 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     if (newKey !== _ltStaticUniformsKey || Math.abs(lodVal - _ltStaticUniformsLod) > 0.005) {
       _ltStaticUniformsKey = newKey;
       _ltStaticUniformsLod = lodVal;
-      gl.uniform1f(uloc_real_ltBrightness, guiControls.lightningBrightness || 1);
-      gl.uniform1f(uloc_real_ltContrast, guiControls.lightningContrast || 1);
+      gl.uniform1f(uloc_real_ltBrightness, Number.isFinite(guiControls.lightningBrightness) ? guiControls.lightningBrightness : 1);
+      gl.uniform1f(uloc_real_ltContrast, Number.isFinite(guiControls.lightningContrast) ? guiControls.lightningContrast : 1);
       gl.uniform1f(uloc_real_ltChannelThickness, Number.isFinite(guiControls.channelThickness) ? guiControls.channelThickness : 0.85);
       gl.uniform1f(uloc_real_ltBranchDensity, guiControls.branchDensity || 1);
       gl.uniform1f(uloc_real_ltBranchLength, guiControls.branchLength || 1);
       gl.uniform1f(uloc_real_ltFlashDuration, getEffectiveLtFlashDuration());
       gl.uniform1f(uloc_real_ltGlowDuration, guiControls.channelGlowDuration || 1);
-      gl.uniform1f(uloc_real_ltGlowStrength, guiControls.glowStrength || 1);
+      gl.uniform1f(uloc_real_ltGlowStrength, Number.isFinite(guiControls.glowStrength) ? guiControls.glowStrength : 1);
       gl.uniform1f(uloc_real_ltAtmosIllum, guiControls.atmosphericIlluminationStrength || 1);
       gl.uniform1f(uloc_real_ltCloudIllum, guiControls.cloudIlluminationStrength || 1);
       gl.uniform1f(uloc_real_ltRainIllum, guiControls.rainShaftIlluminationStrength || 1);

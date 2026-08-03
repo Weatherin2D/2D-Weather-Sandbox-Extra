@@ -440,9 +440,7 @@ vec3 displaySpiderLightning(vec2 sampleUV, vec2 lightningPos, float T, float bol
   float flashBright = T < 1.0
       ? 1500.0 * spiderProg
       : max(500.0 / (0.05 + pow(T * 4.0, 2.5)), 0.0);
-  // Brightness / Contrast / Glow from Lightning GUI.
-  flashBright *= max(ltBrightness, 0.05) * max(ltContrast, 0.05);
-  float glowMul = 0.45 + 1.1 * max(ltGlowStrength, 0.0);
+  // Look sliders applied after HDR tonemap in main (pre-tonemap multiply is crushed).
   if (flashBright < 0.0001) return vec3(0.0);
 
   bool reduced = lodReduced > 0.5;
@@ -531,7 +529,7 @@ vec3 displaySpiderLightning(vec2 sampleUV, vec2 lightningPos, float T, float bol
     }
   }
 
-  return getLightningColor(boltSeed) * totalGlow * flashBright * glowMul;
+  return getLightningColor(boltSeed) * totalGlow * flashBright;
 }
 
 // sdfQuality: 0 Fast / 1 Balanced / 2 Full — arms only when Full.
@@ -550,9 +548,7 @@ vec3 displayCGLightning(vec2 sampleUV, vec2 lightningPos, float T, float boltSee
   float flashBright = T < 1.0
       ? 1125.0 * spiderProg
       : max(300.0 / (0.05 + pow(T * 4.0, 2.5)), 0.0);
-  // Brightness / Contrast / Glow from Lightning GUI.
-  flashBright *= max(ltBrightness, 0.05) * max(ltContrast, 0.05);
-  float glowMul = 0.45 + 1.1 * max(ltGlowStrength, 0.0);
+  // Look sliders applied after HDR tonemap in main (pre-tonemap multiply is crushed).
   if (flashBright < 0.0001) return vec3(0.0);
 
   bool reduced = lodReduced > 0.5;
@@ -701,7 +697,7 @@ vec3 displayCGLightning(vec2 sampleUV, vec2 lightningPos, float T, float boltSee
     }
   }
 
-  return getLightningColor(boltSeed) * totalGlow * flashBright * glowMul;
+  return getLightningColor(boltSeed) * totalGlow * flashBright;
 }
 
 vec3 displayLightning(vec2 pos, float lightningTime, float currentLightningIntensity)
@@ -873,10 +869,12 @@ void applyAirLightning(vec2 uv, float cloudwater, float precip, float cloudDensi
     vec2 ldist = vec2((lightningPos.x - uv.x) * aspectRatios[0], lightningPos.y * 0.5 - uv.y);
     float ldistSq = dot(ldist, ldist);
     float lOnLight = 0.0006 / (ldistSq + 0.008);
-    lOnLight *= currentLightningIntensity * lightningCloudFill
-      * max(ltBrightness, 0.05) * max(ltContrast, 0.05)
-      * (0.55 + 0.9 * max(ltGlowStrength, 0.0));
-    onLight += softClipFlash(tintLightningVolume(getLightningColor(lightningStartIterNum) * lOnLight, cloudBrightTint));
+    lOnLight *= currentLightningIntensity * lightningCloudFill;
+    // Soft-clip first, then apply look sliders (same reason as bolt tonemap).
+    float ltLook = max(ltBrightness, 0.02) * max(ltContrast, 0.02);
+    float ltGlowLook = 0.35 + 0.95 * max(ltGlowStrength, 0.0);
+    onLight += softClipFlash(tintLightningVolume(getLightningColor(lightningStartIterNum) * lOnLight, cloudBrightTint))
+      * ltLook * ltGlowLook;
   }
 
   if (!pathDrawBolts || ltDrawBolts == 0)
@@ -1504,6 +1502,10 @@ void main()
   vec3 litBase = max(color * finalLight, 0.);
   float emitCoupling = mix(1.0, lightningBloomCoupling, 0.65);
   vec3 safeEmitted = (emittedLight * emitCoupling) / (vec3(1.0) + emittedLight * (0.2 / max(flashSoftClip, 0.05)));
+  // Brightness / Contrast / Glow must run AFTER tonemap — HDR crush hid slider changes.
+  float ltLook = max(ltBrightness, 0.02) * max(ltContrast, 0.02);
+  float ltGlowLook = 0.35 + 0.95 * max(ltGlowStrength, 0.0);
+  safeEmitted *= ltLook * ltGlowLook;
   float boltAmt = clamp(length(safeEmitted) * 2.8, 0.0, 1.0);
   vec3 finalColor = mix(litBase + safeEmitted, max(litBase, safeEmitted * 1.4), boltAmt * 0.82);
 
