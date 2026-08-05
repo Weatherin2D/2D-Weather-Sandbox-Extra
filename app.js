@@ -333,7 +333,7 @@ const radToDeg = 57.2957795;
 const kmToMil = 0.62137;
 const mToFt = 3.28084;
 
-const saveFileVersionID = 263574039; // Uint32 id — includes smoke aerosol texture (separate dust/smoke)
+const saveFileVersionID = 263574038; // Uint32 id — includes airmass generator positions + settings
 
 var multiplayerPeerMode = false;
 var multiplayerHostMode = false;
@@ -4337,12 +4337,7 @@ class Weatherstation
     }
 
 
-    // Sample combustion smoke (R32F attachment 3)
-    gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_0);
-    gl.readBuffer(gl.COLOR_ATTACHMENT3);
-    var smokeTextureValues = new Float32Array(1);
-    gl.readPixels(this.#x, this.#y, 1, 1, gl.RED, gl.FLOAT, smokeTextureValues);
-    this.#airQuality = (waterTextureValues[4 + 3] + smokeTextureValues[0]) * 300.0; // dust + smoke
+    this.#airQuality = waterTextureValues[4 + 3] * 300.0; // read smoke
 
     gl.bindFramebuffer(gl.FRAMEBUFFER, lightFrameBuff_0);
     gl.readBuffer(gl.COLOR_ATTACHMENT0); // light texture
@@ -7253,10 +7248,6 @@ class Nuke
     gl.readBuffer(gl.COLOR_ATTACHMENT1);
     gl.readPixels(0, 0, sim_res_x, sim_res_y, gl.RGBA, gl.FLOAT, waterData);
 
-    const smokeData = new Float32Array(sim_res_x * sim_res_y);
-    gl.readBuffer(gl.COLOR_ATTACHMENT3);
-    gl.readPixels(0, 0, sim_res_x, sim_res_y, gl.RED, gl.FLOAT, smokeData);
-
     const wallData = new Int8Array(sim_res_x * sim_res_y * 4);
     gl.readBuffer(gl.COLOR_ATTACHMENT2);
     gl.readPixels(0, 0, sim_res_x, sim_res_y, gl.RGBA_INTEGER, gl.BYTE, wallData);
@@ -7271,9 +7262,8 @@ class Nuke
           if (x >= 0 && x < sim_res_x && y >= 0 && y < sim_res_y) {
             const intensity = 1.0 - (dist / blastRadius);
             const index = (y * sim_res_x + x) * 4;
-            const smokeIdx = y * sim_res_x + x;
             baseData[index + 3] = Math.max(baseData[index + 3], blastTemp * intensity);
-            smokeData[smokeIdx] = Math.min(smokeData[smokeIdx] + guiControls.nukeSmokeAmount * intensity, 48.0);
+            waterData[index + 3] = Math.min(waterData[index + 3] + guiControls.nukeSmokeAmount * intensity, 2.0);
             
             // Check if there's land/vegetation at this location and ignite it
             if (guiControls.nukeIgnitionEnabled && (wallData[index + 0] === 1 || wallData[index + 0] === 26)) {
@@ -7295,11 +7285,6 @@ class Nuke
     [window.waterTexture_0 || waterTexture_0, window.waterTexture_1 || waterTexture_1].forEach(tex => {
       gl.bindTexture(gl.TEXTURE_2D, tex);
       gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, sim_res_x, sim_res_y, gl.RGBA, gl.FLOAT, waterData);
-    });
-
-    [window.smokeTexture_0 || smokeTexture_0, window.smokeTexture_1 || smokeTexture_1].forEach(tex => {
-      gl.bindTexture(gl.TEXTURE_2D, tex);
-      gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, sim_res_x, sim_res_y, gl.RED, gl.FLOAT, smokeData);
     });
 
     [window.wallTexture_0 || wallTexture_0, window.wallTexture_1 || wallTexture_1].forEach(tex => {
@@ -7832,28 +7817,6 @@ async function loadNewFormatSettings(dataBlob, sliceStart, totalBytes, fileVersi
 }
 
 
-function migrateLegacyAerosolToSmoke(waterTexF32, wallTexI8, resX, resY)
-{
-  // Older saves stored combustion smoke in water ch3 with dust. Move high-density
-  // flame values into a dedicated smoke field; leave lower dust in place.
-  const cellCount = resX * resY;
-  const smoke = new Float32Array(cellCount);
-  if (!waterTexF32 || !wallTexI8) return smoke;
-  const n = Math.min(cellCount, (waterTexF32.length / 4) | 0, (wallTexI8.length / 4) | 0);
-  for (let i = 0; i < n; i++) {
-    const o = i * 4;
-    // wall distance 0 → surface snow, leave channel alone
-    if (wallTexI8[o + 1] === 0)
-      continue;
-    const a = waterTexF32[o + 3];
-    if (a > 3.5) {
-      smoke[i] = a;
-      waterTexF32[o + 3] = 0.0;
-    }
-  }
-  return smoke;
-}
-
 async function loadSnapshotFromDecompressed(decompressed, version, inPlaceApplyFn)
 {
   const bytes = asSaveBytes(decompressed);
@@ -7885,19 +7848,8 @@ async function loadSnapshotFromDecompressed(decompressed, version, inPlaceApplyF
   sliceEnd += cellCount * 4;
   let wallTexI8 = new Int8Array(buffer, byteOffset + sliceStart, cellCount * 4);
 
-  let smokeTexF32 = null;
-  // 263574039+: dedicated combustion smoke field after wall
-  if (version == saveFileVersionID || version == 263574039) {
-    sliceStart = sliceEnd;
-    sliceEnd += cellCount * Float32Array.BYTES_PER_ELEMENT;
-    if (sliceEnd <= totalBytes)
-      smokeTexF32 = new Float32Array(buffer, byteOffset + sliceStart, cellCount);
-    else
-      sliceEnd = sliceStart;
-  }
-
   let precipArray = null;
-  if (version == saveFileVersionID || version == 263574038 || version == 263574037) {
+  if (version == saveFileVersionID || version == 263574037) {
     sliceStart = sliceEnd;
     sliceEnd += Uint32Array.BYTES_PER_ELEMENT;
     let savedNumDroplets = new Uint32Array(buffer, byteOffset + sliceStart, 1)[0];
@@ -7923,7 +7875,7 @@ async function loadSnapshotFromDecompressed(decompressed, version, inPlaceApplyF
   if (window.AviationTraffic)
     window.AviationTraffic.clearAll();
 
-  if (version == saveFileVersionID || version == 263574038 || version == 263574037) {
+  if (version == saveFileVersionID || version == 263574037) {
     sliceStart = sliceEnd;
     const dataBlob = createSaveBlobAdapter(bytes);
 
@@ -7944,7 +7896,7 @@ async function loadSnapshotFromDecompressed(decompressed, version, inPlaceApplyF
 
     try {
       sliceStart = await loadRadarTowersFromSave(dataBlob, sliceStart, totalBytes);
-      if (version == saveFileVersionID || version == 263574038)
+      if (version == saveFileVersionID)
         sliceStart = await loadAirmassGeneratorsFromSave(dataBlob, sliceStart, totalBytes);
       if (sliceStart < totalBytes)
         await loadNewFormatSettings(dataBlob, sliceStart, totalBytes, version);
@@ -7954,14 +7906,12 @@ async function loadSnapshotFromDecompressed(decompressed, version, inPlaceApplyF
   }
 
   sanitizeFloodWaterTexture(waterTexF32, wallTexI8, sim_res_x, sim_res_y);
-  if (!smokeTexF32)
-    smokeTexF32 = migrateLegacyAerosolToSmoke(waterTexF32, wallTexI8, sim_res_x, sim_res_y);
 
   if (inPlaceApplyFn)
-    await inPlaceApplyFn(baseTexF32, waterTexF32, wallTexI8, precipArray, smokeTexF32);
+    await inPlaceApplyFn(baseTexF32, waterTexF32, wallTexI8, precipArray);
   else {
     SETUP_MODE = false;
-    await mainScript(baseTexF32, waterTexF32, wallTexI8, precipArray, smokeTexF32);
+    await mainScript(baseTexF32, waterTexF32, wallTexI8, precipArray);
   }
 }
 
@@ -8129,7 +8079,7 @@ window.loadData = async function()
     let versionBuf = await versionBlob.arrayBuffer();
     let version = new Uint32Array(versionBuf)[0];                // convert to Uint32
 
-    if (version == saveFileVersionID || version == 263574038 || version == 263574037 || version == 263574036 || version == 1939327491) { // allow current, previous, and older version
+    if (version == saveFileVersionID || version == 263574037 || version == 263574036 || version == 1939327491) { // allow current, previous, and older version
       // check version id, only proceed if file has the right version id
       let fileArrBuf = await file.slice(4).arrayBuffer();
       let fileUint8Arr = new Uint8Array(fileArrBuf);
@@ -8194,19 +8144,8 @@ window.loadData = async function()
       debugLog('wallTex slice:', sliceStart, 'to', sliceEnd, 'size:', sliceEnd - sliceStart);
       let wallTexI8 = new Int8Array(buffer, byteOffset + sliceStart, cellCount * 4);
 
-      let smokeTexF32 = null;
-      if (version == saveFileVersionID || version == 263574039) {
-        sliceStart = sliceEnd;
-        sliceEnd += cellCount * Float32Array.BYTES_PER_ELEMENT;
-        debugLog('smokeTex slice:', sliceStart, 'to', sliceEnd, 'size:', sliceEnd - sliceStart);
-        if (sliceEnd <= bytes.byteLength)
-          smokeTexF32 = new Float32Array(buffer, byteOffset + sliceStart, cellCount);
-        else
-          sliceEnd = sliceStart;
-      }
-
       // Read precipitation: format stores droplet count (263574037 and newer)
-      if (version == saveFileVersionID || version == 263574038 || version == 263574037) {
+      if (version == saveFileVersionID || version == 263574037) {
         sliceStart = sliceEnd;
         sliceEnd += 1 * Uint32Array.BYTES_PER_ELEMENT;
         let savedNumDroplets = new Uint32Array(buffer, byteOffset + sliceStart, 1)[0];
@@ -8244,7 +8183,7 @@ window.loadData = async function()
         precipArray = null;
       }
 
-      if (version == saveFileVersionID || version == 263574038 || version == 263574037) {             // formats with saved droplet count
+      if (version == saveFileVersionID || version == 263574037) {             // formats with saved droplet count
         debugLog('Loading weather stations, radars, and settings for new version');
 
         const totalBytes = bytes.byteLength;
@@ -8289,7 +8228,7 @@ window.loadData = async function()
 
         sliceStart = await loadRadarTowersFromSave(dataBlob, sliceEnd, totalBytes);
 
-        if (version == saveFileVersionID || version == 263574038)
+        if (version == saveFileVersionID)
           sliceStart = await loadAirmassGeneratorsFromSave(dataBlob, sliceStart, totalBytes);
 
         sliceEnd = sliceStart;
@@ -8317,9 +8256,7 @@ window.loadData = async function()
 
       try {
         sanitizeFloodWaterTexture(waterTexF32, wallTexI8, sim_res_x, sim_res_y);
-        if (!smokeTexF32)
-          smokeTexF32 = migrateLegacyAerosolToSmoke(waterTexF32, wallTexI8, sim_res_x, sim_res_y);
-        await mainScript(baseTexF32, waterTexF32, wallTexI8, precipArray, smokeTexF32);
+        await mainScript(baseTexF32, waterTexF32, wallTexI8, precipArray);
       } catch (e) {
         console.error('Failed to load save file', e);
         alert('Failed to load save file: ' + e.message);
@@ -8800,7 +8737,7 @@ async function prepareSounding()
   }
 }
 
-async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initialRainDrops, initialSmokeTex)
+async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initialRainDrops)
 {
   let hostIterAtLastTextureSync = 0;
   let lastHostSnapshotBroadcast = 0;
@@ -11330,8 +11267,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         'Runway' : 'TOOL_WALL_RUNWAY',
         'Industrial' : 'TOOL_WALL_INDUSTRIAL',
         'Fire' : 'TOOL_WALL_FIRE',
-        'Smoke' : 'TOOL_SMOKE',
-        'Dust' : 'TOOL_DUST',
+        'Smoke / Dust' : 'TOOL_SMOKE',
         'Soil Moisture' : 'TOOL_WALL_MOIST',
         'Floodwater' : 'TOOL_FLOOD',
         'Grass / Shrub' : 'TOOL_VEG_GRASS',
@@ -17827,8 +17763,6 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       onDown() { setGuiTool('TOOL_WALL_FIRE'); } },
     { id: 'toolSmoke', name: 'Tool: smoke', category: 'Tools', defaultCode: 'KeyY',
       onDown() { setGuiTool('TOOL_SMOKE'); } },
-    { id: 'toolDust', name: 'Tool: dust', category: 'Tools', defaultCode: 'KeyO',
-      onDown() { setGuiTool('TOOL_DUST'); } },
     { id: 'toolWallMoist', name: 'Tool: moist wall', category: 'Tools', defaultCode: 'KeyU',
       onDown() { setGuiTool('TOOL_WALL_MOIST'); } },
     { id: 'toolVegGrass', name: 'Tool: grass / shrub', category: 'Tools', defaultCode: 'KeyI',
@@ -17837,7 +17771,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       onDown() { setGuiTool('TOOL_VEG_FOREST'); } },
     { id: 'toolVegForest2', name: 'Tool: forest 2', category: 'Tools', defaultCode: null,
       onDown() { setGuiTool('TOOL_VEG_FOREST2'); } },
-    { id: 'toolWallSnow', name: 'Tool: snow wall', category: 'Tools', defaultCode: null,
+    { id: 'toolWallSnow', name: 'Tool: snow wall', category: 'Tools', defaultCode: 'KeyO',
       onDown() { setGuiTool('TOOL_WALL_SNOW'); } },
     { id: 'toolWind', name: 'Tool: wind', category: 'Tools', defaultCode: 'KeyP',
       onDown() { setGuiTool('TOOL_WIND'); } },
@@ -19872,10 +19806,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   [0] = total water                                        >= 0
   [1] = cloud water                                        >= 0
   [2] = precipitation in air, moisture in surface          >= 0
-  [3] = dust/smog in air, snow in surface                  >= 0 for dust; 0 to 100 for snow
-
-  smoke texture: R32F (ping-ponged with water)
-  [0] = combustion smoke in air (fires / nukes)             >= 0
+  [3] = smoke/dust in air, snow in surface                 >= 0 for smoke/dust
+  0 to 100 for snow
 
   wall texture: RGBA8I
   [0] walltype
@@ -19895,8 +19827,6 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   const baseTexture_1 = gl.createTexture();
   const waterTexture_0 = gl.createTexture();
   const waterTexture_1 = gl.createTexture();
-  const smokeTexture_0 = gl.createTexture();
-  const smokeTexture_1 = gl.createTexture();
   const wallTexture_0 = gl.createTexture();
   const wallTexture_1 = gl.createTexture();
 
@@ -19904,8 +19834,6 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   window.baseTexture_1 = baseTexture_1;
   window.waterTexture_0 = waterTexture_0;
   window.waterTexture_1 = waterTexture_1;
-  window.smokeTexture_0 = smokeTexture_0;
-  window.smokeTexture_1 = smokeTexture_1;
   window.wallTexture_0 = wallTexture_0;
   window.wallTexture_1 = wallTexture_1;
 
@@ -20037,17 +19965,6 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
     //  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
 
-    const smokeInit = initialSmokeTex || new Float32Array(sim_res_x * sim_res_y);
-    gl.bindTexture(gl.TEXTURE_2D, smokeTexture_0);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.R32F, sim_res_x, sim_res_y, 0, gl.RED, gl.FLOAT, smokeInit);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-
-    gl.bindTexture(gl.TEXTURE_2D, smokeTexture_1);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.R32F, sim_res_x, sim_res_y, 0, gl.RED, gl.FLOAT, smokeInit);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-
 
     gl.bindTexture(gl.TEXTURE_2D, wallTexture_0);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8I, sim_res_x, sim_res_y, 0, gl.RGBA_INTEGER, gl.BYTE, initialWallTex);
@@ -20134,11 +20051,6 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       gl.bindTexture(gl.TEXTURE_2D, tex);
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, sim_res_x, sim_res_y, 0, gl.RGBA, gl.FLOAT, waterData);
     });
-    const zeroSmoke = new Float32Array(cellCount);
-    [smokeTexture_0, smokeTexture_1].forEach(tex => {
-      gl.bindTexture(gl.TEXTURE_2D, tex);
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.R32F, sim_res_x, sim_res_y, 0, gl.RED, gl.FLOAT, zeroSmoke);
-    });
 
     const zeroF32 = new Float32Array(4);
     gl.bindFramebuffer(gl.FRAMEBUFFER, chargeFrameBuff_0);
@@ -20185,14 +20097,12 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, baseTexture_0, 0);
   gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT1, gl.TEXTURE_2D, waterTexture_0, 0);
   gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT2, gl.TEXTURE_2D, wallTexture_0, 0);
-  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT3, gl.TEXTURE_2D, smokeTexture_0, 0);
 
 
   gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_1);
   gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, baseTexture_1, 0);
   gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT1, gl.TEXTURE_2D, waterTexture_1, 0);
   gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT2, gl.TEXTURE_2D, wallTexture_1, 0);
-  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT3, gl.TEXTURE_2D, smokeTexture_1, 0);
 
 
   gl.bindTexture(gl.TEXTURE_2D, curlTexture);
@@ -22806,7 +22716,6 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   gl.uniform1i(gl.getUniformLocation(advectionProgram, 'baseTex'), 0);
   gl.uniform1i(gl.getUniformLocation(advectionProgram, 'waterTex'), 1);
   gl.uniform1i(gl.getUniformLocation(advectionProgram, 'wallTex'), 2);
-  gl.uniform1i(gl.getUniformLocation(advectionProgram, 'smokeTex'), 3);
   gl.uniform2f(gl.getUniformLocation(advectionProgram, 'texelSize'), texelSizeX, texelSizeY);
   gl.uniform2f(gl.getUniformLocation(advectionProgram, 'resolution'), sim_res_x, sim_res_y);
   // gl.uniform1fv(
@@ -22853,7 +22762,6 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   gl.uniform1i(gl.getUniformLocation(boundaryProgram, 'precipFeedbackTex'), 5);
   gl.uniform1i(gl.getUniformLocation(boundaryProgram, 'precipDepositionTex'), 6);
   gl.uniform1i(gl.getUniformLocation(boundaryProgram, 'sunColumnTex'), 7);
-  gl.uniform1i(gl.getUniformLocation(boundaryProgram, 'smokeTex'), 8);
   gl.uniform2f(gl.getUniformLocation(boundaryProgram, 'resolution'), sim_res_x, sim_res_y);
   gl.uniform2f(gl.getUniformLocation(boundaryProgram, 'texelSize'), texelSizeX, texelSizeY);
   gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'vorticity'),
@@ -22981,7 +22889,6 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   gl.uniform1i(gl.getUniformLocation(lightingProgram, 'wallTex'), 2);
   gl.uniform1i(gl.getUniformLocation(lightingProgram, 'lightTex'), 3);
   gl.uniform1i(gl.getUniformLocation(lightingProgram, 'sunColumnTex'), 7);
-  gl.uniform1i(gl.getUniformLocation(lightingProgram, 'smokeTex'), 8);
   gl.uniform1f(gl.getUniformLocation(lightingProgram, 'dryLapse'), dryLapse);
 
   // Display programs:
@@ -23009,7 +22916,6 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   gl.uniform1i(gl.getUniformLocation(airQualityDisplayProgram, 'waterTex'), 1);
   gl.uniform1i(gl.getUniformLocation(airQualityDisplayProgram, 'wallTex'), 2);
   gl.uniform1i(gl.getUniformLocation(airQualityDisplayProgram, 'colorScalesTex'), 9);
-  gl.uniform1i(gl.getUniformLocation(airQualityDisplayProgram, 'smokeTex'), 8);
   gl.uniform1f(gl.getUniformLocation(airQualityDisplayProgram, 'dryLapse'), dryLapse);
 
   gl.useProgram(humidityDisplayProgram);
@@ -23115,7 +23021,6 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   gl.uniform1i(gl.getUniformLocation(realisticDisplayProgram, 'lightningCloudFlashTex'), 12);
   gl.uniform1i(gl.getUniformLocation(realisticDisplayProgram, 'lightningSurfFlashTex'), 13);
   gl.uniform1i(gl.getUniformLocation(realisticDisplayProgram, 'sunColumnTex'), 14);
-  gl.uniform1i(gl.getUniformLocation(realisticDisplayProgram, 'smokeTex'), 16);
   gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'dryLapse'), dryLapse);
   gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'cellHeight'), cellHeight);
   gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'visualQuality'), 1.0);
@@ -23345,11 +23250,11 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     gl.useProgram(setupProgram);
     // Render to both framebuffers
     gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_0);
-    gl.drawBuffers([ gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1, gl.COLOR_ATTACHMENT2, gl.COLOR_ATTACHMENT3 ]);
+    gl.drawBuffers([ gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1, gl.COLOR_ATTACHMENT2 ]);
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
 
     gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_1);
-    gl.drawBuffers([ gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1, gl.COLOR_ATTACHMENT2, gl.COLOR_ATTACHMENT3 ]);
+    gl.drawBuffers([ gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1, gl.COLOR_ATTACHMENT2 ]);
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
   }
 
@@ -23752,7 +23657,6 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   const uloc_radar_colorScalesTex      = gl.getUniformLocation(radarDisplayProgram, 'colorScalesTex');
   const uloc_radar_precipFeedbackTex   = gl.getUniformLocation(radarDisplayProgram, 'precipFeedbackTexture');
   const uloc_radar_precipDepositionTex = gl.getUniformLocation(radarDisplayProgram, 'precipDepositionTexture');
-  const uloc_radar_smokeTexture        = gl.getUniformLocation(radarDisplayProgram, 'smokeTexture');
 
   const MAX_COMPOSITE_RADARS = 32;
   const uloc_comp_aspectRatios        = gl.getUniformLocation(compositeRadarDisplayProgram, 'aspectRatios');
@@ -24050,7 +23954,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     updateRadarAccumTextureFromCache();
   }
 
-  function bindRadarCachedSimTextures(baseLoc, waterLoc, wallLoc, precipFbLoc, precipDepLoc, smokeLoc)
+  function bindRadarCachedSimTextures(baseLoc, waterLoc, wallLoc, precipFbLoc, precipDepLoc)
   {
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, cachedBaseTexture);
@@ -24067,11 +23971,6 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     gl.activeTexture(gl.TEXTURE5);
     gl.bindTexture(gl.TEXTURE_2D, cachedPrecipDepositionTexture);
     gl.uniform1i(precipDepLoc, 5);
-    if (smokeLoc) {
-      gl.activeTexture(gl.TEXTURE7);
-      gl.bindTexture(gl.TEXTURE_2D, smokeTexture_1);
-      gl.uniform1i(smokeLoc, 7);
-    }
   }
 
   function uploadCompositeRadarArrays()
@@ -24154,7 +24053,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     gl.bindTexture(gl.TEXTURE_2D, colorScalesTexture);
     gl.uniform1i(uloc_radar_colorScalesTex, 3);
     bindRadarCachedSimTextures(uloc_radar_baseTexture, uloc_radar_waterTexture, uloc_radar_wallTexture,
-                               uloc_radar_precipFeedbackTex, uloc_radar_precipDepositionTex, uloc_radar_smokeTexture);
+                               uloc_radar_precipFeedbackTex, uloc_radar_precipDepositionTex);
   }
 
   function drawRadarProductAtSite(site, productId)
@@ -27011,10 +26910,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       gl.bindTexture(gl.TEXTURE_2D, waterTexture_0);
       gl.activeTexture(gl.TEXTURE2);
       gl.bindTexture(gl.TEXTURE_2D, wallTexture_0);
-      gl.activeTexture(gl.TEXTURE3);
-      gl.bindTexture(gl.TEXTURE_2D, smokeTexture_0);
       gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_1);
-      gl.drawBuffers([ gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1, gl.COLOR_ATTACHMENT2, gl.COLOR_ATTACHMENT3 ]);
+      gl.drawBuffers([ gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1, gl.COLOR_ATTACHMENT2 ]);
       gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
 
       gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_1);
@@ -27026,9 +26923,6 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, sim_res_x, sim_res_y);
       gl.readBuffer(gl.COLOR_ATTACHMENT2);
       gl.bindTexture(gl.TEXTURE_2D, wallTexture_0);
-      gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, sim_res_x, sim_res_y);
-      gl.readBuffer(gl.COLOR_ATTACHMENT3);
-      gl.bindTexture(gl.TEXTURE_2D, smokeTexture_0);
       gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, sim_res_x, sim_res_y);
 
       if (pass.inputType === 23) {
@@ -27087,10 +26981,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       gl.bindTexture(gl.TEXTURE_2D, waterTexture_1);
       gl.activeTexture(gl.TEXTURE2);
       gl.bindTexture(gl.TEXTURE_2D, wallTexture_1);
-      gl.activeTexture(gl.TEXTURE3);
-      gl.bindTexture(gl.TEXTURE_2D, smokeTexture_1);
       gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_0);
-      gl.drawBuffers([ gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1, gl.COLOR_ATTACHMENT2, gl.COLOR_ATTACHMENT3 ]);
+      gl.drawBuffers([ gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1, gl.COLOR_ATTACHMENT2 ]);
       gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
 
       // Copy brushed result back to *_1 (advection output pair)
@@ -27103,9 +26995,6 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, sim_res_x, sim_res_y);
       gl.readBuffer(gl.COLOR_ATTACHMENT2);
       gl.bindTexture(gl.TEXTURE_2D, wallTexture_1);
-      gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, sim_res_x, sim_res_y);
-      gl.readBuffer(gl.COLOR_ATTACHMENT3);
-      gl.bindTexture(gl.TEXTURE_2D, smokeTexture_1);
       gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, sim_res_x, sim_res_y);
     }
     if (uloc_adv_brushOnlyMode) {
@@ -27264,9 +27153,6 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     gl.readBuffer(gl.COLOR_ATTACHMENT2);
     let wallTextureValues = new Int8Array(4 * sim_res_x * sim_res_y);
     gl.readPixels(0, 0, sim_res_x, sim_res_y, gl.RGBA_INTEGER, gl.BYTE, wallTextureValues);
-    gl.readBuffer(gl.COLOR_ATTACHMENT3);
-    let smokeTextureValues = new Float32Array(sim_res_x * sim_res_y);
-    gl.readPixels(0, 0, sim_res_x, sim_res_y, gl.RED, gl.FLOAT, smokeTextureValues);
     sanitizeFloodWaterTexture(waterTextureValues, wallTextureValues, sim_res_x, sim_res_y);
 
     let precipBufferValues = new ArrayBuffer(rainDrops.length * Float32Array.BYTES_PER_ELEMENT);
@@ -27344,7 +27230,6 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
 
     let saveDataArray = [
       Uint16Array.of(sim_res_x), Uint16Array.of(sim_res_y), baseTextureValues, waterTextureValues, wallTextureValues,
-      smokeTextureValues,
       Uint32Array.of(rainDrops.length / 5), precipBufferValues, Uint16Array.of(weatherStations.length),
       weatherStationsPositions, Uint16Array.of(radars.length), radarsPositions, Uint16Array.of(airmassGenerators.length), airmassPositions,
       Uint32Array.of(strGuiControls.length), strGuiControls,
@@ -27515,7 +27400,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     });
   }
 
-  window.__applySnapshotInPlace = async function(baseTexF32, waterTexF32, wallTexI8, precipArray, smokeTexF32)
+  window.__applySnapshotInPlace = async function(baseTexF32, waterTexF32, wallTexI8, precipArray)
   {
     gl.bindTexture(gl.TEXTURE_2D, baseTexture_0);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, sim_res_x, sim_res_y, 0, gl.RGBA, gl.FLOAT, baseTexF32);
@@ -27529,11 +27414,6 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8I, sim_res_x, sim_res_y, 0, gl.RGBA_INTEGER, gl.BYTE, wallTexI8);
     gl.bindTexture(gl.TEXTURE_2D, wallTexture_1);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8I, sim_res_x, sim_res_y, 0, gl.RGBA_INTEGER, gl.BYTE, wallTexI8);
-    const smokeData = smokeTexF32 || new Float32Array(sim_res_x * sim_res_y);
-    gl.bindTexture(gl.TEXTURE_2D, smokeTexture_0);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.R32F, sim_res_x, sim_res_y, 0, gl.RED, gl.FLOAT, smokeData);
-    gl.bindTexture(gl.TEXTURE_2D, smokeTexture_1);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.R32F, sim_res_x, sim_res_y, 0, gl.RED, gl.FLOAT, smokeData);
     if (precipArray && precipVertexBuffer_0) {
       gl.bindBuffer(gl.ARRAY_BUFFER, precipVertexBuffer_0);
       gl.bufferData(gl.ARRAY_BUFFER, precipArray, gl.DYNAMIC_DRAW);
@@ -27895,10 +27775,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     gl.bindTexture(gl.TEXTURE_2D, precipitationFeedbackTexture);
     gl.activeTexture(gl.TEXTURE6);
     gl.bindTexture(gl.TEXTURE_2D, precipitationDepositionTexture);
-    gl.activeTexture(gl.TEXTURE8);
-    gl.bindTexture(gl.TEXTURE_2D, smokeTexture_1);
     gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_0);
-    gl.drawBuffers([ gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1, gl.COLOR_ATTACHMENT2, gl.COLOR_ATTACHMENT3 ]);
+    gl.drawBuffers([ gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1, gl.COLOR_ATTACHMENT2 ]);
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
 
     gl.useProgram(advectionProgram);
@@ -27909,10 +27787,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     gl.bindTexture(gl.TEXTURE_2D, waterTexture_0);
     gl.activeTexture(gl.TEXTURE2);
     gl.bindTexture(gl.TEXTURE_2D, wallTexture_0);
-    gl.activeTexture(gl.TEXTURE3);
-    gl.bindTexture(gl.TEXTURE_2D, smokeTexture_0);
     gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_1);
-    gl.drawBuffers([ gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1, gl.COLOR_ATTACHMENT2, gl.COLOR_ATTACHMENT3 ]);
+    gl.drawBuffers([ gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1, gl.COLOR_ATTACHMENT2 ]);
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
   }
 
@@ -27950,10 +27826,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     gl.bindTexture(gl.TEXTURE_2D, waterTexture_0);
     gl.activeTexture(gl.TEXTURE2);
     gl.bindTexture(gl.TEXTURE_2D, wallTexture_0);
-    gl.activeTexture(gl.TEXTURE3);
-    gl.bindTexture(gl.TEXTURE_2D, smokeTexture_0);
     gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_1);
-    gl.drawBuffers([ gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1, gl.COLOR_ATTACHMENT2, gl.COLOR_ATTACHMENT3 ]);
+    gl.drawBuffers([ gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1, gl.COLOR_ATTACHMENT2 ]);
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
 
     gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_1);
@@ -27965,9 +27839,6 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, sim_res_x, sim_res_y);
     gl.readBuffer(gl.COLOR_ATTACHMENT2);
     gl.bindTexture(gl.TEXTURE_2D, wallTexture_0);
-    gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, sim_res_x, sim_res_y);
-    gl.readBuffer(gl.COLOR_ATTACHMENT3);
-    gl.bindTexture(gl.TEXTURE_2D, smokeTexture_0);
     gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, sim_res_x, sim_res_y);
 
     if (uloc_adv_brushOnlyMode) {
@@ -28036,11 +27907,11 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       gl.uniform1f(uloc_setup_heightMult, ((canvas.height - mouseY) / canvas.height) * 2.0);
       // Render to both framebuffers
       gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_0);
-      gl.drawBuffers([ gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1, gl.COLOR_ATTACHMENT2, gl.COLOR_ATTACHMENT3 ]);
+      gl.drawBuffers([ gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1, gl.COLOR_ATTACHMENT2 ]);
       gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
 
       gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_1);
-      gl.drawBuffers([ gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1, gl.COLOR_ATTACHMENT2, gl.COLOR_ATTACHMENT3 ]);
+      gl.drawBuffers([ gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1, gl.COLOR_ATTACHMENT2 ]);
       gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
     } else {
       // NOT SETUP MODE:
@@ -28059,10 +27930,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
           inputType = 1;
         else if (guiControls.tool == 'TOOL_WATER')
           inputType = 2;
-        else if (guiControls.tool == 'TOOL_DUST')
-          inputType = 3;
         else if (guiControls.tool == 'TOOL_SMOKE')
-          inputType = 34;
+          inputType = 3;
         else if (guiControls.tool == 'TOOL_WIND')
           inputType = 4;
         else if (guiControls.tool == 'TOOL_PRECIP')
@@ -28322,12 +28191,10 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
             gl.bindTexture(gl.TEXTURE_2D, precipitationDepositionTexture);
             gl.activeTexture(gl.TEXTURE7);
             gl.bindTexture(gl.TEXTURE_2D, sunColumnTexture);
-            gl.activeTexture(gl.TEXTURE8);
-            gl.bindTexture(gl.TEXTURE_2D, smokeTexture_1);
 
 
             gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_0);
-            gl.drawBuffers([ gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1, gl.COLOR_ATTACHMENT2, gl.COLOR_ATTACHMENT3 ]);
+            gl.drawBuffers([ gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1, gl.COLOR_ATTACHMENT2 ]);
             gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
 
             // Custom terrain/brush tools: paint with brushOnly onto *_0 (boundary output)
@@ -28357,10 +28224,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
               gl.bindTexture(gl.TEXTURE_2D, waterTexture_0);
               gl.activeTexture(gl.TEXTURE2);
               gl.bindTexture(gl.TEXTURE_2D, wallTexture_0);
-              gl.activeTexture(gl.TEXTURE3);
-              gl.bindTexture(gl.TEXTURE_2D, smokeTexture_0);
               gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_1);
-              gl.drawBuffers([ gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1, gl.COLOR_ATTACHMENT2, gl.COLOR_ATTACHMENT3 ]);
+              gl.drawBuffers([ gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1, gl.COLOR_ATTACHMENT2 ]);
               gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
 
               applyAirmassGeneratorsCpu();
@@ -28414,8 +28279,6 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
 
               gl.activeTexture(gl.TEXTURE7);
               gl.bindTexture(gl.TEXTURE_2D, sunColumnTexture);
-              gl.activeTexture(gl.TEXTURE8);
-              gl.bindTexture(gl.TEXTURE_2D, smokeTexture_1);
 
               gl.drawBuffers([ gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1 ]); // calc light
               gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
@@ -28835,8 +28698,6 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         getLightningFlashIllumTexture(lightningSurfFlashTex, lightningSurfFlashBlurFBO));
       gl.activeTexture(gl.TEXTURE14);
       gl.bindTexture(gl.TEXTURE_2D, sunColumnTexture);
-      gl.activeTexture(gl.TEXTURE16);
-      gl.bindTexture(gl.TEXTURE_2D, smokeTexture_1);
 
       gl.useProgram(realisticDisplayProgram);
       gl.uniform2f(uloc_real_aspectRatios, sim_aspect, canvas_aspect);
@@ -29037,8 +28898,6 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       gl.bindTexture(gl.TEXTURE_2D, waterTexture_1);
       gl.activeTexture(gl.TEXTURE2);
       gl.bindTexture(gl.TEXTURE_2D, wallTexture_1);
-      gl.activeTexture(gl.TEXTURE8);
-      gl.bindTexture(gl.TEXTURE_2D, smokeTexture_1);
       gl.activeTexture(gl.TEXTURE9);
       gl.bindTexture(gl.TEXTURE_2D, colorScalesTexture);
 
