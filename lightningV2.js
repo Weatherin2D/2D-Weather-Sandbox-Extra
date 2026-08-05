@@ -335,12 +335,24 @@
     strobe: 1,
   };
 
+  /**
+   * Frequency slider: 1 = realistic 1× baseline, 100 = extremely unrealistic storm.
+   * Super-linear above ~20 so mid values stay usable and the top is chaotic.
+   */
+  function mapGlobalFrequencyScale(globalMult) {
+    const g = Math.max(Number(globalMult) || 0, 0);
+    if (g <= 0) return 0;
+    if (g <= 1) return g; // 0..1 ramps into baseline
+    // 1 → 1×, 10 → ~12×, 50 → ~85×, 100 → ~220× (extreme)
+    const t = (g - 1) / 99;
+    return 1 + 99 * (t * 0.45 + t * t * 0.55) * (220 / 99);
+  }
+
   function getEffectiveFrequency(controls, typeKey, stormFactor, profile) {
     if (controls.enableLightning === false)
       return 0;
     const personality = getTypeFrequencyMult(profile, typeKey);
     // Flat Lightning GUI: always honor CG / IC / Spider / Frequency sliders.
-    // (Legacy "realistic ratios" lock ignored while those sliders are exposed.)
     const map = {
       intracloud: controls.intracloudFrequency,
       cloudToCloud: controls.cloudToCloudFrequency,
@@ -355,9 +367,10 @@
       strobe: controls.strobeLightningFrequency ?? 0.8,
     };
     const uiScale = FREQ_UI_SCALE[typeKey] || 1;
-    const stormBoost = 0.75 + stormFactor * 0.5;
-    const globalMult = Math.max(controls.globalLightningMultiplier || 0, 0);
-    return (map[typeKey] || 0) * uiScale * globalMult * personality * stormBoost;
+    // Mild storm link — Frequency slider owns most of the absolute rate.
+    const stormBoost = 0.85 + stormFactor * 0.3;
+    const globalScale = mapGlobalFrequencyScale(controls.globalLightningMultiplier);
+    return (map[typeKey] || 0) * uiScale * globalScale * personality * stormBoost;
   }
 
   function createBurstState() {
@@ -1987,14 +2000,19 @@
   }
 
   function strikeChance(freq, burstIntensity, clustering) {
-    // Keep headroom across Frequency 0–100 so the slider stays responsive
-    // (old curve saturated early and lookback made mid/high values identical).
-    const norm = clamp(Math.max(freq, 0) / 100, 0, 1);
-    let chance = norm * 0.035 + norm * norm * 0.025;
-    chance = Math.min(0.18, chance);
-    chance *= Math.max(0.12, burstIntensity);
-    if (clustering > 0.5) chance *= 1.0 + (clustering - 0.5) * 0.35;
-    return chance;
+    // freq = typeSlider(0–100) * mapGlobalFrequencyScale(Frequency) * O(1).
+    // Calibrated so Frequency=1 is ~realistic; Frequency=100 is near-constant fire.
+    //   F=1,  IC≈18 → freq≈15–25  → ~1–2% per iter in a storm
+    //   F=100, IC≈18 → freq≈3000+ → ~70–95% per iter (unrealistic)
+    if (!(freq > 0)) return 0;
+    const k = 0.00072;
+    let chance = 1.0 - Math.exp(-freq * k);
+    chance = Math.min(0.97, chance);
+    // Quiet burst phases still allow strikes; only soft dampen so high-F isn't blocked.
+    const burst = Math.max(0.25, Math.min(burstIntensity || 1, 2.5));
+    chance *= Math.min(1.35, burst);
+    if (clustering > 0.5) chance *= 1.0 + (clustering - 0.5) * 0.5;
+    return Math.min(0.98, chance);
   }
 
   function createEventRecord(strike, eventId, iterNum) {
@@ -2200,6 +2218,7 @@
     applyPreset,
     applyPerformanceTier,
     getEffectiveFrequency,
+    mapGlobalFrequencyScale,
     createBurstState,
     updateBurstState,
     readCharge,

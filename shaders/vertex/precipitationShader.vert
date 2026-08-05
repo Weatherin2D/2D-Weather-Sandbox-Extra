@@ -50,10 +50,11 @@ uniform float fallSpeed;          // 0.0003
 uniform float growthRate0C;       // 0.0005
 // Lightning GUI → precip snow-path storm bolts (writes lightningDataTex for Enhanced SDF).
 uniform int lightningEnabled;           // 0 = never spawn from precip
-uniform float lightningChanceMult;      // globalLightningMultiplier
+uniform float lightningChanceMult;      // Frequency scale (1 = realistic, 100 ≈ extreme)
 uniform float lightningCgWeight;        // cloudToGroundFrequency
 uniform float lightningSpiderWeight;    // spiderLightningFrequency
 uniform float lightningIcWeight;        // intracloudFrequency
+uniform float lightningMinItersSinceLast; // cooldown between precip bolts
 uniform float growthRate_30C;     // 0.01
 uniform float freezingRate;       // 0.0002
 uniform float meltingRate;        // 0.0015
@@ -136,17 +137,18 @@ void main()
           vec4 lightningData = texture(lightningDataTex, vec2(0.5)); // data from last lightning bolt
 
           const float lightningCloudDensityThreshold = 2.5;          // 3.0
-          const float lightningChanceMultiplier = 0.0033;            // 0.0011
+          // Baseline at Frequency=1 (lightningChanceMult≈1); top end is extreme via mult.
+          const float lightningChanceMultiplier = 0.0022;
 
           float cloudPlusPrecipDensity = water[CLOUD] + water[PRECIPITATION];
 
           float lightningSpawnChance = max((cloudPlusPrecipDensity - lightningCloudDensityThreshold) * lightningChanceMultiplier, 0.)
             * max(lightningChanceMult, 0.0);
 
-          const float minIterationsSinceLastLightningBolt = 30.; // 50.
+          float minIters = max(lightningMinItersSinceLast, 2.0);
 
           if (lightningEnabled != 0 &&
-              lightningData[START_ITERNUM] < iterNum - minIterationsSinceLastLightningBolt &&
+              lightningData[START_ITERNUM] < iterNum - minIters &&
               random2d(vec2(base[TEMPERATURE] * 0.2324, water[TOTAL] * 7.7)) < lightningSpawnChance) { // Spawn lightning
             lightningSpawned = true;
             isActive = false;

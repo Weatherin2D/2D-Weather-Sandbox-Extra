@@ -81,8 +81,13 @@ const ControlHelp = (function() {
       keys: 'I',
     },
     TOOL_SMOKE: {
-      title: 'Smoke / Dust',
-      body: 'Add airborne smoke or dust. Absorbs sunlight, warms the air, and reduces visibility in the realistic view.',
+      title: 'Smoke',
+      body: 'Paint warm tan wildfire smoke. Same physics as fire plumes — absorbs sunlight, warms air, and reduces visibility. Fires also emit this smoke.',
+      keys: 'Y',
+    },
+    TOOL_DUST: {
+      title: 'Dust',
+      body: 'Add airborne dust or smog (brown haze). Absorbs sunlight, warms the air, and reduces visibility. Separate from cream/tan fire smoke.',
       keys: 'O',
     },
     TOOL_WALL_MOIST: {
@@ -324,7 +329,10 @@ const ControlHelp = (function() {
     nukeBlastRadius: 'Radius of the thermal blast in cells.',
     nukeTemperature: 'Peak temperature added by a nuke detonation.',
     lightningRenderStyle: 'Classic particle-based bolts with prebaked textures (same as the original sandbox).',
-    globalLightningMultiplier: 'Overall scale for lightning frequency.',
+    globalLightningMultiplier: 'Lightning rate scale. 1 = realistic 1×, 100 = extremely unrealistic nearly continuous lightning.',
+    cloudToGroundFrequency: 'Relative amount of cloud-to-ground strikes (with Frequency scale).',
+    intracloudFrequency: 'Relative amount of in-cloud strikes (with Frequency scale).',
+    spiderLightningFrequency: 'Relative amount of spider / cloud-channel lightning (with Frequency scale).',
     lightningBrightness: 'Brightness of lightning bolt rendering.',
     flashDuration: 'How long lightning flashes illuminate the scene.',
     chargeGenerationRate: 'How quickly storms build electrical charge naturally.',
