@@ -24,6 +24,7 @@ uniform sampler2D colorScalesTex;
 uniform sampler2D precipFeedbackTexture;
 uniform sampler2D precipDepositionTexture;
 uniform sampler2D radarAccumTexture;
+uniform sampler2D smokeTexture;
 
 uniform vec2  radarPos;
 uniform float radarRange;
@@ -151,6 +152,7 @@ struct GateSample {
   float iceFrac;
   float cc;
   float zdr;
+  float aerosol;
   bool  valid;
 };
 
@@ -163,12 +165,13 @@ GateSample sampleGateAt(vec2 snappedCell)
   if (!g.valid) return g;
 
   g.water = texture(waterTexture, tc);
+  g.aerosol = g.water[DUST] + texture(smokeTexture, tc).r;
   g.base = texture(baseTexture, tc);
   g.precipFeedback = texture(precipFeedbackTexture, tc);
   g.precipDep = texture(precipDepositionTexture, tc).xy;
 
   float gridPrecip = g.water[PRECIPITATION];
-  float dust = g.water[SMOKE] * 0.15;
+  float dust = g.aerosol * 0.15;
   g.reflectiveMass = (gridPrecip + dust) * sensitivity;
   g.dBZ = computeDBZ(g.reflectiveMass);
 
@@ -184,7 +187,7 @@ GateSample sampleGateAt(vec2 snappedCell)
     g.iceFrac = smoothstep(0.4, 0.9, heightFactor) * clamp(g.water[PRECIPITATION] * 8.0, 0.0, 1.0);
   }
 
-  g.cc = computeCorrelation(gridPrecip, dust, massScore, g.iceFrac, g.particleSize, g.water[SMOKE], snappedCell);
+  g.cc = computeCorrelation(gridPrecip, dust, massScore, g.iceFrac, g.particleSize, g.aerosol, snappedCell);
 
   g.zdr = (g.particleSize * (1.0 - g.iceFrac) * 4.0) - (g.particleSize * g.iceFrac * 1.5);
   g.zdr = clamp(g.zdr, -1.0, 5.0);
@@ -207,7 +210,8 @@ float columnEchoTop(vec2 snappedTC, float threshold)
     ivec4 wData = texture(wallTexture, sampleTC);
     if (wData[1] == 0) continue;
     vec4 wSample = texture(waterTexture, sampleTC);
-    float reflectiveMass = wSample[PRECIPITATION] + wSample[SMOKE] * 0.15;
+    float aerosol = wSample[DUST] + texture(smokeTexture, sampleTC).r;
+    float reflectiveMass = wSample[PRECIPITATION] + aerosol * 0.15;
     if (reflectiveMass > threshold) echoTopFrac = yFrac;
   }
   return echoTopFrac;
@@ -381,9 +385,9 @@ void main()
       pixelOpacity *= min(g.reflectiveMass * 300.0, 1.0);
 
     } else if (productType == PRODUCT_HCA) {
-      if (g.reflectiveMass < 0.00005 && g.water[SMOKE] < 0.01) discard;
+      if (g.reflectiveMass < 0.00005 && g.aerosol < 0.01) discard;
       float hcaClass = 0.0;
-      if (g.water[SMOKE] > 0.08 && g.reflectiveMass < 0.0003)
+      if (g.aerosol > 0.08 && g.reflectiveMass < 0.0003)
         hcaClass = 5.0;
       else if (g.cc < 0.72 && g.dBZ > 45.0)
         hcaClass = 6.0;
@@ -399,7 +403,7 @@ void main()
         hcaClass = 1.0;
       float t = hcaClass / 6.0;
       color = sampleColorScaleStepped(t);
-      pixelOpacity *= max(min(g.reflectiveMass * 400.0, 1.0), min(g.water[SMOKE] * 2.0, 0.6));
+      pixelOpacity *= max(min(g.reflectiveMass * 400.0, 1.0), min(g.aerosol * 2.0, 0.6));
 
     } else if (productType == PRODUCT_HAIL) {
       if (g.reflectiveMass < 0.0001) discard;

@@ -155,7 +155,8 @@
       case 'TOOL_NONE': return 0;
       case 'TOOL_TEMPERATURE': return 1;
       case 'TOOL_WATER': return 2;
-      case 'TOOL_SMOKE': return 3;
+      case 'TOOL_SMOKE': return 34;
+      case 'TOOL_DUST': return 3;
       case 'TOOL_WIND': return 4;
       case 'TOOL_PRECIP': return 5;
       case 'TOOL_WALL': return 10;

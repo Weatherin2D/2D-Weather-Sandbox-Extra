@@ -29,6 +29,7 @@ in vec2 fragCoord;
 layout(location = 0) out vec4 base;
 layout(location = 1) out vec4 water;
 layout(location = 2) out ivec4 wall;
+layout(location = 3) out float smoke;
 
 float rand(float n) { return fract(sin(n) * 43758.5453123); }
 
@@ -50,6 +51,7 @@ void main()
 {
   base = vec4(0.0);
   water = vec4(0.0);
+  smoke = 0.0;
 
   // WALL SETUP
 

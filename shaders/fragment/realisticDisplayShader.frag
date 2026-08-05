@@ -29,6 +29,7 @@ uniform sampler2D lightningOnLightTex;
 uniform sampler2D lightningCloudFlashTex;
 uniform sampler2D lightningSurfFlashTex;
 uniform sampler2D sunColumnTex;
+uniform sampler2D smokeTex;
 
 uniform int ltUseIllumTexture;
 
@@ -800,7 +801,7 @@ vec3 softClipFlash(vec3 lightRgb)
   return lightRgb / (vec3(1.0) + lightRgb * (0.35 / clip));
 }
 
-vec4 computeCloudSmokeColor(float cloudwater, float precip, float smokeAmt, float localLightIntensity, float rainSnowFactor)
+vec4 computeCloudSmokeColor(float cloudwater, float precip, float dustAmt, float smokeAmt, float localLightIntensity, float rainSnowFactor, float nearFireEmberMask, vec2 windVel)
 {
   float densScale = max(cloudDensityScale, 0.01);
   float soft = clamp(cloudSoftness, 0.15, 2.5);
@@ -829,19 +830,117 @@ vec4 computeCloudSmokeColor(float cloudwater, float precip, float smokeAmt, floa
   shaftCol += vec3(spec);
   cloudCol = mix(cloudCol, shaftCol, shaftAmt);
 
-  const vec3 smokeThinCol = vec3(0.8, 0.51, 0.26);
-  const vec3 smokeThickCol = vec3(0., 0., 0.);
+  // Dust: reddish haboob / red-sand look (thin: light orange-red, thick: dark red-brown)
+  const vec3 dustThinCol = vec3(0.88, 0.38, 0.22);
+  const vec3 dustThickCol = vec3(0.28, 0.06, 0.03);
+  float dustOpacity = clamp(1. - (1. / (dustAmt + 1.)), 0.0, 1.0);
+  vec3 dustCol = mix(dustThinCol, dustThickCol, dustOpacity);
 
-  float smokeOpacity = clamp(1. - (1. / (smokeAmt + 1.)), 0.0, 1.0);
-  float fireIntensity = clamp((smokeOpacity - 0.8) * 25., 0.0, 1.0);
+  // Combustion smoke — thin plumes stay translucent tan; mega-fire densities become
+  // dense pyrocumulus: charcoal tops, firelit orange interiors, pale billow highlights.
+  const vec3 smokeAsh = vec3(0.86, 0.80, 0.74);        // thin daylight ash
+  const vec3 smokeCharcoal = vec3(0.18, 0.15, 0.14);     // thick bulk
+  const vec3 smokeSoot = vec3(0.06, 0.05, 0.045);        // extreme opaque core
+  const vec3 smokeFireOrange = vec3(1.15, 0.42, 0.06);   // fire glow inside volume
+  const vec3 smokeFireGold = vec3(1.35, 0.75, 0.22);     // hottest lit smoke
+  const vec3 smokeBillowLit = vec3(0.95, 0.90, 0.85);    // sunlit cauliflower faces
+
+  // Allow very high smokeAmt to approach full opacity (no soft 0.88 ceiling)
+  const float smokeOpaqueRef = 5.5;
+  float smokeOpacity = clamp(smokeAmt / (smokeAmt + smokeOpaqueRef), 0.0, 1.0);
+  float megaFire = smoothstep(6.0, 22.0, smokeAmt);   // opacity ramp (unchanged)
+  // Colour density ramps kick in earlier so plumes look thicker at the same mass
+  float heavyCol = smoothstep(0.35, 2.2, smokeAmt);
+  float megaCol = smoothstep(1.2, 5.5, smokeAmt);
+  // Mega fires go fully solid; lighter plumes stay somewhat see-through
+  smokeOpacity = mix(smokeOpacity * 0.90, 1.0, megaFire);
+  smokeOpacity = clamp(smokeOpacity, 0.0, 1.0);
+
+  // Density-driven body colour: ash → charcoal → near-black (lower thresholds)
+  vec3 smokeBaseCol = mix(smokeAsh, smokeCharcoal, heavyCol);
+  smokeBaseCol = mix(smokeBaseCol, smokeSoot, megaCol * 0.85);
+
+  // Billowing cauliflower variation from noise (pyrocumulus lobes)
+  vec2 billowUV = fragCoord * 0.11 + vec2(iterNum * 0.004, iterNum * 0.0025);
+  float billow = texture(noiseTex, billowUV * 0.08).r;
+  billow = mix(billow, texture(noiseTex, billowUV * 0.19 + 3.7).r, 0.45);
+  billow = smoothstep(0.25, 0.78, billow);
+
+  // Interior firelight — stronger at high density and when ambient sun is weak (night / deep shade)
+  float nightBoost = 1.0 - clamp(lit, 0.0, 1.0);
+  float internalGlow = heavyCol * mix(0.25, 1.0, nightBoost) * mix(0.55, 1.0, megaCol);
+  internalGlow *= mix(0.7, 1.15, billow); // brighter in denser billow lobes
+  smokeBaseCol = mix(smokeBaseCol, smokeFireOrange, internalGlow * 0.75);
+  smokeBaseCol = mix(smokeBaseCol, smokeFireGold, internalGlow * internalGlow * 0.55);
+
+  // Sunlit / ambient-lit billow faces (pale grey-white highlights like ref)
+  float rimLit = pow(clamp(lit, 0.0, 1.2), 0.65) * heavyCol * mix(0.35, 1.0, billow);
+  smokeBaseCol = mix(smokeBaseCol, smokeBillowLit, rimLit * 0.5);
+  // Night mega-fire: outer shell stays darker charcoal where not firelit
+  smokeBaseCol = mix(smokeBaseCol, smokeSoot, megaCol * nightBoost * (1.0 - billow) * 0.4);
+
+  // Open flame only in denser hot cores (not the whole purple plume)
+  float fireIntensity = clamp((smokeOpacity - 0.55) * 3.5, 0.0, 1.0) * (1.0 - megaCol * 0.35);
   vec3 fireCol = hsv2rgb(vec3(fireIntensity * 0.008, 0.98, 5.0)) * 1.0;
-  vec3 smokeOrFireCol = mix(mix(smokeThinCol, smokeThickCol, smokeOpacity), fireCol, fireIntensity);
+  vec3 smokeOrFireCol = mix(smokeBaseCol, fireCol, fireIntensity * 0.55);
 
-  shadowLight += fireIntensity * 2.5;
+  // Soft volume lighting on billow tops
+  vec3 smokeLit = smokeOrFireCol * mix(0.72, 1.18, clamp(lit, 0.0, 1.0));
+  smokeOrFireCol = mix(smokeOrFireCol, smokeLit, 0.45);
 
-  float outOpacity = 1. - (1. - smokeOpacity) * (1. - cloudOpacity);
+  // Self-illumination when massive fire lights the smoke from within
+  shadowLight += fireIntensity * 2.0 + internalGlow * megaCol * 3.5;
+
+  // Composite: smoke over dust over cloud (product of transparencies)
+  float dustOverCloudOpacity = 1. - (1. - dustOpacity) * (1. - cloudOpacity);
+  vec3 dustOverCloud = dustOpacity > 1e-5
+    ? (dustCol * dustOpacity / max(dustOverCloudOpacity, 1e-4)
+       + cloudCol * cloudOpacity * (1. - dustOpacity) / max(dustOverCloudOpacity, 1e-4))
+    : cloudCol;
+  if (dustOpacity <= 1e-5)
+    dustOverCloudOpacity = cloudOpacity;
+
+  float outOpacity = 1. - (1. - smokeOpacity) * (1. - dustOverCloudOpacity);
   vec3 outColor = (smokeOrFireCol * smokeOpacity / max(outOpacity, 1e-4))
-    + (cloudCol * cloudOpacity * (1. - smokeOpacity) / max(outOpacity, 1e-4));
+    + (dustOverCloud * dustOverCloudOpacity * (1. - smokeOpacity) / max(outOpacity, 1e-4));
+
+  // Embers: brief star sparks that drift with wind. Caller sets nearFireEmberMask
+  // only at night and near fire (not lofted through the smoke plume).
+  if (nearFireEmberMask > 0.001) {
+    // Scroll star field so points appear to drift with local wind
+    vec2 drift = vec2(windVel.x, max(windVel.y, 0.0) * 0.35 + 0.004) * iterNum * 18.0;
+    float starScale = 2.35;
+    vec2 drifted = fragCoord - drift;
+    vec2 cell = floor(drifted * starScale);
+    vec2 local = fract(drifted * starScale) - 0.5;
+    float seed = fract(sin(dot(cell, vec2(127.1, 311.7))) * 43758.5453);
+    float waveSpeed = 0.62;
+    float phase = fract(iterNum * waveSpeed + seed * 7.31);
+    float flash = exp(-phase * 20.0) * step(phase, 0.16);
+    float spawn = step(0.80, fract(seed * 17.3 + floor(iterNum * waveSpeed + seed * 7.31) * 0.07));
+    float r2 = dot(local, local);
+    float core = exp(-r2 * 95.0);
+    float arms = exp(-abs(local.x) * 55.0) * exp(-abs(local.y) * 9.0)
+               + exp(-abs(local.y) * 55.0) * exp(-abs(local.x) * 9.0);
+    float star = max(core, arms * 0.65) * flash * spawn * nearFireEmberMask;
+    float starScale2 = 3.5;
+    vec2 drifted2 = fragCoord - drift * 1.15 - vec2(0.0, iterNum * 0.012);
+    vec2 cell2 = floor(drifted2 * starScale2 + 11.0);
+    vec2 local2 = fract(drifted2 * starScale2 + 11.0) - 0.5;
+    float seed2 = fract(sin(dot(cell2, vec2(74.7, 191.3))) * 23421.631);
+    float phase2 = fract(iterNum * 0.78 + seed2 * 5.17);
+    float flash2 = exp(-phase2 * 24.0) * step(phase2, 0.13);
+    float spawn2 = step(0.86, fract(seed2 * 9.1 + floor(iterNum * 0.78) * 0.13));
+    float core2 = exp(-dot(local2, local2) * 150.0);
+    float star2 = core2 * flash2 * spawn2 * nearFireEmberMask;
+    float starAmt = max(star, star2 * 0.85);
+    vec3 starCol = vec3(1.35, 0.95, 0.55);
+    vec3 starRim = vec3(1.15, 0.45, 0.08);
+    vec3 starRgb = mix(starRim, starCol, core * spawn * flash);
+    outColor += starRgb * starAmt * 1.7;
+    outOpacity = min(1.0, outOpacity + starAmt * 0.85);
+    shadowLight += starAmt * 2.8;
+  }
 
   return vec4(outColor, outOpacity);
 }
@@ -1137,7 +1236,18 @@ void main()
           ? smoothBilerpWallVis(baseTex, wallTex, airBnd)
           : texture(baseTex, airBnd * texelSize);
         float airRainSnow = map_rangeC(KtoC(potentialToRealT(airBaseSample[TEMPERATURE])), 0.0, 5.0, 0.0, 1.0);
-        vec4 airColor = computeCloudSmokeColor(airCloud, airPrecip, airWater[SMOKE], normalizedSunlightAt(airUV), airRainSnow);
+        // Match dust/cloud: Hermite/bilerp smoke so fire plumes are not blocky cells
+        float airSmoke = smoothClouds > 0.5
+          ? smoothBilerpWallVis(smokeTex, wallTex, airBnd).r
+          : ((farZoom || visualQuality < 0.45)
+            ? texture(smokeTex, airBnd * texelSize).r
+            : bilerpWallVis(smokeTex, wallTex, airBnd).r);
+        // Night-only star embers near fire at waterline; drift with local wind
+        float nearEmber = 0.0;
+        if (isAnyFireType(wall[TYPE]) && wall[VERT_DISTANCE] == 0)
+          nearEmber = clamp(airSmoke * 0.2, 0.0, 1.0) * nightFactor;
+        vec2 airWind = airBaseSample.xy;
+        vec4 airColor = computeCloudSmokeColor(airCloud, airPrecip, airWater[DUST], airSmoke, normalizedSunlightAt(airUV), airRainSnow, nearEmber, airWind);
         opacity = airColor.a;
         color = airColor.rgb;
         // Waterline air: cheap fill only — full SDF runs on true air fragments.
@@ -1201,7 +1311,21 @@ void main()
   } else { // air
 
     float rainSnowFactorAir = map_rangeC(KtoC(realTemp), 0.0, 5.0, 0.0, 1.0);
-    vec4 airColor = computeCloudSmokeColor(cloudwater, water[PRECIPITATION], water[SMOKE], lightIntensity, rainSnowFactorAir);
+    // Smooth smoke the same way as dust/cloud in waterTex (smoke lives in a separate texture)
+    float airSmokeAmt = smoothClouds > 0.5
+      ? smoothBilerpWallVis(smokeTex, wallTex, bndFragCoord).r
+      : ((farZoom || visualQuality < 0.45)
+        ? texture(smokeTex, bndFragCoord * texelSize).r
+        : bilerpWallVis(smokeTex, wallTex, bndFragCoord).r);
+    // Night-only star embers just above fire (cells 1–2); drift with wind, die quickly
+    float nearFireEmberMask = 0.0;
+    if (isAnyFireType(wall[TYPE]) && wall[VERT_DISTANCE] >= 1 && wall[VERT_DISTANCE] <= 2) {
+      float heightFall = wall[VERT_DISTANCE] == 1 ? 1.0 : 0.45;
+      float flameCore = clamp((airSmokeAmt - 0.25) * 0.4, 0.12, 1.0);
+      nearFireEmberMask = flameCore * heightFall * nightFactor;
+    }
+    vec2 airWind = base.xy;
+    vec4 airColor = computeCloudSmokeColor(cloudwater, water[PRECIPITATION], water[DUST], airSmokeAmt, lightIntensity, rainSnowFactorAir, nearFireEmberMask, airWind);
     opacity = airColor.a;
     color = airColor.rgb;
 

@@ -9,6 +9,7 @@ uniform sampler2D baseTex;
 uniform sampler2D waterTex;
 uniform isampler2D wallTex;
 uniform sampler2D colorScalesTex;
+uniform sampler2D smokeTex;
 
 uniform vec2 resolution;
 uniform vec2 texelSize;
@@ -52,7 +53,7 @@ void main()
     }
   } else { // fluid
 
-    float smokeDensity = water[SMOKE];
+    float smokeDensity = water[DUST] + bilerpWall(smokeTex, wallTex, fragCoord).r;
 
     int palletteIndex = int(map_range(smokeDensity, 0.0, 1.0, 0., 26.));
     palletteIndex = clamp(palletteIndex, 0, 26);

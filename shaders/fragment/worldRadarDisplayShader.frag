@@ -26,6 +26,7 @@ uniform sampler2D colorScalesTex;
 uniform sampler2D precipFeedbackTexture;
 uniform sampler2D precipDepositionTexture;
 uniform sampler2D radarAccumTexture;
+uniform sampler2D smokeTexture;
 
 uniform float blockSize;
 uniform float sensitivity;
@@ -146,7 +147,8 @@ ColumnStats scanColumn(vec2 snappedTC, int stepCount)
     vec2 pdep = texture(precipDepositionTexture, sampleTC).xy;
 
     float gridPrecip = wSample[PRECIPITATION];
-    float dust = wSample[SMOKE] * 0.15;
+    float aerosol = wSample[DUST] + texture(smokeTexture, sampleTC).r;
+    float dust = aerosol * 0.15;
     float mass = (gridPrecip + dust) * sensitivity;
     s.vil += gridPrecip * sensitivity;
 
@@ -157,7 +159,7 @@ ColumnStats scanColumn(vec2 snappedTC, int stepCount)
     float totalDep = rainDep + snowDep;
     float iceFrac = (totalDep > 0.0001) ? (snowDep / totalDep) : smoothstep(0.4, 0.9, yFrac) * clamp(gridPrecip * 8.0, 0.0, 1.0);
     vec2 cellPos = vec2(snappedTC.x * resolution.x, yFrac * resolution.y);
-    float cc = computeCorrelation(gridPrecip, dust, massScore, iceFrac, particleSize, wSample[SMOKE], cellPos);
+    float cc = computeCorrelation(gridPrecip, dust, massScore, iceFrac, particleSize, aerosol, cellPos);
     s.minCC = min(s.minCC, cc);
 
     if (gridPrecip + dust > 0.0003)
@@ -171,7 +173,7 @@ ColumnStats scanColumn(vec2 snappedTC, int stepCount)
       s.iceAtMax = iceFrac;
       s.zdrAtMax = clamp(particleSize * (1.0 - iceFrac) * 4.0 - particleSize * iceFrac * 1.5, -1.0, 5.0);
       s.windAtMax = base.xy;
-      s.smokeMax = wSample[SMOKE];
+      s.smokeMax = aerosol;
     }
   }
 
@@ -225,7 +227,7 @@ void main()
     if (wC[1] == 0)
       discard;
     vec4 wS = texture(waterTexture, cappiTC);
-    float mass = (wS[PRECIPITATION] + wS[SMOKE] * 0.15) * sensitivity;
+    float mass = (wS[PRECIPITATION] + (wS[DUST] + texture(smokeTexture, cappiTC).r) * 0.15) * sensitivity;
     float dBZ = computeDBZ(mass);
     if (dBZ < 1.0)
       discard;

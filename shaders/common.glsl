@@ -78,7 +78,8 @@ precision highp isampler2D;
 #define CLOUD 1         // cloud water                     >= 0
 #define PRECIPITATION 2 // precipitation in air            >= 0
 #define SOIL_MOISTURE 2 // active surface moisture in mm   >= 0
-#define SMOKE 3         // smoke/dust in air               >= 0 for smoke/dust
+#define DUST 3          // dust/smog in air                >= 0 (desert loft, urban, brush)
+#define SMOKE 3         // legacy alias → DUST channel; combustion smoke is separate smokeTex
 #define SNOW 3          // snow at surface in cm           0 to 40000
 #define SUSTAINED_MOISTURE 1 // long-term climate moisture at land surface only (reuses CLOUD channel)
 #define SALINITY 1           // salinity ppt on water & ice surface only (reuses CLOUD channel)
@@ -327,7 +328,48 @@ float sunLineOfSightVisibility(sampler2D waterTex, isampler2D wallTex, vec2 texC
     float thickCloud = max(cloudW - 5.0, 0.0);
     float cloudShadowWeight = pow(clamp(thickCloud / 14.0, 0.0, 1.0), 2.0);
     float cloudExtinction = cloudShadowWeight * cloudW * 0.008;
-    float extinction = min(cloudExtinction + w[PRECIPITATION] * 0.025 + w[SMOKE] * 0.004, 0.92);
+    // Dust (water ch3) only here — callers that have smokeTex should sum smoke at the sample site separately if needed.
+    float extinction = min(cloudExtinction + w[PRECIPITATION] * 0.025 + w[DUST] * 0.004, 0.92);
+    transmittance *= (1.0 - extinction);
+  }
+  return transmittance;
+}
+
+// Line-of-sight with dust + combustion smoke extinction (smokeTex R channel).
+float sunLineOfSightVisibilitySmoke(sampler2D waterTex, sampler2D smokeTex, isampler2D wallTex, vec2 texCoord, vec2 texelSize, float sunZenithAngle, float sunAzimuth)
+{
+  vec2 sunPos = sunScreenPositionForLight(sunZenithAngle, sunAzimuth);
+  vec2 toSun = sunPos - texCoord;
+  toSun.x *= texelSize.y / texelSize.x;
+  float dist = length(toSun);
+  if (dist < length(texelSize) * 0.25)
+    return 1.0;
+
+  vec2 stepUV = (toSun / dist) * texelSize;
+  float stepsNeeded = dist / max(length(stepUV), 1e-7);
+  int maxSteps = int(clamp(stepsNeeded, 8.0, 220.0));
+  float transmittance = 1.0;
+
+  for (int i = 1; i < 224; i++) {
+    if (i >= maxSteps)
+      break;
+    vec2 p = texCoord + stepUV * float(i);
+    if (p.y > 1.0)
+      return transmittance;
+    if (p.y < 0.0 || p.x < 0.0 || p.x > 1.0)
+      return transmittance;
+
+    if (texture(wallTex, p)[DISTANCE] == 0)
+      return 0.0;
+
+    vec4 w = texture(waterTex, p);
+    float smokeAmt = texture(smokeTex, p).r;
+    float cloudW = smoothCloudWaterAt(waterTex, p);
+    float thickCloud = max(cloudW - 5.0, 0.0);
+    float cloudShadowWeight = pow(clamp(thickCloud / 14.0, 0.0, 1.0), 2.0);
+    float cloudExtinction = cloudShadowWeight * cloudW * 0.008;
+    float aerosol = w[DUST] + smokeAmt;
+    float extinction = min(cloudExtinction + w[PRECIPITATION] * 0.025 + aerosol * 0.004, 0.92);
     transmittance *= (1.0 - extinction);
   }
   return transmittance;

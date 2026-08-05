@@ -16,6 +16,7 @@ uniform sampler2D waterTex;
 uniform isampler2D wallTex;
 uniform sampler2D lightTex;
 uniform sampler2D sunColumnTex;
+uniform sampler2D smokeTex;
 
 uniform vec2 resolution;
 uniform vec2 texelSize;
@@ -59,6 +60,8 @@ void main()
 
     float realTemp = potentialToRealT(texture(baseTex, texCoord)[TEMPERATURE]);
     vec4 water = texture(waterTex, texCoord);
+    float smokeAmt = texture(smokeTex, texCoord).r;
+    float aerosol = water[DUST] + smokeAmt;
     ivec4 wall = texture(wallTex, texCoord);
 
     // Sunset red peaks near dusk, then clears in deep night (no persistent red cloud light).
@@ -77,7 +80,7 @@ void main()
       if (fragCoord.y < resolution.y - 2.) {                                                                                   // prevent shadow bug above simulation area
         float reflection = min(pow(water[CLOUD] * 0.0010 + water[PRECIPITATION] * 0.00020, 0.5) * cellHeightCompensation, 1.); // 0.035 cloud + 0.35 precipitation
         reflection += 0.0002;                                                                                                  // clear air scattering
-        float absorbtion = min(water[SMOKE] * 0.020 * cellHeightCompensation, 1.);                                             // 0.025 dust/smoke
+        float absorbtion = min((water[DUST] * 0.020 + smokeAmt * 0.012) * cellHeightCompensation, 1.); // dense fire smoke blocks more sun
 
         float lightReflected = sunlight * reflection;
         float lightAbsorbed = sunlight * absorbtion;
@@ -165,12 +168,22 @@ void main()
         }
       }
 
-      float smokeOpacity = clamp(1. - (1. / (water[SMOKE] + 1.)), 0.0, 1.0);
-      float fireIntensity = clamp((smokeOpacity - 0.8) * 25., 0.0, 1.0);
-      vec3 fireCol = hsv2rgb(vec3(fireIntensity * 0.008, 0.98, 5.0)) * 1.0; // 1.0, 0.7, 0.0
+      // Mega-fire smoke glow — color ramp thresholds lowered to match thicker look
+      float smokeOpaqueRef = 5.5;
+      float smokeOpacity = clamp(smokeAmt / (smokeAmt + smokeOpaqueRef), 0.0, 1.0);
+      float megaFire = smoothstep(6.0, 22.0, smokeAmt);
+      float megaCol = smoothstep(1.2, 5.5, smokeAmt);
+      smokeOpacity = mix(smokeOpacity * 0.90, 1.0, megaFire);
+      float fireIntensity = clamp((smokeOpacity - 0.55) * 3.5, 0.0, 1.0) * (1.0 - megaCol * 0.35);
+      vec3 fireCol = hsv2rgb(vec3(fireIntensity * 0.008, 0.98, 5.0)) * 1.0;
       vec3 FinalFireCol = mix(vec3(0), fireCol, fireIntensity);
+      // Volume firelight for extreme density (orange sky/glow at night)
+      // (Do not use standardSunBrightness inside expressions — the #define ends with ';')
+      float nightBoost = 1.0 - clamp(sunlight * 0.0008, 0.0, 1.0);
+      FinalFireCol += vec3(1.1, 0.4, 0.05) * megaCol * (0.35 + 0.9 * nightBoost);
+      FinalFireCol += vec3(1.3, 0.7, 0.15) * megaCol * megaCol * 0.4;
 
-      reflectedLight.rgb += FinalFireCol * 0.1;
+      reflectedLight.rgb += FinalFireCol * mix(0.12, 0.35, megaCol);
 
       net_heating *= IR_rate;
 

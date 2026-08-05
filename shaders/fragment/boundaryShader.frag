@@ -19,6 +19,7 @@ uniform sampler2D lightTex;
 uniform sampler2D precipFeedbackTex;
 uniform sampler2D precipDepositionTex;
 uniform sampler2D sunColumnTex;
+uniform sampler2D smokeTex;
 
 uniform float dryLapse;
 uniform float evapHeat;
@@ -63,6 +64,7 @@ uniform float forestGrowthSpecies;
 layout(location = 0) out vec4 base;
 layout(location = 1) out vec4 water;
 layout(location = 2) out ivec4 wall;
+layout(location = 3) out float smoke;
 
 #include "common.glsl"
 
@@ -117,6 +119,7 @@ void main()
 {
   base = texture(baseTex, texCoord);
   water = texture(waterTex, texCoord);
+  smoke = texture(smokeTex, texCoord).r;
 
   vec4 precipFeedback = texture(precipFeedbackTex, texCoord);
 
@@ -168,18 +171,23 @@ void main()
     water[PRECIPITATION] = max(water[PRECIPITATION] * 0.997 - 0.00001 + precipFeedback[MASS] * 0.005, 0.0);
 
 
-    // rain removes smoke from air
-    water[SMOKE] /= 1. + max(-precipFeedback[VAPOR] * 0.1, 0.0) + precipFeedback[MASS] * 0.000; // rain formation in clouds removes smoke
-                                                                                                // quickly , falling rain slower
-    water[SMOKE] -= precipFeedback[MASS] * 0.0001;                                              // linearly to remove last little bit
+    // rain removes dust and smoke from air
+    float scrub = 1. + max(-precipFeedback[VAPOR] * 0.1, 0.0) + precipFeedback[MASS] * 0.000;
+    water[DUST] /= scrub; // rain formation in clouds removes dust quickly , falling rain slower
+    water[DUST] -= precipFeedback[MASS] * 0.0001; // linearly to remove last little bit
+    water[DUST] = max(water[DUST], 0.0);
 
-
-    water[SMOKE] -= max((water[SMOKE] - 4.0) * 0.01, 0.); // dissipate fire color to smoke
-
-    water[SMOKE] = max(water[SMOKE], 0.0);                // snow and smoke can't go below 0
-
-    if (water[SMOKE] > 4.0) {
-      water[SMOKE] -= water[PRECIPITATION] * 0.02; // falling precipitation extinguishes flames
+    // same scrubbing physics for combustion smoke
+    smoke /= scrub;
+    smoke -= precipFeedback[MASS] * 0.0001;
+    // Flame-to-smoke fade starts higher so mega-fire columns can get very dense
+    smoke -= max((smoke - 12.0) * 0.006, 0.);
+    // Gentle ambient fade — allow densities well above previous soft ceiling
+    smoke *= 0.9990;
+    smoke -= max(smoke - 8.0, 0.) * 0.004;
+    smoke = max(smoke, 0.0);
+    if (smoke > 4.0) {
+      smoke -= water[PRECIPITATION] * 0.02; // falling precipitation extinguishes flames
     }
 
     // GRAVITY
@@ -348,6 +356,10 @@ void main()
           surfaceDrag = 0.040;
         else if (wall[TYPE] == WALLTYPE_SUBURBAN)
           surfaceDrag = 0.012;
+        else if (isAnyFireType(wall[TYPE])) {
+          // Burning ground: light open-land drag so horizontal wind can cross fire
+          surfaceDrag = 0.0025;
+        }
         else if (isCustomBase(wall[TYPE])) {
           float gBio = grassBiomass(wall[VEGETATION]);
           float fBio = forestBiomass(wall[VEGETATION]);
@@ -398,16 +410,25 @@ void main()
       switch (wall[TYPE]) {
       case WALLTYPE_FIRE:
       case WALLTYPE_FIRE_FOREST2:
-        if (wall[VERT_DISTANCE] == 1) { // forest fire & one above surface
+        if (wall[VERT_DISTANCE] == 1) { // air cell immediately above a burning surface
           float sfcFlood = getFloodHeightMm(waterInSurface[TOTAL]);
-          float fireIntensity = 0.0;
+          // Active fire wall types keep heating forever (until flood extinguishes the ground fire).
+          // Fuel/moisture still scale smoke output; heat has a sustained floor so heat doesn't die with vegetation.
           if (sfcFlood < significantFloodMm) {
-            fireIntensity = calcFireIntensity(wall[VEGETATION], waterInSurface[SOIL_MOISTURE], water[PRECIPITATION]);
-            fireIntensity = max(fireIntensity, 0.);
+            float fuelIntensity = max(calcFireIntensity(wall[VEGETATION], waterInSurface[SOIL_MOISTURE], water[PRECIPITATION]), 0.);
+            const float sustainedFireHeat = 0.006;
+            float heatRate = max(fuelIntensity, sustainedFireHeat);
+            base[TEMPERATURE] += heatRate * 0.65;          // modest heat — less buoyant tower
+            // Smoke yield ramps with fuel; sustained floor builds density in large fires
+            smoke += max(fuelIntensity, sustainedFireHeat * 0.5) * 4.5;
+            // Cap still very high so mega-fire columns can reach pyrocumulus densities
+            smoke = min(smoke, 48.0);
+            water[TOTAL] += fuelIntensity * 0.50;          // moisture only while fuel burns
+            // Gentle updraft so extra smoke spreads more than it rockets upward
+            const float fireUpdraftCap = 0.045;
+            if (base[VY] < fireUpdraftCap)
+              base[VY] = min(base[VY] + heatRate * 1.0, fireUpdraftCap);
           }
-          base[TEMPERATURE] += fireIntensity;   // heat
-          water[SMOKE] += fireIntensity * 2.0;  // smoke
-          water[TOTAL] += fireIntensity * 0.50; // extra water from burning trees, both from water in the wood and from burning of hydrogen and hydrocarbons
         }
         // nobreak!
       case WALLTYPE_INDUSTRIAL:
@@ -421,8 +442,8 @@ void main()
             base.y += 0.05;
           }
 
-          else if (wall[VERT_DISTANCE] == 6 && texFragX == 29) { // smoke stack
-            water[SMOKE] += 0.01;
+          else if (wall[VERT_DISTANCE] == 6 && texFragX == 29) { // stack pollution (dust/smog look)
+            water[DUST] += 0.01;
             base[TEMPERATURE] += 0.02;
             base.xy *= 0.5;
           }
@@ -430,12 +451,12 @@ void main()
         // nobreak!
       case WALLTYPE_SUBURBAN:
         if (wall[TYPE] == WALLTYPE_SUBURBAN)
-          water[SMOKE] += 0.0000004;
+          water[DUST] += 0.0000004;
         // nobreak!
       case WALLTYPE_AMERICAN_SUBURBAN:
       case WALLTYPE_URBAN:
         if (isUrbanLike(wall[TYPE]))
-          water[SMOKE] += 0.000002; // Urban produces smog
+          water[DUST] += 0.000002; // Urban produces smog/dust
         // nobreak!
       case WALLTYPE_FOREST2:
       case WALLTYPE_LAND:
@@ -456,7 +477,7 @@ void main()
           base[TEMPERATURE] -= evaporation * evapHeat * 0.5;                                // evaporative cooling (half the real value, to prevent boring non convective conditions)
 
           if (wall[VEGETATION] < 10 && water[SOIL_MOISTURE] < 5.0) {                        // Dry desert area
-            water[SMOKE] = min(water[SMOKE] + (max(abs(base[VX]) - 0.12, 0.) * 0.15), 2.4); // Dust blowing up with wind
+            water[DUST] = min(water[DUST] + (max(abs(base[VX]) - 0.12, 0.) * 0.15), 2.4); // Dust blowing up with wind
           }
         }
         break;
@@ -517,18 +538,16 @@ void main()
       case WALLTYPE_FIRE_FOREST2:
         if (isAnyFireType(wall[TYPE])) {            // extra check to make sure it's not urban
           float floodExcessFire = getFloodHeightMm(water[TOTAL]);
-          // Significant standing floodwater extinguishes fire immediately
+          // Only significant standing floodwater extinguishes fire — fuel/moisture no longer end the burn
+          // so the surface keeps heating the air above indefinitely while it remains a fire type.
           if (floodExcessFire >= significantFloodMm) {
             wall[TYPE] = extinguishFireType(wall[TYPE]);
           } else {
             float fireIntensity = calcFireIntensity(wall[VEGETATION], water[SOIL_MOISTURE], waterX0Yp[PRECIPITATION]);
-
-            if (fireIntensity < minimalFireIntensity) { // fire goes out
-              wall[TYPE] = extinguishFireType(wall[TYPE]); // turn off fire
-            } else if (int(iterNum) % (int(10. / fireIntensity) + 1) == 0) {
-              wall[VEGETATION] -= 1;                    // reduce vegetation
-              if (wall[VEGETATION] < 10)
-                wall[TYPE] = extinguishFireType(wall[TYPE]); // turn off fire
+            // Consume fuel visually when available; bare ground stays on fire after fuel is gone
+            if (fireIntensity >= minimalFireIntensity && wall[VEGETATION] > 0
+                && int(iterNum) % (int(10. / fireIntensity) + 1) == 0) {
+              wall[VEGETATION] = max(wall[VEGETATION] - 1, 0);
             }
           }
         }
@@ -793,13 +812,55 @@ void main()
 
           // Fire cannot spread onto significantly flooded ground
           if (getFloodHeightMm(water[TOTAL]) < significantFloodMm
-              && subInterval % (int(water[SOIL_MOISTURE] * 0.1 + water[SNOW] * 0.5) + 10) == 0
               && wall[VEGETATION] >= minimalFireVegetation
-              && (isAnyFireType(wallXmY0[TYPE]) || isAnyFireType(wallXpY0[TYPE]) || texture(waterTex, texCoordX0Yp)[SMOKE] > 4.5)) {
-            if (wall[TYPE] == WALLTYPE_FOREST2)
-              wall[TYPE] = WALLTYPE_FIRE_FOREST2;
-            else if (!isAnyFireType(wall[TYPE]))
-              wall[TYPE] = WALLTYPE_FIRE;
+              && !isAnyFireType(wall[TYPE])) {
+            int moistureGate = int(water[SOIL_MOISTURE] * 0.1 + water[SNOW] * 0.5) + 10;
+            bool adjacentFire = isAnyFireType(wallXmY0[TYPE]) || isAnyFireType(wallXpY0[TYPE]);
+
+            // Contiguous front: left/right neighbor fire
+            if (adjacentFire && subInterval % moistureGate == 0) {
+              if (wall[TYPE] == WALLTYPE_FOREST2)
+                wall[TYPE] = WALLTYPE_FIRE_FOREST2;
+              else
+                wall[TYPE] = WALLTYPE_FIRE;
+            }
+            // Ember / spot fires: short-range wind-lofted smoke sampled upwind aloft
+            else if (subInterval % max(moistureGate / 2, 1) == 0) {
+              vec4 airAbove = texture(baseTex, texCoordX0Yp);
+              float windX = airAbove[VX];
+              float windMag = abs(windX);
+              float windSign = sign(windX);
+              if (windSign == 0.0)
+                windSign = 1.0;
+              // Short range only — just ahead of the front (1–4 cells)
+              float lookCells = clamp(windMag * 16.0, 1.0, 4.0);
+              float emberLoad = 0.0;
+              for (int h = 1; h <= 3; h++) {
+                vec2 emberUV = texCoord + vec2(-windSign * lookCells * texelSize.x, float(h) * texelSize.y);
+                emberUV.x = fract(emberUV.x); // wrap horizontally
+                emberUV.y = clamp(emberUV.y, 0.0, 1.0);
+                emberLoad = max(emberLoad, texture(smokeTex, emberUV).r);
+                vec2 emb2 = emberUV + vec2(-windSign * texelSize.x, 0.0);
+                emb2.x = fract(emb2.x);
+                emberLoad = max(emberLoad, texture(smokeTex, emb2).r);
+              }
+              // Concentrate near denser plume; still not only pure flame (>4.5)
+              bool inEmberBand = emberLoad > 0.25 && emberLoad < 8.0;
+              if (inEmberBand) {
+                float dryness = clamp(1.0 - water[SOIL_MOISTURE] * 0.02 - water[SNOW] * 0.05, 0.05, 1.0);
+                float windFactor = clamp(0.3 + windMag * 10.0, 0.3, 1.4);
+                // Higher chance at short range so spots form just downwind
+                float rangeFalloff = 1.15 - (lookCells - 1.0) * 0.12; // stronger at 1–2 cells
+                float chance = clamp(emberLoad * 0.14 * windFactor * dryness * rangeFalloff, 0.0, 0.55);
+                float roll = random2d(texCoord * resolution + vec2(iterNum * 0.0013, 17.7));
+                if (roll < chance) {
+                  if (wall[TYPE] == WALLTYPE_FOREST2)
+                    wall[TYPE] = WALLTYPE_FIRE_FOREST2;
+                  else
+                    wall[TYPE] = WALLTYPE_FIRE;
+                }
+              }
+            }
           }
           //}
         }
@@ -991,4 +1052,7 @@ void main()
       }
     }
   }
+
+  if (wall[DISTANCE] == 0)
+    smoke = 0.0;
 } // main

@@ -17,6 +17,7 @@ in vec2 texCoordXpYm; // right down
 uniform sampler2D baseTex;
 uniform sampler2D waterTex;
 uniform isampler2D wallTex;
+uniform sampler2D smokeTex;
 
 uniform vec4 userInputValues; // xpos    Ypos     intensity     Brush Size
 
@@ -51,6 +52,7 @@ uniform int brushOnlyMode; // 1 = copy fields + apply brush only (pause-edit; no
 layout(location = 0) out vec4 base;
 layout(location = 1) out vec4 water;
 layout(location = 2) out ivec4 wall;
+layout(location = 3) out float smoke;
 
 uniform vec2 resolution;
 
@@ -80,6 +82,7 @@ void main()
   if (brushOnlyMode != 0) {
     base = texture(baseTex, texCoord);
     water = texture(waterTex, texCoord);
+    smoke = texture(smokeTex, texCoord).r;
     if (wall[DISTANCE] != 0)
       realTemp = potentialToRealT(base[TEMPERATURE]);
   } else if (wall[DISTANCE] != 0) { // not wall
@@ -108,17 +111,11 @@ void main()
     base[PRESSURE] = bilerpWall(baseTex, wallTex, fragCoord - velAtP)[PRESSURE];
     base[TEMPERATURE] = bilerpWall(baseTex, wallTex, fragCoord - velAtP)[TEMPERATURE];
 
-    water.xyw = bilerpWall(waterTex, wallTex, fragCoord - velAtP).xyw; // centered
+    water.xyw = bilerpWall(waterTex, wallTex, fragCoord - velAtP).xyw; // centered (water.w = dust)
 
-                                                                       //   water.z = bilerpWall(waterTex, wallTex, fragCoord + vec2(0.0, +0.01)).z;
-    // // precipitation visualization
     water[PRECIPITATION] = bilerpWall(waterTex, wallTex, fragCoord - velAtP + vec2(0, 0.05))[PRECIPITATION]; // precipitation visualization advected with flow, and downward
 
-    // vec2 backTracedPos = fragCoord - velAtP; // advect / flow
-
-    // vec2 backTracedPos = texCoord; // no flow
-
-    // water.xy = bilerp(waterTex, backTracedPos).xy;
+    smoke = bilerpWall(smokeTex, wallTex, fragCoord - velAtP).r; // combustion smoke, same advection as dust
 
     realTemp = potentialToRealT(base[TEMPERATURE]);
 
@@ -203,6 +200,7 @@ void main()
     base = texture(baseTex, texCoord);     // pass trough
 
     water = texture(waterTex, texCoord);
+    smoke = 0.0;                             // smoke only lives in air
 
     if (isLandOrForest2(wall[TYPE])) { // land / deciduous forest land
       base[TEMPERATURE] = 1000.0;      // Set snow melting feedback to 0
@@ -307,9 +305,13 @@ void main()
       water[TOTAL] += cloudWaterChange;
       water[TOTAL] = max(water[TOTAL], 0.0);
 
-    } else if (userInputType == 3 && wall[DISTANCE] != 0) { // smoke, only apply if not wall
-      water[SMOKE] += userInputValues[BRUSH_INTENSITY];
-      water[SMOKE] = min(max(water[SMOKE], 0.0), 2.0);
+    } else if (userInputType == 3 && wall[DISTANCE] != 0) { // dust, only apply if not wall
+      water[DUST] += userInputValues[BRUSH_INTENSITY];
+      water[DUST] = min(max(water[DUST], 0.0), 2.0);
+
+    } else if (userInputType == 34 && wall[DISTANCE] != 0) { // combustion smoke brush
+      smoke += userInputValues[BRUSH_INTENSITY];
+      smoke = min(max(smoke, 0.0), 48.0);
 
     } else if (userInputType == 4) {                                                 // drag/move air
 
@@ -594,7 +596,8 @@ void main()
             water[TOTAL] = 0.0;
             water[CLOUD] = 0.0;
             water[PRECIPITATION] = 0.0;
-            water[SMOKE] = 0.0;
+            water[DUST] = 0.0;
+            smoke = 0.0;
           }
         }
       }
@@ -657,7 +660,7 @@ void main()
         base[PRESSURE] += 0.05;                                      // pressure wave
         base[TEMPERATURE] = CtoK(50.0);                              // heat
         water[TOTAL] += 1.;                                          // moisture
-        water[SMOKE] += 10.;                                         // smoke
+        smoke += 18.;                                                // combustion smoke (dense fireball)
       }
     }
   }

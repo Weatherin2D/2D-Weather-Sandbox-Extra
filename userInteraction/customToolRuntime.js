@@ -235,7 +235,8 @@
 
     addPass(1, effects.temperature);
     addPass(2, effects.vapor);
-    addPass(3, effects.smoke);
+    addPass(34, effects.smoke); // combustion smoke field
+    addPass(3, effects.dust);   // dust/smog field
     addPass(23, effects.charge);
     addPass(20, effects.soilMoisture);
     addPass(21, effects.snow);
