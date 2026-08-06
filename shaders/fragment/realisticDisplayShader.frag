@@ -965,18 +965,25 @@ void applyAirLightning(vec2 uv, float cloudwater, float precip, float cloudDensi
 
   float currentLightningIntensity = lightningIntensityOverTime(lightningTime, lightningPos, lightningData[INTENSITY]);
 
-  // Cheap cloud fill always (also for pixels outside bolt AABB).
+  // Cloud/precip-local fill only — never light empty air (that recolors the whole sky/sim).
   {
-    vec2 ldist = vec2((lightningPos.x - uv.x) * aspectRatios[0], lightningPos.y * 0.5 - uv.y);
-    float ldistSq = dot(ldist, ldist);
-    float lOnLight = 0.0006 / (ldistSq + 0.008);
-    lOnLight *= currentLightningIntensity * lightningCloudFill;
-    // Soft-clip first, then apply look sliders (same reason as bolt tonemap).
-    float ltLook = max(ltBrightness, 0.02) * max(ltContrast, 0.02);
-    float ltGlowLook = 0.35 + 0.95 * max(ltGlowStrength, 0.0);
-    // Do not dump into onLight — that washes sunset/sunrise cloud colour to white/blue.
-    lightningFillLight += softClipFlash(tintLightningVolume(getLightningColor(lightningStartIterNum) * lOnLight, cloudBrightTint))
-      * ltLook * ltGlowLook;
+    float media = max(cloudDensity, 0.0) + max(precip, 0.0) * 12.0;
+    // Strong reject of clear air / thin haze so flash stays inside the storm body.
+    float mediaMask = clamp(1.0 - 1.0 / (1.0 + media * 0.35), 0.0, 1.0);
+    mediaMask *= mediaMask;
+    if (mediaMask > 0.01) {
+      vec2 ldist = vec2((lightningPos.x - uv.x) * aspectRatios[0], lightningPos.y * 0.5 - uv.y);
+      float ldistSq = dot(ldist, ldist);
+      // Tighter falloff than a domain-wide wash.
+      float lOnLight = 0.00022 / (ldistSq + 0.012);
+      lOnLight *= currentLightningIntensity * lightningCloudFill * mediaMask;
+      // Fill uses muted look sliders (bolts still get full post-tonemap look).
+      float fillLook = mix(1.0, max(ltBrightness, 0.02) * max(ltContrast, 0.02), 0.35);
+      float fillGlow = mix(1.0, 0.35 + 0.95 * max(ltGlowStrength, 0.0), 0.28);
+      lightningFillLight += softClipFlash(
+          tintLightningVolume(getLightningColor(lightningStartIterNum) * lOnLight, cloudBrightTint))
+        * fillLook * fillGlow * 0.5;
+    }
   }
 
   if (!pathDrawBolts || ltDrawBolts == 0)
@@ -1617,14 +1624,20 @@ void main()
 
   finalLight += sunTint * shadowLight + onLight;
 
-  // Lightning fill: brighten clouds without replacing sunset/sunrise chromaticity.
-  // Day/golden-hour → re-tint flash luminance with sun colour; deep night keeps bolt chroma.
+  // Lightning fill: soft in-cloud lift only — never dominate scene chroma (dust/sky wash).
   {
     float flashLum = max(dot(lightningFillLight, vec3(0.2126, 0.7152, 0.0722)), 0.0);
-    float sunLum = max(dot(sunTint, vec3(0.2126, 0.7152, 0.0722)), 0.05);
-    vec3 sunChroma = sunTint / sunLum;
-    float preserveSunChroma = 1.0 - deepNight;
-    finalLight += mix(lightningFillLight, sunChroma * flashLum, preserveSunChroma);
+    if (flashLum > 1e-6) {
+      float baseLum = max(dot(finalLight, vec3(0.2126, 0.7152, 0.0722)), 0.015);
+      // Cap fill so existing lighting (incl. dust/cloud albedo under sun) keeps its colour.
+      flashLum = min(flashLum, baseLum * 0.45 + 0.03);
+      float sunLum = max(dot(sunTint, vec3(0.2126, 0.7152, 0.0722)), 0.05);
+      vec3 sunChroma = sunTint / sunLum;
+      // Prefer neutral white over bolt palette — blue flash recolored brown dust globally.
+      float preserveSunChroma = (1.0 - deepNight) * 0.75;
+      vec3 fillChroma = mix(vec3(1.0), sunChroma, preserveSunChroma);
+      finalLight += fillChroma * flashLum;
+    }
   }
 
   // June 8 flash spill compositing (harmony-scaled earlier)
@@ -1638,13 +1651,17 @@ void main()
   opacity += min(length(emittedLight) * 0.1, 0.2);
   opacity = clamp(opacity, 0.0, 1.0);
   vec3 litBase = max(color * finalLight, 0.);
-  float emitCoupling = mix(1.0, lightningBloomCoupling, 0.65);
-  vec3 safeEmitted = (emittedLight * emitCoupling) / (vec3(1.0) + emittedLight * (0.2 / max(flashSoftClip, 0.05)));
+  float emitCoupling = mix(1.0, lightningBloomCoupling, 0.45);
+  vec3 safeEmitted = (emittedLight * emitCoupling) / (vec3(1.0) + emittedLight * (0.35 / max(flashSoftClip, 0.05)));
   // Brightness / Contrast / Glow must run AFTER tonemap — HDR crush hid slider changes.
   float ltLook = max(ltBrightness, 0.02) * max(ltContrast, 0.02);
   float ltGlowLook = 0.35 + 0.95 * max(ltGlowStrength, 0.0);
   safeEmitted *= ltLook * ltGlowLook;
-  // Additive bolts only — never replace lit cloud colour with flash (was washing sunset tint).
+  // Soft-cap bolt HDR so bloom doesn't lift the whole frame's colour during strikes.
+  float boltHdr = max(dot(safeEmitted, vec3(0.2126, 0.7152, 0.0722)), 0.0);
+  if (boltHdr > 8.0)
+    safeEmitted *= 8.0 / boltHdr;
+  // Additive bolts only — never replace lit cloud/dust colour with flash.
   vec3 finalColor = litBase + safeEmitted;
 
   // Near-surface fog / haze in moist cool air (off when fogHazeStrength == 0)
