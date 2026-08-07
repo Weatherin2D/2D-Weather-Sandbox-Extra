@@ -833,7 +833,9 @@ vec4 computeCloudSmokeColor(float cloudwater, float precip, float dustAmt, float
   // Dust: reddish haboob / red-sand look (thin: light orange-red, thick: dark red-brown)
   const vec3 dustThinCol = vec3(0.88, 0.38, 0.22);
   const vec3 dustThickCol = vec3(0.28, 0.06, 0.03);
-  float dustOpacity = clamp(1. - (1. / (dustAmt + 1.)), 0.0, 1.0);
+  // Ignore tiny residual channel noise so flashes cannot tint the whole sky brown.
+  float dustAmtVis = max(dustAmt - 0.04, 0.0);
+  float dustOpacity = clamp(1. - (1. / (dustAmtVis + 1.)), 0.0, 1.0);
   vec3 dustCol = mix(dustThinCol, dustThickCol, dustOpacity);
 
   // Combustion smoke — thin plumes stay translucent tan; mega-fire densities become

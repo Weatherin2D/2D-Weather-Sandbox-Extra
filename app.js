@@ -23214,7 +23214,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   gl.uniform1i(gl.getUniformLocation(realisticDisplayProgram, 'lightningCloudFlashTex'), 12);
   gl.uniform1i(gl.getUniformLocation(realisticDisplayProgram, 'lightningSurfFlashTex'), 13);
   gl.uniform1i(gl.getUniformLocation(realisticDisplayProgram, 'sunColumnTex'), 14);
-  // Unit 10 (not 16): stay within typical WebGL2 TEXTURE0–15 so smoke never samples unbound slots.
+  // Unit 10 is free in realistic display (0–15 only; unit 16 is invalid on most GPUs).
   gl.uniform1i(gl.getUniformLocation(realisticDisplayProgram, 'smokeTex'), 10);
   gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'dryLapse'), dryLapse);
   gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'cellHeight'), cellHeight);
@@ -24482,6 +24482,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     lightningDataUploadBuf[1] = 0;
     lightningDataUploadBuf[2] = 0;
     lightningDataUploadBuf[3] = 0;
+    gl.activeTexture(gl.TEXTURE8);
     gl.bindTexture(gl.TEXTURE_2D, lightningDataTexture);
     gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 1, 1, gl.RGBA, gl.FLOAT, lightningDataUploadBuf);
   }
@@ -24494,6 +24495,9 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     lightningDataUploadBuf[1] = normY;
     lightningDataUploadBuf[2] = startIter;
     lightningDataUploadBuf[3] = intensity;
+    // Always bind on the lightningData unit so we never overwrite smoke / other slots
+    // still selected as the active texture (was clobbering smoke → full-scene brown flash).
+    gl.activeTexture(gl.TEXTURE8);
     gl.bindTexture(gl.TEXTURE_2D, lightningDataTexture);
     gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 1, 1, gl.RGBA, gl.FLOAT, lightningDataUploadBuf);
   }
@@ -28935,8 +28939,6 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         getLightningFlashIllumTexture(lightningSurfFlashTex, lightningSurfFlashBlurFBO));
       gl.activeTexture(gl.TEXTURE14);
       gl.bindTexture(gl.TEXTURE_2D, sunColumnTexture);
-      gl.activeTexture(gl.TEXTURE10);
-      gl.bindTexture(gl.TEXTURE_2D, smokeTexture_1);
 
       gl.useProgram(realisticDisplayProgram);
       gl.uniform2f(uloc_real_aspectRatios, sim_aspect, canvas_aspect);
@@ -28960,7 +28962,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       if (uloc_real_smoothClouds)
         gl.uniform1f(uloc_real_smoothClouds, guiControls.smoothClouds !== false ? 1.0 : 0.0);
 
-        // Enhanced SDF bolts read lightningDataTex; keep forced strikes uploaded.
+      // Upload strike data first (activates unit 8), then bind every sampler cleanly.
       syncProceduralStrikeToLightningDataTexture();
       gl.activeTexture(gl.TEXTURE7);
       gl.bindTexture(gl.TEXTURE_2D, defaultLightningTexture);
@@ -28968,6 +28970,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       gl.bindTexture(gl.TEXTURE_2D, lightningDataTexture);
       gl.activeTexture(gl.TEXTURE9);
       gl.bindTexture(gl.TEXTURE_2D, ambientLightFBOs[0].texture);
+      gl.activeTexture(gl.TEXTURE10);
+      gl.bindTexture(gl.TEXTURE_2D, smokeTexture_1);
       gl.activeTexture(gl.TEXTURE15);
       gl.bindTexture(gl.TEXTURE_2D, customSurfaceAtlas);
 
