@@ -604,7 +604,7 @@ const guiControls_default = {
   bloomStrength : 1.0,
   greenHueStartThreshold : 0.8,
   greenHueEndThreshold : 1.8,
-  greenHueStrength : 0.8,
+  greenHueStrength : 0.45,
   enhancedLooks : false,
   timeOfDay : 12.0,
   latitude : 45.0,
@@ -11882,6 +11882,27 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         gl.uniform1f(gl.getUniformLocation(postProcessingProgram, 'contrast'), guiControls.contrast);
       })
       .name('Contrast');
+    displayAppearance.add(guiControls, 'greenHueStartThreshold', 0.2, 3.0, 0.05)
+      .onChange(function() {
+        if (!realisticDisplayProgram) return;
+        gl.useProgram(realisticDisplayProgram);
+        gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'greenHueStartThreshold'), guiControls.greenHueStartThreshold);
+      })
+      .name('Core Hue Start (intense)');
+    displayAppearance.add(guiControls, 'greenHueEndThreshold', 0.5, 4.0, 0.05)
+      .onChange(function() {
+        if (!realisticDisplayProgram) return;
+        gl.useProgram(realisticDisplayProgram);
+        gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'greenHueEndThreshold'), guiControls.greenHueEndThreshold);
+      })
+      .name('Core Hue Full (extreme)');
+    displayAppearance.add(guiControls, 'greenHueStrength', 0.0, 2.0, 0.05)
+      .onChange(function() {
+        if (!realisticDisplayProgram) return;
+        gl.useProgram(realisticDisplayProgram);
+        gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'greenHueStrength'), guiControls.greenHueStrength);
+      })
+      .name('Core Hue / Glow');
     displayAppearance.add(guiControls, 'showDrops').name('Show Droplets').listen();
     displayAppearance.add(guiControls, 'enableRainbows').name('Rainbows').listen();
     displayAppearance.add(guiControls, 'smoothClouds').name('Smooth Clouds').listen();
@@ -23207,6 +23228,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   gl.uniform1i(gl.getUniformLocation(realisticDisplayProgram, 'surfaceTextureMap'), 5);
   gl.uniform1i(gl.getUniformLocation(realisticDisplayProgram, 'customSurfaceAtlas'), 15);
   gl.uniform1i(gl.getUniformLocation(realisticDisplayProgram, 'curlTex'), 6);
+  gl.uniform1i(gl.getUniformLocation(realisticDisplayProgram, 'dropletSizeTex'), 6);
   gl.uniform1i(gl.getUniformLocation(realisticDisplayProgram, 'lightningTex'), 7);
   gl.uniform1i(gl.getUniformLocation(realisticDisplayProgram, 'lightningDataTex'), 8);
   gl.uniform1i(gl.getUniformLocation(realisticDisplayProgram, 'ambientLightTex'), 9);
@@ -23224,6 +23246,9 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     guiControls.floodWaterOpacity != null ? guiControls.floodWaterOpacity
       : (guiControls.floodVizStrength != null ? guiControls.floodVizStrength : 0.75));
   gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'fogHazeStrength'), guiControls.fogHazeStrength != null ? guiControls.fogHazeStrength : 0.0);
+  gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'greenHueStartThreshold'), guiControls.greenHueStartThreshold != null ? guiControls.greenHueStartThreshold : 0.8);
+  gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'greenHueEndThreshold'), guiControls.greenHueEndThreshold != null ? guiControls.greenHueEndThreshold : 1.8);
+  gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'greenHueStrength'), guiControls.greenHueStrength != null ? guiControls.greenHueStrength : 0.45);
   uploadCloudsRainUniforms();
 
   if (lightningIllumProgram) {
@@ -23297,6 +23322,9 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'smoothClouds'), guiControls.smoothClouds !== false ? 1.0 : 0.0);
         gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'minShadowLight'), guiControls.minShadowLight);
         gl.uniform1i(gl.getUniformLocation(realisticDisplayProgram, 'enableRainbows'), guiControls.enableRainbows !== false ? 1 : 0);
+        gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'greenHueStartThreshold'), guiControls.greenHueStartThreshold != null ? guiControls.greenHueStartThreshold : 0.8);
+        gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'greenHueEndThreshold'), guiControls.greenHueEndThreshold != null ? guiControls.greenHueEndThreshold : 1.8);
+        gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'greenHueStrength'), guiControls.greenHueStrength != null ? guiControls.greenHueStrength : 0.45);
       }
       if (skyBackgroundDisplayProgram) {
         gl.useProgram(skyBackgroundDisplayProgram);
@@ -28752,7 +28780,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       airplane.display();
     }
 
-    if (guiControls.enablePrecipitation && isDropletSizeDisplayMode(guiControls.displayMode))
+    if (guiControls.enablePrecipitation && (guiControls.displayMode == 'DISP_REAL'
+        || isDropletSizeDisplayMode(guiControls.displayMode)))
       updateDropletSizeTexture();
 
     // render to canvas
@@ -28867,7 +28896,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       gl.activeTexture(gl.TEXTURE5);
       gl.bindTexture(gl.TEXTURE_2D, surfaceTextureMap);
       gl.activeTexture(gl.TEXTURE6);
-      gl.bindTexture(gl.TEXTURE_2D, curlTexture);
+      gl.bindTexture(gl.TEXTURE_2D, dropletSizeTexture);
       gl.activeTexture(gl.TEXTURE7);
       gl.bindTexture(gl.TEXTURE_2D, precipitationFeedbackTexture);
 
@@ -28964,6 +28993,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
 
       // Upload strike data first (activates unit 8), then bind every sampler cleanly.
       syncProceduralStrikeToLightningDataTexture();
+      gl.activeTexture(gl.TEXTURE6);
+      gl.bindTexture(gl.TEXTURE_2D, dropletSizeTexture);
       gl.activeTexture(gl.TEXTURE7);
       gl.bindTexture(gl.TEXTURE_2D, defaultLightningTexture);
       gl.activeTexture(gl.TEXTURE8);
