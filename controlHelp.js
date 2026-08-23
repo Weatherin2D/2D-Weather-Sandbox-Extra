@@ -236,6 +236,7 @@ const ControlHelp = (function() {
     evapHeat: 'Cooling of the surface when evaporation occurs.',
     meltingHeat: 'Energy absorbed when snow or ice melts.',
     condensationRate: 'How quickly excess vapor condenses into cloud water.',
+    cloudEvaporationRate: 'How quickly cloud water evaporates when the air is undersaturated. Lower = softer cloud edges.',
     waterWeight: 'Weight of cloud water on dynamics — higher values make clouds sink more.',
     aboveZeroThreshold: 'Cloud water needed to spawn rain above 0°C.',
     subZeroThreshold: 'Cloud water needed to spawn snow below 0°C.',
@@ -566,6 +567,7 @@ const ControlHelp = (function() {
     '↓ Import': 'Load scale colors from the JSON text area.',
     '⎘ Copy to Clipboard': 'Copy the active scale definition to the clipboard.',
     'Interpolate stops': 'Smoothly blend colors between stops instead of hard steps.',
+    'Smooth this view': 'Blend colors continuously between stops for this scale, like Relative Humidity. Unchecked keeps hard color bands.',
   };
 
   const KEYBIND_HELP = {
@@ -595,7 +597,7 @@ const ControlHelp = (function() {
     },
     '#colorScalePanel': {
       title: 'Color Scale Editor',
-      body: 'Edit the color ramps used by display modes and overlays. Select a scale tab, adjust stops, and optionally interpolate smoothly between them.',
+      body: 'Edit the color ramps used by display modes and overlays. Select a scale tab, adjust stops, and use Smooth this view to interpolate like Relative Humidity.',
     },
     '#keybindPanel': {
       title: 'Keybind Editor',
@@ -718,7 +720,7 @@ const ControlHelp = (function() {
       if (body) attachElement(btn, label, body);
     });
     const interp = document.querySelector('#colorScalePanel .cse-opt-lbl');
-    if (interp) attachElement(interp, 'Interpolate stops', COLOR_SCALE_ACTION_HELP['Interpolate stops']);
+    if (interp) attachElement(interp, 'Smooth this view', COLOR_SCALE_ACTION_HELP['Smooth this view']);
   }
 
   function attachKeybindEditor() {

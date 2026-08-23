@@ -17,6 +17,7 @@ uniform vec2 texelSize;
 uniform float dryLapse;
 
 uniform float displayVectorField;
+uniform int colorScaleInterpolate;
 
 uniform vec3 view;   // Xpos  Ypos    Zoom
 uniform vec4 cursor; // xpos   Ypos  Size   type
@@ -55,9 +56,8 @@ void main()
 
     float smokeDensity = water[DUST] + bilerpWall(smokeTex, wallTex, fragCoord).r;
 
-    int palletteIndex = int(map_range(smokeDensity, 0.0, 1.0, 0., 26.));
-    palletteIndex = clamp(palletteIndex, 0, 26);
-    fragmentColor = texelFetch(colorScalesTex, ivec2(1, palletteIndex), 0);
+    float t = clamp(map_range(smokeDensity, 0.0, 1.0, 0.0, 1.0), 0.0, 1.0);
+    fragmentColor = sampleColorScale(colorScalesTex, 1, t, 27, colorScaleInterpolate);
 
     drawVectorField(base.xy, displayVectorField);
   }

@@ -16,6 +16,7 @@ uniform float dryLapse;
 uniform float surfacePressure;
 
 uniform float displayVectorField;
+uniform int colorScaleInterpolate;
 
 uniform vec3 view;   // Xpos  Ypos    Zoom
 uniform vec4 cursor; // xpos   Ypos  Size   type
@@ -55,9 +56,8 @@ void main()
     }
   } else { // fluid
 
-    int palletteIndex = int(map_range(realTempC, -71.0, 59.0, 0., 130.));
-    palletteIndex = clamp(palletteIndex, 0, 130);
-    fragmentColor = texelFetch(colorScalesTex, ivec2(0, palletteIndex), 0);
+    float t = clamp(map_range(realTempC, -71.0, 59.0, 0.0, 1.0), 0.0, 1.0);
+    fragmentColor = sampleColorScale(colorScalesTex, 0, t, 131, colorScaleInterpolate);
 
     // Keep the temperature display neutral so pressure-driven changes do not
     // introduce an artificial red hue over time.

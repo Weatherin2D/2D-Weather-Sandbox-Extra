@@ -17,6 +17,10 @@ uniform float dryLapse;
 
 uniform int colorScaleColumn;
 uniform int colorScaleCloudColumn;
+uniform int colorScaleStops;
+uniform int colorScaleCloudStops;
+uniform int colorScaleInterpolate;
+uniform int colorScaleCloudInterpolate;
 
 uniform float colorScaleRhMin;
 uniform float colorScaleRhMax;
@@ -74,17 +78,13 @@ void main()
       float lookupRh = rhPct + colorScaleRhOffset;
       float rhRange = max(colorScaleRhMax - colorScaleRhMin, 0.001);
       float v = clamp((lookupRh - colorScaleRhMin) / rhRange, 0.0, 1.0);
-      ivec2 scaleSize = textureSize(colorScalesTex, 0);
-      float u = (float(colorScaleColumn) + 0.5) / float(scaleSize.x);
-      fragmentColor = texture(colorScalesTex, vec2(u, v));
+      fragmentColor = sampleColorScale(colorScalesTex, colorScaleColumn, v, colorScaleStops, colorScaleInterpolate);
     } else {
       float cloudDens = clamp(water[CLOUD], 0.0, 10.0);
       float lookupCloud = cloudDens + colorScaleCloudOffset;
       float cloudRange = max(colorScaleCloudMax - colorScaleCloudMin, 0.001);
       float v = clamp((lookupCloud - colorScaleCloudMin) / cloudRange, 0.0, 1.0);
-      ivec2 scaleSize = textureSize(colorScalesTex, 0);
-      float u = (float(colorScaleCloudColumn) + 0.5) / float(scaleSize.x);
-      fragmentColor = texture(colorScalesTex, vec2(u, v));
+      fragmentColor = sampleColorScale(colorScalesTex, colorScaleCloudColumn, v, colorScaleCloudStops, colorScaleCloudInterpolate);
     }
 
     drawVectorField(base.xy, displayVectorField);

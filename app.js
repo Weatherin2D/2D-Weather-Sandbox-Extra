@@ -582,7 +582,8 @@ const guiControls_default = {
   evapHeat : 2.90,          //  Real: 2260 J/g
   meltingHeat : 0.43,       //  Real:  334 J/g
   condensationRate : 0.0050,
-  waterWeight : 0.25,       // 0.50
+  cloudEvaporationRate : 0.08,
+  waterWeight : 0.18,       // 0.25 / was 0.50 — lighter loading so updrafts sustain
   inactiveDroplets : 0,
   aboveZeroThreshold : 1.0, // PRECIPITATION
   subZeroThreshold : 0.005, // 0.01
@@ -605,6 +606,9 @@ const guiControls_default = {
   greenHueStartThreshold : 0.8,
   greenHueEndThreshold : 1.8,
   greenHueStrength : 0.45,
+  greenHueBrightness : 1.0,
+  greenHueSaturation : 1.0,
+  greenHueHue : 0.0,
   enhancedLooks : false,
   timeOfDay : 12.0,
   latitude : 45.0,
@@ -11111,6 +11115,8 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     gl.uniform1f(gl.getUniformLocation(advectionProgram, 'meltingHeat'), guiControls.meltingHeat);
     gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'meltingHeat'), guiControls.meltingHeat);
     gl.uniform1f(gl.getUniformLocation(advectionProgram, 'condensationRate'), guiControls.condensationRate);
+    gl.uniform1f(gl.getUniformLocation(advectionProgram, 'cloudEvaporationRate'),
+      guiControls.cloudEvaporationRate != null ? guiControls.cloudEvaporationRate : 0.08);
     gl.uniform1f(gl.getUniformLocation(advectionProgram, 'globalDrying'), guiControls.globalDrying);
     gl.uniform1f(gl.getUniformLocation(advectionProgram, 'globalHeating'), guiControls.globalHeating);
     gl.uniform1f(gl.getUniformLocation(advectionProgram, 'soundingForcing'), guiControls.soundingForcing);
@@ -11679,6 +11685,13 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       })
       .listen()
       .name('Condensation Rate');
+    water_folder.add(guiControls, 'cloudEvaporationRate', 0.001, 0.40, 0.001)
+      .onChange(function() {
+        gl.useProgram(advectionProgram);
+        gl.uniform1f(gl.getUniformLocation(advectionProgram, 'cloudEvaporationRate'), guiControls.cloudEvaporationRate);
+      })
+      .listen()
+      .name('Cloud Evaporation Rate');
     water_folder.add(guiControls, 'waterWeight', 0.0, 2.0, 0.01)
       .onChange(function() {
         gl.useProgram(boundaryProgram);
@@ -11903,6 +11916,27 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'greenHueStrength'), guiControls.greenHueStrength);
       })
       .name('Core Hue / Glow');
+    displayAppearance.add(guiControls, 'greenHueBrightness', 0.1, 3.0, 0.05)
+      .onChange(function() {
+        if (!realisticDisplayProgram) return;
+        gl.useProgram(realisticDisplayProgram);
+        gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'greenHueBrightness'), guiControls.greenHueBrightness);
+      })
+      .name('Core Hue Brightness');
+    displayAppearance.add(guiControls, 'greenHueSaturation', 0.0, 2.0, 0.05)
+      .onChange(function() {
+        if (!realisticDisplayProgram) return;
+        gl.useProgram(realisticDisplayProgram);
+        gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'greenHueSaturation'), guiControls.greenHueSaturation);
+      })
+      .name('Core Hue Saturation');
+    displayAppearance.add(guiControls, 'greenHueHue', -1.0, 1.0, 0.05)
+      .onChange(function() {
+        if (!realisticDisplayProgram) return;
+        gl.useProgram(realisticDisplayProgram);
+        gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'greenHueHue'), guiControls.greenHueHue);
+      })
+      .name('Core Hue Shift');
     displayAppearance.add(guiControls, 'showDrops').name('Show Droplets').listen();
     displayAppearance.add(guiControls, 'enableRainbows').name('Rainbows').listen();
     displayAppearance.add(guiControls, 'smoothClouds').name('Smooth Clouds').listen();
@@ -20862,6 +20896,21 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     { id: 'scp',               name: 'SCP',                col:72, stops: 33, interpolate: false },
   ];
 
+  function getColorScaleCfg(id) {
+    return COLOR_SCALE_CONFIGS.find(c => c.id === id);
+  }
+  function getColorScaleCfgByCol(col) {
+    return COLOR_SCALE_CONFIGS.find(c => c.col === col);
+  }
+  function colorScaleSmoothFlag(id) {
+    const cfg = getColorScaleCfg(id);
+    return (cfg && cfg.interpolate) ? 1 : 0;
+  }
+  function colorScaleSmoothFlagByCol(col) {
+    const cfg = getColorScaleCfgByCol(col);
+    return (cfg && cfg.interpolate) ? 1 : 0;
+  }
+
   const DEFAULT_IR_PALETTE = [
     [255,178,255],[255,128,255],[255, 77,255],[204,  0,204],[166,  0,153],
     [128,  0,128],[ 89,  0,153],[  0,  0,178],[  0,  0,255],[  0, 77,255],
@@ -21515,10 +21564,10 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     });
     gl.bindTexture(gl.TEXTURE_2D, colorScalesTexture);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, offC);
-    // Use LINEAR filtering for scales with interpolation enabled, NEAREST otherwise
-    const anyInterpolate = COLOR_SCALE_CONFIGS.some(cfg => cfg.interpolate);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, anyInterpolate ? gl.LINEAR : gl.NEAREST);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, anyInterpolate ? gl.LINEAR : gl.NEAREST);
+    // LINEAR so smooth views can texture() the baked ramp. Discrete views use
+    // texelFetch, which ignores the filter.
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
   }
@@ -21528,6 +21577,20 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     if (!stops || !stops.length) return [10, 10, 20];
     const range = maxVal - minVal || 1;
     const normalized = Math.max(0, Math.min(1, (value - minVal) / range));
+    const cfg = getColorScaleCfg(scaleId);
+    if (cfg && cfg.interpolate && stops.length > 1) {
+      const f = normalized * (stops.length - 1);
+      const i0 = Math.max(0, Math.min(stops.length - 1, Math.floor(f)));
+      const i1 = Math.min(stops.length - 1, i0 + 1);
+      const t = f - i0;
+      const c0 = stops[i0];
+      const c1 = stops[i1];
+      return [
+        Math.round(c0[0] + t * (c1[0] - c0[0])),
+        Math.round(c0[1] + t * (c1[1] - c0[1])),
+        Math.round(c0[2] + t * (c1[2] - c0[2])),
+      ];
+    }
     const idx = Math.round(normalized * (stops.length - 1));
     return stops[idx];
   };
@@ -21556,6 +21619,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         font-weight:600;transition:all 0.15s;}
       .cse-tab:hover{background:#1e1e38;color:#aaa;border-color:#3a3a60;}
       .cse-tab.active{background:#1e3080;color:#a0c0ff;border-color:#3050c0;}
+      .cse-tab.smooth{box-shadow:inset 0 -2px 0 #4a90e2;}
       .cse-grad{height:32px;border-radius:6px;margin-bottom:12px;border:1px solid #252540;}
       .cse-stops{display:flex;flex-direction:column;gap:2px;margin-bottom:12px;
         max-height:240px;overflow-y:auto;
@@ -21651,8 +21715,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
           <button class="cse-offset-btn" id="cse-add50">+50</button>
         </div>
         <div class="cse-opt-row">
-          <label class="cse-opt-lbl">
-            <input type="checkbox" id="cse-interpolate"> Smooth interpolation
+          <label class="cse-opt-lbl" title="Blend colors continuously between stops, like Relative Humidity">
+            <input type="checkbox" id="cse-interpolate"> Smooth this view
           </label>
         </div>
         <div class="cse-offset-row" style="margin-top:8px;">
@@ -21800,9 +21864,25 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       const minVal = Math.min(...values);
       const maxVal = Math.max(...values);
       const range = maxVal - minVal || 1;
+      let stopsCss;
+      if (cfg.interpolate) {
+        stopsCss = colors.map((c, i) =>
+          `rgb(${c[0]},${c[1]},${c[2]}) ${(((values[i] - minVal) / range) * 100).toFixed(1)}%`).join(',');
+      } else {
+        const parts = [];
+        for (let i = 0; i < colors.length; i++) {
+          const c = colors[i];
+          const p0 = ((values[i] - minVal) / range) * 100;
+          const p1 = i + 1 < values.length
+            ? ((values[i + 1] - minVal) / range) * 100
+            : 100;
+          parts.push(`rgb(${c[0]},${c[1]},${c[2]}) ${p0.toFixed(1)}%`);
+          parts.push(`rgb(${c[0]},${c[1]},${c[2]}) ${p1.toFixed(1)}%`);
+        }
+        stopsCss = parts.join(',');
+      }
       document.getElementById('cse-grad').style.background =
-        'linear-gradient(to right,' + colors.map((c,i) =>
-          `rgb(${c[0]},${c[1]},${c[2]}) ${(((values[i] - minVal) / range) * 100).toFixed(1)}%`).join(',') + ')';
+        'linear-gradient(to right,' + stopsCss + ')';
     }
     function refreshJson(cfg) {
       const format = document.getElementById('cse-format').value;
@@ -21925,8 +22005,11 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     function showScale(cfgId) {
       activeId = cfgId;
       const cfg = COLOR_SCALE_CONFIGS.find(c => c.id === cfgId);
-      document.querySelectorAll('.cse-tab').forEach(t =>
-        t.classList.toggle('active', t.dataset.id === cfgId));
+      document.querySelectorAll('.cse-tab').forEach(t => {
+        t.classList.toggle('active', t.dataset.id === cfgId);
+        const tabCfg = COLOR_SCALE_CONFIGS.find(c => c.id === t.dataset.id);
+        t.classList.toggle('smooth', !!(tabCfg && tabCfg.interpolate));
+      });
       refreshGrad(cfg);
       renderStops(cfg);
       refreshJson(cfg);
@@ -21993,6 +22076,9 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     document.getElementById('cse-interpolate').onchange = () => {
       const cfg = COLOR_SCALE_CONFIGS.find(c => c.id === activeId);
       cfg.interpolate = document.getElementById('cse-interpolate').checked;
+      refreshGrad(cfg);
+      const tab = document.querySelector(`.cse-tab[data-id="${activeId}"]`);
+      if (tab) tab.classList.toggle('smooth', !!cfg.interpolate);
       uploadColorScaleTexture();
     };
 
@@ -23075,6 +23161,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   gl.uniform1i(gl.getUniformLocation(chargeDisplayProgram, 'colorScalesTex'), 9);
   gl.uniform1i(gl.getUniformLocation(chargeDisplayProgram, 'colorScaleColumn'), 23);
   gl.uniform1i(gl.getUniformLocation(chargeDisplayProgram, 'colorScaleStops'),  33);
+  gl.uniform1i(gl.getUniformLocation(chargeDisplayProgram, 'colorScaleInterpolate'), colorScaleSmoothFlag('charge'));
 
   gl.useProgram(dropletSizeDisplayProgram);
   gl.uniform2f(gl.getUniformLocation(dropletSizeDisplayProgram, 'resolution'), sim_res_x, sim_res_y);
@@ -23087,6 +23174,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   const uloc_dropletDisp_sizeChannel = gl.getUniformLocation(dropletSizeDisplayProgram, 'sizeChannel');
   const uloc_dropletDisp_colorScaleColumn = gl.getUniformLocation(dropletSizeDisplayProgram, 'colorScaleColumn');
   const uloc_dropletDisp_colorScaleStops = gl.getUniformLocation(dropletSizeDisplayProgram, 'colorScaleStops');
+  const uloc_dropletDisp_colorScaleInterpolate = gl.getUniformLocation(dropletSizeDisplayProgram, 'colorScaleInterpolate');
   const uloc_dropletDisp_valueMin = gl.getUniformLocation(dropletSizeDisplayProgram, 'valueMin');
   const uloc_dropletDisp_valueMax = gl.getUniformLocation(dropletSizeDisplayProgram, 'valueMax');
   const uloc_dropletDisp_view = gl.getUniformLocation(dropletSizeDisplayProgram, 'view');
@@ -23249,6 +23337,9 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'greenHueStartThreshold'), guiControls.greenHueStartThreshold != null ? guiControls.greenHueStartThreshold : 0.8);
   gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'greenHueEndThreshold'), guiControls.greenHueEndThreshold != null ? guiControls.greenHueEndThreshold : 1.8);
   gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'greenHueStrength'), guiControls.greenHueStrength != null ? guiControls.greenHueStrength : 0.45);
+  gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'greenHueBrightness'), guiControls.greenHueBrightness != null ? guiControls.greenHueBrightness : 1.0);
+  gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'greenHueSaturation'), guiControls.greenHueSaturation != null ? guiControls.greenHueSaturation : 1.0);
+  gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'greenHueHue'), guiControls.greenHueHue != null ? guiControls.greenHueHue : 0.0);
   uploadCloudsRainUniforms();
 
   if (lightningIllumProgram) {
@@ -23325,6 +23416,9 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'greenHueStartThreshold'), guiControls.greenHueStartThreshold != null ? guiControls.greenHueStartThreshold : 0.8);
         gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'greenHueEndThreshold'), guiControls.greenHueEndThreshold != null ? guiControls.greenHueEndThreshold : 1.8);
         gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'greenHueStrength'), guiControls.greenHueStrength != null ? guiControls.greenHueStrength : 0.45);
+        gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'greenHueBrightness'), guiControls.greenHueBrightness != null ? guiControls.greenHueBrightness : 1.0);
+        gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'greenHueSaturation'), guiControls.greenHueSaturation != null ? guiControls.greenHueSaturation : 1.0);
+        gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'greenHueHue'), guiControls.greenHueHue != null ? guiControls.greenHueHue : 0.0);
       }
       if (skyBackgroundDisplayProgram) {
         gl.useProgram(skyBackgroundDisplayProgram);
@@ -23717,6 +23811,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   const uloc_radar_dbzOpacityStrength  = gl.getUniformLocation(radarDisplayProgram, 'dbzOpacityStrength');
   const uloc_radar_colorScaleColumn    = gl.getUniformLocation(radarDisplayProgram, 'colorScaleColumn');
   const uloc_radar_colorScaleStops     = gl.getUniformLocation(radarDisplayProgram, 'colorScaleStops');
+  const uloc_radar_colorScaleInterpolate = gl.getUniformLocation(radarDisplayProgram, 'colorScaleInterpolate');
   const uloc_radar_radarPos            = gl.getUniformLocation(radarDisplayProgram, 'radarPos');
   const uloc_radar_radarRange          = gl.getUniformLocation(radarDisplayProgram, 'radarRange');
   const uloc_radar_radarResolution     = gl.getUniformLocation(radarDisplayProgram, 'radarResolution');
@@ -23734,6 +23829,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   const uloc_temp_Xmult                = gl.getUniformLocation(temperatureDisplayProgram, 'Xmult');
   const uloc_temp_displayVectorField   = gl.getUniformLocation(temperatureDisplayProgram, 'displayVectorField');
   const uloc_temp_surfacePressure      = gl.getUniformLocation(temperatureDisplayProgram, 'surfacePressure');
+  const uloc_temp_colorScaleInterpolate = gl.getUniformLocation(temperatureDisplayProgram, 'colorScaleInterpolate');
 
   // temperatureChange display per-frame
   const uloc_tempChg_aspectRatios      = gl.getUniformLocation(temperatureChangeDisplayProgram, 'aspectRatios');
@@ -23742,12 +23838,15 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   const uloc_tempChg_Xmult             = gl.getUniformLocation(temperatureChangeDisplayProgram, 'Xmult');
   const uloc_tempChg_tempUnit          = gl.getUniformLocation(temperatureChangeDisplayProgram, 'tempUnit');
   const uloc_tempChg_displayVectorField= gl.getUniformLocation(temperatureChangeDisplayProgram, 'displayVectorField');
+  const uloc_tempChg_colorScaleStops   = gl.getUniformLocation(temperatureChangeDisplayProgram, 'colorScaleStops');
+  const uloc_tempChg_colorScaleInterpolate = gl.getUniformLocation(temperatureChangeDisplayProgram, 'colorScaleInterpolate');
 
   // airQuality display per-frame
   const uloc_airQ_aspectRatios         = gl.getUniformLocation(airQualityDisplayProgram, 'aspectRatios');
   const uloc_airQ_view                 = gl.getUniformLocation(airQualityDisplayProgram, 'view');
   const uloc_airQ_cursor               = gl.getUniformLocation(airQualityDisplayProgram, 'cursor');
   const uloc_airQ_Xmult                = gl.getUniformLocation(airQualityDisplayProgram, 'Xmult');
+  const uloc_airQ_colorScaleInterpolate = gl.getUniformLocation(airQualityDisplayProgram, 'colorScaleInterpolate');
 
   // humidity display per-frame
   const uloc_humd_aspectRatios         = gl.getUniformLocation(humidityDisplayProgram, 'aspectRatios');
@@ -23763,6 +23862,10 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   const uloc_humd_colorScaleCloudMin   = gl.getUniformLocation(humidityDisplayProgram, 'colorScaleCloudMin');
   const uloc_humd_colorScaleCloudMax   = gl.getUniformLocation(humidityDisplayProgram, 'colorScaleCloudMax');
   const uloc_humd_colorScaleCloudOffset = gl.getUniformLocation(humidityDisplayProgram, 'colorScaleCloudOffset');
+  const uloc_humd_colorScaleStops      = gl.getUniformLocation(humidityDisplayProgram, 'colorScaleStops');
+  const uloc_humd_colorScaleCloudStops = gl.getUniformLocation(humidityDisplayProgram, 'colorScaleCloudStops');
+  const uloc_humd_colorScaleInterpolate = gl.getUniformLocation(humidityDisplayProgram, 'colorScaleInterpolate');
+  const uloc_humd_colorScaleCloudInterpolate = gl.getUniformLocation(humidityDisplayProgram, 'colorScaleCloudInterpolate');
 
   const uloc_thetae_aspectRatios       = gl.getUniformLocation(thetaeDisplayProgram, 'aspectRatios');
   const uloc_thetae_view               = gl.getUniformLocation(thetaeDisplayProgram, 'view');
@@ -23773,6 +23876,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   const uloc_thetae_colorScaleMin      = gl.getUniformLocation(thetaeDisplayProgram, 'colorScaleThetaeMin');
   const uloc_thetae_colorScaleMax      = gl.getUniformLocation(thetaeDisplayProgram, 'colorScaleThetaeMax');
   const uloc_thetae_colorScaleOffset   = gl.getUniformLocation(thetaeDisplayProgram, 'colorScaleThetaeOffset');
+  const uloc_thetae_colorScaleStops    = gl.getUniformLocation(thetaeDisplayProgram, 'colorScaleStops');
+  const uloc_thetae_colorScaleInterpolate = gl.getUniformLocation(thetaeDisplayProgram, 'colorScaleInterpolate');
   const uloc_thetae_simHeight          = gl.getUniformLocation(thetaeDisplayProgram, 'simHeight');
 
   const uloc_dew_aspectRatios          = gl.getUniformLocation(dewpointDisplayProgram, 'aspectRatios');
@@ -23784,6 +23889,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   const uloc_dew_colorScaleMin         = gl.getUniformLocation(dewpointDisplayProgram, 'colorScaleDewMin');
   const uloc_dew_colorScaleMax         = gl.getUniformLocation(dewpointDisplayProgram, 'colorScaleDewMax');
   const uloc_dew_colorScaleOffset      = gl.getUniformLocation(dewpointDisplayProgram, 'colorScaleDewOffset');
+  const uloc_dew_colorScaleStops       = gl.getUniformLocation(dewpointDisplayProgram, 'colorScaleStops');
+  const uloc_dew_colorScaleInterpolate = gl.getUniformLocation(dewpointDisplayProgram, 'colorScaleInterpolate');
 
   const uloc_tw_aspectRatios           = gl.getUniformLocation(wetbulbDisplayProgram, 'aspectRatios');
   const uloc_tw_view                   = gl.getUniformLocation(wetbulbDisplayProgram, 'view');
@@ -23794,6 +23901,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   const uloc_tw_colorScaleMin          = gl.getUniformLocation(wetbulbDisplayProgram, 'colorScaleTwMin');
   const uloc_tw_colorScaleMax          = gl.getUniformLocation(wetbulbDisplayProgram, 'colorScaleTwMax');
   const uloc_tw_colorScaleOffset       = gl.getUniformLocation(wetbulbDisplayProgram, 'colorScaleTwOffset');
+  const uloc_tw_colorScaleStops        = gl.getUniformLocation(wetbulbDisplayProgram, 'colorScaleStops');
+  const uloc_tw_colorScaleInterpolate  = gl.getUniformLocation(wetbulbDisplayProgram, 'colorScaleInterpolate');
 
   const uloc_ptype_aspectRatios        = gl.getUniformLocation(precipTypeDisplayProgram, 'aspectRatios');
   const uloc_ptype_view                = gl.getUniformLocation(precipTypeDisplayProgram, 'view');
@@ -23805,8 +23914,14 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     const rhVals = colorScaleValues.relativeHumidity;
     const cloudVals = colorScaleValues.humidityCloud;
     if (!rhVals?.length || !cloudVals?.length) return;
+    const rhCfg = getColorScaleCfg('relativeHumidity');
+    const cloudCfg = getColorScaleCfg('humidityCloud');
     gl.uniform1i(uloc_humd_colorScaleColumn, 24);
     gl.uniform1i(uloc_humd_colorScaleCloudColumn, 60);
+    gl.uniform1i(uloc_humd_colorScaleStops, rhCfg ? rhCfg.stops : rhVals.length);
+    gl.uniform1i(uloc_humd_colorScaleCloudStops, cloudCfg ? cloudCfg.stops : cloudVals.length);
+    gl.uniform1i(uloc_humd_colorScaleInterpolate, colorScaleSmoothFlag('relativeHumidity'));
+    gl.uniform1i(uloc_humd_colorScaleCloudInterpolate, colorScaleSmoothFlag('humidityCloud'));
     gl.uniform1f(uloc_humd_colorScaleRhMin, rhVals[0]);
     gl.uniform1f(uloc_humd_colorScaleRhMax, rhVals[rhVals.length - 1]);
     gl.uniform1f(uloc_humd_colorScaleRhOffset, 0);
@@ -23818,7 +23933,10 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   function setThetaeColorScaleUniforms() {
     const vals = colorScaleValues.thetae;
     if (!vals?.length) return;
+    const cfg = getColorScaleCfg('thetae');
     gl.uniform1i(uloc_thetae_colorScaleColumn, 63);
+    gl.uniform1i(uloc_thetae_colorScaleStops, cfg ? cfg.stops : vals.length);
+    gl.uniform1i(uloc_thetae_colorScaleInterpolate, colorScaleSmoothFlag('thetae'));
     gl.uniform1f(uloc_thetae_colorScaleMin, vals[0]);
     gl.uniform1f(uloc_thetae_colorScaleMax, vals[vals.length - 1]);
     gl.uniform1f(uloc_thetae_colorScaleOffset, 0);
@@ -23828,7 +23946,10 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   function setDewpointColorScaleUniforms() {
     const vals = colorScaleValues.dewpoint;
     if (!vals?.length) return;
+    const cfg = getColorScaleCfg('dewpoint');
     gl.uniform1i(uloc_dew_colorScaleColumn, 65);
+    gl.uniform1i(uloc_dew_colorScaleStops, cfg ? cfg.stops : vals.length);
+    gl.uniform1i(uloc_dew_colorScaleInterpolate, colorScaleSmoothFlag('dewpoint'));
     gl.uniform1f(uloc_dew_colorScaleMin, vals[0]);
     gl.uniform1f(uloc_dew_colorScaleMax, vals[vals.length - 1]);
     gl.uniform1f(uloc_dew_colorScaleOffset, 0);
@@ -23837,7 +23958,10 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   function setWetbulbColorScaleUniforms() {
     const vals = colorScaleValues.wetbulb;
     if (!vals?.length) return;
+    const cfg = getColorScaleCfg('wetbulb');
     gl.uniform1i(uloc_tw_colorScaleColumn, 66);
+    gl.uniform1i(uloc_tw_colorScaleStops, cfg ? cfg.stops : vals.length);
+    gl.uniform1i(uloc_tw_colorScaleInterpolate, colorScaleSmoothFlag('wetbulb'));
     gl.uniform1f(uloc_tw_colorScaleMin, vals[0]);
     gl.uniform1f(uloc_tw_colorScaleMax, vals[vals.length - 1]);
     gl.uniform1f(uloc_tw_colorScaleOffset, 0);
@@ -23849,6 +23973,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   const uloc_IR_cursor                 = gl.getUniformLocation(IRtempDisplayProgram, 'cursor');
   const uloc_IR_upOrDown               = gl.getUniformLocation(IRtempDisplayProgram, 'upOrDown');
   const uloc_IR_Xmult                  = gl.getUniformLocation(IRtempDisplayProgram, 'Xmult');
+  const uloc_IR_colorScaleInterpolate  = gl.getUniformLocation(IRtempDisplayProgram, 'colorScaleInterpolate');
 
   // universal display per-frame
   const uloc_univ_aspectRatios         = gl.getUniformLocation(universalDisplayProgram, 'aspectRatios');
@@ -23861,6 +23986,12 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   const uloc_univ_dispMultiplier       = gl.getUniformLocation(universalDisplayProgram, 'dispMultiplier');
   const uloc_univ_floodThreshold       = gl.getUniformLocation(universalDisplayProgram, 'floodThreshold');
   const uloc_univ_colorScaleStops      = gl.getUniformLocation(universalDisplayProgram, 'colorScaleStops');
+  const uloc_univ_colorScaleInterpolate = gl.getUniformLocation(universalDisplayProgram, 'colorScaleInterpolate');
+
+  function setUnivColorScaleColumn(col) {
+    gl.uniform1i(uloc_univ_colorScaleColumn, col);
+    gl.uniform1i(uloc_univ_colorScaleInterpolate, colorScaleSmoothFlagByCol(col));
+  }
 
   // airplane per-frame
   const uloc_sky_planeDirectionAndGearPos = gl.getUniformLocation(skyBackgroundDisplayProgram, 'planeDirectionAndGearPos');
@@ -23893,6 +24024,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   const uloc_comp_dbzOpacityStrength  = gl.getUniformLocation(compositeRadarDisplayProgram, 'dbzOpacityStrength');
   const uloc_comp_colorScaleColumn    = gl.getUniformLocation(compositeRadarDisplayProgram, 'colorScaleColumn');
   const uloc_comp_colorScaleStops     = gl.getUniformLocation(compositeRadarDisplayProgram, 'colorScaleStops');
+  const uloc_comp_colorScaleInterpolate = gl.getUniformLocation(compositeRadarDisplayProgram, 'colorScaleInterpolate');
   const uloc_comp_radarCount          = gl.getUniformLocation(compositeRadarDisplayProgram, 'radarCount');
   const uloc_comp_radarPositions      = gl.getUniformLocation(compositeRadarDisplayProgram, 'radarPositions');
   const uloc_comp_radarRanges         = gl.getUniformLocation(compositeRadarDisplayProgram, 'radarRanges');
@@ -24242,6 +24374,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     const scale = RADAR_COLOR_SCALE_LOOKUP[meta.colorScale] || RADAR_COLOR_SCALE_LOOKUP.radarReflectivity;
     gl.uniform1i(uloc_radar_colorScaleColumn, scale.col);
     gl.uniform1i(uloc_radar_colorScaleStops, scale.stops);
+    gl.uniform1i(uloc_radar_colorScaleInterpolate, colorScaleSmoothFlag(meta.colorScale || 'radarReflectivity'));
   }
 
   function getRadarForOverlaySource()
@@ -24338,6 +24471,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     gl.uniform1f(uloc_comp_dbzOpacityStrength, guiControls.dbzOpacityStrength);
     gl.uniform1i(uloc_comp_colorScaleColumn, 18);
     gl.uniform1i(uloc_comp_colorScaleStops, 36);
+    gl.uniform1i(uloc_comp_colorScaleInterpolate, colorScaleSmoothFlag('radarReflectivity'));
     gl.activeTexture(gl.TEXTURE3);
     gl.bindTexture(gl.TEXTURE_2D, colorScalesTexture);
     gl.uniform1i(uloc_comp_colorScalesTex, 3);
@@ -29182,6 +29316,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         gl.uniform4f(uloc_temp_cursor, mouseXinSim, mouseYinSim, guiControls.brushSize * 0.5, cursorType);
         gl.uniform1f(uloc_temp_Xmult, horizontalDisplayMult);
         gl.uniform1f(uloc_temp_surfacePressure, guiControls.surfacePressure);
+        gl.uniform1i(uloc_temp_colorScaleInterpolate, colorScaleSmoothFlag('temperature'));
 
         // Don't display vectors when zoomed out because you would just see
         // noise
@@ -29202,6 +29337,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         gl.uniform1i(uloc_tempChg_wallTex, 2);
         gl.uniform1i(uloc_tempChg_colorScalesTex, 9);
         gl.uniform1i(uloc_tempChg_colorScaleColumn, 16);
+        gl.uniform1i(uloc_tempChg_colorScaleStops, 33);
+        gl.uniform1i(uloc_tempChg_colorScaleInterpolate, colorScaleSmoothFlag('temperatureChange'));
         let tempUnitCode = 0;
         if (guiControls.tempUnit == 'TEMP_UNIT_F') tempUnitCode = 1;
         else if (guiControls.tempUnit == 'TEMP_UNIT_K') tempUnitCode = 2;
@@ -29227,6 +29364,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         gl.uniform3f(uloc_airQ_view, cam.curXpos, cam.curYpos, cam.curZoom);
         gl.uniform4f(uloc_airQ_cursor, mouseXinSim, mouseYinSim, guiControls.brushSize * 0.5, cursorType);
         gl.uniform1f(uloc_airQ_Xmult, horizontalDisplayMult);
+        gl.uniform1i(uloc_airQ_colorScaleInterpolate, colorScaleSmoothFlag('airQuality'));
         gl.activeTexture(gl.TEXTURE8);
         gl.bindTexture(gl.TEXTURE_2D, smokeTexture_1);
 
@@ -29305,6 +29443,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         gl.uniform4f(uloc_IR_cursor, mouseXinSim, mouseYinSim, guiControls.brushSize * 0.5, cursorType);
         gl.uniform1i(uloc_IR_upOrDown, 0);
         gl.uniform1f(uloc_IR_Xmult, horizontalDisplayMult);
+        gl.uniform1i(uloc_IR_colorScaleInterpolate, colorScaleSmoothFlag('irDown'));
 
         gl.activeTexture(gl.TEXTURE0);
         gl.bindTexture(gl.TEXTURE_2D, getCurrentLightTexture());
@@ -29315,6 +29454,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         gl.uniform4f(uloc_IR_cursor, mouseXinSim, mouseYinSim, guiControls.brushSize * 0.5, cursorType);
         gl.uniform1i(uloc_IR_upOrDown, 1);
         gl.uniform1f(uloc_IR_Xmult, horizontalDisplayMult);
+        gl.uniform1i(uloc_IR_colorScaleInterpolate, colorScaleSmoothFlag('irUp'));
 
         gl.activeTexture(gl.TEXTURE0);
         gl.bindTexture(gl.TEXTURE_2D, getCurrentLightTexture());
@@ -29327,7 +29467,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         gl.activeTexture(gl.TEXTURE9);
         gl.bindTexture(gl.TEXTURE_2D, colorScalesTexture);
         gl.uniform1i(gl.getUniformLocation(universalDisplayProgram, 'colorScalesTex'), 9);
-        gl.uniform1i(uloc_univ_colorScaleColumn, 4);
+        setUnivColorScaleColumn(4);
         gl.uniform1i(uloc_univ_useUnipolarScale, 0);
         gl.uniform1f(uloc_univ_floodThreshold, 0.0);
 
@@ -29336,13 +29476,13 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         case 'DISP_HORIVEL':
           gl.uniform1i(uloc_univ_quantityIndex, 0);
           gl.uniform1f(uloc_univ_dispMultiplier, 10.0);
-          gl.uniform1i(uloc_univ_colorScaleColumn, 6);
+          setUnivColorScaleColumn(6);
           colorScaleStops = 33;
           break;
         case 'DISP_VERTVEL':
           gl.uniform1i(uloc_univ_quantityIndex, 1);
           gl.uniform1f(uloc_univ_dispMultiplier, 10.0);
-          gl.uniform1i(uloc_univ_colorScaleColumn, 7);
+          setUnivColorScaleColumn(7);
           colorScaleStops = 33;
           break;
         case 'DISP_WATER':
@@ -29350,7 +29490,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
           gl.bindTexture(gl.TEXTURE_2D, waterTexture_1);
           gl.uniform1i(uloc_univ_quantityIndex, 0);
           gl.uniform1f(uloc_univ_dispMultiplier, 0.06);
-          gl.uniform1i(uloc_univ_colorScaleColumn, 5);
+          setUnivColorScaleColumn(5);
           gl.uniform1i(uloc_univ_useUnipolarScale, 1);
           colorScaleStops = 33;
           break;
@@ -29359,7 +29499,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
           gl.bindTexture(gl.TEXTURE_2D, getCurrentLightTexture());
           gl.uniform1i(uloc_univ_quantityIndex, 1);
           gl.uniform1f(uloc_univ_dispMultiplier, 50000.0);
-          gl.uniform1i(uloc_univ_colorScaleColumn, 8);
+          setUnivColorScaleColumn(8);
           gl.uniform1i(uloc_univ_useUnipolarScale, 0);
           colorScaleStops = 33;
           break;
@@ -29368,7 +29508,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
           gl.bindTexture(gl.TEXTURE_2D, precipitationFeedbackTexture);
           gl.uniform1i(uloc_univ_quantityIndex, 0);
           gl.uniform1f(uloc_univ_dispMultiplier, 0.06);
-          gl.uniform1i(uloc_univ_colorScaleColumn, 9);
+          setUnivColorScaleColumn(9);
           gl.uniform1i(uloc_univ_useUnipolarScale, 1);
           colorScaleStops = 33;
           break;
@@ -29377,7 +29517,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
           gl.bindTexture(gl.TEXTURE_2D, precipitationFeedbackTexture);
           gl.uniform1i(uloc_univ_quantityIndex, 1);
           gl.uniform1f(uloc_univ_dispMultiplier, 500.0);
-          gl.uniform1i(uloc_univ_colorScaleColumn, 10);
+          setUnivColorScaleColumn(10);
           gl.uniform1i(uloc_univ_useUnipolarScale, 0);
           colorScaleStops = 33;
           break;
@@ -29386,7 +29526,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
           gl.bindTexture(gl.TEXTURE_2D, precipitationFeedbackTexture);
           gl.uniform1i(uloc_univ_quantityIndex, 2);
           gl.uniform1f(uloc_univ_dispMultiplier, 500.0);
-          gl.uniform1i(uloc_univ_colorScaleColumn, 11);
+          setUnivColorScaleColumn(11);
           gl.uniform1i(uloc_univ_useUnipolarScale, 0);
           colorScaleStops = 33;
           break;
@@ -29395,7 +29535,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
           gl.bindTexture(gl.TEXTURE_2D, precipitationDepositionTexture);
           gl.uniform1i(uloc_univ_quantityIndex, 0);
           gl.uniform1f(uloc_univ_dispMultiplier, 1.0);
-          gl.uniform1i(uloc_univ_colorScaleColumn, 12);
+          setUnivColorScaleColumn(12);
           gl.uniform1i(uloc_univ_useUnipolarScale, 1);
           colorScaleStops = 33;
           break;
@@ -29404,7 +29544,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
           gl.bindTexture(gl.TEXTURE_2D, precipitationDepositionTexture);
           gl.uniform1i(uloc_univ_quantityIndex, 1);
           gl.uniform1f(uloc_univ_dispMultiplier, 1.0);
-          gl.uniform1i(uloc_univ_colorScaleColumn, 13);
+          setUnivColorScaleColumn(13);
           gl.uniform1i(uloc_univ_useUnipolarScale, 1);
           colorScaleStops = 33;
           break;
@@ -29413,7 +29553,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
           gl.bindTexture(gl.TEXTURE_2D, waterTexture_1);
           gl.uniform1i(uloc_univ_quantityIndex, 2);
           gl.uniform1f(uloc_univ_dispMultiplier, 0.02);
-          gl.uniform1i(uloc_univ_colorScaleColumn, 14);
+          setUnivColorScaleColumn(14);
           gl.uniform1i(uloc_univ_useUnipolarScale, 1);
           colorScaleStops = 33;
           break;
@@ -29425,7 +29565,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
           gl.uniform1f(uloc_univ_floodThreshold, 1001.0); // WATER_MARKER_LAND
           // encoded = floodMm * 1e-5; full opacity at 25 m → multiplier 4.0
           gl.uniform1f(uloc_univ_dispMultiplier, 4.0);
-          gl.uniform1i(uloc_univ_colorScaleColumn, 5);
+          setUnivColorScaleColumn(5);
           gl.uniform1i(uloc_univ_useUnipolarScale, 1);
           colorScaleStops = 33;
           break;
@@ -29435,7 +29575,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
           // CAPE/skew-T use hydrostatic P(z) when useHydrostaticCapePressure is on.
           gl.uniform1i(uloc_univ_quantityIndex, 2);
           gl.uniform1f(uloc_univ_dispMultiplier, 1.0);
-          gl.uniform1i(uloc_univ_colorScaleColumn, 22);
+          setUnivColorScaleColumn(22);
           gl.uniform1i(uloc_univ_useUnipolarScale, 0);
           colorScaleStops = 33;
           break;
@@ -29444,7 +29584,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
           gl.bindTexture(gl.TEXTURE_2D, curlTexture);
           gl.uniform1i(uloc_univ_quantityIndex, 0);
           gl.uniform1f(uloc_univ_dispMultiplier, 7.0);
-          gl.uniform1i(uloc_univ_colorScaleColumn, 15);
+          setUnivColorScaleColumn(15);
           gl.uniform1i(uloc_univ_useUnipolarScale, 0);
           colorScaleStops = 33;
           break;
@@ -29453,7 +29593,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
           gl.bindTexture(gl.TEXTURE_2D, divergenceTexture);
           gl.uniform1i(uloc_univ_quantityIndex, 0);
           gl.uniform1f(uloc_univ_dispMultiplier, 7.0);
-          gl.uniform1i(uloc_univ_colorScaleColumn, 67);
+          setUnivColorScaleColumn(67);
           gl.uniform1i(uloc_univ_useUnipolarScale, 0);
           colorScaleStops = 33;
           break;
@@ -29462,7 +29602,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
           gl.bindTexture(gl.TEXTURE_2D, waterTexture_1);
           gl.uniform1i(uloc_univ_quantityIndex, 3); // SNOW (cm)
           gl.uniform1f(uloc_univ_dispMultiplier, 0.02); // ~50 cm → full scale
-          gl.uniform1i(uloc_univ_colorScaleColumn, 62);
+          setUnivColorScaleColumn(62);
           gl.uniform1i(uloc_univ_useUnipolarScale, 1);
           colorScaleStops = 33;
           break;
@@ -29527,6 +29667,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
             gl.uniform4f(gl.getUniformLocation(chargeDisplayProgram, 'cursor'), mouseXinSim, mouseYinSim, guiControls.brushSize * 0.5, cursorType);
             gl.uniform1f(gl.getUniformLocation(chargeDisplayProgram, 'Xmult'), horizontalDisplayMult);
             gl.uniform2f(gl.getUniformLocation(chargeDisplayProgram, 'aspectRatios'), sim_aspect, canvas_aspect);
+            gl.uniform1i(gl.getUniformLocation(chargeDisplayProgram, 'colorScaleInterpolate'), colorScaleSmoothFlag('charge'));
             gl.activeTexture(gl.TEXTURE0);
             gl.bindTexture(gl.TEXTURE_2D, even ? chargeTexture_1 : chargeTexture_0);
             gl.activeTexture(gl.TEXTURE2);
@@ -29550,6 +29691,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
             gl.uniform1i(uloc_dropletDisp_sizeChannel, dv.channel);
             gl.uniform1i(uloc_dropletDisp_colorScaleColumn, scaleCfg.col);
             gl.uniform1i(uloc_dropletDisp_colorScaleStops, scaleCfg.stops);
+            gl.uniform1i(uloc_dropletDisp_colorScaleInterpolate, scaleCfg.interpolate ? 1 : 0);
             gl.uniform1f(uloc_dropletDisp_valueMin, scaleVals[0]);
             gl.uniform1f(uloc_dropletDisp_valueMax, scaleVals[scaleVals.length - 1]);
             gl.activeTexture(gl.TEXTURE0);
@@ -29605,6 +29747,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
           gl.uniform1f(uloc_comp_dbzOpacityStrength, guiControls.dbzOpacityStrength);
           gl.uniform1i(uloc_comp_colorScaleColumn, 18);
           gl.uniform1i(uloc_comp_colorScaleStops, 36);
+          gl.uniform1i(uloc_comp_colorScaleInterpolate, colorScaleSmoothFlag('radarReflectivity'));
 
           gl.activeTexture(gl.TEXTURE3);
           gl.bindTexture(gl.TEXTURE_2D, colorScalesTexture);

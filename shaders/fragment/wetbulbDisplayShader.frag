@@ -16,6 +16,8 @@ uniform vec2 texelSize;
 uniform float dryLapse;
 
 uniform int colorScaleColumn;
+uniform int colorScaleStops;
+uniform int colorScaleInterpolate;
 uniform float colorScaleTwMin;
 uniform float colorScaleTwMax;
 uniform float colorScaleTwOffset;
@@ -73,9 +75,7 @@ void main()
     float lookup = twC + colorScaleTwOffset;
     float range = max(colorScaleTwMax - colorScaleTwMin, 0.001);
     float v = clamp((lookup - colorScaleTwMin) / range, 0.0, 1.0);
-    ivec2 scaleSize = textureSize(colorScalesTex, 0);
-    float u = (float(colorScaleColumn) + 0.5) / float(scaleSize.x);
-    fragmentColor = texture(colorScalesTex, vec2(u, v));
+    fragmentColor = sampleColorScale(colorScalesTex, colorScaleColumn, v, colorScaleStops, colorScaleInterpolate);
 
     drawVectorField(base.xy, displayVectorField);
   }

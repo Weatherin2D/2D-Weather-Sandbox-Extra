@@ -17,6 +17,8 @@ uniform float displayVectorField;
 uniform vec3 view;
 uniform vec4 cursor;
 uniform int colorScaleColumn;
+uniform int colorScaleStops;
+uniform int colorScaleInterpolate;
 uniform int tempUnit;
 
 out vec4 fragmentColor;
@@ -44,8 +46,7 @@ void main()
     rangeMin = -0.4 * 1.8;
     rangeMax = 0.4 * 1.8;
   }
-  float indexF = map_rangeC(diff, rangeMin, rangeMax, 0.0, 32.0);
-  int paletteIndex = int(indexF + 0.5);
+  float t = map_rangeC(diff, rangeMin, rangeMax, 0.0, 1.0);
 
   if (wall[1] == 0) {
     switch (wall[0]) {
@@ -66,7 +67,7 @@ void main()
         break;
     }
   } else {
-    fragmentColor = texelFetch(colorScalesTex, ivec2(colorScaleColumn, paletteIndex), 0);
+    fragmentColor = sampleColorScale(colorScalesTex, colorScaleColumn, t, colorScaleStops, colorScaleInterpolate);
     drawVectorField(base.xy, displayVectorField);
   }
 

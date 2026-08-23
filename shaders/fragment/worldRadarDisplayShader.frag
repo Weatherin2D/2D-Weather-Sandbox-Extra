@@ -35,6 +35,7 @@ uniform float dbzOpacityStrength;
 uniform float opacity;
 uniform int   colorScaleColumn;
 uniform int   colorScaleStops;
+uniform int   colorScaleInterpolate;
 uniform int   productType;
 uniform float cappiHeightFrac;
 uniform int   useAccumTexture;
@@ -59,8 +60,7 @@ const int PRODUCT_ACCUM = 15;
 
 vec3 sampleColorScaleStepped(float t)
 {
-  int idx = clamp(int(t * float(colorScaleStops - 1) + 0.5), 0, colorScaleStops - 1);
-  return texelFetch(colorScalesTex, ivec2(colorScaleColumn, idx), 0).rgb;
+  return sampleColorScale(colorScalesTex, colorScaleColumn, t, colorScaleStops, colorScaleInterpolate).rgb;
 }
 
 float computeDBZ(float reflectiveMass)

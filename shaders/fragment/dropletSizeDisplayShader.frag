@@ -19,6 +19,7 @@ uniform vec4 cursor;
 uniform int sizeChannel; // 0 = hail (R), 1 = all droplets (G)
 uniform int colorScaleColumn;
 uniform int colorScaleStops;
+uniform int colorScaleInterpolate;
 uniform float valueMin;
 uniform float valueMax;
 
@@ -55,8 +56,7 @@ void main()
   } else {
     float range = max(valueMax - valueMin, 0.001);
     float normalized = clamp((sizeMm - valueMin) / range, 0.0, 1.0);
-    int palIdx = clamp(int(normalized * float(colorScaleStops - 1)), 0, colorScaleStops - 1);
-    fragmentColor = texelFetch(colorScalesTex, ivec2(colorScaleColumn, palIdx), 0);
+    fragmentColor = sampleColorScale(colorScalesTex, colorScaleColumn, normalized, colorScaleStops, colorScaleInterpolate);
     float alpha = smoothstep(0.5, 2.0, sizeMm);
     fragmentColor = mix(vec4(0.04, 0.04, 0.06, 1.0), fragmentColor, alpha);
   }

@@ -17,6 +17,8 @@ uniform float dryLapse;
 uniform float simHeight;
 
 uniform int colorScaleColumn;
+uniform int colorScaleStops;
+uniform int colorScaleInterpolate;
 uniform float colorScaleThetaeMin;
 uniform float colorScaleThetaeMax;
 uniform float colorScaleThetaeOffset;
@@ -79,9 +81,7 @@ void main()
     float lookup = thetaeC + colorScaleThetaeOffset;
     float range = max(colorScaleThetaeMax - colorScaleThetaeMin, 0.001);
     float v = clamp((lookup - colorScaleThetaeMin) / range, 0.0, 1.0);
-    ivec2 scaleSize = textureSize(colorScalesTex, 0);
-    float u = (float(colorScaleColumn) + 0.5) / float(scaleSize.x);
-    fragmentColor = texture(colorScalesTex, vec2(u, v));
+    fragmentColor = sampleColorScale(colorScalesTex, colorScaleColumn, v, colorScaleStops, colorScaleInterpolate);
 
     drawVectorField(base.xy, displayVectorField);
   }

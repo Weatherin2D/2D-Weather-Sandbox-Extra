@@ -15,6 +15,7 @@ uniform vec2 texelSize;
 uniform float dryLapse;
 
 uniform int upOrDown; // 0 = down     1 = up
+uniform int colorScaleInterpolate;
 
 uniform vec3 view;    // Xpos  Ypos    Zoom
 uniform vec4 cursor;  // xpos   Ypos  Size   type
@@ -49,16 +50,13 @@ void main()
     }
   } else {
 
-    int palletteIndex;
-
+    float t;
     if (upOrDown == 1)
-      palletteIndex = int(map_range(IRtemp, -26. - 2., 30., 0., 29.)); // up
+      t = clamp(map_range(IRtemp, -26. - 2., 30., 0., 1.), 0.0, 1.0); // up
     else
-      palletteIndex = int(map_range(IRtemp, -60. - 2., 26., 0., 29.)); // down
+      t = clamp(map_range(IRtemp, -60. - 2., 26., 0., 1.), 0.0, 1.0); // down
 
-    palletteIndex = clamp(palletteIndex, 0, 29);
-
-    fragmentColor = texelFetch(colorScalesTex, ivec2(2 + upOrDown, palletteIndex), 0);
+    fragmentColor = sampleColorScale(colorScalesTex, 2 + upOrDown, t, 30, colorScaleInterpolate);
   }
   drawCursor(cursor, view);
 }

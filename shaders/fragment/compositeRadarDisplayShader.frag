@@ -22,6 +22,7 @@ uniform sampler2D precipDepositionTexture;
 uniform float opacity;
 uniform int   colorScaleColumn;
 uniform int   colorScaleStops;
+uniform int   colorScaleInterpolate;
 uniform bool  dbzOpacityEnabled;
 uniform float dbzOpacityStrength;
 
@@ -36,8 +37,7 @@ out vec4 fragmentColor;
 
 vec3 sampleColorScaleStepped(float t)
 {
-  int idx = clamp(int(t * float(colorScaleStops)), 0, colorScaleStops - 1);
-  return texelFetch(colorScalesTex, ivec2(colorScaleColumn, idx), 0).rgb;
+  return sampleColorScale(colorScalesTex, colorScaleColumn, t, colorScaleStops, colorScaleInterpolate).rgb;
 }
 
 float computeReflectivityAt(vec2 cellPos, vec2 radarPos, float radarRange, float radarResolution, float sensitivity)

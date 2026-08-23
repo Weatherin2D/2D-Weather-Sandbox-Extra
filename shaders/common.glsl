@@ -28,9 +28,9 @@ precision highp isampler2D;
 #define minVegetationMoisture 12.0   // mm sustained moisture required for vegetation growth
 
 #define iterPerSimDay 300000.0              // in-game iterations per day (timePerIteration = 0.00008 h)
-#define vegDiebackDaysPerPointMild 5.0      // days between biomass loss when stress is barely above zero
-#define vegDiebackDaysPerPointSevere 0.32   // days between loss under severe drought (~2 wk grass, ~6–10 wk forest)
-#define vegDiebackMinIter 12000.0           // minimum spacing between dieback steps
+#define vegDiebackDaysPerPointMild 50.0      // days between biomass loss when stress is barely above zero (10x slower)
+#define vegDiebackDaysPerPointSevere 3.2   // days between loss under severe drought (~20 days grass, ~60–100 days forest)
+#define vegDiebackMinIter 120000.0           // minimum spacing between dieback steps (10x slower)
 #define vegTreeDiebackSlowdown 3.8          // large trees die slower than grass
 
 #define fullWhiteSnowHeight 10.0   // snow height at witch full whiteness is displayed and max albedo is achieved
@@ -465,13 +465,10 @@ bool isLandOriginIce(float salinityPpt) { return salinityPpt < 0.0; }
 float dT_saturated(float dTdry,
                    float dTl) // dTl = temperature difference because of latent heat
 {
-  if (dTl == 0.0)
+  float denom = dTdry - dTl;
+  if (abs(denom) < 1e-8)
     return dTdry;
-  else {
-    float multiplier = dTdry / (dTdry - dTl);
-
-    return dTdry * multiplier;
-  }
+  return dTdry * (dTdry / denom);
 }
 ////////////// Water Functions ///////////////
 #define wf_devider 250.0 // 250.0 Real water 	230 less steep curve
@@ -679,4 +676,19 @@ vec3 sunColor(float scattering) // 0.0 = white     0.5 = orange     1.0 = red
 {
   float val = 1.0 - scattering;
   return hsv2rgb(vec3(0.015 + val * 0.15, min(2.0 - val * 2.0, 1.), 1.));
+}
+
+// Color-scale lookup. interpolate != 0 samples the baked ramp with LINEAR
+// filtering (RH-style smooth). interpolate == 0 snaps to the nearest stop.
+vec4 sampleColorScale(sampler2D tex, int column, float t, int stops, int interpolate)
+{
+  t = clamp(t, 0.0, 1.0);
+  if (interpolate != 0) {
+    ivec2 scaleSize = textureSize(tex, 0);
+    float u = (float(column) + 0.5) / float(scaleSize.x);
+    return texture(tex, vec2(u, t));
+  }
+  int n = max(stops, 2);
+  int palIdx = clamp(int(t * float(n - 1) + 0.5), 0, n - 1);
+  return texelFetch(tex, ivec2(column, palIdx), 0);
 }

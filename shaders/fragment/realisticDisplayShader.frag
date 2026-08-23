@@ -103,6 +103,9 @@ uniform float lightningBloomCoupling;
 uniform float greenHueStartThreshold;
 uniform float greenHueEndThreshold;
 uniform float greenHueStrength;
+uniform float greenHueBrightness;
+uniform float greenHueSaturation;
+uniform float greenHueHue;
 
 out vec4 fragmentColor;
 
@@ -796,40 +799,6 @@ float normalizedSunlightAt(vec2 tc)
   return smoothSunlightSample(lightTex, tc, texelSize, visualQuality) / standardSunBrightness;
 }
 
-// Sample RH with the same Hermite / bilerp path as oversaturated cloud water,
-// so 90–100% moisture fog gets soft edges instead of sim-cell stripes.
-float sampleRhAt(vec2 fc)
-{
-  vec2 cfc = vec2(fc.x, clamp(fc.y, 0.0, resolution.y));
-  bool farZ = view[2] / resolution.x <= 0.0025;
-  vec4 wSamp;
-  vec4 bSamp;
-  if (smoothClouds > 0.5) {
-    wSamp = smoothBilerpWallVis(waterTex, wallTex, cfc);
-    bSamp = smoothBilerpWallVis(baseTex, wallTex, cfc);
-  } else if (farZ || visualQuality < 0.45) {
-    wSamp = texture(waterTex, cfc * texelSize);
-    bSamp = texture(baseTex, cfc * texelSize);
-  } else {
-    wSamp = bilerpWallVis(waterTex, wallTex, cfc);
-    bSamp = bilerpWallVis(baseTex, wallTex, cfc);
-  }
-  return relativeHumd(potentialToRealT(bSamp[TEMPERATURE]), wSamp[TOTAL]);
-}
-
-// Extra vertical soften only when Smooth Clouds is off (Hermite already softens cell edges).
-float verticallySoftRh(vec2 fc)
-{
-  if (smoothClouds > 0.5)
-    return sampleRhAt(fc);
-  float rh = sampleRhAt(fc) * 0.40;
-  rh += sampleRhAt(fc + vec2(0.0, 0.75)) * 0.20;
-  rh += sampleRhAt(fc - vec2(0.0, 0.75)) * 0.20;
-  rh += sampleRhAt(fc + vec2(0.0, 1.50)) * 0.10;
-  rh += sampleRhAt(fc - vec2(0.0, 1.50)) * 0.10;
-  return rh;
-}
-
 vec3 tintLightningVolume(vec3 lightRgb, vec3 matchTint)
 {
   if (lightningTintMode < 0.5)
@@ -845,7 +814,7 @@ vec3 softClipFlash(vec3 lightRgb)
   return lightRgb / (vec3(1.0) + lightRgb * (0.35 / clip));
 }
 
-vec4 computeCloudSmokeColor(float cloudwater, float precip, float dustAmt, float smokeAmt, float localLightIntensity, float rainSnowFactor, float nearFireEmberMask, vec2 windVel, float dayMask, float hailMm, float dropMm, float rh)
+vec4 computeCloudSmokeColor(float cloudwater, float precip, float dustAmt, float smokeAmt, float localLightIntensity, float rainSnowFactor, float nearFireEmberMask, vec2 windVel, float dayMask, float hailMm, float dropMm)
 {
   float densScale = max(cloudDensityScale, 0.01);
   float soft = clamp(cloudSoftness, 0.15, 2.5);
@@ -853,21 +822,7 @@ vec4 computeCloudSmokeColor(float cloudwater, float precip, float dustAmt, float
   vec3 baseCloud = vec3(1.0 / (cloudwater * 0.005 + 1.0)) * cloudBrightTint;
   vec3 precipTint = mix(snowShaftTint, rainShaftTint, clamp(rainSnowFactor, 0.0, 1.0));
   float precipWeight = clamp(precip * 0.8 * densScale, 0.0, 8.0);
-
-  // Soft RH mist (90%→100%) that hands off continuously into real cloud water.
-  // Match mist peak density to the opacity of freshly condensed cloud so 99%→100%
-  // RH does not pop when condensation begins.
-  float rh01 = clamp(rh, 0.0, 1.5);
-  // Fully open by ~99–100% so 0.99 and 1.00 read the same visually
-  float rhMist = smoothstep(0.90, 0.995, rh01);
-  float realCloud = max(cloudwater, 0.0) * 13.6 * densScale;
-  // Peak mist density ≡ thin newly-formed cloud (continuous at condensation onset)
-  float mistPeak = 0.22 * densScale;
-  float mistTarget = rhMist * mistPeak;
-  // As real cloud grows to mistPeak, mist fades 1:1 so total density stays continuous
-  float mistFade = 1.0 - smoothstep(0.0, max(mistPeak, 1e-4), realCloud);
-  float mistWeight = mistTarget * mistFade;
-  float cloudWeight = realCloud + mistWeight;
+  float cloudWeight = max(cloudwater * 13.6 * densScale, 0.0);
   float totalDensity = cloudWeight + precipWeight;
   float cloudOpacity = clamp(1.0 - (1.0 / (1. + totalDensity)), 0.0, 1.0);
   cloudOpacity = pow(cloudOpacity, 1.0 / soft);
@@ -878,9 +833,6 @@ vec4 computeCloudSmokeColor(float cloudwater, float precip, float dustAmt, float
   float lit = pow(clamp(localLightIntensity, 0.0, 1.5), mix(1.0, 0.65, cloudLightResponse)) * mix(0.55, 1.35, cloudLightResponse);
   float cloudShadow = (1.0 - smoothstep(0.06, 0.22, lit)) * thickCloudMask;
   vec3 cloudCol = mix(baseCloud, baseCloud * cloudDarkTint, cloudShadow * cloudShadowStrength);
-  // Mist chroma only while mist still contributes (fades out with handoff)
-  float mistFrac = mistWeight / max(totalDensity, 1e-4);
-  cloudCol = mix(cloudCol, cloudBrightTint * vec3(0.94, 0.96, 1.0), mistFrac * mistFrac * 0.22);
 
   // Precip shafts take shaft tint and optional sky-ish reflection + sun backlight
   float shaftAmt = clamp(precipWeight / max(totalDensity, 1e-4), 0.0, 1.0);
@@ -923,11 +875,19 @@ vec4 computeCloudSmokeColor(float cloudwater, float precip, float dustAmt, float
       float cloudLum = max(dot(cloudCol, vec3(0.2126, 0.7152, 0.0722)), 1e-4);
       float hueLum = max(dot(coreHue, vec3(0.2126, 0.7152, 0.0722)), 1e-4);
       vec3 hueKeepLum = coreHue * (cloudLum / hueLum);
+      
+      // Apply brightness adjustment to hue
+      hueKeepLum *= clamp(greenHueBrightness, 0.1, 3.0);
+      
+      // Apply saturation adjustment to hue (luminance-preserving)
+      float coreLum = dot(hueKeepLum, vec3(0.2126, 0.7152, 0.0722));
+      hueKeepLum = mix(vec3(coreLum), hueKeepLum, clamp(greenHueSaturation, 0.0, 2.0));
+      
       // Soft multiply toward hue, then ease back into cloud for a blended cast
-      vec3 softMul = mix(vec3(1.0), coreHue, 0.42);
+      vec3 softMul = mix(vec3(1.0), hueKeepLum, 0.42);
       vec3 tinted = mix(cloudCol * softMul, hueKeepLum, 0.35);
       cloudCol = mix(cloudCol, tinted, coreAmt * 0.30);
-      precipCoreHue = coreHue;
+      precipCoreHue = hueKeepLum;
       precipCoreHueAmt = max(precipCoreHueAmt, coreAmt);
     }
   }
@@ -1359,9 +1319,7 @@ void main()
           nearEmber = clamp(airSmoke * 0.2, 0.0, 1.0) * nightFactor;
         vec2 airWind = airBaseSample.xy;
         vec4 airSizes = texture(dropletSizeTex, airUV);
-        // Always Hermite-smooth RH for mist (same path as oversaturated cloud).
-        float airRh = verticallySoftRh(airBnd);
-        vec4 airColor = computeCloudSmokeColor(airCloud, airPrecip, airWater[DUST], airSmoke, normalizedSunlightAt(airUV), airRainSnow, nearEmber, airWind, 1.0 - nightFactor, airSizes.r, airSizes.g, airRh);
+        vec4 airColor = computeCloudSmokeColor(airCloud, airPrecip, airWater[DUST], airSmoke, normalizedSunlightAt(airUV), airRainSnow, nearEmber, airWind, 1.0 - nightFactor, airSizes.r, airSizes.g);
         opacity = airColor.a;
         color = airColor.rgb;
         // Waterline air: cheap fill only — full SDF runs on true air fragments.
@@ -1440,9 +1398,7 @@ void main()
     }
     vec2 airWind = base.xy;
     vec4 dropSizes = texture(dropletSizeTex, bndFragCoord * texelSize);
-    // Always Hermite-smooth RH for mist (same path as oversaturated cloud).
-    float airRh = verticallySoftRh(bndFragCoord);
-    vec4 airColor = computeCloudSmokeColor(cloudwater, water[PRECIPITATION], water[DUST], airSmokeAmt, lightIntensity, rainSnowFactorAir, nearFireEmberMask, airWind, 1.0 - nightFactor, dropSizes.r, dropSizes.g, airRh);
+    vec4 airColor = computeCloudSmokeColor(cloudwater, water[PRECIPITATION], water[DUST], airSmokeAmt, lightIntensity, rainSnowFactorAir, nearFireEmberMask, airWind, 1.0 - nightFactor, dropSizes.r, dropSizes.g);
     opacity = airColor.a;
     color = airColor.rgb;
 

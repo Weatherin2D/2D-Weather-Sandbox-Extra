@@ -19,6 +19,7 @@ uniform vec4 cursor;
 // Color scale column for charge (blue=negative, white=neutral, red=positive)
 uniform int colorScaleColumn;
 uniform int colorScaleStops;
+uniform int colorScaleInterpolate;
 
 out vec4 fragmentColor;
 
@@ -45,8 +46,7 @@ void main()
 
     // Bipolar: map [-1,1] → [0,1]
     float normalized = clamp((displayCharge + 1.0) * 0.5, 0.0, 1.0);
-    int palIdx = clamp(int(normalized * float(colorScaleStops - 1)), 0, colorScaleStops - 1);
-    vec4 chargeColor = texelFetch(colorScalesTex, ivec2(colorScaleColumn, palIdx), 0);
+    vec4 chargeColor = sampleColorScale(colorScalesTex, colorScaleColumn, normalized, colorScaleStops, colorScaleInterpolate);
 
     // Show charge magnitude as brightness — stronger charge = more saturated color
     float chargeMag = abs(displayCharge);
@@ -58,8 +58,7 @@ void main()
 
     // Bipolar: map [-1,1] → [0,1]
     float normalized = clamp((airCharge + 1.0) * 0.5, 0.0, 1.0);
-    int palIdx = clamp(int(normalized * float(colorScaleStops - 1)), 0, colorScaleStops - 1);
-    fragmentColor = texelFetch(colorScalesTex, ivec2(colorScaleColumn, palIdx), 0);
+    fragmentColor = sampleColorScale(colorScalesTex, colorScaleColumn, normalized, colorScaleStops, colorScaleInterpolate);
 
     // Fade to near-black where charge is near zero (cleaner look)
     float chargeMag = abs(airCharge);

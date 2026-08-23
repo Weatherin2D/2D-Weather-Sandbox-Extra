@@ -37,6 +37,7 @@ uniform float dryLapse;
 uniform float evapHeat;
 uniform float meltingHeat;
 uniform float condensationRate;
+uniform float cloudEvaporationRate;
 
 uniform float globalEffectsStartAlt;
 uniform float globalEffectsEndAlt;
@@ -120,43 +121,36 @@ void main()
     realTemp = potentialToRealT(base[TEMPERATURE]);
 
 
-    //  float excessWater = max(water[TOTAL] - maxWater(realTemp), 0.0); // calculate the amount of extra water beyond 100% rel hum, including both vapor and cloud water
+    // excessWater: vapor+cloud above saturation at current T (can be negative when dry)
     float excessWater = water[TOTAL] - maxWater(realTemp);
-
-    float overSaturation = excessWater - water[CLOUD]; // amount of water vapor that should condence, but hasn't yet
+    // Vapor that should be cloud but isn't yet (or deficit when evaporating)
+    float overSaturation = excessWater - water[CLOUD];
 
     float condensation;
-
-    if (overSaturation < 0.) {                          // evaporation
-      condensation = overSaturation * 0.20;             // evaporation is rapid
-    } else {                                            // condensation
-      condensation = overSaturation * condensationRate; // 0.002 0.25 amount of the oversaturated water vapor that slowly condences
+    if (overSaturation < 0.0) {
+      // Cloud evaporates into undersaturated air (faster than condensation, GUI-tunable)
+      float evapRate = max(cloudEvaporationRate, 0.0);
+      condensation = overSaturation * evapRate;
+    } else {
+      // Soft onset near equilibrium — thin haze doesn't flicker, but still fires towers
+      float onset = smoothstep(0.0, 0.006, overSaturation);
+      condensation = overSaturation * max(condensationRate, 0.0) * onset;
     }
-    condensation = max(condensation, -water[CLOUD]);    // Prevent cloudwater from going negative
+    condensation = max(condensation, -water[CLOUD]); // never evaporate more cloud than exists
 
-    float dT = condensation * evapHeat * 1.0;           // how much that water phase change would change the temperature
-    base[TEMPERATURE] += dT;
-    realTemp += dT;
-    water[CLOUD] += condensation;
+    // Latent heat: full one-shot warming on condensation (drives buoyancy/storms);
+    // saturated adjust only on evaporation so cooling stays tempered.
+    float dTdry = condensation * evapHeat;
+    float excessAtWarm = water[TOTAL] - maxWater(realTemp + dTdry);
+    float dWt = max(excessAtWarm, 0.0) - max(excessWater, 0.0);
+    float dTl = dWt * evapHeat;
+    float satAdj = dT_saturated(dTdry, dTl);
+    float actualTempChange = condensation > 0.0 ? dTdry : satAdj;
 
+    base[TEMPERATURE] += actualTempChange;
+    realTemp += actualTempChange;
+    water[CLOUD] = max(water[CLOUD] + condensation, 0.0);
 
-    // float newCloudWater = water[CLOUD] + condensation;                             // slowly condence the oversaturated vapor
-
-    // float dWt = max(water[TOTAL] - maxWater(realTemp + dT), 0.0) - overSaturation; // how much that temperature change would change
-    //  the amount of liquid water
-
-    // actualTempChange = dT_saturated(dT, dWt * evapHeat);
-
-    //  base[TEMPERATURE] += actualTempChange; // APPLY LATENT HEAT!
-
-    // realTemp += actualTempChange;
-
-    // float tempC = KtoC(realTemp);
-
-
-    //   water[CLOUD] = max(water[TOTAL] - maxWater(realTemp), 0.0); // recalculate cloud water
-
-    // float relHum = relativeHumd(realTemp, water[TOTAL]); // not used
 
     // Radiative cooling and heating effects
 

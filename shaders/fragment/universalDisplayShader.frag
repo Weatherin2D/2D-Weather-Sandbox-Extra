@@ -19,6 +19,7 @@ uniform float floodThreshold; // when > 0, value = max(0, cell[q] - floodThresho
 uniform int colorScaleColumn; // which column of colorScalesTex to sample (4=universal, 5=waterVapor)
 uniform int useUnipolarScale;  // 1 = clamp(val,0,1), 0 = bipolar (val+1)*0.5
 uniform int colorScaleStops;  // number of palette stops in colorScalesTex
+uniform int colorScaleInterpolate;
 
 uniform vec3 view;   // Xpos  Ypos    Zoom
 uniform vec4 cursor; // xpos   Ypos  Size   type
@@ -49,9 +50,7 @@ vec4 sampleQuantityColor(float val)
   float normalized = (useUnipolarScale == 1)
     ? clamp(val, 0.0, 1.0)
     : clamp((val + 1.0) * 0.5, 0.0, 1.0);
-  int palIdx = int(normalized * float(colorScaleStops - 1));
-  palIdx = clamp(palIdx, 0, colorScaleStops - 1);
-  return texelFetch(colorScalesTex, ivec2(colorScaleColumn, palIdx), 0);
+  return sampleColorScale(colorScalesTex, colorScaleColumn, normalized, colorScaleStops, colorScaleInterpolate);
 }
 
 // Flood palette: full scale at 25 m; 50% mix at 5 m (matches realistic opacity curve)

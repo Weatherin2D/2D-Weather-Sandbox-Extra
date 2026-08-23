@@ -543,11 +543,23 @@ void main()
           if (floodExcessFire >= significantFloodMm) {
             wall[TYPE] = extinguishFireType(wall[TYPE]);
           } else {
-            float fireIntensity = calcFireIntensity(wall[VEGETATION], water[SOIL_MOISTURE], waterX0Yp[PRECIPITATION]);
-            // Consume fuel visually when available; bare ground stays on fire after fuel is gone
-            if (fireIntensity >= minimalFireIntensity && wall[VEGETATION] > 0
-                && int(iterNum) % (int(10. / fireIntensity) + 1) == 0) {
-              wall[VEGETATION] = max(wall[VEGETATION] - 1, 0);
+            // Moderate rainfall puts out fires while causing smoldering (increased smoke)
+            float precipAbove = waterX0Yp[PRECIPITATION];
+            if (precipAbove >= 0.05) {
+              // Rain hitting fire extinguishes it
+              wall[TYPE] = extinguishFireType(wall[TYPE]);
+              // Rain causes smoldering: boost smoke when rain hits fire
+              smoke += precipAbove * 3.0;
+            } else if (precipAbove >= 0.01) {
+              // Light rainfall causes some smoldering without full extinguishment
+              smoke += precipAbove * 1.5;
+            } else {
+              float fireIntensity = calcFireIntensity(wall[VEGETATION], water[SOIL_MOISTURE], waterX0Yp[PRECIPITATION]);
+              // Consume fuel visually when available; bare ground stays on fire after fuel is gone
+              if (fireIntensity >= minimalFireIntensity && wall[VEGETATION] > 0
+                  && int(iterNum) % (int(10. / fireIntensity) + 1) == 0) {
+                wall[VEGETATION] = max(wall[VEGETATION] - 1, 0);
+              }
             }
           }
         }
@@ -748,7 +760,7 @@ void main()
 
           int vegetationGrowthRate = 0;
           if (climateMoisture >= minVegetationMoisture)
-            vegetationGrowthRate = int((climateMoisture - minVegetationMoisture) * sqrt(lightAboveSurface[SUNLIGHT]) * 0.008);
+            vegetationGrowthRate = int((climateMoisture - minVegetationMoisture) * sqrt(lightAboveSurface[SUNLIGHT]) * 0.0008); // 10x slower for ~monthly growth
 
           if (vegetationGrowthRate > 0 && int(iterNum) % ((100 / vegetationGrowthRate) * 100) == 0) {
             int tempLimit = int(map_rangeC(realTempAboveSurface, CtoK(0.0), CtoK(25.0), 0., float(FOREST_VEG_MAX)));
