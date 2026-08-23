@@ -224,11 +224,18 @@
     const inp = document.createElement('input');
     inp.type = 'number';
     inp.className = 'shm-inp';
-    inp.min = String(min);
-    inp.max = String(max);
+    // Soft-lock: don't constrain HTML element so manual input can exceed visual bounds
+    // Store visual range for reference but allow any value to be typed
+    inp.dataset.minVal = String(min);
+    inp.dataset.maxVal = String(max);
     inp.step = String(step);
     inp.value = String(getVal());
     inp.onchange = function() {
+      const v = parseFloat(inp.value);
+      if (Number.isFinite(v)) setVal(v);
+    };
+    inp.oninput = function() {
+      // Allow live updates as user types, without clamping
       const v = parseFloat(inp.value);
       if (Number.isFinite(v)) setVal(v);
     };

@@ -782,6 +782,15 @@ vec3 bump3y(vec3 x, vec3 yoffset)
   y = saturate(y - yoffset);
   return y;
 }
+vec3 rgb2hsv(vec3 c) {
+  vec4 K = vec4(0.0, -1.0 / 3.0, 2.0 / 3.0, -1.0);
+  vec4 p = mix(vec4(c.bg, K.wz), vec4(c.gb, K.xy), step(c.b, c.g));
+  vec4 q = mix(vec4(p.xyw, c.r), vec4(c.r, p.yzx), step(p.x, c.r));
+  float d = q.x - min(q.yzw);
+  float e = 1.0e-10;
+  return vec3(abs(q.z + (q.w - q.y) / (6.0 * d + e)), d / (q.x + e), q.x);
+}
+
 vec3 spectral_zucconi(float w)
 {
   // w: [400, 700] wavelenght(nm)
@@ -869,9 +878,9 @@ vec4 computeCloudSmokeColor(float cloudwater, float precip, float dustAmt, float
     float coreAmt = intense * inShadow * clamp(dayMask, 0.0, 1.0)
       * clamp(greenHueStrength, 0.0, 3.0) * mix(0.2, 1.0, shaftAmt)
       * mix(0.28, 1.0, sizeOrFallback);
-    // Soft onset so cores feather into surrounding shafts
-    coreAmt = smoothstep(0.04, 0.78, coreAmt);
-    if (coreAmt > 0.001) {
+    // Soft onset so cores feather into surrounding shafts — reduced thresholds to fill gaps
+    coreAmt = smoothstep(0.01, 0.55, coreAmt);
+    if (coreAmt > 0.0001) {
       float cloudLum = max(dot(cloudCol, vec3(0.2126, 0.7152, 0.0722)), 1e-4);
       float hueLum = max(dot(coreHue, vec3(0.2126, 0.7152, 0.0722)), 1e-4);
       vec3 hueKeepLum = coreHue * (cloudLum / hueLum);
@@ -883,10 +892,18 @@ vec4 computeCloudSmokeColor(float cloudwater, float precip, float dustAmt, float
       float coreLum = dot(hueKeepLum, vec3(0.2126, 0.7152, 0.0722));
       hueKeepLum = mix(vec3(coreLum), hueKeepLum, clamp(greenHueSaturation, 0.0, 2.0));
       
+      // Apply hue shift via HSV rotation
+      float hueShift = clamp(greenHueHue, -1.0, 1.0) * 0.5; // -1..1 → -0.5..0.5 hue rotation
+      if (abs(hueShift) > 0.01) {
+        vec3 hsv = rgb2hsv(hueKeepLum);
+        hsv.x = fract(hsv.x + hueShift); // rotate hue in [0,1] space
+        hueKeepLum = hsv2rgb(hsv);
+      }
+      
       // Soft multiply toward hue, then ease back into cloud for a blended cast
       vec3 softMul = mix(vec3(1.0), hueKeepLum, 0.42);
       vec3 tinted = mix(cloudCol * softMul, hueKeepLum, 0.35);
-      cloudCol = mix(cloudCol, tinted, coreAmt * 0.30);
+      cloudCol = mix(cloudCol, tinted, coreAmt * 0.35);
       precipCoreHue = hueKeepLum;
       precipCoreHueAmt = max(precipCoreHueAmt, coreAmt);
     }
