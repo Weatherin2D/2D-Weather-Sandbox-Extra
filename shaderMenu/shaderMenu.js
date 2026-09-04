@@ -567,6 +567,8 @@
       function(v) { setCR({ cloudLightResponse: v }); }, 0, 2, 0.01, syncArr);
     addSlider(lighting, 'Cloud shadow strength', '', function() { return cloudsRainS().cloudShadowStrength; },
       function(v) { setCR({ cloudShadowStrength: v }); }, 0, 1, 0.01, syncArr);
+    addSlider(lighting, 'Shadow sun tint', '0 = Enhanced neutral shadows, 1 = sun-colored shadows', function() { return cloudsRainS().shadowSunTint; },
+      function(v) { setCR({ shadowSunTint: v }); }, 0, 1, 0.01, syncArr);
     addSlider(lighting, 'Shaft backlight', '', function() { return cloudsRainS().shaftBacklight; },
       function(v) { setCR({ shaftBacklight: v }); }, 0, 1, 0.01, syncArr);
     addSlider(lighting, 'Cloud density scale', '', function() { return cloudsRainS().cloudDensityScale; },

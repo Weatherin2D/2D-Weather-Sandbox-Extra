@@ -10,18 +10,18 @@
 
   const CLOUDS_RAIN_DEFAULTS = {
     cloudBrightTint: [1, 1, 1],
-    cloudDarkTint: [0.45, 0.58, 0.85],
-    rainShaftTint: [0.85, 0.88, 0.92],
-    snowShaftTint: [0.95, 0.97, 1.0],
+    cloudDarkTint: [0.055, 0.072, 0.098],
+    rainShaftTint: [0.55, 0.62, 0.78],
+    snowShaftTint: [0.75, 0.82, 0.95],
     cloudLightResponse: 1.0,
-    cloudShadowStrength: 0.45,
-    shaftBacklight: 0.35,
+    cloudShadowStrength: 0.7,
+    shaftBacklight: 0.15,
     cloudDensityScale: 1.0,
     cloudOpacityMult: 1.0,
-    rainOpacityMult: 1.0,
+    rainOpacityMult: 2.25,
     cloudSoftness: 1.0,
-    shaftSpecular: 0.25,
-    skyReflectAmount: 0.15,
+    shaftSpecular: 0.1,
+    skyReflectAmount: 0.05,
     refractDistort: 0.0,
     rainbowStrength: 1.0,
     lightningCloudFill: 1.0,
@@ -31,13 +31,14 @@
     lightningTint: [0.70, 0.57, 1.0],
     flashSoftClip: 1.0,
     lightningBloomCoupling: 1.0,
+    shadowSunTint: 0.0,
   };
 
   const APPEARANCE_DEFAULTS = {
     exposure: 1.0,
-    saturation: 1.0,
-    contrast: 1.0,
-    bloomStrength: 1.0,
+    saturation: 1.15,
+    contrast: 1.1,
+    bloomStrength: 0.99,
     enableRainbows: true,
     smoothClouds: true,
     floodWaterOpacity: 0.75,
@@ -131,6 +132,35 @@
   }
 
   function buildBuiltinPacks() {
+    const enhancedV2 = makePack({
+      id: 'builtin_enhanced_v2',
+      name: 'Enhanced V2',
+      builtin: true,
+      appearance: {
+        exposure: 1.0,
+        saturation: 1.15,
+        contrast: 1.1,
+        bloomStrength: 0.99,
+        enableRainbows: true,
+        smoothClouds: true,
+        floodWaterOpacity: 0.75,
+        fogHazeStrength: 0.0,
+        minShadowLight: 0.02,
+      },
+      cloudsRain: {
+        cloudBrightTint: [1, 1, 1],
+        cloudDarkTint: [0.055, 0.072, 0.098],
+        rainShaftTint: [0.55, 0.62, 0.78],
+        snowShaftTint: [0.75, 0.82, 0.95],
+        cloudShadowStrength: 0.7,
+        shaftBacklight: 0.15,
+        shaftSpecular: 0.1,
+        skyReflectAmount: 0.05,
+        rainOpacityMult: 2.25,
+        shadowSunTint: 0.0,
+      },
+    });
+
     const vanilla = makePack({
       id: 'builtin_vanilla',
       name: 'Vanilla',
@@ -146,7 +176,16 @@
         fogHazeStrength: 0.0,
         minShadowLight: 0.02,
       },
-      cloudsRain: {},
+      cloudsRain: {
+        cloudDarkTint: [0.45, 0.58, 0.85],
+        rainShaftTint: [0.85, 0.88, 0.92],
+        snowShaftTint: [0.95, 0.97, 1.0],
+        cloudShadowStrength: 0.45,
+        shaftBacklight: 0.35,
+        shaftSpecular: 0.25,
+        skyReflectAmount: 0.15,
+        shadowSunTint: 1.0,
+      },
     });
 
     const cinematic = makePack({
@@ -173,6 +212,7 @@
         flashSoftClip: 0.7,
         shaftSpecular: 0.32,
         skyReflectAmount: 0.20,
+        shadowSunTint: 1.0,
       },
     });
 
@@ -201,6 +241,7 @@
         lightningCloudFill: 0.75,
         lightningShaftGlow: 0.7,
         sheetFlashMix: 0.8,
+        shadowSunTint: 1.0,
       },
     });
 
@@ -226,6 +267,7 @@
         skyReflectAmount: 0.28,
         lightningTintMode: 'matchClouds',
         sheetFlashMix: 0.75,
+        shadowSunTint: 1.0,
       },
     });
 
@@ -257,6 +299,7 @@
         sheetFlashMix: 0.85,
         lightningTintMode: 'matchClouds',
         flashSoftClip: 0.75,
+        shadowSunTint: 1.0,
       },
     });
 
@@ -288,6 +331,7 @@
         lightningCloudFill: 0.6,
         lightningShaftGlow: 0.55,
         lightningTintMode: 'matchClouds',
+        shadowSunTint: 1.0,
       },
     });
 
@@ -319,6 +363,7 @@
         lightningCloudFill: 0.65,
         lightningShaftGlow: 0.75,
         sheetFlashMix: 0.7,
+        shadowSunTint: 1.0,
       },
     });
 
@@ -351,6 +396,7 @@
         lightningTintMode: 'matchClouds',
         flashSoftClip: 0.6,
         lightningBloomCoupling: 0.75,
+        shadowSunTint: 1.0,
       },
     });
 
@@ -384,6 +430,7 @@
         sheetFlashMix: 0.5,
         lightningTintMode: 'custom',
         lightningTint: [0.95, 0.75, 0.45],
+        shadowSunTint: 1.0,
       },
     });
 
@@ -418,6 +465,7 @@
         lightningShaftGlow: 0.4,
         sheetFlashMix: 0.5,
         flashSoftClip: 0.8,
+        shadowSunTint: 1.0,
       },
     });
 
@@ -452,11 +500,12 @@
         flashSoftClip: 0.85,
         lightningBloomCoupling: 1.25,
         rainbowStrength: 1.15,
+        shadowSunTint: 1.0,
       },
     });
 
     return [
-      vanilla, cinematic, stormy, goldenHour,
+      enhancedV2, vanilla, cinematic, stormy, goldenHour,
       supercell, arctic, monsoon, noir, dustStorm, softMist, neonNight,
     ];
   }

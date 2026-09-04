@@ -98,6 +98,8 @@ uniform float lightningTintMode; // 0=neutral 1=matchClouds 2=custom
 uniform vec3 lightningTint;
 uniform float flashSoftClip;
 uniform float lightningBloomCoupling;
+// 0 = Enhanced neutral shadow light; 1 = Full sunTint * shadowLight
+uniform float shadowSunTint;
 
 // Intense hail/rain core cast — daytime + cloud-shadow only (guiControls.greenHue*)
 uniform float greenHueStartThreshold;
@@ -829,9 +831,16 @@ vec4 computeCloudSmokeColor(float cloudwater, float precip, float dustAmt, float
   float densScale = max(cloudDensityScale, 0.01);
   float soft = clamp(cloudSoftness, 0.15, 2.5);
 
-  vec3 baseCloud = vec3(1.0 / (cloudwater * 0.005 + 1.0)) * cloudBrightTint;
+  // Blue tint from #14243e chroma applied across the whole brightness range (not one navy stop).
+  const vec3 deepCloudNavySat = vec3(0.078431, 0.141176, 0.243137); // #14243e
+  float deepLum = max(dot(deepCloudNavySat, vec3(0.2126, 0.7152, 0.0722)), 1e-4);
+  vec3 navyChroma = deepCloudNavySat / deepLum; // unit-luminance blue direction
+  navyChroma = mix(vec3(1.0), navyChroma, 0.78); // keep readable blue without oversat
+
+  float densBright = 1.0 / (cloudwater * 0.005 + 1.0);
   vec3 precipTint = mix(snowShaftTint, rainShaftTint, clamp(rainSnowFactor, 0.0, 1.0));
-  float precipWeight = clamp(precip * 0.8 * densScale, 0.0, 8.0);
+  // Thicker precip curtains.
+  float precipWeight = clamp(precip * 5.2 * densScale, 0.0, 22.0);
   float cloudWeight = max(cloudwater * 13.6 * densScale, 0.0);
   float totalDensity = cloudWeight + precipWeight;
   float cloudOpacity = clamp(1.0 - (1.0 / (1. + totalDensity)), 0.0, 1.0);
@@ -839,18 +848,44 @@ vec4 computeCloudSmokeColor(float cloudwater, float precip, float dustAmt, float
   cloudOpacity *= mix(cloudOpacityMult, rainOpacityMult, clamp(precipWeight / max(totalDensity, 1e-4), 0.0, 1.0));
   cloudOpacity = clamp(cloudOpacity, 0.0, 1.0);
 
-  float thickCloudMask = smoothstep(0.45, 0.90, cloudOpacity);
+  float thickCloudMask = smoothstep(0.28, 0.82, cloudOpacity);
   float lit = pow(clamp(localLightIntensity, 0.0, 1.5), mix(1.0, 0.65, cloudLightResponse)) * mix(0.55, 1.35, cloudLightResponse);
-  float cloudShadow = (1.0 - smoothstep(0.06, 0.22, lit)) * thickCloudMask;
-  vec3 cloudCol = mix(baseCloud, baseCloud * cloudDarkTint, cloudShadow * cloudShadowStrength);
+  // Density must be high before darkness kicks in — unlit alone must not blacken the whole cloud.
+  float densDark = clamp(1.0 - densBright, 0.0, 1.0);
+  densDark = smoothstep(0.35, 0.92, densDark); // only denser cloudwater counts
+  float unlit = 1.0 - smoothstep(0.06, 0.70, lit);
+  float denseShadow = densDark * thickCloudMask * mix(0.25, 1.0, unlit);
+  float darkAmt = pow(clamp(denseShadow, 0.0, 1.0), 1.15);
 
-  // Precip shafts take shaft tint and optional sky-ish reflection + sun backlight
+  // Greyscale brightness ramp (white → black), then blue-tint at every level.
+  float cloudLum = mix(1.0, 0.0, smoothstep(0.0, 1.0, darkAmt));
+  cloudLum = mix(cloudLum, cloudLum * densBright, 0.25); // thin wisps stay brighter
+  vec3 greyRamp = cloudBrightTint * cloudLum;
+  vec3 blueRamp = navyChroma * cloudLum; // same brightness, blue cast throughout
+  // Stronger blue in shadows, still present on lit/mid tones
+  float blueAmt = mix(0.22, 0.82, darkAmt) * mix(0.35, 1.0, thickCloudMask);
+  vec3 cloudCol = mix(greyRamp, blueRamp, blueAmt);
+  float bodyForce = smoothstep(0.40, 0.88, densDark) * thickCloudMask;
+  vec3 greyWisp = cloudBrightTint * mix(densBright, 0.55 + densBright * 0.45, unlit * 0.35);
+  // Wisps also get a light cool cast
+  greyWisp = mix(greyWisp, greyWisp * navyChroma, 0.18);
+  cloudCol = mix(greyWisp, cloudCol, bodyForce);
+
+  // Precip shafts — same full-range blue tint, brighter than cloud body
   float shaftAmt = clamp(precipWeight / max(totalDensity, 1e-4), 0.0, 1.0);
-  vec3 shaftCol = mix(cloudCol, precipTint, shaftAmt * 0.85);
-  shaftCol = mix(shaftCol, precipTint * vec3(0.75, 0.82, 0.95), skyReflectAmount * shaftAmt);
-  shaftCol += precipTint * shaftBacklight * lit * shaftAmt * 0.35;
+  float shaftDark = clamp(denseShadow * mix(0.55, 1.0, shaftAmt), 0.0, 1.0);
+  shaftDark = pow(shaftDark, 1.12);
+  float shaftLum = mix(0.92, 0.12, smoothstep(0.0, 1.0, shaftDark)); // brighter floor than clouds
+  vec3 shaftGrey = mix(precipTint, vec3(shaftLum), 0.65);
+  vec3 shaftBlue = navyChroma * shaftLum;
+  float shaftBlueAmt = mix(0.28, 0.75, shaftDark);
+  vec3 shaftCol = mix(shaftGrey, shaftBlue, shaftBlueAmt);
+  shaftCol = mix(shaftCol, precipTint, clamp(lit, 0.0, 1.0) * 0.45 * (1.0 - shaftAmt));
+  shaftCol += precipTint * shaftBacklight * lit * shaftAmt * 0.28;
   float spec = pow(clamp(lit, 0.0, 1.0), 4.0) * shaftSpecular * shaftAmt;
   shaftCol += vec3(spec);
+  // Lift precip vs cloud so shafts read thicker/brighter overall
+  shaftCol = min(shaftCol * 1.45 + vec3(0.06), vec3(1.0));
   cloudCol = mix(cloudCol, shaftCol, shaftAmt);
 
   // Severe core cast: soft blue rain / green hail — daytime + sun-shadow only.
@@ -1056,8 +1091,8 @@ void applyAirLightning(vec2 uv, float cloudwater, float precip, float cloudDensi
     if (mediaMask > 0.01) {
       vec2 ldist = vec2((lightningPos.x - uv.x) * aspectRatios[0], lightningPos.y * 0.5 - uv.y);
       float ldistSq = dot(ldist, ldist);
-      // Tighter falloff than a domain-wide wash.
-      float lOnLight = 0.00022 / (ldistSq + 0.012);
+      // Enhanced-V2 strength (0.0006 / +0.008), still gated by mediaMask.
+      float lOnLight = 0.0006 / (ldistSq + 0.008);
       lOnLight *= currentLightningIntensity * lightningCloudFill * mediaMask;
       // Fill uses muted look sliders (bolts still get full post-tonemap look).
       float fillLook = mix(1.0, max(ltBrightness, 0.02) * max(ltContrast, 0.02), 0.35);
@@ -1117,6 +1152,33 @@ void applyAirLightning(vec2 uv, float cloudwater, float precip, float cloudDensi
 
 
 float rand(float n) { return fract(sin(n) * 43758.5453123); }
+
+// Enhanced-V2 altitude sunset scattering on lit cloud faces (display-only).
+void applyAltitudeSunsetOnLight(float sunAng, float cloudOpacityIn, float localLightIntensity)
+{
+  float absSun = abs(sunAng);
+  float cloudScattering = clamp(map_range(absSun, 75. * deg2rad, 90. * deg2rad, 0., 1.), 0., 1.);
+  // Fade out in deep night so purple wash does not linger.
+  float deepNightGate = 1.0 - clamp(map_range(absSun, 88. * deg2rad, 96. * deg2rad, 0., 1.), 0., 1.);
+  cloudScattering *= deepNightGate;
+  if (cloudScattering < 1e-5 || cloudOpacityIn < 1e-4)
+    return;
+
+  float y = clamp(texCoord.y, 0.0, 1.0);
+  vec3 colPurple = vec3(0.65, 0.38, 0.82);
+  vec3 colPink   = vec3(1.00, 0.50, 0.60);
+  vec3 colOrange = vec3(1.00, 0.52, 0.22);
+  vec3 colYellow = vec3(1.00, 0.88, 0.48);
+  vec3 altColor  = mix(colPurple,
+                     mix(colPink,
+                       mix(colOrange, colYellow, smoothstep(0.45, 0.70, y)),
+                     smoothstep(0.20, 0.45, y)),
+                   smoothstep(0.05, 0.20, y));
+  onLight += altColor * cloudScattering * cloudOpacityIn * localLightIntensity * y * 6.0;
+
+  float altFactor = clamp((y - 0.50) / 0.50, 0.0, 1.0);
+  onLight += vec3(cloudScattering * cloudOpacityIn * altFactor * altFactor * localLightIntensity * 8.0);
+}
 
 void main()
 {
@@ -1337,9 +1399,11 @@ void main()
           nearEmber = clamp(airSmoke * 0.2, 0.0, 1.0) * nightFactor;
         vec2 airWind = airBaseSample.xy;
         vec4 airSizes = texture(dropletSizeTex, airUV);
-        vec4 airColor = computeCloudSmokeColor(airCloud, airPrecip, airWater[DUST], airSmoke, normalizedSunlightAt(airUV), airRainSnow, nearEmber, airWind, 1.0 - nightFactor, airSizes.r, airSizes.g);
+        float airLight = normalizedSunlightAt(airUV);
+        vec4 airColor = computeCloudSmokeColor(airCloud, airPrecip, airWater[DUST], airSmoke, airLight, airRainSnow, nearEmber, airWind, 1.0 - nightFactor, airSizes.r, airSizes.g);
         opacity = airColor.a;
         color = airColor.rgb;
+        applyAltitudeSunsetOnLight(localSunAngle, airColor.a, airLight);
         // Waterline air: cheap fill only — full SDF runs on true air fragments.
         applyAirLightning(airUV, airCloud, airPrecip, max(airCloud * 13.6, 0.0), false);
       } else {
@@ -1419,6 +1483,7 @@ void main()
     vec4 airColor = computeCloudSmokeColor(cloudwater, water[PRECIPITATION], water[DUST], airSmokeAmt, lightIntensity, rainSnowFactorAir, nearFireEmberMask, airWind, 1.0 - nightFactor, dropSizes.r, dropSizes.g);
     opacity = airColor.a;
     color = airColor.rgb;
+    applyAltitudeSunsetOnLight(localSunAngle, airColor.a, lightIntensity);
 
     // Subtle refraction warp behind dense precip/cloud (display approx)
     if (refractDistort > 0.001 && airColor.a > 0.08) {
@@ -1703,10 +1768,17 @@ void main()
 
   vec3 ambientLight = texture(ambientLightTex, texCoord).rgb;
 
-  onLight += ambientLight * pow(1. - clamp(-texCoord.y * 15., 0., 1.), 2.5);
+  // Kill sky-blue ambient wash inside thick cloud/precip so the body stays #14243e.
+  float cloudBodyMask = 0.0;
+  if (wall[DISTANCE] != 0 && texCoord.y > 0.0 && texCoord.y <= 1.0)
+    cloudBodyMask = smoothstep(0.18, 0.65, opacity) * (1.0 - smoothstep(0.2, 0.55, lightIntensity));
+  onLight += ambientLight * pow(1. - clamp(-texCoord.y * 15., 0., 1.), 2.5) * (1.0 - cloudBodyMask * 0.92);
 
 
-  finalLight += sunTint * shadowLight + onLight;
+  // shadowSunTint: 0 = Enhanced neutral shadows; 1 = Full sun-tinted shadows
+  float shadowTintAmt = clamp(shadowSunTint, 0.0, 1.0);
+  vec3 shadowTerm = mix(vec3(shadowLight), sunTint * shadowLight, shadowTintAmt);
+  finalLight += shadowTerm + onLight;
 
   // Lightning fill: soft in-cloud lift only — never dominate scene chroma (dust/sky wash).
   {
@@ -1747,6 +1819,18 @@ void main()
     safeEmitted *= 8.0 / boltHdr;
   // Additive bolts only — never replace lit cloud/dust colour with flash.
   vec3 finalColor = litBase + safeEmitted;
+
+  // Cool blue cast across the whole cloud luminance range (not only mid-shadows).
+  if (wall[DISTANCE] != 0 && texCoord.y > 0.0 && texCoord.y <= 1.0) {
+    const vec3 deepCloudNavySat = vec3(0.078431, 0.141176, 0.243137);
+    float deepLum = max(dot(deepCloudNavySat, vec3(0.2126, 0.7152, 0.0722)), 1e-4);
+    vec3 navyChroma = mix(vec3(1.0), deepCloudNavySat / deepLum, 0.78);
+    float lum = max(dot(finalColor, vec3(0.2126, 0.7152, 0.0722)), 0.0);
+    float bodyAmt = smoothstep(0.20, 0.70, opacity);
+    float blueAmt = mix(0.18, 0.55, bodyAmt) * (0.45 + 0.55 * (1.0 - smoothstep(0.15, 0.55, lightIntensity)));
+    vec3 tinted = navyChroma * lum;
+    finalColor = mix(finalColor, tinted, clamp(blueAmt, 0.0, 0.65));
+  }
 
   // Keep severe-core chroma through lightning / fill: re-apply as luminance-preserving tint
   // after lighting so bright flashes cannot bleach the hue away.

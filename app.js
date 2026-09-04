@@ -600,9 +600,9 @@ const guiControls_default = {
   SmoothCam : true,
   camSpeed : 0.01,
   exposure : 1.0,
-  saturation : 1.0,
-  contrast : 1.0,
-  bloomStrength : 1.0,
+  saturation : 1.15,
+  contrast : 1.1,
+  bloomStrength : 0.99,
   greenHueStartThreshold : 0.8,
   greenHueEndThreshold : 1.8,
   greenHueStrength : 0.45,
@@ -19469,7 +19469,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
 
   // load shaders
-  const SHADER_ASSET_VERSION = 41; // bump to bust CDN/browser cache after shader edits
+  const SHADER_ASSET_VERSION = 57; // bump to bust CDN/browser cache after shader edits
 
   var commonSource = await loadSourceFile('shaders/common.glsl');
   var commonDisplaySource = await loadSourceFile('shaders/commonDisplay.glsl');
@@ -20714,23 +20714,23 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   loadSkySettings();
 
   // ---- Shader Menu: clouds / rain / lightning harmony (display-only) ----
-  const CLOUDS_RAIN_STORAGE_KEY = 'weatherSandboxCloudsRain_v1';
+  const CLOUDS_RAIN_STORAGE_KEY = 'weatherSandboxCloudsRain_v2';
   let cloudsRainSettings = (window.ShaderMenu && window.ShaderMenu.packs)
     ? window.ShaderMenu.packs.getCloudsRainDefaults()
     : {
       cloudBrightTint : [ 1, 1, 1 ],
-      cloudDarkTint : [ 0.45, 0.58, 0.85 ],
-      rainShaftTint : [ 0.85, 0.88, 0.92 ],
-      snowShaftTint : [ 0.95, 0.97, 1.0 ],
+      cloudDarkTint : [ 0.055, 0.072, 0.098 ],
+      rainShaftTint : [ 0.55, 0.62, 0.78 ],
+      snowShaftTint : [ 0.75, 0.82, 0.95 ],
       cloudLightResponse : 1.0,
-      cloudShadowStrength : 0.45,
-      shaftBacklight : 0.35,
+      cloudShadowStrength : 0.7,
+      shaftBacklight : 0.15,
       cloudDensityScale : 1.0,
       cloudOpacityMult : 1.0,
-      rainOpacityMult : 1.0,
+      rainOpacityMult : 2.25,
       cloudSoftness : 1.0,
-      shaftSpecular : 0.25,
-      skyReflectAmount : 0.15,
+      shaftSpecular : 0.1,
+      skyReflectAmount : 0.05,
       refractDistort : 0.0,
       rainbowStrength : 1.0,
       lightningCloudFill : 1.0,
@@ -20740,6 +20740,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       lightningTint : [ 0.70, 0.57, 1.0 ],
       flashSoftClip : 1.0,
       lightningBloomCoupling : 1.0,
+      shadowSunTint : 0.0,
     };
 
   function loadCloudsRainSettings()
@@ -20806,6 +20807,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     u3('lightningTint', cr.lightningTint);
     u1('flashSoftClip', cr.flashSoftClip);
     u1('lightningBloomCoupling', cr.lightningBloomCoupling);
+    u1('shadowSunTint', cr.shadowSunTint != null ? cr.shadowSunTint : 0.0);
   }
 
   function resetCloudsRainSettings()
