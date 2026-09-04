@@ -839,8 +839,8 @@ vec4 computeCloudSmokeColor(float cloudwater, float precip, float dustAmt, float
 
   float densBright = 1.0 / (cloudwater * 0.005 + 1.0);
   vec3 precipTint = mix(snowShaftTint, rainShaftTint, clamp(rainSnowFactor, 0.0, 1.0));
-  // Thicker precip curtains.
-  float precipWeight = clamp(precip * 5.2 * densScale, 0.0, 22.0);
+  // Precip curtains (tuned thinner).
+  float precipWeight = clamp(precip * 2.8 * densScale, 0.0, 14.0);
   float cloudWeight = max(cloudwater * 13.6 * densScale, 0.0);
   float totalDensity = cloudWeight + precipWeight;
   float cloudOpacity = clamp(1.0 - (1.0 / (1. + totalDensity)), 0.0, 1.0);

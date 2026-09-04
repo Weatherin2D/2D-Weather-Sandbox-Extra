@@ -18,7 +18,7 @@
     shaftBacklight: 0.15,
     cloudDensityScale: 1.0,
     cloudOpacityMult: 1.0,
-    rainOpacityMult: 2.25,
+    rainOpacityMult: 1.35,
     cloudSoftness: 1.0,
     shaftSpecular: 0.1,
     skyReflectAmount: 0.05,
@@ -156,7 +156,7 @@
         shaftBacklight: 0.15,
         shaftSpecular: 0.1,
         skyReflectAmount: 0.05,
-        rainOpacityMult: 2.25,
+        rainOpacityMult: 1.35,
         shadowSunTint: 0.0,
       },
     });
