@@ -98,6 +98,12 @@ uniform float lightningTintMode; // 0=neutral 1=matchClouds 2=custom
 uniform vec3 lightningTint;
 uniform float flashSoftClip;
 uniform float lightningBloomCoupling;
+// Soft precip illumination (Lightning GUI)
+uniform float ltPrecipGlowChance;
+uniform float ltPrecipGlowPrecipOnlyChance;
+uniform float ltPrecipGlowStrength;
+uniform float ltPrecipGlowSize;
+uniform float ltPrecipGlowSoftness;
 // 0 = Enhanced neutral shadow light; 1 = Full sunTint * shadowLight
 uniform float shadowSunTint;
 
@@ -127,13 +133,17 @@ vec3 emittedLight = vec3(0.); // pure light, like lightning
 
 float shadowLight;
 
-// Daytime severe-core cast (set in computeCloudSmokeColor; applied after lighting so flashes keep the hue)
+// Daytime severe-core cast (set in computeCloudSmokeColor; applied after lighting)
 vec3 precipCoreHue = vec3(1.0);
 float precipCoreHueAmt = 0.0;
 
 vec3 onLight; // extra light that lights up objects, just like sunlight and shadowlight
 // Lightning cloud/air fill — kept separate so sunset/sunrise chroma is preserved at compose time.
 vec3 lightningFillLight = vec3(0.);
+// 50/50 precip glow near bolt: amount + parent bolt tint + precip-only flag
+float lightningShaftFlash = 0.0;
+vec3 lightningShaftFlashTint = vec3(0.92, 0.94, 1.0);
+float lightningShaftFlashPrecipOnly = 0.0;
 
 
 const vec3 bareDrySoilCol = pow(vec3(0.85, 0.60, 0.40), vec3(GAMMA));
@@ -581,7 +591,42 @@ vec3 displayCGLightning(vec2 sampleUV, vec2 lightningPos, float T, float boltSee
 
   vec2  p       = vec2(sampleUV.x * aspectRatios[0], sampleUV.y);
   vec2  origin  = vec2(lightningPos.x * aspectRatios[0], lightningPos.y);
-  float stepLen = max(lightningPos.y, 0.05) / float(mainSegs);
+
+  // Ground contact under a UV column. Prefer walk-down: VERT_DISTANCE is int8
+  // (±127) and saturates for tall storms, which left CGs floating mid-air.
+  // Initial tip estimate under the strike origin (budget length for the zigzag).
+  float tipY = 0.0;
+  {
+    float xUV = clamp(lightningPos.x, 0.001, 0.999);
+    float yWalk = lightningPos.y;
+    // Cover full column height regardless of sim resolution (VERT_DISTANCE saturates at 127).
+    float step = max(texelSize.y * 2.0, lightningPos.y / 64.0);
+    tipY = 0.0;
+    bool hit = false;
+    for (int k = 0; k < 80; k++) {
+      yWalk -= step;
+      if (yWalk <= 0.0) { tipY = 0.0; hit = true; break; }
+      ivec4 w = texture(wallTex, vec2(xUV, clamp(yWalk, 0.001, 0.999)));
+      if (w[DISTANCE] == 0) {
+        // Sit in the air cell above the wall sample so the tip kisses the surface.
+        tipY = max(yWalk + texelSize.y, 0.0);
+        hit = true;
+        break;
+      }
+    }
+    if (!hit) {
+      // Fallback if walk never found wall (open bottom / ocean column).
+      ivec4 wallAtOrigin = texture(wallTex, clamp(lightningPos, vec2(0.001), vec2(0.999)));
+      int vd = wallAtOrigin[VERT_DISTANCE];
+      if (wallAtOrigin[DISTANCE] == 0)
+        tipY = max(lightningPos.y, 0.0);
+      else if (vd > 0)
+        tipY = max(lightningPos.y - float(vd) * texelSize.y + texelSize.y, 0.0);
+    }
+  }
+  float reach = max(origin.y - tipY, 0.02);
+  // Budget extra length so zigzags still reach; final remap guarantees contact.
+  float stepLen = (reach / float(mainSegs)) / 0.72;
 
   float totalGlow = 0.0;
 
@@ -592,9 +637,45 @@ vec3 displayCGLightning(vec2 sampleUV, vec2 lightningPos, float T, float boltSee
   for (int i = 0; i < MAIN_MAX; i++) {
     if (i >= mainSegs) break;
     float r1 = random2d(vec2(boltSeed * 0.00371 + float(i) * 0.0937, boltSeed * 0.00591 + float(i) * 0.0517));
-    cgAng += (r1 - 0.5) * 1.6;
-    cgAng -= (cgAng + PI * 0.5) * 0.30;
+    cgAng += (r1 - 0.5) * 1.45;
+    cgAng -= (cgAng + PI * 0.5) * 0.38;
+    // Strong downward bias so the trunk prefers the ground
+    cgAng = mix(cgAng, -PI * 0.5, 0.22);
     cgVerts[i + 1] = cgVerts[i] + vec2(cos(cgAng), sin(cgAng)) * stepLen;
+  }
+
+  // Re-resolve ground under the built tip column (terrain may differ from origin X),
+  // then stretch / compress so the tip lands on that surface.
+  {
+    // Pull tip X toward the origin column so contact stays under the flash column.
+    cgVerts[mainSegs].x = mix(cgVerts[mainSegs].x, origin.x, 0.40);
+    float tipXUV = clamp(cgVerts[mainSegs].x / max(aspectRatios[0], 1e-4), 0.001, 0.999);
+    float yWalk = max(cgVerts[mainSegs].y, lightningPos.y);
+    float step = max(texelSize.y * 2.0, yWalk / 64.0);
+    float tipAtCol = tipY;
+    bool hit = false;
+    for (int k = 0; k < 80; k++) {
+      yWalk -= step;
+      if (yWalk <= 0.0) { tipAtCol = 0.0; hit = true; break; }
+      ivec4 w = texture(wallTex, vec2(tipXUV, clamp(yWalk, 0.001, 0.999)));
+      if (w[DISTANCE] == 0) {
+        tipAtCol = max(yWalk + texelSize.y, 0.0);
+        hit = true;
+        break;
+      }
+    }
+    if (hit)
+      tipY = tipAtCol;
+
+    float tipBuilt = cgVerts[mainSegs].y;
+    float spanOrig = max(origin.y - tipBuilt, 1e-4);
+    float spanNeed = max(origin.y - tipY, 1e-4);
+    float yScale = spanNeed / spanOrig;
+    for (int i = 1; i <= MAIN_MAX; i++) {
+      if (i > mainSegs) break;
+      cgVerts[i].y = origin.y - (origin.y - cgVerts[i].y) * yScale;
+    }
+    cgVerts[mainSegs].y = tipY;
   }
 
   {
@@ -617,7 +698,7 @@ vec3 displayCGLightning(vec2 sampleUV, vec2 lightningPos, float T, float boltSee
     int   fromIdx = min(int(random2d(vec2(sbs * 0.00113, sbs * 0.00173)) * float(mainSegs - 4)) + 2, mainSegs - 2);
 
     float branchLen = random2d(vec2(sbs * 0.00217, sbs * 0.00319)) * 0.20 + 0.05;
-    float sbStep    = max(lightningPos.y, 0.05) * branchLen / float(sideSegs);
+    float sbStep    = reach * branchLen / float(sideSegs);
     float sbAng     = -PI * 0.5 + (random2d(vec2(sbs * 0.00411, sbs * 0.00591)) - 0.5) * PI * 1.6;
     sbVerts[0]      = cgVerts[fromIdx];
 
@@ -627,6 +708,8 @@ vec3 displayCGLightning(vec2 sampleUV, vec2 lightningPos, float T, float boltSee
       sbAng += (r1 - 0.5) * 1.6;
       sbAng -= (sbAng + PI * 0.5) * 0.30;
       sbVerts[i + 1] = sbVerts[i] + vec2(cos(sbAng), sin(sbAng)) * sbStep;
+      if (sbVerts[i + 1].y < tipY)
+        sbVerts[i + 1].y = tipY;
     }
 
     float sbMinD = 1e10, sbMinFade = 0.0;
@@ -826,7 +909,7 @@ vec3 softClipFlash(vec3 lightRgb)
   return lightRgb / (vec3(1.0) + lightRgb * (0.35 / clip));
 }
 
-vec4 computeCloudSmokeColor(float cloudwater, float precip, float dustAmt, float smokeAmt, float localLightIntensity, float rainSnowFactor, float nearFireEmberMask, vec2 windVel, float dayMask, float hailMm, float dropMm)
+vec4 computeCloudSmokeColor(float cloudwater, float precip, float dustAmt, float smokeAmt, float localLightIntensity, float rainSnowFactor, float nearFireEmberMask, vec2 windVel, float dayMask, float hailMm, float dropMm, vec2 sampleUV)
 {
   float densScale = max(cloudDensityScale, 0.01);
   float soft = clamp(cloudSoftness, 0.15, 2.5);
@@ -888,60 +971,84 @@ vec4 computeCloudSmokeColor(float cloudwater, float precip, float dustAmt, float
   shaftCol = min(shaftCol * 1.45 + vec3(0.06), vec3(1.0));
   cloudCol = mix(cloudCol, shaftCol, shaftAmt);
 
-  // Severe core cast: soft blue rain / green hail — daytime + sun-shadow only.
-  // Biased toward larger droplets, especially ice/hail. Shadow gate ignores lightning.
-  if (greenHueStrength > 0.001 && dayMask > 0.001 && precip > 0.01) {
-    float hueStart = max(greenHueStartThreshold, 0.01);
-    float hueEnd = max(greenHueEndThreshold, hueStart + 0.05);
-    float intense = smoothstep(hueStart, hueEnd, precip);
-    float inShadow = 1.0 - smoothstep(0.035, 0.22, lit);
-    float coldFrac = 1.0 - clamp(rainSnowFactor, 0.0, 1.0);
-
-    // Size gates from droplet accum: R=hail/ice mm, G=any droplet mm
-    float iceGate = smoothstep(2.5, 24.0, max(hailMm, 0.0));
-    float waterGate = smoothstep(1.5, 16.0, max(dropMm, 0.0));
-    float hasSizeData = step(0.01, max(hailMm, 0.0) + max(dropMm, 0.0));
-    // Prefer ice; large liquid only gently boosts. No particle data → mild cold/intense fallback.
-    float sizeGate = clamp(iceGate * 0.9 + waterGate * 0.2 + iceGate * waterGate * 0.15, 0.0, 1.0);
-    float sizeOrFallback = mix(mix(0.35, 0.8, intense * (0.4 + coldFrac * 0.6)), sizeGate, hasSizeData);
-
-    float hailBias = clamp(iceGate * 0.85 + coldFrac * 0.3 + intense * coldFrac * 0.2, 0.0, 1.0);
-    // Soft mid-sat hues that sit in cloud grey rather than neon primaries
-    const vec3 rainCoreHue = vec3(0.58, 0.74, 0.90);
-    const vec3 hailCoreHue = vec3(0.50, 0.80, 0.56);
-    vec3 coreHue = mix(rainCoreHue, hailCoreHue, hailBias);
-
-    float coreAmt = intense * inShadow * clamp(dayMask, 0.0, 1.0)
-      * clamp(greenHueStrength, 0.0, 3.0) * mix(0.2, 1.0, shaftAmt)
-      * mix(0.28, 1.0, sizeOrFallback);
-    // Soft onset so cores feather into surrounding shafts — reduced thresholds to fill gaps
-    coreAmt = smoothstep(0.01, 0.55, coreAmt);
-    if (coreAmt > 0.0001) {
-      float cloudLum = max(dot(cloudCol, vec3(0.2126, 0.7152, 0.0722)), 1e-4);
-      float hueLum = max(dot(coreHue, vec3(0.2126, 0.7152, 0.0722)), 1e-4);
-      vec3 hueKeepLum = coreHue * (cloudLum / hueLum);
-      
-      // Apply brightness adjustment to hue
-      hueKeepLum *= clamp(greenHueBrightness, 0.1, 3.0);
-      
-      // Apply saturation adjustment to hue (luminance-preserving)
-      float coreLum = dot(hueKeepLum, vec3(0.2126, 0.7152, 0.0722));
-      hueKeepLum = mix(vec3(coreLum), hueKeepLum, clamp(greenHueSaturation, 0.0, 2.0));
-      
-      // Apply hue shift via HSV rotation
-      float hueShift = clamp(greenHueHue, -1.0, 1.0) * 0.5; // -1..1 → -0.5..0.5 hue rotation
-      if (abs(hueShift) > 0.01) {
-        vec3 hsv = rgb2hsv(hueKeepLum);
-        hsv.x = fract(hsv.x + hueShift); // rotate hue in [0,1] space
-        hueKeepLum = hsv2rgb(hsv);
+  // Faint teal glow in shaded precip sheets only (daytime).
+  // Cheap early reject; 4-tap precip blur only on candidate pixels (not every air frag).
+  {
+    float dayGate = smoothstep(0.05, 0.40, clamp(dayMask, 0.0, 1.0));
+    float sheetProbe = smoothstep(0.22, 0.78, shaftAmt);
+    if (greenHueStrength > 0.001 && dayGate > 0.001 && precip > 0.008 && sheetProbe > 0.015
+        && lit < 0.22) {
+      // 4-tap precip blur (water only) — fills holes without the old 16-sample cost
+      vec2 px = texelSize * 2.0;
+      float precipSm = precip * 0.40;
+      {
+        vec4 wN = texture(waterTex, clamp(sampleUV + vec2( px.x, 0.0), vec2(0.001), vec2(0.999)));
+        precipSm += wN[PRECIPITATION] * 0.15;
       }
-      
-      // Soft multiply toward hue, then ease back into cloud for a blended cast
-      vec3 softMul = mix(vec3(1.0), hueKeepLum, 0.42);
-      vec3 tinted = mix(cloudCol * softMul, hueKeepLum, 0.35);
-      cloudCol = mix(cloudCol, tinted, coreAmt * 0.35);
-      precipCoreHue = hueKeepLum;
-      precipCoreHueAmt = max(precipCoreHueAmt, coreAmt);
+      {
+        vec4 wN = texture(waterTex, clamp(sampleUV + vec2(-px.x, 0.0), vec2(0.001), vec2(0.999)));
+        precipSm += wN[PRECIPITATION] * 0.15;
+      }
+      {
+        vec4 wN = texture(waterTex, clamp(sampleUV + vec2(0.0,  px.y), vec2(0.001), vec2(0.999)));
+        precipSm += wN[PRECIPITATION] * 0.15;
+      }
+      {
+        vec4 wN = texture(waterTex, clamp(sampleUV + vec2(0.0, -px.y), vec2(0.001), vec2(0.999)));
+        precipSm += wN[PRECIPITATION] * 0.15;
+      }
+
+      float hueStart = max(greenHueStartThreshold, 0.01);
+      float hueEnd = max(greenHueEndThreshold, hueStart + 0.05);
+      float intense = smoothstep(hueStart * 0.70, hueEnd, precipSm);
+      // Deep shade — slightly softer edge so the curtain feathers
+      float inShadow = 1.0 - smoothstep(0.03, 0.22, lit);
+      float coldFrac = 1.0 - clamp(rainSnowFactor, 0.0, 1.0);
+
+      float iceGate = smoothstep(1.5, 18.0, max(hailMm, 0.0));
+      float waterGate = smoothstep(1.0, 14.0, max(dropMm, 0.0));
+      float sizeBoost = clamp(iceGate * 0.85 + waterGate * 0.22 + iceGate * waterGate * 0.12, 0.0, 1.0);
+      float sizeMul = mix(0.82, 1.0, sizeBoost);
+
+      float hailBias = clamp(iceGate * 0.75 + coldFrac * 0.35 + intense * coldFrac * 0.2, 0.0, 1.0);
+      const vec3 rainCoreHue = vec3(0.28, 0.86, 0.88);
+      const vec3 hailCoreHue = vec3(0.22, 0.95, 0.52);
+      vec3 coreHue = mix(rainCoreHue, hailCoreHue, hailBias);
+
+      float sheetAmt = sheetProbe * intense;
+      sheetAmt = smoothstep(0.02, 0.55, sheetAmt);
+
+      float coreAmt = sheetAmt * inShadow * dayGate
+        * clamp(greenHueStrength, 0.0, 3.0) * sizeMul;
+      coreAmt = smoothstep(0.02, 0.50, coreAmt);
+
+      if (coreAmt > 0.0001) {
+        float cLum = max(dot(cloudCol, vec3(0.2126, 0.7152, 0.0722)), 1e-4);
+        float hueLum = max(dot(coreHue, vec3(0.2126, 0.7152, 0.0722)), 1e-4);
+        vec3 hueKeepLum = coreHue * (cLum / hueLum);
+
+        float bright = clamp(greenHueBrightness, 0.1, 3.0);
+        hueKeepLum = mix(hueKeepLum, hueKeepLum * bright, 0.55);
+
+        float coreLum = dot(hueKeepLum, vec3(0.2126, 0.7152, 0.0722));
+        hueKeepLum = mix(vec3(coreLum), hueKeepLum, clamp(greenHueSaturation, 0.0, 2.0));
+
+        float hueShift = clamp(greenHueHue, -1.0, 1.0) * 0.5;
+        if (abs(hueShift) > 0.01) {
+          vec3 hsv = rgb2hsv(hueKeepLum);
+          hsv.x = fract(hsv.x + hueShift);
+          hueKeepLum = hsv2rgb(hsv);
+        }
+
+        // Brighter soft tint + slight volume lift (still not neon additive blob)
+        vec3 softMul = mix(vec3(1.0), hueKeepLum, 0.55);
+        vec3 tinted = mix(cloudCol * softMul, hueKeepLum, 0.38);
+        cloudCol = mix(cloudCol, tinted, coreAmt * 0.52);
+        cloudCol += hueKeepLum * coreAmt * 0.12 * bright;
+
+        precipCoreHue = hueKeepLum;
+        precipCoreHueAmt = max(precipCoreHueAmt, coreAmt);
+      }
     }
   }
 
@@ -1103,6 +1210,83 @@ void applyAirLightning(vec2 uv, float cloudwater, float precip, float cloudDensi
     }
   }
 
+  // Soft precip illumination near the bolt.
+  // 75% chance of glow (ltPrecipGlowChance); of those, 50/50 full vs precip-only.
+  if (ltEnableRainIllum != 0) {
+    float glowChance = clamp(ltPrecipGlowChance, 0.0, 1.0);
+    float shaftCoin = random2d(vec2(lightningStartIterNum * 0.00241, lightningStartIterNum * 0.00713));
+    if (shaftCoin < glowChance) {
+      float modeCoin = random2d(vec2(lightningStartIterNum * 0.00491, lightningStartIterNum * 0.00917));
+      float precipOnlyChance = clamp(ltPrecipGlowPrecipOnlyChance, 0.0, 1.0);
+      bool precipOnly = modeCoin < precipOnlyChance;
+      lightningShaftFlashPrecipOnly = precipOnly ? 1.0 : 0.0;
+
+      bool isCgStrike = lightningData[INTENSITY] > 1.0;
+      float boltPulse = lightningTime < 1.0
+        ? smoothstep(0.18, 1.0, lightningTime)
+        : clamp(1.0 / (0.08 + pow((lightningTime - 1.0) * 3.0, 2.1)), 0.0, 1.0);
+      boltPulse = max(boltPulse, clamp(currentLightningIntensity * 0.022, 0.0, 0.85));
+
+      vec3 boltTint = tintLightningVolume(getLightningColor(lightningStartIterNum), cloudBrightTint);
+      float boltLum = max(dot(boltTint, vec3(0.2126, 0.7152, 0.0722)), 1e-3);
+      vec3 boltBright = boltTint / boltLum;
+      lightningShaftFlashTint = mix(vec3(1.0), boltBright, 0.78);
+
+      float sizeMul = clamp(ltPrecipGlowSize, 0.25, 2.5);
+      float softMul = clamp(ltPrecipGlowSoftness, 0.25, 2.5);
+      float dx = (uv.x - lightningPos.x) * aspectRatios[0];
+      float dy = uv.y - lightningPos.y;
+      float rx = (isCgStrike ? 0.26 : 0.20) * sizeMul;
+      float ry = (isCgStrike ? 0.40 : 0.28) * sizeMul;
+      float cy = isCgStrike ? -0.14 : -0.05;
+      vec2 local = vec2(dx / max(rx, 1e-4), (dy - cy) / max(ry, 1e-4));
+
+      vec2 nUV = local * 0.18 + lightningPos.xy * 1.1
+        + vec2(lightningStartIterNum * 0.00007, lightningStartIterNum * 0.00011);
+      vec2 nTap = vec2(0.04, 0.0);
+      float nSoft = (
+        texture(noiseTex, nUV * 0.12).r +
+        texture(noiseTex, nUV * 0.12 + nTap).r +
+        texture(noiseTex, nUV * 0.12 - nTap).r +
+        texture(noiseTex, nUV * 0.12 + nTap.yx).r
+      ) * 0.25;
+      vec2 localW = local + (vec2(nSoft) - 0.5) * 0.12;
+      float r = length(localW);
+
+      // Softness widens the outer lobe and eases the rim power
+      float coreK = mix(0.85, 0.35, clamp(softMul * 0.5, 0.0, 1.0));
+      float midK  = mix(0.28, 0.10, clamp(softMul * 0.45, 0.0, 1.0));
+      float wingK = mix(0.10, 0.035, clamp(softMul * 0.45, 0.0, 1.0));
+      float radial = exp(-r * r * coreK) * 0.40
+                   + exp(-r * r * midK) * 0.40
+                   + exp(-r * r * wingK) * 0.35;
+      radial = smoothstep(0.0, mix(0.75, 0.98, clamp(softMul * 0.4, 0.0, 1.0)), radial);
+      radial = pow(clamp(radial, 0.0, 1.0), mix(1.0, 0.55, clamp(softMul * 0.5, 0.0, 1.0)));
+
+      float belowGate = smoothstep(0.18, -0.06, dy);
+      float aboveGround = smoothstep(-0.03, 0.10, uv.y);
+      float precipGate;
+      if (precipOnly) {
+        // Strict precip shafts only — cloud body stays unchanged
+        precipGate = smoothstep(0.04, 0.18, precip);
+        float cloudAmt = max(cloudwater, cloudDensity * 0.08);
+        float shaftFrac = precip / max(precip + cloudAmt * 0.12 + 1e-4, 1e-4);
+        precipGate *= smoothstep(0.35, 0.70, shaftFrac);
+      } else {
+        // Current soft glow (can fringe near bolt in mixed precip)
+        precipGate = smoothstep(0.001, 0.12, precip);
+      }
+      float glowStr = clamp(
+        max(lightningShaftGlow, 0.5)
+        * max(ltRainIllum, 0.5)
+        * max(ltPrecipGlowStrength, 0.0),
+        0.0, 3.0);
+
+      float shaftVis = boltPulse * radial * belowGate * aboveGround * precipGate * glowStr;
+      lightningShaftFlash = max(lightningShaftFlash, clamp(shaftVis, 0.0, 0.95));
+    }
+  }
+
   if (!pathDrawBolts || ltDrawBolts == 0)
     return;
 
@@ -1182,6 +1366,16 @@ void applyAltitudeSunsetOnLight(float sunAng, float cloudOpacityIn, float localL
 
 void main()
 {
+  // Per-fragment reset (globals are not reliably re-inited each invocation).
+  emittedLight = vec3(0.0);
+  lightningFillLight = vec3(0.0);
+  lightningShaftFlash = 0.0;
+  lightningShaftFlashTint = vec3(0.92, 0.94, 1.0);
+  lightningShaftFlashPrecipOnly = 0.0;
+  onLight = vec3(0.0);
+  precipCoreHue = vec3(1.0);
+  precipCoreHueAmt = 0.0;
+
   vec2 bndFragCoord = vec2(fragCoord.x, clamp(fragCoord.y, 0., resolution.y)); // bound y within range
   // Smooth clouds: Hermite-interpolated samples restore soft edges (avoids blocky cells).
   // When off, keep distance-LOD cheap path (nearest / linear bilerp).
@@ -1400,7 +1594,7 @@ void main()
         vec2 airWind = airBaseSample.xy;
         vec4 airSizes = texture(dropletSizeTex, airUV);
         float airLight = normalizedSunlightAt(airUV);
-        vec4 airColor = computeCloudSmokeColor(airCloud, airPrecip, airWater[DUST], airSmoke, airLight, airRainSnow, nearEmber, airWind, 1.0 - nightFactor, airSizes.r, airSizes.g);
+        vec4 airColor = computeCloudSmokeColor(airCloud, airPrecip, airWater[DUST], airSmoke, airLight, airRainSnow, nearEmber, airWind, 1.0 - nightFactor, airSizes.r, airSizes.g, airUV);
         opacity = airColor.a;
         color = airColor.rgb;
         applyAltitudeSunsetOnLight(localSunAngle, airColor.a, airLight);
@@ -1480,7 +1674,7 @@ void main()
     }
     vec2 airWind = base.xy;
     vec4 dropSizes = texture(dropletSizeTex, bndFragCoord * texelSize);
-    vec4 airColor = computeCloudSmokeColor(cloudwater, water[PRECIPITATION], water[DUST], airSmokeAmt, lightIntensity, rainSnowFactorAir, nearFireEmberMask, airWind, 1.0 - nightFactor, dropSizes.r, dropSizes.g);
+    vec4 airColor = computeCloudSmokeColor(cloudwater, water[PRECIPITATION], water[DUST], airSmokeAmt, lightIntensity, rainSnowFactorAir, nearFireEmberMask, airWind, 1.0 - nightFactor, dropSizes.r, dropSizes.g, bndFragCoord * texelSize);
     opacity = airColor.a;
     color = airColor.rgb;
     applyAltitudeSunsetOnLight(localSunAngle, airColor.a, lightIntensity);
@@ -1821,7 +2015,8 @@ void main()
   vec3 finalColor = litBase + safeEmitted;
 
   // Cool blue cast across the whole cloud luminance range (not only mid-shadows).
-  if (wall[DISTANCE] != 0 && texCoord.y > 0.0 && texCoord.y <= 1.0) {
+  // Kill navy while shafts are lightning-bleached so the flash stays white.
+  if (wall[DISTANCE] != 0 && texCoord.y > 0.0 && texCoord.y <= 1.0 && lightningShaftFlash < 0.08) {
     const vec3 deepCloudNavySat = vec3(0.078431, 0.141176, 0.243137);
     float deepLum = max(dot(deepCloudNavySat, vec3(0.2126, 0.7152, 0.0722)), 1e-4);
     vec3 navyChroma = mix(vec3(1.0), deepCloudNavySat / deepLum, 0.78);
@@ -1832,21 +2027,24 @@ void main()
     finalColor = mix(finalColor, tinted, clamp(blueAmt, 0.0, 0.65));
   }
 
-  // Keep severe-core chroma through lightning / fill: re-apply as luminance-preserving tint
-  // after lighting so bright flashes cannot bleach the hue away.
-  if (precipCoreHueAmt > 0.001) {
-    float lum = max(dot(finalColor, vec3(0.2126, 0.7152, 0.0722)), 1e-4);
-    float hueLum = max(dot(precipCoreHue, vec3(0.2126, 0.7152, 0.0722)), 1e-4);
-    vec3 hueKeepLum = precipCoreHue * (lum / hueLum);
-    // Soft multiply + ease so flash-lit cores keep a blended cast (not a hard wash)
-    vec3 softMul = mix(vec3(1.0), precipCoreHue, 0.40);
-    vec3 tinted = mix(finalColor * softMul, hueKeepLum, 0.30);
-    float flashAmt = smoothstep(0.03, 0.75, precipCoreHueAmt) * 0.34;
-    finalColor = mix(finalColor, tinted, flashAmt);
+  // Keep precip-sheet teal through navy cast / fill — soft tint, sun still kills it.
+  // Skip during shaft flash so teal cannot recolor the white curtain.
+  if (precipCoreHueAmt > 0.001 && lightningShaftFlash < 0.08) {
+    float dimGate = 1.0 - smoothstep(0.03, 0.22, lightIntensity);
+    float amt = precipCoreHueAmt * dimGate;
+    if (amt > 0.0001) {
+      float lum = max(dot(finalColor, vec3(0.2126, 0.7152, 0.0722)), 1e-4);
+      float hueLum = max(dot(precipCoreHue, vec3(0.2126, 0.7152, 0.0722)), 1e-4);
+      vec3 hueKeepLum = precipCoreHue * (lum / hueLum);
+      vec3 softMul = mix(vec3(1.0), precipCoreHue, 0.48);
+      vec3 tinted = mix(finalColor * softMul, hueKeepLum, 0.32);
+      float tintAmt = smoothstep(0.015, 0.55, amt) * 0.42;
+      finalColor = mix(finalColor, tinted, tintAmt);
+    }
   }
 
   // Near-surface fog / haze in moist cool air (off when fogHazeStrength == 0)
-  if (fogHazeStrength > 0.0 && wall[DISTANCE] > 0) {
+  if (fogHazeStrength > 0.0 && wall[DISTANCE] > 0 && lightningShaftFlash < 0.08) {
     float rhFog = relativeHumd(realTemp, water[TOTAL]);
     float nearSfc = 1.0 - smoothstep(0.0, 0.14, texCoord.y);
     float cool = 1.0 - smoothstep(2.0, 18.0, KtoC(realTemp));
@@ -1865,6 +2063,29 @@ void main()
       float sunLit = clamp(max(lightIntensity, shadowLight), 0.08, 1.0);
       vec3 shadowedFlood = floodWaterColor() * mix(0.55, 1.0, sunLit);
       finalColor = mix(finalColor, shadowedFlood, clamp(floodA * 0.65 * sunLit, 0.0, 0.75));
+    }
+  }
+
+  // Soft precip glow — gradual edges, bolt tint.
+  // Precip-only mode: shafts light up; cloud bodies stay unchanged.
+  if (lightningShaftFlash > 0.008 && opacity > 0.02 && texCoord.y > -0.02 && texCoord.y <= 1.0) {
+    float glow = clamp(lightningShaftFlash, 0.0, 1.0);
+    if (lightningShaftFlashPrecipOnly > 0.5) {
+      float pGate = smoothstep(0.03, 0.16, precipF);
+      float cloudKeep = 1.0 - smoothstep(0.08, 0.45, cloudwater);
+      glow *= pGate * mix(0.25, 1.0, cloudKeep);
+    }
+    if (glow > 0.008) {
+      glow = smoothstep(0.0, 0.85, glow);
+      glow = pow(glow, 0.78);
+      vec3 tint = max(lightningShaftFlashTint, vec3(0.05));
+      vec3 flashHi = mix(vec3(1.0), tint, 0.50) * 1.02;
+      vec3 flashLo = mix(finalColor, tint * 0.80, 0.45);
+      vec3 flashCol = mix(flashLo, flashHi, glow);
+      finalColor = mix(finalColor, flashCol, glow * 0.70);
+      finalColor += tint * glow * 0.85;
+      if (lightningShaftFlashPrecipOnly < 0.5)
+        opacity = max(opacity, mix(opacity, 0.48, glow * 0.32));
     }
   }
 

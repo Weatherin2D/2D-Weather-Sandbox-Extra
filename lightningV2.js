@@ -96,7 +96,7 @@
     glowStrength: 0.75,
     atmosphericIlluminationStrength: 0.45,
     cloudIlluminationStrength: 0.28,
-    rainShaftIlluminationStrength: 0.5,
+    rainShaftIlluminationStrength: 1.0,
     terrainIlluminationStrength: 0.45,
     nighttimeFlashStrength: 0.6,
     daytimeFlashStrength: 0.25,
@@ -107,6 +107,12 @@
     ltEnableTerrainIllumination: true,
     ltEnablePersistentChannelGlow: true,
     ltEnableVolumetricCloudFlashing: true,
+    // Soft precip illumination glow (Enhanced SDF)
+    precipGlowChance: 0.75,
+    precipGlowPrecipOnlyChance: 0.5,
+    precipGlowStrength: 1.0,
+    precipGlowSize: 1.0,
+    precipGlowSoftness: 1.0,
 
     intracloudChannelVisibility: 0.95,
     cloudToCloudChannelVisibility: 1.0,
@@ -654,13 +660,15 @@
     let bestScore = -1;
     let best = { x: origin.x, y: simResY * 0.02 };
     const originCharge = origin.chargeVal ?? readCharge(cache, origin.x, origin.y);
-    const searchRadius = simResX * 0.14;
+    // Keep CG contact near the flash column — wide lateral targets looked like floating tips.
+    const searchRadius = simResX * 0.08;
 
     for (let i = 0; i < 14; i++) {
       const angle = shaderRand(eventId * 4.1 + slot * 31 + i * 7) * Math.PI * 2;
       const dist = shaderRand(eventId * 6.2 + i * 13) * searchRadius;
       const tx = clamp(origin.x + Math.cos(angle) * dist, 0, simResX - 1);
-      const ty = clamp(simResY * 0.01 + shaderRand(eventId + i * 19) * simResY * 0.07, 0, simResY * 0.12);
+      // Near-surface band; real surface Y snapped after scoring
+      const ty = clamp(simResY * 0.002 + shaderRand(eventId + i * 19) * simResY * 0.03, 0, simResY * 0.06);
 
       let cond = readConductivity(cache, tx, ty);
       if (!controls.enableGroundConductivity) cond = 0.5;
@@ -673,12 +681,30 @@
       const elevBonus = controls.enableTerrainTargeting
         ? readPotential(cache, tx, ty) * controls.terrainInfluence * 0.35 : 0;
 
-      const score = cond + oppose + elevBonus + shaderRand(eventId * 8.1 + i) * 0.12;
+      // Prefer targets closer to the origin column for a clean ground attachment
+      const columnPref = 1.0 - Math.min(Math.abs(tx - origin.x) / Math.max(searchRadius, 1), 1.0) * 0.35;
+
+      const score = (cond + oppose + elevBonus) * columnPref + shaderRand(eventId * 8.1 + i) * 0.12;
       if (score > bestScore) {
         bestScore = score;
         best = { x: tx, y: ty };
       }
     }
+    // Snap dest to air cell just above terrain in that column when helper is available
+    let snapped = false;
+    try {
+      const finder = global.findSimYposAboveSurfaceAtX;
+      if (typeof finder === 'function') {
+        const surfY = finder(Math.floor(best.x));
+        if (Number.isFinite(surfY)) {
+          best.y = surfY;
+          snapped = true;
+        }
+      }
+    } catch (_) { /* keep scored ty */ }
+    // Only force a low dest if snap failed and scored ty is clearly mid-air
+    if (!snapped && (!(Number.isFinite(best.y)) || best.y > simResY * 0.12))
+      best.y = Math.max(1, Math.floor(simResY * 0.02));
     return best;
   }
 
@@ -2076,6 +2102,21 @@
     folder.add(controls, 'lightningContrast', 0.05, 4, 0.05).name('Contrast').onChange(onChanged);
     folder.add(controls, 'glowStrength', 0, 4, 0.05).name('Glow').onChange(onChanged);
     folder.add(controls, 'flashDuration', 0.2, 3, 0.05).name('Flash Duration').onChange(onChanged);
+
+    if (controls.ltEnableRainShaftIllumination == null) controls.ltEnableRainShaftIllumination = true;
+    if (controls.rainShaftIlluminationStrength == null) controls.rainShaftIlluminationStrength = 1.0;
+    if (controls.precipGlowChance == null) controls.precipGlowChance = 0.75;
+    if (controls.precipGlowPrecipOnlyChance == null) controls.precipGlowPrecipOnlyChance = 0.5;
+    if (controls.precipGlowStrength == null) controls.precipGlowStrength = 1.0;
+    if (controls.precipGlowSize == null) controls.precipGlowSize = 1.0;
+    if (controls.precipGlowSoftness == null) controls.precipGlowSoftness = 1.0;
+    folder.add(controls, 'ltEnableRainShaftIllumination').name('Precip Illumination').onChange(onChanged);
+    folder.add(controls, 'precipGlowChance', 0, 1, 0.01).name('Illum Chance').onChange(onChanged);
+    folder.add(controls, 'precipGlowPrecipOnlyChance', 0, 1, 0.01).name('Precip-Only Chance').onChange(onChanged);
+    folder.add(controls, 'precipGlowStrength', 0, 3, 0.05).name('Illum Strength').onChange(onChanged);
+    folder.add(controls, 'rainShaftIlluminationStrength', 0, 3, 0.05).name('Illum Intensity').onChange(onChanged);
+    folder.add(controls, 'precipGlowSize', 0.25, 2.5, 0.05).name('Illum Size').onChange(onChanged);
+    folder.add(controls, 'precipGlowSoftness', 0.25, 2.5, 0.05).name('Illum Softness').onChange(onChanged);
 
     folder.add(controls, 'enableThunder').name('Thunder').onChange(onChanged);
     folder.add(controls, 'thunderVolume', 0, 3, 0.05).name('Thunder Volume').onChange(onChanged);

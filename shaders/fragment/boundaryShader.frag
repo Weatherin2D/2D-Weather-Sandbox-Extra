@@ -60,6 +60,12 @@ uniform float enableFlooding;          // 0/1 — natural rain→flood ponding
 uniform float enableStormSurge;        // 0/1 — coastal storm-surge inundation
 // Natural grass→forest species pick: 0 = random 50/50, 1 = Forest (conifer), 2 = Forest 2 (deciduous)
 uniform float forestGrowthSpecies;
+uniform float rainfallAmountMult;          // scales rain hitting soil / runoff
+uniform float vegetationGrowthMult;        // scales climate-driven vegetation growth
+uniform float vegetationDiebackMult;       // scales drought dieback speed
+uniform float soilMoistureLossMult;        // scales soil evaporative drying
+uniform float climateMoistureDecayMult;    // scales sustained climate moisture decay
+uniform float fireBurnMult;                // scales fuel consumption while on fire
 
 layout(location = 0) out vec4 base;
 layout(location = 1) out vec4 water;
@@ -538,8 +544,9 @@ void main()
       case WALLTYPE_FIRE_FOREST2:
         if (isAnyFireType(wall[TYPE])) {            // extra check to make sure it's not urban
           float floodExcessFire = getFloodHeightMm(water[TOTAL]);
-          // Only significant standing floodwater extinguishes fire — fuel/moisture no longer end the burn
-          // so the surface keeps heating the air above indefinitely while it remains a fire type.
+          // Flood and rain still quench immediately and keep remaining canopy.
+          // Fuel consumption always runs while alight; moisture can slow it but not freeze it.
+          // When vegetation hits 0 the cell burns out to land.
           if (floodExcessFire >= significantFloodMm) {
             wall[TYPE] = extinguishFireType(wall[TYPE]);
           } else {
@@ -554,12 +561,14 @@ void main()
               // Light rainfall causes some smoldering without full extinguishment
               smoke += precipAbove * 1.5;
             } else {
-              float fireIntensity = calcFireIntensity(wall[VEGETATION], water[SOIL_MOISTURE], waterX0Yp[PRECIPITATION]);
-              // Consume fuel visually when available; bare ground stays on fire after fuel is gone
+              float fireIntensity = calcFireIntensity(wall[VEGETATION], water[SOIL_MOISTURE], waterX0Yp[PRECIPITATION]) * max(fireBurnMult, 0.0);
+              // Consume fuel while alight; moisture can slow the burn but the divisor is never 0.
               if (fireIntensity >= minimalFireIntensity && wall[VEGETATION] > 0
-                  && int(iterNum) % (int(10. / fireIntensity) + 1) == 0) {
+                  && int(iterNum) % (int(10. / max(fireIntensity, minimalFireIntensity)) + 1) == 0) {
                 wall[VEGETATION] = max(wall[VEGETATION] - 1, 0);
               }
+              if (wall[VEGETATION] <= 0)
+                wall[TYPE] = WALLTYPE_LAND;
             }
           }
         }
@@ -583,7 +592,7 @@ void main()
           // Near-surface air PRECIPITATION persists between hits and drives wetting/floods.
           float rainFromDrops = precipDeposition[RAIN_DEPOSITION] * 2.0;
           float rainFromAir = max(waterX0Yp[PRECIPITATION], 0.0) * 0.55;
-          float rainInput = rainFromDrops + rainFromAir;
+          float rainInput = (rainFromDrops + rainFromAir) * max(rainfallAmountMult, 0.0);
           float poreSpace = max(soilFieldCapacity - water[SOIL_MOISTURE], 0.0);
           float infiltration = min(rainInput, min(maxInfiltrationRate, poreSpace * 0.25 + maxInfiltrationRate * 0.3));
           float runoff = max(rainInput - infiltration, 0.0);
@@ -682,7 +691,7 @@ void main()
           if (water[SUSTAINED_MOISTURE] < 0.01 && wall[VEGETATION] > 15)
             water[SUSTAINED_MOISTURE] = min(float(wall[VEGETATION]) * 0.25, 40.0);
 
-          water[SUSTAINED_MOISTURE] = clamp(water[SUSTAINED_MOISTURE] + infiltration * sustainedMoistureGain - sustainedMoistureDecay, 0.0, 100.0);
+          water[SUSTAINED_MOISTURE] = clamp(water[SUSTAINED_MOISTURE] + infiltration * sustainedMoistureGain - sustainedMoistureDecay * max(climateMoistureDecayMult, 0.0), 0.0, 100.0);
 
           // Stash flood for evaporation step below (encoded after soil evap)
           water[TOTAL] = encodeLandWithFlood(floodMm);
@@ -695,7 +704,7 @@ void main()
 
         float realTempAboveSurface = potentialToRealT(baseAboveSurface[TEMPERATURE], texCoordX0Yp.y);
 
-        float evaporation = calcEvaporation(realTempAboveSurface, waterAboveSurface[TOTAL], vegetationInfluence(wall[VEGETATION]), water[SOIL_MOISTURE]) * 0.10;
+        float evaporation = calcEvaporation(realTempAboveSurface, waterAboveSurface[TOTAL], vegetationInfluence(wall[VEGETATION]), water[SOIL_MOISTURE]) * 0.10 * max(soilMoistureLossMult, 0.0);
 
         // Evaporate standing flood first; soil only dries when flood is gone.
         // A share of evaporating flood soaks into soil (soil rises only from flood loss).
@@ -758,9 +767,10 @@ void main()
           // dynamic vegetation — growth driven by sustained climate moisture, not one-off rain spikes
           float climateMoisture = water[SUSTAINED_MOISTURE];
 
+          // Burning cells do not grow; fire already consumes biomass
           int vegetationGrowthRate = 0;
-          if (climateMoisture >= minVegetationMoisture)
-            vegetationGrowthRate = int((climateMoisture - minVegetationMoisture) * sqrt(lightAboveSurface[SUNLIGHT]) * 0.0008); // 10x slower for ~monthly growth
+          if (!isAnyFireType(wall[TYPE]) && climateMoisture >= minVegetationMoisture)
+            vegetationGrowthRate = int((climateMoisture - minVegetationMoisture) * sqrt(lightAboveSurface[SUNLIGHT]) * 0.0008 * max(vegetationGrowthMult, 0.0));
 
           if (vegetationGrowthRate > 0 && int(iterNum) % ((100 / vegetationGrowthRate) * 100) == 0) {
             int tempLimit = int(map_rangeC(realTempAboveSurface, CtoK(0.0), CtoK(25.0), 0., float(FOREST_VEG_MAX)));
@@ -807,7 +817,7 @@ void main()
                 : 0.62;
               float daysPerLoss = mix(vegDiebackDaysPerPointMild, vegDiebackDaysPerPointSevere, pow(droughtStress, 0.82));
               float cellJitter = 0.88 + random2d(texCoord * resolution + biomass * 0.013) * 0.24;
-              float dieInterval = max(daysPerLoss * treeSlowdown * cellJitter * iterPerSimDay, vegDiebackMinIter);
+              float dieInterval = max(daysPerLoss * treeSlowdown * cellJitter * iterPerSimDay, vegDiebackMinIter) / max(vegetationDiebackMult, 0.05);
               int diePeriod = int(dieInterval);
               int diePhase = int(random2d(texCoord * vec2(41.7, 173.3)) * float(diePeriod));
 

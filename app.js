@@ -24,7 +24,7 @@ function updateSetupSliders()
   document.getElementById('simResYWarning').style.display = (simResY == 300) ? 'none' : 'block';
   let simResXWarn = document.getElementById('simResXWarning');
   if (simResXWarn)
-    simResXWarn.style.display = (simResX > 16000) ? 'block' : 'none';
+    simResXWarn.style.display = (simResX >= 12000) ? 'block' : 'none';
   document.getElementById('simResShowX').value = simResX;
   document.getElementById('simResShowY').value = simResY
   document.getElementById('simHeightShow').value = simHeight + ' m';
@@ -603,11 +603,11 @@ const guiControls_default = {
   saturation : 1.15,
   contrast : 1.1,
   bloomStrength : 0.99,
-  greenHueStartThreshold : 0.8,
-  greenHueEndThreshold : 1.8,
-  greenHueStrength : 0.45,
-  greenHueBrightness : 1.0,
-  greenHueSaturation : 1.0,
+  greenHueStartThreshold : 0.4,
+  greenHueEndThreshold : 1.,
+  greenHueStrength : 0.65,
+  greenHueBrightness : 1.25,
+  greenHueSaturation : 1.05,
   greenHueHue : 0.0,
   enhancedLooks : false,
   timeOfDay : 12.0,
@@ -736,6 +736,12 @@ const guiControls_default = {
   floodPondRate : 12.0, // ponding build rate once rain exceeds threshold
   // Natural grass→forest canopy species: Random (50/50), Forest (conifer), Forest 2 (deciduous)
   forestGrowthSpecies : 'Random (50/50)',
+  rainfallAmountMult : 1.0,
+  vegetationGrowthMult : 1.0,
+  vegetationDiebackMult : 1.0,
+  soilMoistureLossMult : 1.0,
+  climateMoistureDecayMult : 1.0,
+  fireBurnMult : 1.0,
   // Meteorological MSLP (display/stations). Fluid base[PRESSURE] stays dimensionless.
   surfacePressure : 1013.25,       // sea-level baseline hPa
   pressureThermalScale : 1.5,      // hPa per °C column warmth (warm → lower MSLP)
@@ -903,6 +909,221 @@ var minShadowLight = 0.02;
 var saveFileName = '';
 
 var guiControlsFromSaveFile = null;
+
+// Home-screen startup presets captured from reference save
+// "cfdgds (4) (1).weathersandbox" — visual/shader look + performance toggles.
+const HOME_PRESET_STORAGE_KEY = 'weatherSandboxHomePresets_v1';
+const HOME_ULTRA_REALISTIC_DISPLAY = {
+  displayMode: 'DISP_REAL',
+  exposure: 0.57,
+  saturation: 0.98,
+  contrast: 1.28,
+  bloomStrength: 0.7,
+  enableBloom: false,
+  smoothClouds: true,
+  enableRainbows: true,
+  floodWaterOpacity: 0.75,
+  floodVizStrength: 0.75,
+  fogHazeStrength: 0.0,
+  minShadowLight: 0.2,
+  autoMinShadowLight: true,
+  greenHueStartThreshold: 0.8,
+  greenHueEndThreshold: 1.8,
+  greenHueStrength: 0.45,
+  greenHueBrightness: 1.0,
+  greenHueSaturation: 1.0,
+  greenHueHue: 0.0,
+  enhancedLooks: false,
+  starVisibility: 0.25,
+  starLightEmitStrength: 0.15,
+  starDensity: 0.5,
+  lightningBrightness: 2.4,
+  lightningContrast: 1.0,
+  glowStrength: 0.75,
+  flashDuration: 0.2,
+  ltSdfQuality: 'Balanced',
+  ltDrawSdfBolts: true,
+  channelThickness: 1.05,
+  lightningIllumTexture: true,
+  lightningIllumBlurStrength: 1.0,
+  gpuEffectQuality: 1.0,
+  atmosphericIlluminationStrength: 0.5,
+  cloudIlluminationStrength: 0.45,
+  rainShaftIlluminationStrength: 1.0,
+  terrainIlluminationStrength: 0.45,
+  ltEnableRainShaftIllumination: true,
+  ltEnableCloudIllumination: true,
+  ltEnableAtmosphericLighting: true,
+  ltEnableBloom: true,
+  precipGlowChance: 0.75,
+  precipGlowPrecipOnlyChance: 0.5,
+  precipGlowStrength: 1.0,
+  precipGlowSize: 1.0,
+  precipGlowSoftness: 1.0,
+};
+const HOME_PERFORMANCE_MODE = {
+  highResPerformanceMode: false,
+  performanceAutoScaling: true,
+  auto_IterPerFrame: true,
+  IterPerFrame: 0.1,
+  reducedPrecipitation: false,
+  reducedWeatherStationUpdates: true,
+  disableTempChangeHistory: true,
+  skipCurlCalculation: false,
+  skipCAPECalculation: true,
+  skipLightingCalculation: false,
+  skipAdvection: false,
+  skipChargeCalculation: false,
+  enableBloom: false,
+  gpuEffectQuality: 1.0,
+  atmosphericLightingResolution: 1.0,
+  lightningIllumTexture: true,
+  lightningIllumBlurStrength: 1.0,
+  lightningPerformanceTier: 'High',
+  maxActiveLightningEvents: 24,
+  maxActiveBolts: 8,
+  maxBranchCount: 48,
+  maxIlluminationRadius: 1.0,
+  lightningLODDistance: 1.0,
+  dynamicLOD: true,
+  adaptiveLightningQuality: true,
+  ltSdfQuality: 'Balanced',
+  ltDrawSdfBolts: true,
+};
+var pendingHomeUltraShaderPack = false;
+
+function getHomeStartupPresetState()
+{
+  const state = { ultraRealistic: false, performanceMode: false };
+  try {
+    const raw = localStorage.getItem(HOME_PRESET_STORAGE_KEY);
+    if (!raw) return state;
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === 'object') {
+      state.ultraRealistic = !!parsed.ultraRealistic;
+      state.performanceMode = !!parsed.performanceMode;
+    }
+  } catch (_) { /* ignore */ }
+  return state;
+}
+
+function setHomeStartupPresetState(state)
+{
+  try {
+    localStorage.setItem(HOME_PRESET_STORAGE_KEY, JSON.stringify({
+      ultraRealistic: !!state.ultraRealistic,
+      performanceMode: !!state.performanceMode,
+    }));
+  } catch (_) { /* ignore */ }
+}
+
+function syncHomeStartupPresetButtons()
+{
+  const state = getHomeStartupPresetState();
+  const ultraBtn = document.getElementById('homeUltraRealisticBtn');
+  const perfBtn = document.getElementById('homePerformanceModeBtn');
+  if (ultraBtn) {
+    ultraBtn.classList.toggle('active', state.ultraRealistic);
+    ultraBtn.setAttribute('aria-pressed', state.ultraRealistic ? 'true' : 'false');
+    ultraBtn.textContent = state.ultraRealistic
+      ? 'Ultra-realistic display: ON'
+      : 'Enable ultra-realistic display';
+  }
+  if (perfBtn) {
+    perfBtn.classList.toggle('active', state.performanceMode);
+    perfBtn.setAttribute('aria-pressed', state.performanceMode ? 'true' : 'false');
+    perfBtn.textContent = state.performanceMode
+      ? 'Performance mode: ON'
+      : 'Enable performance mode';
+  }
+}
+
+function setupHomeStartupPresetButtons()
+{
+  const ultraBtn = document.getElementById('homeUltraRealisticBtn');
+  const perfBtn = document.getElementById('homePerformanceModeBtn');
+  if (!ultraBtn && !perfBtn) return;
+  syncHomeStartupPresetButtons();
+  if (ultraBtn) {
+    ultraBtn.onclick = function() {
+      const state = getHomeStartupPresetState();
+      state.ultraRealistic = !state.ultraRealistic;
+      setHomeStartupPresetState(state);
+      syncHomeStartupPresetButtons();
+    };
+  }
+  if (perfBtn) {
+    perfBtn.onclick = function() {
+      const state = getHomeStartupPresetState();
+      state.performanceMode = !state.performanceMode;
+      setHomeStartupPresetState(state);
+      syncHomeStartupPresetButtons();
+    };
+  }
+}
+
+function applyObjectPresetToGuiControls(preset)
+{
+  if (!preset || !guiControls) return;
+  for (const key of Object.keys(preset)) {
+    if (preset[key] !== undefined)
+      guiControls[key] = preset[key];
+  }
+}
+
+function applyHomeScreenStartupPresets()
+{
+  const state = getHomeStartupPresetState();
+  pendingHomeUltraShaderPack = false;
+  if (state.ultraRealistic) {
+    applyObjectPresetToGuiControls(HOME_ULTRA_REALISTIC_DISPLAY);
+    pendingHomeUltraShaderPack = true;
+  }
+  if (state.performanceMode)
+    applyObjectPresetToGuiControls(HOME_PERFORMANCE_MODE);
+  if ((state.ultraRealistic || state.performanceMode) && typeof datGui !== 'undefined' && datGui && typeof datGui.updateDisplay === 'function')
+    datGui.updateDisplay();
+}
+
+function applyPendingHomeUltraShaderPack()
+{
+  if (!pendingHomeUltraShaderPack) return;
+  if (typeof window.__applyHomeCloudsRain !== 'function') return;
+  if (!window.ShaderMenu || !window.ShaderMenu.packs || !window.ShaderMenu.packs.getBuiltinPacks)
+    return;
+  pendingHomeUltraShaderPack = false;
+  try {
+    const packs = window.ShaderMenu.packs.getBuiltinPacks() || [];
+    let enhanced = null;
+    for (let i = 0; i < packs.length; i++) {
+      if (packs[i] && packs[i].id === 'builtin_enhanced_v2') {
+        enhanced = packs[i];
+        break;
+      }
+    }
+    if (!enhanced || !enhanced.cloudsRain) return;
+    const merged = window.ShaderMenu.packs.mergeCloudsRain
+      ? window.ShaderMenu.packs.mergeCloudsRain(enhanced.cloudsRain)
+      : Object.assign({}, enhanced.cloudsRain);
+    window.__applyHomeCloudsRain(merged);
+    // Keep save-tuned appearance (exposure/contrast/etc.) over pack appearance defaults.
+    applyObjectPresetToGuiControls(HOME_ULTRA_REALISTIC_DISPLAY);
+    const homeState = getHomeStartupPresetState();
+    if (homeState.performanceMode)
+      applyObjectPresetToGuiControls(HOME_PERFORMANCE_MODE);
+    if (typeof uploadAppearanceUniforms === 'function')
+      uploadAppearanceUniforms();
+  } catch (e) {
+    console.warn('Home ultra-realistic shader pack failed', e);
+  }
+}
+
+if (typeof document !== 'undefined') {
+  if (document.readyState === 'loading')
+    document.addEventListener('DOMContentLoaded', setupHomeStartupPresetButtons);
+  else
+    setupHomeStartupPresetButtons();
+}
 var datGui;
 
 var sim_res_x;
@@ -970,6 +1191,25 @@ function getDropletCap(reduced)
   return reduced ? NUM_DROPLETS_CAP_REDUCED : NUM_DROPLETS_CAP;
 }
 
+function getSimCellCount(resX, resY)
+{
+  const x = resX != null ? resX : sim_res_x;
+  const y = resY != null ? resY : sim_res_y;
+  return Math.max(1, (x | 0) * (y | 0));
+}
+
+// True 16000×200-class grids (~3.2M+ cells). 12000×200 is not ultra — that size
+// used to run at full auto-iter on a decent GPU and must be allowed to again.
+function isUltraHighResSim(resX, resY)
+{
+  const x = resX != null ? resX : sim_res_x;
+  const y = resY != null ? resY : sim_res_y;
+  return getSimCellCount(x, y) >= 3200000 || (x | 0) >= 16000;
+}
+
+// Set in loadData before droplets exist; consumed by applyHighResStartupGuard().
+var pendingHighResReducedPrecip = false;
+
 // Scale droplet density down as grid size grows so transform-feedback cost stays playable.
 function computeNumDroplets(resX, resY)
 {
@@ -996,11 +1236,37 @@ function computeNumDroplets(resX, resY)
   if (precipGpuCapabilities.mobile)
     divider = Math.max(divider, 80);
   let n = cells / divider;
-  const reduced = guiControls && guiControls.reducedPrecipitation;
+  const reduced = (guiControls && guiControls.reducedPrecipitation) || pendingHighResReducedPrecip;
   if (reduced)
     n *= 0.5;
   const cap = getDropletCap(!!reduced);
   return Math.max(1, Math.min(Math.floor(n), cap));
+}
+
+// Cold-start large grids at a low iter count, then let auto_IterPerFrame climb.
+// Do not permanently enable highResPerformanceMode / skip CAPE — that made
+// 12000×200 feel broken on GPUs that can run it at full speed.
+function applyHighResStartupGuard()
+{
+  if (!guiControls)
+    return false;
+  const cells = getSimCellCount();
+  if (cells < 700000)
+    return false;
+
+  guiControls.performanceAutoScaling = true;
+  guiControls.auto_IterPerFrame = true;
+
+  const startIters = isUltraHighResSim() ? 1 : (cells >= 2000000 ? 2 : 3);
+  if (!(Number(guiControls.IterPerFrame) <= startIters))
+    guiControls.IterPerFrame = startIters;
+
+  // VRAM only: skip the 6 extra history textures on true ultra-wide grids.
+  if (isUltraHighResSim())
+    guiControls.disableTempChangeHistory = true;
+
+  pendingHighResReducedPrecip = false;
+  return true;
 }
 
 /** After precip feedback FBOs exist: gate precipitation on float renderability / mobile budgets. */
@@ -1048,7 +1314,7 @@ function configurePrecipitationGpuCapabilities()
 
 function cellsLikelyHeavy()
 {
-  return (sim_res_x | 0) * (sim_res_y | 0) > 400000;
+  return getSimCellCount() > 400000;
 }
 
 let hdrFBO;
@@ -3795,7 +4061,10 @@ function createAmbientLightFBOs()
   // debugLog('createAmbientLightFBOs');
 
   ambientLightFBOs.length = 0;   // empty array
-  for (let i = 0; i < 80; i++) { // max iterations
+  // Ultra-wide (e.g. 16000×200): skip the full-res bounce mip — lighting physics
+  // still uses emittedLightFBO at sim resolution.
+  const startI = isUltraHighResSim() ? 1 : 0;
+  for (let i = startI; i < 80; i++) { // max iterations
     let width = res.x >> i;      // right shift to devide by 2 multiple times
     let height = res.y >> i;
 
@@ -8440,10 +8709,20 @@ window.loadData = async function()
     sim_res_y = parseInt(document.getElementById('simResSelY').value);
     sim_height = parseInt(document.getElementById('simHeightSel').value);
 
+    pendingHighResReducedPrecip = getSimCellCount(sim_res_x, sim_res_y) >= 4000000;
     NUM_DROPLETS = computeNumDroplets(sim_res_x, sim_res_y);
     SETUP_MODE = true;
 
-    mainScript(null); // run without initial textures
+    try {
+      await mainScript(null); // run without initial textures
+    } catch (e) {
+      console.error('Failed to start simulation', e);
+      const msg = (e && e.message) ? e.message : String(e);
+      if (loadingBar)
+        await loadingBar.showError('ERROR starting simulation:\n' + msg);
+      else
+        alert('Failed to start simulation: ' + msg);
+    }
   }
 }
 
@@ -10862,6 +11141,27 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     throw new Error('Your browser does not support WebGL2');
   }
 
+  const maxTexSize = gl.getParameter(gl.MAX_TEXTURE_SIZE) || 0;
+  if (sim_res_x > maxTexSize || sim_res_y > maxTexSize) {
+    const msg = 'This GPU max texture size is ' + maxTexSize +
+      '. ' + sim_res_x + '×' + sim_res_y + ' does not fit. Try a width of ' +
+      Math.min(16000, maxTexSize) + ' or less (16000×200 needs at least 16000).';
+    if (loadingBar && typeof loadingBar.showError === 'function')
+      await loadingBar.showError(msg);
+    else
+      alert(msg);
+    throw new Error(msg);
+  }
+
+  canvas.addEventListener('webglcontextlost', function(ev) {
+    console.error('WebGL context lost — GPU reset (often first frames at high resolution).');
+    const msg = 'The GPU reset while running this simulation. Refresh with Ctrl+Shift+R. Ultra-wide grids like 16000×200 start at 1 physics step and speed up once the GPU is warm.';
+    if (loadingBar && typeof loadingBar.showError === 'function')
+      loadingBar.showError(msg);
+    else
+      alert(msg);
+  }, false);
+
   // SETUP GUI
 
   if (guiControlsFromSaveFile == null) { // use default settings
@@ -10879,6 +11179,9 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     if (startLatitude) {
       guiControls.latitude = startLatitude;
     }
+
+    // Home-screen toggles: ultra-realistic display / performance mode
+    applyHomeScreenStartupPresets();
 
   } else {
     setupDatGui(guiControlsFromSaveFile);                     // use settings from save file
@@ -10958,6 +11261,15 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     guiControls.enableFlooding = !!guiControls.enableFlooding;
   if (guiControls.forestGrowthSpecies === undefined)
     guiControls.forestGrowthSpecies = guiControls_default.forestGrowthSpecies;
+  const landRateKeys = [
+    'rainfallAmountMult', 'vegetationGrowthMult', 'vegetationDiebackMult',
+    'soilMoistureLossMult', 'climateMoistureDecayMult', 'fireBurnMult'
+  ];
+  for (let i = 0; i < landRateKeys.length; i++) {
+    const key = landRateKeys[i];
+    if (guiControls[key] === undefined || !Number.isFinite(guiControls[key]))
+      guiControls[key] = guiControls_default[key];
+  }
   if (guiControls.enableStormSurge === undefined)
     guiControls.enableStormSurge = guiControls_default.enableStormSurge;
   else
@@ -11026,6 +11338,8 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       window.AviationTraffic.setDisplayFlightRoutes(guiControls.airTrafficShowRoutes);
   }
 
+  applyHighResStartupGuard();
+
   var uloc_charge_generationRate = null;
   var uloc_charge_minCloudDensity = null;
   var uloc_charge_stormCoreThreshold = null;
@@ -11089,6 +11403,26 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     return 0.0; // Random (50/50)
   }
 
+  function landRateUniform(key)
+  {
+    const v = guiControls[key];
+    return Number.isFinite(v) ? v : 1.0;
+  }
+
+  var landRateUniformsReady = false;
+  function uploadLandRateUniforms()
+  {
+    if (!landRateUniformsReady)
+      return;
+    gl.useProgram(boundaryProgram);
+    gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'rainfallAmountMult'), landRateUniform('rainfallAmountMult'));
+    gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'vegetationGrowthMult'), landRateUniform('vegetationGrowthMult'));
+    gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'vegetationDiebackMult'), landRateUniform('vegetationDiebackMult'));
+    gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'soilMoistureLossMult'), landRateUniform('soilMoistureLossMult'));
+    gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'climateMoistureDecayMult'), landRateUniform('climateMoistureDecayMult'));
+    gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'fireBurnMult'), landRateUniform('fireBurnMult'));
+  }
+
   function setGuiUniforms()
   { // set all uniforms to new values
     gl.useProgram(boundaryProgram);
@@ -11099,6 +11433,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'evapHeat'), guiControls.evapHeat);
     gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'waterWeight'), guiControls.waterWeight);
     gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'forestGrowthSpecies'), forestGrowthSpeciesUniform());
+    uploadLandRateUniforms();
     gl.useProgram(velocityProgram);
     gl.uniform1f(gl.getUniformLocation(velocityProgram, 'dragMultiplier'),
       guiControls.soundingMode ? 999.0 : guiControls.dragMultiplier);
@@ -11206,6 +11541,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
   function setupDatGui(strGuiControls)
   {
+    applyDatGuiSoftLock();
     datGui = new dat.GUI();
     disableDatGuiBuiltinKeybinds();
 
@@ -11698,6 +12034,12 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'waterWeight'), guiControls.waterWeight);
       })
       .name('Water Weight');
+    water_folder.add(guiControls, 'soilMoistureLossMult', 0.0, 5.0, 0.05)
+      .onChange(uploadLandRateUniforms)
+      .name('Soil Moisture Loss');
+    water_folder.add(guiControls, 'climateMoistureDecayMult', 0.0, 5.0, 0.05)
+      .onChange(uploadLandRateUniforms)
+      .name('Climate Moisture Decay');
 
     var vegetation_folder = datGui.addFolder('Vegetation');
     vegetation_folder.add(guiControls, 'forestGrowthSpecies', {
@@ -11711,6 +12053,15 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       })
       .name('Natural Forest Type')
       .listen();
+    vegetation_folder.add(guiControls, 'vegetationGrowthMult', 0.0, 5.0, 0.05)
+      .onChange(uploadLandRateUniforms)
+      .name('Vegetation Growth');
+    vegetation_folder.add(guiControls, 'vegetationDiebackMult', 0.0, 5.0, 0.05)
+      .onChange(uploadLandRateUniforms)
+      .name('Vegetation Dieback');
+    vegetation_folder.add(guiControls, 'fireBurnMult', 0.0, 5.0, 0.05)
+      .onChange(uploadLandRateUniforms)
+      .name('Fire Burn Rate');
 
     var precipitation_folder = datGui.addFolder('Precipitation');
 
@@ -11727,6 +12078,10 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         gl.uniform1f(gl.getUniformLocation(precipitationProgram, 'subZeroThreshold'), guiControls.subZeroThreshold);
       })
       .name('Precipitation Threshold -°C');
+
+    precipitation_folder.add(guiControls, 'rainfallAmountMult', 0.0, 5.0, 0.05)
+      .onChange(uploadLandRateUniforms)
+      .name('Rainfall Amount');
 
     precipitation_folder.add(guiControls, 'spawnChance', 0.00001, 0.0001, 0.00001)
       .onChange(function() {
@@ -11901,42 +12256,42 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         gl.useProgram(realisticDisplayProgram);
         gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'greenHueStartThreshold'), guiControls.greenHueStartThreshold);
       })
-      .name('Core Hue Start (intense)');
+      .name('Core Glow Start (intense)');
     displayAppearance.add(guiControls, 'greenHueEndThreshold', 0.5, 4.0, 0.05)
       .onChange(function() {
         if (!realisticDisplayProgram) return;
         gl.useProgram(realisticDisplayProgram);
         gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'greenHueEndThreshold'), guiControls.greenHueEndThreshold);
       })
-      .name('Core Hue Full (extreme)');
+      .name('Core Glow Full (extreme)');
     displayAppearance.add(guiControls, 'greenHueStrength', 0.0, 2.0, 0.05)
       .onChange(function() {
         if (!realisticDisplayProgram) return;
         gl.useProgram(realisticDisplayProgram);
         gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'greenHueStrength'), guiControls.greenHueStrength);
       })
-      .name('Core Hue / Glow');
+      .name('Core Glow Strength');
     displayAppearance.add(guiControls, 'greenHueBrightness', 0.1, 3.0, 0.05)
       .onChange(function() {
         if (!realisticDisplayProgram) return;
         gl.useProgram(realisticDisplayProgram);
         gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'greenHueBrightness'), guiControls.greenHueBrightness);
       })
-      .name('Core Hue Brightness');
+      .name('Core Glow Brightness');
     displayAppearance.add(guiControls, 'greenHueSaturation', 0.0, 2.0, 0.05)
       .onChange(function() {
         if (!realisticDisplayProgram) return;
         gl.useProgram(realisticDisplayProgram);
         gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'greenHueSaturation'), guiControls.greenHueSaturation);
       })
-      .name('Core Hue Saturation');
+      .name('Core Glow Saturation');
     displayAppearance.add(guiControls, 'greenHueHue', -1.0, 1.0, 0.05)
       .onChange(function() {
         if (!realisticDisplayProgram) return;
         gl.useProgram(realisticDisplayProgram);
         gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'greenHueHue'), guiControls.greenHueHue);
       })
-      .name('Core Hue Shift');
+      .name('Core Glow Hue Shift');
     displayAppearance.add(guiControls, 'showDrops').name('Show Droplets').listen();
     displayAppearance.add(guiControls, 'enableRainbows').name('Rainbows').listen();
     displayAppearance.add(guiControls, 'smoothClouds').name('Smooth Clouds').listen();
@@ -12333,8 +12688,10 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       guiControls.enableBloom = false;
       guiControls.gpuEffectQuality = 0.45;
       guiControls.atmosphericLightingResolution = 0.5;
-      // Start at a usable sim speed; auto_IterPerFrame climbs further when headroom exists.
-      guiControls.IterPerFrame = Math.min(10, getMaxAutoIterPerFrame());
+      // Warm start: 10 iters immediately can TDR a large grid. Auto-iter climbs after warmup.
+      const ultra = isUltraHighResSim();
+      const warmIters = ultra ? 2 : ((typeof simRuntimeFrames === 'number' && simRuntimeFrames >= 60) ? 6 : 2);
+      guiControls.IterPerFrame = Math.min(warmIters, getMaxAutoIterPerFrame());
       if (typeof LightningV2 !== 'undefined' && LightningV2.applyPreset)
         LightningV2.applyPreset(guiControls, 'Performance');
       NUM_DROPLETS = computeNumDroplets();
@@ -12569,6 +12926,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     debugLog('startSimulation called, SETUP_MODE was:', SETUP_MODE);
     SETUP_MODE = false;
     simRuntimeFrames = 0;
+    applyHighResStartupGuard();
     gl.useProgram(postProcessingProgram);
     if (postProc_exposure_loc !== null) {
       gl.uniform1f(postProc_exposure_loc, guiControls.exposure);
@@ -18995,40 +19353,41 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
 
   function getFramePressure()
   {
-    // 0 = comfortable, 1 = heavy frame pressure. Gradual — not a hard on/off switch.
+    // 0 = comfortable, 1 = heavy. Use measured frame time — do not fake pressure
+    // from cell count, or a 12000×200 grid stays in lite-mode on a fast GPU.
     if (guiControls.performanceAutoScaling === false)
       return 0;
     let p = clamp((smoothedFrameMs - TARGET_FRAME_MS) / 36.0, 0, 1);
-    // High-res grids start under more pressure so expensive passes throttle earlier.
-    const resBias = clamp((getResolutionCostFactor() - 1.0) * 0.22, 0, 0.55);
-    p = clamp(p + resBias, 0, 1);
-    // Mild bias only — keep pass striding without locking lite-mode when FPS is fine.
-    if (guiControls.highResPerformanceMode)
-      p = clamp(p + 0.08, 0, 1);
+    if (p > 0.05) {
+      const resBias = clamp((getResolutionCostFactor() - 1.0) * 0.10, 0, 0.22);
+      p = clamp(p + resBias, 0, 1);
+      if (guiControls.highResPerformanceMode)
+        p = clamp(p + 0.05, 0, 1);
+    }
     return p;
   }
 
   function useLiteVisualsMode()
   {
-    // Aggressive: enter lite mode sooner, especially at high resolution.
     const threshold = guiControls.highResPerformanceMode ? 0.28 : 0.34;
-    return getFramePressure() > threshold || getResolutionCostFactor() > 2.2;
+    return getFramePressure() > threshold;
   }
 
   function getMaxAutoIterPerFrame()
   {
-    // Prefer filling spare GPU budget with physics so sim stays fast while display LOD keeps FPS smooth.
+    // Safety ceiling only. Auto-iter backs off from real frame time, so a GPU that
+    // can run 12000×200 at ~10–18 iters/frame is allowed to do that again.
     const resCost = getResolutionCostFactor();
     if (guiControls.highResPerformanceMode) {
-      if (resCost > 2.5)
+      if (resCost > 4.0)
         return 10;
-      if (resCost > 1.5)
+      if (resCost > 2.5)
         return 14;
       return 20;
     }
-    if (resCost > 3.0)
+    if (resCost > 4.0)
       return 12;
-    if (resCost > 2.0)
+    if (resCost > 2.5)
       return 18;
     if (resCost > 1.4)
       return 24;
@@ -19045,16 +19404,12 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       scale = 0.75;
     if (pixels > 2560 * 1440)
       scale = 0.625;
-    if (getResolutionCostFactor() > 1.8)
-      scale = Math.min(scale, 0.75);
-    if (getResolutionCostFactor() > 2.8)
-      scale = Math.min(scale, 0.55);
     const pressure = getSmoothedFramePressure();
     if (pressure > 0.22)
       scale = Math.min(scale, 0.75);
     if (pressure > 0.40)
       scale = Math.min(scale, 0.5);
-    if (pressure > 0.65 || guiControls.highResPerformanceMode)
+    if (pressure > 0.65)
       scale = Math.min(scale, 0.45);
     if (useLiteVisualsMode())
       scale = Math.min(scale, 0.5);
@@ -19094,11 +19449,9 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     if (guiControls.performanceAutoScaling === false && !guiControls.highResPerformanceMode)
       return true;
     const pressure = getFramePressure();
-    const resCost = getResolutionCostFactor();
-    // Aggressive high-res / load: precip at most once per frame (iter 0).
-    if (useLiteVisualsMode() || guiControls.highResPerformanceMode || resCost > 1.8 || pressure > 0.40)
+    if (pressure > 0.40)
       return iterIndex === 0;
-    if (pressure > 0.22 || resCost > 1.25)
+    if (pressure > 0.22)
       return iterIndex === 0 || ((frameNum & 1) === 0 && (iterIndex & 1) === 0);
     return true;
   }
@@ -19110,10 +19463,9 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     if (guiControls.performanceAutoScaling === false)
       return true;
     const pressure = getFramePressure();
-    const resCost = getResolutionCostFactor();
-    if (guiControls.highResPerformanceMode || pressure > 0.50 || resCost > 2.2)
+    if (pressure > 0.50)
       return iterIndex % 3 === 0;
-    if (pressure > 0.28 || resCost > 1.4)
+    if (pressure > 0.28)
       return (iterIndex & 1) === 0;
     return true;
   }
@@ -19190,6 +19542,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   {
     // Cap adaptive levels by zoom so far-away views skip fine ambient mips.
     let cap = guiControls.highResPerformanceMode ? 4 : 5;
+    if (isUltraHighResSim())
+      cap = Math.min(cap, 3);
     const zoomNorm = cam.curZoom / Math.max(sim_res_x, 1);
     if (zoomNorm < 0.002)
       cap = Math.min(cap, 3);
@@ -19385,6 +19739,56 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       window.removeEventListener('keydown', dat.GUI._keydownHandler, false);
   }
 
+  // Soft-lock dat.GUI numbers: slider still uses min/max for drag mapping, but typed
+  // values (and programmatic setValue) are not clamped to that range or step.
+  function applyDatGuiSoftLock()
+  {
+    if (typeof dat === 'undefined' || !dat.controllers || !dat.controllers.NumberController)
+      return;
+    const NC = dat.controllers.NumberController;
+    if (NC.__softLockApplied)
+      return;
+    NC.__softLockApplied = true;
+
+    NC.prototype.setValue = function(e) {
+      const n = typeof e === 'number' ? e : parseFloat(e);
+      if (!Number.isFinite(n))
+        return this;
+      this.object[this.property] = n;
+      if (this.__onChange)
+        this.__onChange.call(this, n);
+      this.updateDisplay();
+      return this;
+    };
+
+    const NCS = dat.controllers.NumberControllerSlider;
+    if (NCS && NCS.prototype) {
+      NCS.prototype.updateDisplay = function() {
+        let t = (this.getValue() - this.__min) / (this.__max - this.__min);
+        if (!Number.isFinite(t))
+          t = 0;
+        t = Math.max(0, Math.min(1, t));
+        if (this.__foreground)
+          this.__foreground.style.width = (100 * t) + '%';
+        if (dat.controllers.Controller && dat.controllers.Controller.prototype.updateDisplay)
+          dat.controllers.Controller.prototype.updateDisplay.call(this);
+        return this;
+      };
+    }
+
+    // Show the real stored value (don't round display to step precision)
+    const NCB = dat.controllers.NumberControllerBox;
+    if (NCB && NCB.prototype) {
+      NCB.prototype.updateDisplay = function() {
+        if (this.__input)
+          this.__input.value = String(this.getValue());
+        if (dat.controllers.Controller && dat.controllers.Controller.prototype.updateDisplay)
+          dat.controllers.Controller.prototype.updateDisplay.call(this);
+        return this;
+      };
+    }
+  }
+
   document.addEventListener('keydown', (event) => {
     if (keybindEditorCapturing) {
       event.preventDefault();
@@ -19469,7 +19873,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
 
   // load shaders
-  const SHADER_ASSET_VERSION = 58; // bump to bust CDN/browser cache after shader edits
+  const SHADER_ASSET_VERSION = 80; // bump to bust CDN/browser cache after shader edits
 
   var commonSource = await loadSourceFile('shaders/common.glsl');
   var commonDisplaySource = await loadSourceFile('shaders/commonDisplay.glsl');
@@ -19579,7 +19983,18 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   const precipDisplayProgram = createProgram(precipDisplayVertexShader, precipDisplayShader);
   gl.deleteShader(precipDisplayVertexShader);
   const universalDisplayProgram = createProgram(dispVertexShader, universalDisplayShader);
-  const skyBackgroundDisplayProgram = createProgram(realDispVertexShader, skyBackgroundDisplayShader);
+  await loadingBar.set(82, 'Linking sky shader');
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  let skyBackgroundDisplayProgram;
+  try {
+    skyBackgroundDisplayProgram = await linkProgramAsync(
+      realDispVertexShader, skyBackgroundDisplayShader, null, 'sky background');
+  } catch (e) {
+    if (gl.isContextLost && gl.isContextLost()) {
+      await loadingBar.showError('WebGL context lost while linking the sky shader.\nRefresh the page (Ctrl+F5). If this keeps happening, try a smaller simulation resolution.');
+    }
+    throw e;
+  }
 
   // Link realistic display with Lightning V2 (June 8 path); fall back if link fails.
   await loadingBar.set(84, 'Linking realistic display shader');
@@ -20101,6 +20516,26 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   const customSurfaceAtlas = gl.createTexture();
   const customSkyTex = gl.createTexture();
   const customSunTex = gl.createTexture();
+  const skyPhaseNightTex = gl.createTexture();
+  const skyPhaseCivilTex = gl.createTexture();
+  const skyPhaseSunRiseSetTex = gl.createTexture();
+  const skyPhaseGoldenTex = gl.createTexture();
+  const skyPhaseEarlyTex = gl.createTexture();
+  let skyPhaseTexturesReady = false;
+  function initSkyPhasePlaceholder(tex)
+  {
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([0, 0, 0, 255]));
+  }
+  initSkyPhasePlaceholder(skyPhaseNightTex);
+  initSkyPhasePlaceholder(skyPhaseCivilTex);
+  initSkyPhasePlaceholder(skyPhaseSunRiseSetTex);
+  initSkyPhasePlaceholder(skyPhaseGoldenTex);
+  initSkyPhasePlaceholder(skyPhaseEarlyTex);
   // Placeholder 1×1 so sampler is valid before any custom tools load
   gl.bindTexture(gl.TEXTURE_2D, customSurfaceAtlas);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
@@ -20161,6 +20596,16 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   window.chargeTexture_1 = chargeTexture_1;
   window.latestChargeTexture = latestChargeTexture;
 
+  async function yieldGpuIfUltra()
+  {
+    if (!isUltraHighResSim())
+      return;
+    try { gl.flush(); } catch (e) { /* ignore */ }
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    if (gl.isContextLost && gl.isContextLost())
+      throw new Error('WebGL context lost while allocating ' + sim_res_x + '×' + sim_res_y + ' textures.');
+  }
+
   // Set up Textures
   async function setupTextures()
   {
@@ -20169,7 +20614,9 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
     //  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-
+    if (gl.isContextLost && gl.isContextLost())
+      throw new Error('GPU rejected ' + sim_res_x + '×' + sim_res_y + ' textures (context lost).');
+    await yieldGpuIfUltra();
 
     gl.bindTexture(gl.TEXTURE_2D, baseTexture_1);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, sim_res_x, sim_res_y, 0, gl.RGBA, gl.FLOAT, initialBaseTex);
@@ -20190,6 +20637,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
     //  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    await yieldGpuIfUltra();
 
     const smokeInit = initialSmokeTex || new Float32Array(sim_res_x * sim_res_y);
     gl.bindTexture(gl.TEXTURE_2D, smokeTexture_0);
@@ -20218,15 +20666,21 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
 
     for (let i = 0; i < temperatureChangeHistoryTextures.length; i++) {
       gl.bindTexture(gl.TEXTURE_2D, temperatureChangeHistoryTextures[i]);
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, sim_res_x, sim_res_y, 0, gl.RGBA, gl.FLOAT, initialBaseTex);
+      if (guiControls && guiControls.disableTempChangeHistory) {
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, 1, 1, 0, gl.RGBA, gl.FLOAT, new Float32Array(4));
+      } else {
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, sim_res_x, sim_res_y, 0, gl.RGBA, gl.FLOAT, initialBaseTex);
+      }
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
     }
 
+    try { gl.flush(); } catch (e) { /* ignore */ }
+
     lastSaveTime = new Date();
   }
 
-  setupTextures();
+  await setupTextures();
 
   function resetAtmosphereKeepTerrain()
   {
@@ -20319,7 +20773,9 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     debugLog('Atmosphere reset — terrain and instruments kept (default ~25°C surface profile)');
   }
 
+  await yieldGpuIfUltra();
   createAmbientLightFBOs();
+  await yieldGpuIfUltra();
 
   // Initialize radar cache FBOs
   radars.forEach(radar => radar.initCacheFBO());
@@ -20374,6 +20830,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   gl.bindFramebuffer(gl.FRAMEBUFFER, capeFrameBuff);
   gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, capeTexture,
                           0); // attach the texture as the first color attachment
+  await yieldGpuIfUltra();
 
   // Charge textures: RG32F ping-ponged (R=air charge, G=ground charge), bipolar ±1.0
   gl.bindTexture(gl.TEXTURE_2D, chargeTexture_0);
@@ -20587,6 +21044,36 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);        // horizontal
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE); // vertical
+
+  function uploadSkyPhaseTexture(tex, img)
+  {
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, img.width, img.height, 0, gl.RGBA, gl.UNSIGNED_BYTE, img);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  }
+
+  try {
+    const skyVer = typeof SHADER_ASSET_VERSION !== 'undefined' ? SHADER_ASSET_VERSION : 66;
+    const skyImgs = await Promise.all([
+      loadImage('resources/img/sky/sky_night.png?v=' + skyVer),
+      loadImage('resources/img/sky/sky_civil_twilight.png?v=' + skyVer),
+      loadImage('resources/img/sky/sky_sunrise_sunset.png?v=' + skyVer),
+      loadImage('resources/img/sky/sky_golden_hour.png?v=' + skyVer),
+      loadImage('resources/img/sky/sky_early_golden.png?v=' + skyVer),
+    ]);
+    uploadSkyPhaseTexture(skyPhaseNightTex, skyImgs[0]);
+    uploadSkyPhaseTexture(skyPhaseCivilTex, skyImgs[1]);
+    uploadSkyPhaseTexture(skyPhaseSunRiseSetTex, skyImgs[2]);
+    uploadSkyPhaseTexture(skyPhaseGoldenTex, skyImgs[3]);
+    uploadSkyPhaseTexture(skyPhaseEarlyTex, skyImgs[4]);
+    skyPhaseTexturesReady = true;
+  } catch (e) {
+    console.warn('Sky phase textures failed to load; keeping procedural sky only.', e);
+    skyPhaseTexturesReady = false;
+  }
 
   if (window.UserInteraction && window.UserInteraction.atlas) {
     window.UserInteraction.atlas.setGL(gl, customSurfaceAtlas);
@@ -22642,13 +23129,24 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       const inp = document.createElement('input');
       inp.type = 'number';
       inp.className = 'ske-inp';
-      inp.min = min;
-      inp.max = max;
-      inp.step = step;
+      // Soft-lock: keep visual range as hints only; typed values are not clamped
+      inp.dataset.minVal = String(min);
+      inp.dataset.maxVal = String(max);
+      inp.step = String(step);
       inp.value = getVal();
       inp.onchange = () => {
-        setVal(parseFloat(inp.value));
-        commitSkyChange();
+        const v = parseFloat(inp.value);
+        if (Number.isFinite(v)) {
+          setVal(v);
+          commitSkyChange();
+        }
+      };
+      inp.oninput = () => {
+        const v = parseFloat(inp.value);
+        if (Number.isFinite(v)) {
+          setVal(v);
+          commitSkyChange();
+        }
       };
       row.appendChild(lbl);
       row.appendChild(inp);
@@ -23101,6 +23599,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
                guiControls.enableStormSurge === false ? 0.0 : 1.0);
   gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'forestGrowthSpecies'),
                typeof forestGrowthSpeciesUniform === 'function' ? forestGrowthSpeciesUniform() : 0.0);
+  landRateUniformsReady = true;
+  uploadLandRateUniforms();
 
   gl.useProgram(curlProgram);
   gl.uniform2f(gl.getUniformLocation(curlProgram, 'texelSize'), texelSizeX, texelSizeY);
@@ -23298,6 +23798,12 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   gl.uniform1i(gl.getUniformLocation(skyBackgroundDisplayProgram, 'customSunTex'), 14);
   gl.uniform1f(gl.getUniformLocation(skyBackgroundDisplayProgram, 'useCustomSkyTex'), 0.0);
   gl.uniform1f(gl.getUniformLocation(skyBackgroundDisplayProgram, 'useCustomSunTex'), 0.0);
+  gl.uniform1i(gl.getUniformLocation(skyBackgroundDisplayProgram, 'skyPhaseNight'), 0);
+  gl.uniform1i(gl.getUniformLocation(skyBackgroundDisplayProgram, 'skyPhaseCivil'), 1);
+  gl.uniform1i(gl.getUniformLocation(skyBackgroundDisplayProgram, 'skyPhaseSunRiseSet'), 2);
+  gl.uniform1i(gl.getUniformLocation(skyBackgroundDisplayProgram, 'skyPhaseGolden'), 4);
+  gl.uniform1i(gl.getUniformLocation(skyBackgroundDisplayProgram, 'skyPhaseEarly'), 5);
+  gl.uniform1f(gl.getUniformLocation(skyBackgroundDisplayProgram, 'useSkyPhaseTextures'), 0.0);
 
   gl.useProgram(universalDisplayProgram);
   gl.uniform2f(gl.getUniformLocation(universalDisplayProgram, 'resolution'), sim_res_x, sim_res_y);
@@ -23338,9 +23844,9 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'fogHazeStrength'), guiControls.fogHazeStrength != null ? guiControls.fogHazeStrength : 0.0);
   gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'greenHueStartThreshold'), guiControls.greenHueStartThreshold != null ? guiControls.greenHueStartThreshold : 0.8);
   gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'greenHueEndThreshold'), guiControls.greenHueEndThreshold != null ? guiControls.greenHueEndThreshold : 1.8);
-  gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'greenHueStrength'), guiControls.greenHueStrength != null ? guiControls.greenHueStrength : 0.45);
-  gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'greenHueBrightness'), guiControls.greenHueBrightness != null ? guiControls.greenHueBrightness : 1.0);
-  gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'greenHueSaturation'), guiControls.greenHueSaturation != null ? guiControls.greenHueSaturation : 1.0);
+  gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'greenHueStrength'), guiControls.greenHueStrength != null ? guiControls.greenHueStrength : 0.65);
+  gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'greenHueBrightness'), guiControls.greenHueBrightness != null ? guiControls.greenHueBrightness : 1.25);
+  gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'greenHueSaturation'), guiControls.greenHueSaturation != null ? guiControls.greenHueSaturation : 1.05);
   gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'greenHueHue'), guiControls.greenHueHue != null ? guiControls.greenHueHue : 0.0);
   uploadCloudsRainUniforms();
 
@@ -23417,9 +23923,9 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         gl.uniform1i(gl.getUniformLocation(realisticDisplayProgram, 'enableRainbows'), guiControls.enableRainbows !== false ? 1 : 0);
         gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'greenHueStartThreshold'), guiControls.greenHueStartThreshold != null ? guiControls.greenHueStartThreshold : 0.8);
         gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'greenHueEndThreshold'), guiControls.greenHueEndThreshold != null ? guiControls.greenHueEndThreshold : 1.8);
-        gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'greenHueStrength'), guiControls.greenHueStrength != null ? guiControls.greenHueStrength : 0.45);
-        gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'greenHueBrightness'), guiControls.greenHueBrightness != null ? guiControls.greenHueBrightness : 1.0);
-        gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'greenHueSaturation'), guiControls.greenHueSaturation != null ? guiControls.greenHueSaturation : 1.0);
+        gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'greenHueStrength'), guiControls.greenHueStrength != null ? guiControls.greenHueStrength : 0.65);
+        gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'greenHueBrightness'), guiControls.greenHueBrightness != null ? guiControls.greenHueBrightness : 1.25);
+        gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'greenHueSaturation'), guiControls.greenHueSaturation != null ? guiControls.greenHueSaturation : 1.05);
         gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'greenHueHue'), guiControls.greenHueHue != null ? guiControls.greenHueHue : 0.0);
       }
       if (skyBackgroundDisplayProgram) {
@@ -23552,6 +24058,18 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         return { ok : false, error : 'Runtime not ready' };
       },
     });
+
+    // Home ultra-realistic: apply Enhanced V2 cloudsRain once Shader Menu deps exist.
+    window.__applyHomeCloudsRain = function(obj) {
+      const patched = Object.assign({}, cloudsRainSettings, obj || {});
+      if (window.ShaderMenu && window.ShaderMenu.packs)
+        cloudsRainSettings = window.ShaderMenu.packs.mergeCloudsRain(patched);
+      else
+        cloudsRainSettings = patched;
+      saveCloudsRainSettings();
+      uploadCloudsRainUniforms();
+    };
+    applyPendingHomeUltraShaderPack();
   }
   if (typeof buildUserInteractionMenu === 'function')
     buildUserInteractionMenu();
@@ -23767,6 +24285,11 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   const uloc_real_ltSdfQuality         = gl.getUniformLocation(realisticDisplayProgram, 'ltSdfQuality');
   const uloc_real_ltDrawBolts          = gl.getUniformLocation(realisticDisplayProgram, 'ltDrawBolts');
   const uloc_real_ltEnableLightning    = gl.getUniformLocation(realisticDisplayProgram, 'ltEnableLightning');
+  const uloc_real_ltPrecipGlowChance   = gl.getUniformLocation(realisticDisplayProgram, 'ltPrecipGlowChance');
+  const uloc_real_ltPrecipGlowPrecipOnlyChance = gl.getUniformLocation(realisticDisplayProgram, 'ltPrecipGlowPrecipOnlyChance');
+  const uloc_real_ltPrecipGlowStrength = gl.getUniformLocation(realisticDisplayProgram, 'ltPrecipGlowStrength');
+  const uloc_real_ltPrecipGlowSize     = gl.getUniformLocation(realisticDisplayProgram, 'ltPrecipGlowSize');
+  const uloc_real_ltPrecipGlowSoftness = gl.getUniformLocation(realisticDisplayProgram, 'ltPrecipGlowSoftness');
 
   const uloc_illum_waterTex            = lightningIllumProgram ? gl.getUniformLocation(lightningIllumProgram, 'waterTex') : null;
   const uloc_illum_sunAngle            = lightningIllumProgram ? gl.getUniformLocation(lightningIllumProgram, 'sunAngle') : null;
@@ -24769,13 +25292,32 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
 
   function getStartupIterationCap()
   {
-    if (SETUP_MODE || simRuntimeFrames >= 60)
+    if (SETUP_MODE)
       return null;
-    if (simRuntimeFrames < 20)
-      return 2;
-    if (simRuntimeFrames < 45)
-      return 5;
-    return null;
+    const cells = getSimCellCount();
+    let warmup = 20;
+    let firstCap = 3;
+    let midCap = 8;
+    let lastCap = 10;
+    if (cells >= 700000) {
+      warmup = 36;
+      firstCap = 2;
+      midCap = 6;
+      lastCap = 10;
+    }
+    if (isUltraHighResSim()) {
+      warmup = 50;
+      firstCap = 1;
+      midCap = 3;
+      lastCap = 6;
+    }
+    if (simRuntimeFrames >= warmup)
+      return null;
+    if (simRuntimeFrames < Math.floor(warmup * 0.35))
+      return firstCap;
+    if (simRuntimeFrames < Math.floor(warmup * 0.70))
+      return midCap;
+    return lastCap;
   }
 
   function estimateStormActivity()
@@ -26214,6 +26756,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     const zoomNorm = cam.curZoom / Math.max(sim_res_x, 1);
     if (zoomNorm < 0.0025 || (lodVal != null && lodVal < 0.45) || guiControls.highResPerformanceMode)
       scale = Math.min(scale, 0.5);
+    if (isUltraHighResSim())
+      scale = Math.min(scale, 0.25);
     if (zoomNorm < 0.001 || (lodVal != null && lodVal < 0.3))
       scale = Math.min(scale, 0.5);
     return scale;
@@ -26330,6 +26874,21 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       gl.uniform1f(uloc_real_ltGlowStrength, Number.isFinite(guiControls.glowStrength) ? guiControls.glowStrength : 1);
     if (uloc_real_ltFlashDuration)
       gl.uniform1f(uloc_real_ltFlashDuration, Math.max(getEffectiveLtFlashDuration(), 0.2));
+    // Always upload rain-shaft illum flags (do not wait for V2 static key — defaults to 0).
+    if (uloc_real_ltEnableRainIllum)
+      gl.uniform1i(uloc_real_ltEnableRainIllum, guiControls.ltEnableRainShaftIllumination !== false ? 1 : 0);
+    if (uloc_real_ltRainIllum)
+      gl.uniform1f(uloc_real_ltRainIllum, guiControls.rainShaftIlluminationStrength || 1);
+    if (uloc_real_ltPrecipGlowChance)
+      gl.uniform1f(uloc_real_ltPrecipGlowChance, Number.isFinite(guiControls.precipGlowChance) ? guiControls.precipGlowChance : 0.75);
+    if (uloc_real_ltPrecipGlowPrecipOnlyChance)
+      gl.uniform1f(uloc_real_ltPrecipGlowPrecipOnlyChance, Number.isFinite(guiControls.precipGlowPrecipOnlyChance) ? guiControls.precipGlowPrecipOnlyChance : 0.5);
+    if (uloc_real_ltPrecipGlowStrength)
+      gl.uniform1f(uloc_real_ltPrecipGlowStrength, Number.isFinite(guiControls.precipGlowStrength) ? guiControls.precipGlowStrength : 1);
+    if (uloc_real_ltPrecipGlowSize)
+      gl.uniform1f(uloc_real_ltPrecipGlowSize, Number.isFinite(guiControls.precipGlowSize) ? guiControls.precipGlowSize : 1);
+    if (uloc_real_ltPrecipGlowSoftness)
+      gl.uniform1f(uloc_real_ltPrecipGlowSoftness, Number.isFinite(guiControls.precipGlowSoftness) ? guiControls.precipGlowSoftness : 1);
 
     if (!lightningV2InRealisticShader || !uloc_real_ltNumStrikes)
       return;
@@ -27519,6 +28078,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     mouseXinSim = savedMouseX;
     return y;
   }
+  // Expose for LightningV2 CG dest snap (ground contact)
+  window.findSimYposAboveSurfaceAtX = findSimYposAboveSurfaceAtX;
 
   async function buildSnapshotBlob()
   {
@@ -28297,6 +28858,9 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     mouseYinSim = screenToSimY(mouseY);
 
     if (SETUP_MODE) {
+      const setupHeavy = getSimCellCount() >= 700000;
+      const mouseMoved = (mouseXinSim !== prevMouseXinSim) || (mouseYinSim !== prevMouseYinSim);
+      if (!setupHeavy || mouseMoved || frameNum < 2) {
       gl.disable(gl.BLEND);
       gl.viewport(0, 0, sim_res_x, sim_res_y);
       gl.useProgram(setupProgram);
@@ -28310,6 +28874,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_1);
       gl.drawBuffers([ gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1, gl.COLOR_ATTACHMENT2, gl.COLOR_ATTACHMENT3 ]);
       gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+      }
     } else {
       // NOT SETUP MODE:
 
@@ -28527,7 +29092,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
             let chargeStride = 1;
             if (guiControls.adaptiveLightningQuality !== false && smoothedFrameMs > TARGET_FRAME_MS * 1.12)
               chargeStride = 2;
-            if (guiControls.highResPerformanceMode || getResolutionCostFactor() > 2.0 || getFramePressure() > 0.45)
+            if (getFramePressure() > 0.45)
               chargeStride = Math.max(chargeStride, 3);
 
             if (i === numIterations - 1)
@@ -29038,6 +29603,16 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
 
 
       // draw background
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, skyPhaseNightTex);
+      gl.activeTexture(gl.TEXTURE1);
+      gl.bindTexture(gl.TEXTURE_2D, skyPhaseCivilTex);
+      gl.activeTexture(gl.TEXTURE2);
+      gl.bindTexture(gl.TEXTURE_2D, skyPhaseSunRiseSetTex);
+      gl.activeTexture(gl.TEXTURE4);
+      gl.bindTexture(gl.TEXTURE_2D, skyPhaseGoldenTex);
+      gl.activeTexture(gl.TEXTURE5);
+      gl.bindTexture(gl.TEXTURE_2D, skyPhaseEarlyTex);
       gl.activeTexture(gl.TEXTURE8);
       gl.bindTexture(gl.TEXTURE_2D, A380Texture); // left-facing (shader picks L/R per plane)
       gl.activeTexture(gl.TEXTURE9);
@@ -29068,6 +29643,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         const useSun = texApi && texApi.hasSun() ? 1.0 : 0.0;
         gl.uniform1f(gl.getUniformLocation(skyBackgroundDisplayProgram, 'useCustomSkyTex'), useSky);
         gl.uniform1f(gl.getUniformLocation(skyBackgroundDisplayProgram, 'useCustomSunTex'), useSun);
+        gl.uniform1f(gl.getUniformLocation(skyBackgroundDisplayProgram, 'useSkyPhaseTextures'),
+          skyPhaseTexturesReady ? 1.0 : 0.0);
       }
 
       // NPC traffic planes → same sky A380 path as airplane mode
@@ -29092,6 +29669,17 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       gl.enable(gl.BLEND);
       gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
 
+      // Restore units overwritten by sky phase textures for the realistic pass.
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, baseTexture_1);
+      gl.activeTexture(gl.TEXTURE1);
+      gl.bindTexture(gl.TEXTURE_2D, waterTexture_1);
+      gl.activeTexture(gl.TEXTURE2);
+      gl.bindTexture(gl.TEXTURE_2D, wallTexture_1);
+      gl.activeTexture(gl.TEXTURE4);
+      gl.bindTexture(gl.TEXTURE_2D, noiseTexture);
+      gl.activeTexture(gl.TEXTURE5);
+      gl.bindTexture(gl.TEXTURE_2D, surfaceTextureMap);
 
       // draw clouds and terrain
       gl.activeTexture(gl.TEXTURE11);
@@ -30307,6 +30895,7 @@ drawNukeOverlay();
     // Auto-adjust iterations per frame every frame using smoothedFrameMs instead of
     // waiting for the 1-second FPS counter. This reacts in ~5 frames rather than ~60.
     if (!guiControls.paused && guiControls.auto_IterPerFrame
+        && !SETUP_MODE
         && !airplaneMode && !guiControls.slowMotion && !guiControls.realtimeMode
         && !multiplayerHostMode && !multiplayerPeerMode
         && !(window.WeatherSandbox && window.WeatherSandbox.replay
@@ -30319,12 +30908,15 @@ drawNukeOverlay();
       if (guiControls.IterPerFrame > maxAutoIters)
         guiControls.IterPerFrame = maxAutoIters;
       const msOverBudget = smoothedFrameMs - TARGET_FRAME_MS;
+      const warmingUp = getStartupIterationCap() != null;
       if (msOverBudget > 2) {
         adjIterPerFrame(msOverBudget > 8 ? -2 : -1);
-      } else if (guiControls.IterPerFrame < maxAutoIters) {
-        if (msOverBudget < -12) {
+      } else if (!warmingUp && guiControls.IterPerFrame < maxAutoIters) {
+        if (msOverBudget < -16) {
+          adjIterPerFrame(3);
+        } else if (msOverBudget < -12) {
           adjIterPerFrame(2);
-        } else if (msOverBudget < -5 && frameNum % 3 === 0) {
+        } else if (msOverBudget < -5 && frameNum % 2 === 0) {
           adjIterPerFrame(1);
         }
       }

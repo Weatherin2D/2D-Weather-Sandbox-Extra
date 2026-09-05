@@ -181,6 +181,43 @@
             line-height: 1.5;
         }
 
+        .home-startup-presets {
+            margin: 14px 0 8px;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            align-items: center;
+            max-width: 900px;
+        }
+
+        .home-preset-btn {
+            padding: 10px 16px;
+            border-radius: 8px;
+            border: 1px solid rgba(255, 255, 255, 0.35);
+            background: rgba(0, 0, 0, 0.35);
+            color: #f2f6fa;
+            font-size: 0.95rem;
+            cursor: pointer;
+        }
+
+        .home-preset-btn:hover {
+            border-color: rgba(168, 218, 220, 0.8);
+            background: rgba(74, 144, 226, 0.25);
+        }
+
+        .home-preset-btn.active {
+            border-color: rgba(120, 220, 170, 0.95);
+            background: rgba(40, 120, 90, 0.55);
+            box-shadow: 0 0 0 1px rgba(120, 220, 170, 0.35);
+        }
+
+        .home-preset-hint {
+            flex-basis: 100%;
+            margin: 0;
+            font-size: 0.85rem;
+            opacity: 0.75;
+        }
+
         #IntroScreen {
             position: relative;
             z-index: 1;
@@ -1511,7 +1548,7 @@
                 <tr>
                     <td></td>
                     <td colspan="2"><i id="simResXWarning" style="color:rgb(255, 61, 61); display: none;">Very high
-                            horizontal resolutions (above 16000) need a lot of GPU memory — expect slower performance.</i></td>
+                            horizontal resolutions (12000–16000, e.g. 12000×200) run at full auto-iter when the GPU has headroom. Widths of 16000+ start slowly then speed up. Above 16000 also needs a GPU max texture size of at least that width.</i></td>
                 </tr>
                 <tr>
                     <td><b>Vertical resolution</b></td>
@@ -1536,6 +1573,11 @@
                 </tr>
             </table>
             <input type="button" id="mpCreateSimBtn" value="Create New Simulation" onclick="loadData()" />
+            <div id="homeStartupPresets" class="home-startup-presets">
+                <button type="button" id="homeUltraRealisticBtn" class="home-preset-btn" aria-pressed="false">Enable ultra-realistic display</button>
+                <button type="button" id="homePerformanceModeBtn" class="home-preset-btn" aria-pressed="false">Enable performance mode</button>
+                <p class="home-preset-hint">Optional starting presets for new sims (from your reference save). Both can be on at once.</p>
+            </div>
             <p id="mpPeerWaitHint" style="display:none; color:#a8dadc; margin-top:8px;">Joined as peer — waiting for host simulation…</p>
             <div class="intro-hints-option">
                 <label for="introShowHints">
@@ -1631,7 +1673,7 @@
                     realistic,
                     longer lasting cells</li>
                 <li>Performance is mostly GPU dependent, GTX 1070 or better recommended for realtime gameplay</li>
-                <li>At high resolutions, open Advanced → <b>Apply Performance Preset</b> for aggressive speed settings</li>
+                <li>At high resolutions, the sim starts slowly for a few seconds so the GPU does not reset, then speeds up. You can also open Advanced → <b>Apply Performance Preset</b> for more aggressive speed settings</li>
                 <li>Press <b>F3</b> in-sim for an FPS / debug overlay (like Minecraft)</li>
                 <li>If you have a laptop with a dedicated GPU, make sure the browser is actually using it! It's
                     often

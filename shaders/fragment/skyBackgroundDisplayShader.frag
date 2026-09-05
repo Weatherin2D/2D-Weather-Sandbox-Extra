@@ -60,6 +60,14 @@ uniform sampler2D customSunTex;
 uniform float useCustomSkyTex;
 uniform float useCustomSunTex;
 
+// Built-in vertical sky gradients keyed by solar elevation (noon stays procedural).
+uniform sampler2D skyPhaseNight;
+uniform sampler2D skyPhaseCivil;
+uniform sampler2D skyPhaseSunRiseSet;
+uniform sampler2D skyPhaseGolden;
+uniform sampler2D skyPhaseEarly;
+uniform float useSkyPhaseTextures;
+
 uniform vec2 planeDirectionAndGearPos; // player: x=dirLeft(1/0), y=gearPos
 
 uniform vec3 planePos; // player: xy=norm, z=angle
@@ -320,11 +328,44 @@ void main()
   sunWarmth *= 1.0 - smoothstep(0.48, 0.88, skyHeight);
   twilightSky = mix(twilightSky, vec3(0.88, 0.62, 0.24), sunWarmth * twilightAmt * 0.55);
 
+  // Elevation-keyed sky phase textures (PDF gradients). Noon keeps procedural daySky.
+  // Image top is black, image bottom is horizon colour. WebGL uploads image-top → v=0,
+  // so use 1-y so texture bottom (warm) sits at surface y=0 and black at the sky top.
+  // Sky draws above the sim (texCoord.y > 1). Map the strip across the same vertical
+  // span as zenithBlack (full black ~ skyH 2.0) so the baked black fade sits in the
+  // overscan, not halfway down inside the simulation.
+  float phaseAmt = 0.0;
+  if (useSkyPhaseTextures > 0.5) {
+    float elevDeg = sunElevRad * rad2deg;
+    float skyHPhase = (texCoord.y - horizonLine) / max(1.0 - horizonLine, 0.01);
+    float vTex = 1.0 - clamp(skyHPhase / 2.0, 0.0, 1.0);
+    vec3 cNight = texture(skyPhaseNight, vec2(0.5, vTex)).rgb;
+    vec3 cCivil = texture(skyPhaseCivil, vec2(0.5, vTex)).rgb;
+    vec3 cRiseSet = texture(skyPhaseSunRiseSet, vec2(0.5, vTex)).rgb;
+    vec3 cGolden = texture(skyPhaseGolden, vec2(0.5, vTex)).rgb;
+    vec3 cEarly = texture(skyPhaseEarly, vec2(0.5, vTex)).rgb;
+
+    // 1 night, 2 civil twilight, 3 sunrise/sunset, 4 golden hour, 5 early golden → noon procedural
+    float wNight = 1.0 - smoothstep(-12.0, -4.0, elevDeg);
+    float wCivil = smoothstep(-12.0, -4.0, elevDeg) * (1.0 - smoothstep(-1.5, 2.5, elevDeg));
+    float wRiseSet = smoothstep(-1.5, 2.5, elevDeg) * (1.0 - smoothstep(4.0, 9.0, elevDeg));
+    float wGolden = smoothstep(4.0, 9.0, elevDeg) * (1.0 - smoothstep(11.0, 17.0, elevDeg));
+    float wEarly = smoothstep(11.0, 17.0, elevDeg) * (1.0 - smoothstep(20.0, 28.0, elevDeg));
+    float wSum = max(wNight + wCivil + wRiseSet + wGolden + wEarly, 1e-5);
+    vec3 phaseSky = (cNight * wNight + cCivil * wCivil + cRiseSet * wRiseSet
+                     + cGolden * wGolden + cEarly * wEarly) / wSum;
+    phaseAmt = clamp(wSum, 0.0, 1.0) * (1.0 - smoothstep(22.0, 30.0, elevDeg));
+    // Prefer the texture colours over procedural twilight wash.
+    daySky = mix(daySky, phaseSky, phaseAmt);
+    twilightSky = mix(twilightSky, phaseSky, phaseAmt);
+    twilightAmt *= (1.0 - phaseAmt * 0.92);
+  }
+
   // Custom sky texture: use as day base + softly tint into twilight (never replace after the mix).
   // Avoid fract() wrap on U — that caused hard vertical seams when the strip wasn't seamless.
   if (useCustomSkyTex > 0.5) {
-    float v = clamp(skyHeight, 0.0, 1.0);
-    float vTex = 1.0 - v;
+    float skyHCustom = (texCoord.y - horizonLine) / max(1.0 - horizonLine, 0.01);
+    float vTex = 1.0 - clamp(skyHCustom / 2.0, 0.0, 1.0); // horizon at surface; black in overscan
     // Vertical gradient core (stable) + light clamped panorama detail (no wrap)
     vec3 customGrad = texture(customSkyTex, vec2(0.5, vTex)).rgb;
     float uClamped = clamp(texCoord.x, 0.001, 0.999);
@@ -342,8 +383,10 @@ void main()
   // Wide smoothstep so multi-lat columns blend day↔twilight without hard pillars
   float twilightBlend = smoothstep(0.0, 1.0, twilightAmt);
   vec3 mixedCol = mix(daySky, twilightSky, twilightBlend);
-  // Day and twilight both must finish black at the top of the skybox.
+  // Noon procedural black-out at the top. When phase textures own the sky, keep their baked
+  // black fade instead of crushing mid-sky colours.
   float zenithBlack = smoothstep(0.62, 2.0, skyHeight);
+  zenithBlack *= (1.0 - phaseAmt);
   mixedCol = mix(mixedCol, vec3(0.0), zenithBlack);
 
   // Star field - only visible at night (sun below horizon)
