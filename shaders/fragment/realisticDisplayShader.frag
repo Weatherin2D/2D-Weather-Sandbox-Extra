@@ -1267,11 +1267,13 @@ void applyAirLightning(vec2 uv, float cloudwater, float precip, float cloudDensi
       float aboveGround = smoothstep(-0.03, 0.10, uv.y);
       float precipGate;
       if (precipOnly) {
-        // Strict precip shafts only — cloud body stays unchanged
+        // Free-air precip shafts only — cloud bodies stay unchanged, and
+        // precip embedded in cloud is masked by that cloud density.
         precipGate = smoothstep(0.04, 0.18, precip);
         float cloudAmt = max(cloudwater, cloudDensity * 0.08);
-        float shaftFrac = precip / max(precip + cloudAmt * 0.12 + 1e-4, 1e-4);
-        precipGate *= smoothstep(0.35, 0.70, shaftFrac);
+        float shaftFrac = precip / max(precip + cloudAmt * 0.35 + 1e-4, 1e-4);
+        float freeAir = 1.0 - smoothstep(0.04, 0.30, cloudAmt);
+        precipGate *= smoothstep(0.45, 0.78, shaftFrac) * freeAir;
       } else {
         // Current soft glow (can fringe near bolt in mixed precip)
         precipGate = smoothstep(0.001, 0.12, precip);
@@ -2067,13 +2069,14 @@ void main()
   }
 
   // Soft precip glow — gradual edges, bolt tint.
-  // Precip-only mode: shafts light up; cloud bodies stay unchanged.
+  // Precip-only mode: free-air shafts light up; cloud density masks embedded precip.
   if (lightningShaftFlash > 0.008 && opacity > 0.02 && texCoord.y > -0.02 && texCoord.y <= 1.0) {
     float glow = clamp(lightningShaftFlash, 0.0, 1.0);
     if (lightningShaftFlashPrecipOnly > 0.5) {
       float pGate = smoothstep(0.03, 0.16, precipF);
-      float cloudKeep = 1.0 - smoothstep(0.08, 0.45, cloudwater);
-      glow *= pGate * mix(0.25, 1.0, cloudKeep);
+      // Dense cloud fully occludes precip-only glow (no 25% bleed-through).
+      float cloudMask = 1.0 - smoothstep(0.04, 0.30, cloudwater);
+      glow *= pGate * cloudMask;
     }
     if (glow > 0.008) {
       glow = smoothstep(0.0, 0.85, glow);

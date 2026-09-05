@@ -352,7 +352,7 @@ const ControlHelp = (function() {
     lightningIllumBlurStrength: 'Softens lightning flash lighting in the scene. 0 = sharp; higher = smoother, more stable illumination.',
     ltEnableRainShaftIllumination: 'Soft glow in precip near the bolt (tinted like the lightning).',
     precipGlowChance: 'Chance a strike gets precip illumination glow (default 75%).',
-    precipGlowPrecipOnlyChance: 'Of glowing strikes: chance the glow is precip-only and leaves cloud bodies unchanged (default 50%).',
+    precipGlowPrecipOnlyChance: 'Of glowing strikes: chance the glow is precip-only (free-air shafts; clouds mask glow when precip sits inside them; default 50%).',
     precipGlowStrength: 'How strong the soft precip illumination glow is.',
     rainShaftIlluminationStrength: 'Overall intensity multiplier for precip illumination.',
     precipGlowSize: 'How large the illumination glow spreads around the bolt.',
