@@ -334,6 +334,7 @@ const ControlHelp = (function() {
     outflowOverlay: 'Highlight cold-pool / gust-front edges where near-surface air is cool and divergent. Works over any display mode.',
     labelsOverlay: 'Name cloud types and weather events in the scene (stratocumulus, altocumulus, supercell, hail core, outflow, lightning, and similar). Tags sit on the feature. Tornado/mesocyclone only appear when rotation and shear are strong.',
     tornadoDetectionOverlay: 'Find small near-surface updrafts with condensation to the ground. Intensity is the left-vs-right wind difference at the vortex, shown with an EF estimate. Separate from the Labels overlay tornado tag.',
+    tornadoDetectionUpdateFreq: 'How often (in sim iterations) tornado detection re-scans near-surface winds and cloud. Lower = more frequent updates. Independent of Risk/Sounding Update Freq.',
     radarOverlay: 'Draw radar data on top of the realistic view.',
     radarOpacity: 'Opacity of the radar overlay.',
     nukeBlastRadius: 'Radius of the thermal blast in cells.',

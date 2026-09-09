@@ -761,6 +761,7 @@ const guiControls_default = {
   outflowOverlay : false, // canvas markers for cold-pool / gust-front edges
   labelsOverlay : false, // world-space cloud type / weather event names
   tornadoDetectionOverlay : false, // near-surface vortex markers with wind delta / EF
+  tornadoDetectionUpdateFreq : 8, // sim iterations between tornado detection rescans
   lightningIllumTexture : true,
   lightningIllumBlurStrength : 1.0,
   performanceAutoScaling : true,
@@ -3733,6 +3734,13 @@ function clearOutflowFronts()
 function overlayWantsBackgroundSoundingScan()
 {
   return !!(guiControls && (guiControls.stormTrackOverlay || guiControls.outflowOverlay || guiControls.labelsOverlay || guiControls.tornadoDetectionOverlay));
+}
+
+function tornadoDetectionUpdateInterval()
+{
+  const v = guiControls && guiControls.tornadoDetectionUpdateFreq;
+  const n = Number.isFinite(v) ? (v | 0) : 8;
+  return Math.max(1, Math.min(60, n));
 }
 
 function collectLabelLightningStrikes()
@@ -11459,6 +11467,10 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     guiControls.labelsOverlay = guiControls_default.labelsOverlay;
   if (guiControls.tornadoDetectionOverlay === undefined)
     guiControls.tornadoDetectionOverlay = guiControls_default.tornadoDetectionOverlay;
+  if (guiControls.tornadoDetectionUpdateFreq === undefined || !Number.isFinite(guiControls.tornadoDetectionUpdateFreq))
+    guiControls.tornadoDetectionUpdateFreq = guiControls_default.tornadoDetectionUpdateFreq;
+  else
+    guiControls.tornadoDetectionUpdateFreq = tornadoDetectionUpdateInterval();
   if (guiControls.airTrafficEnabled === undefined)
     guiControls.airTrafficEnabled = guiControls_default.airTrafficEnabled;
   if (guiControls.airTrafficMaxPlanes === undefined)
@@ -12580,6 +12592,13 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         }
       })
       .name('Tornado Detection');
+    displayOverlays.add(guiControls, 'tornadoDetectionUpdateFreq', 1, 60, 1)
+      .onChange(function() {
+        guiControls.tornadoDetectionUpdateFreq = tornadoDetectionUpdateInterval();
+        if (guiControls.tornadoDetectionOverlay)
+          tornadoLastScanIter = -9999;
+      })
+      .name('Tornado Update Freq');
     displayOverlays.add(guiControls, 'enableVectorField').name('Vector Field');
     displayOverlays.add(guiControls, 'displayWeatherStations')
       .onChange(function() {
@@ -29265,32 +29284,46 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   function tickBackgroundSoundingOverlays()
   {
     if (!overlayWantsBackgroundSoundingScan()) return;
+
+    const riskFreq = Math.max(10, guiControls.riskUpdateFrequency | 0);
+    const tornadoFreq = tornadoDetectionUpdateInterval();
+    const tornadoOn = !!guiControls.tornadoDetectionOverlay;
+    const tornadoDue = tornadoOn && (iterNum - tornadoLastScanIter) >= tornadoFreq;
+
     if (isSoundingDisplayMode(guiControls.displayMode) || guiControls.displayMode === 'DISP_RISK') {
-      const freq = Math.max(10, guiControls.riskUpdateFrequency | 0);
       if (soundingOverlayData.length && guiControls.labelsOverlay
-          && (iterNum - labelsLastScanIter) >= freq)
+          && (iterNum - labelsLastScanIter) >= riskFreq)
         updateWeatherLabelsFromPending(soundingOverlayData);
-      if (guiControls.tornadoDetectionOverlay
-          && overlayScan.baseAll && overlayScan.waterAll && overlayScan.wallAll
-          && (iterNum - tornadoLastScanIter) >= freq) {
+      if (tornadoDue && overlayScan.baseAll && overlayScan.waterAll && overlayScan.wallAll) {
         updateTornadoDetectionFromScan();
         tornadoLastScanIter = iterNum;
       }
       return;
     }
 
-    const freq = Math.max(10, guiControls.riskUpdateFrequency | 0);
-    const last = overlayScan.lastFinishIter;
-    if (!overlayScan.active && (iterNum - last) >= freq) {
-      if (soundingOverlayData.length && (iterNum - overlayScan.lastFinishIter) < freq * 3) {
+    if (overlayScan.active && overlayScan.kind === 'sounding') {
+      tickOverlayScan();
+      return;
+    }
+    if (overlayScan.active)
+      return;
+
+    const chargeBuff = even ? chargeFrameBuff_0 : chargeFrameBuff_1;
+    const othersOn = !!(guiControls.stormTrackOverlay || guiControls.outflowOverlay || guiControls.labelsOverlay);
+    const othersDue = othersOn && (iterNum - overlayScan.lastFinishIter) >= riskFreq;
+
+    if (tornadoDue) {
+      beginOverlayScan('sounding', false, !!guiControls.labelsOverlay, frameBuff_1, chargeBuff);
+      tickOverlayScan();
+      return;
+    }
+    if (othersDue) {
+      if (!tornadoOn && soundingOverlayData.length && (iterNum - overlayScan.lastFinishIter) < riskFreq * 3) {
         refreshBackgroundOverlaysFromPending(soundingOverlayData);
       } else {
-        const chargeBuff = even ? chargeFrameBuff_0 : chargeFrameBuff_1;
         beginOverlayScan('sounding', false, !!guiControls.labelsOverlay, frameBuff_1, chargeBuff);
         tickOverlayScan();
       }
-    } else if (overlayScan.active && overlayScan.kind === 'sounding') {
-      tickOverlayScan();
     }
   }
 
