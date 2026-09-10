@@ -138,14 +138,8 @@ void main()
     }
     condensation = max(condensation, -water[CLOUD]); // never evaporate more cloud than exists
 
-    // Latent heat: full one-shot warming on condensation (drives buoyancy/storms);
-    // saturated adjust only on evaporation so cooling stays tempered.
-    float dTdry = condensation * evapHeat;
-    float excessAtWarm = water[TOTAL] - maxWater(realTemp + dTdry);
-    float dWt = max(excessAtWarm, 0.0) - max(excessWater, 0.0);
-    float dTl = dWt * evapHeat;
-    float satAdj = dT_saturated(dTdry, dTl);
-    float actualTempChange = condensation > 0.0 ? dTdry : satAdj;
+    // Latent heat is conservative: the same heat per gram for condensation and evaporation.
+    actualTempChange = condensation * evapHeat;
 
     base[TEMPERATURE] += actualTempChange;
     realTemp += actualTempChange;

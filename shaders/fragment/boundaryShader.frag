@@ -480,7 +480,7 @@ void main()
           }
 
           water[TOTAL] += evaporation;
-          base[TEMPERATURE] -= evaporation * evapHeat * 0.5;                                // evaporative cooling (half the real value, to prevent boring non convective conditions)
+          base[TEMPERATURE] -= evaporation * evapHeat;                                      // evaporative cooling (full latent heat so later condensation does not net-warm the column)
 
           if (wall[VEGETATION] < 10 && water[SOIL_MOISTURE] < 5.0) {                        // Dry desert area
             water[DUST] = min(water[DUST] + (max(abs(base[VX]) - 0.12, 0.) * 0.15), 2.4); // Dust blowing up with wind
@@ -918,7 +918,7 @@ void main()
             float airTemperature = potentialToRealT(texture(baseTex, texCoordX0Yp)[TEMPERATURE], texCoordX0Yp.y);
             float netWaterHeating = 0.0;
             netWaterHeating += (airTemperature - base[TEMPERATURE]) * waterHeatExchangeRate;
-            netWaterHeating -= max((maxWater(base[TEMPERATURE]) - waterX0Yp[TOTAL]) * waterEvaporation, 0.) * evapHeat * 0.5;
+            netWaterHeating -= max((maxWater(base[TEMPERATURE]) - waterX0Yp[TOTAL]) * waterEvaporation, 0.) * evapHeat;
 
             float lightPower = max(lightAboveSurface[SUNLIGHT] * cos(colSunAngle), 0.0);
             float waterAlbedo = (wall[TYPE] == WALLTYPE_FRESH_WATER) ? ALBEDO_FRESH_WATER : ALBEDO_WATER;
