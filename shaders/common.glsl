@@ -212,16 +212,16 @@ float settlementMaxHeight(int t)
   if (t == 37) return 40.0;  // Market District
   if (t == 38) return 150.0; // Brutalist Towers
   if (t == 39) return 45.0;  // Small Downtown
-  if (t == 40) return 40.0;  // Townhouses
-  if (t == 41) return 25.0;  // Ranch Houses
-  if (t == 42) return 55.0;  // McMansions
-  if (t == 43) return 45.0;  // Garden Apartments
-  if (t == 44) return 20.0;  // Mobile Homes
-  if (t == 45) return 40.0;  // Victorian Street
-  if (t == 46) return 30.0;  // Mediterranean
-  if (t == 47) return 28.0;  // Cottage Lane
-  if (t == 48) return 32.0;  // Duplex Split-level
-  if (t == 49) return 35.0;  // Strip Commercial
+  if (t == 40) return 80.0;  // Townhouses
+  if (t == 41) return 55.0;  // Ranch Houses
+  if (t == 42) return 100.0; // McMansions
+  if (t == 43) return 90.0;  // Garden Apartments
+  if (t == 44) return 40.0;  // Mobile Homes
+  if (t == 45) return 80.0;  // Victorian Street
+  if (t == 46) return 60.0;  // Mediterranean
+  if (t == 47) return 50.0;  // Cottage Lane
+  if (t == 48) return 70.0;  // Duplex Split-level
+  if (t == 49) return 85.0;  // Strip Commercial
   return 80.0;
 }
 bool canPaintUrbanOn(int t)
@@ -762,10 +762,55 @@ vec3 hsv2rgb(vec3 c)
   return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
 }
 
-vec3 sunColor(float scattering) // 0.0 = white     0.5 = orange     1.0 = red
+vec3 sunColor(float scattering) // 0.0 = white     0.5 = gold/orange     1.0 = red
 {
   float val = 1.0 - scattering;
-  return hsv2rgb(vec3(0.015 + val * 0.15, min(2.0 - val * 2.0, 1.), 1.));
+  // Slightly yellower mid-band so golden hour reads before deep red.
+  float hue = 0.018 + val * 0.125;
+  float sat = min(2.0 - val * 2.0, 1.0);
+  sat = mix(sat, min(sat + 0.12, 1.0),
+            smoothstep(0.18, 0.48, scattering) * (1.0 - smoothstep(0.58, 0.92, scattering)));
+  return hsv2rgb(vec3(hue, sat, 1.0));
+}
+
+// Twilight strength from solar zenith (0 = day, 1 = strong dusk/dawn; 0 again in deep night).
+float cloudTwilightStrength(float absZenithRad)
+{
+  float scatter = clamp(map_range(absZenithRad, 72.0 * deg2rad, 88.0 * deg2rad, 0.0, 1.0), 0.0, 1.0);
+  float deepNight = clamp(map_range(absZenithRad, 88.0 * deg2rad, 96.0 * deg2rad, 0.0, 1.0), 0.0, 1.0);
+  return scatter * (1.0 - deepNight);
+}
+
+// Cloud albedo chroma for sunrise/sunset. morningW: 1 = morning, 0 = evening.
+// elevDeg: solar elevation in degrees (negative below horizon).
+vec3 cloudTwilightAlbedo(float scattering, float morningW, float elevDeg)
+{
+  vec3 paleGold = vec3(1.00, 0.92, 0.72);
+  vec3 gold = vec3(1.00, 0.78, 0.42);
+  vec3 amber = vec3(1.00, 0.55, 0.22);
+  vec3 burnt = vec3(0.95, 0.35, 0.12);
+  vec3 deepRed = vec3(0.85, 0.18, 0.10);
+  vec3 rose = vec3(1.00, 0.55, 0.58);
+
+  float wGolden = smoothstep(4.0, 9.0, elevDeg) * (1.0 - smoothstep(11.0, 17.0, elevDeg));
+  float wRiseSet = smoothstep(-1.5, 2.5, elevDeg) * (1.0 - smoothstep(4.0, 9.0, elevDeg));
+  float wCivil = smoothstep(-12.0, -4.0, elevDeg) * (1.0 - smoothstep(-1.5, 2.5, elevDeg));
+
+  // Evening: pale gold → gold → amber → red as the sun sinks.
+  vec3 evening = mix(paleGold, gold, clamp(scattering * 1.15, 0.0, 1.0));
+  evening = mix(evening, amber, smoothstep(0.32, 0.62, scattering));
+  evening = mix(evening, mix(burnt, deepRed, smoothstep(0.68, 1.0, scattering)),
+                smoothstep(0.52, 0.95, scattering));
+
+  // Morning: red/rose → gold → pale gold as the sun rises.
+  float riseT = clamp((elevDeg + 2.0) / 14.0, 0.0, 1.0);
+  vec3 morning = mix(mix(deepRed, rose, 0.45), mix(gold, paleGold, riseT), riseT);
+
+  vec3 tint = mix(evening, morning, clamp(morningW, 0.0, 1.0));
+  tint = mix(tint, gold, wGolden * 0.55);
+  tint = mix(tint, mix(amber, deepRed, 0.35), wRiseSet * 0.40 * (1.0 - morningW));
+  tint = mix(tint, mix(rose, deepRed, 0.50), wCivil * 0.35 * morningW);
+  return tint;
 }
 
 // Color-scale lookup. interpolate != 0 samples the baked ramp with LINEAR

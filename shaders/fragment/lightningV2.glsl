@@ -27,6 +27,8 @@ uniform float ltCloudObscuration;
 uniform float ltChannelIllumRatio;
 uniform float ltStrobeFlicker;
 uniform float ltChannelThickness;
+// Shared with Enhanced SDF path: 0 = auto 1–3 pulses, else explicit pulse count.
+uniform float ltFlashPulseCount;
 
 const vec3 LT_CG_COL = vec3(0.70, 0.57, 1.0);
 // Number of texture variants tiled horizontally in the lightning atlas.
@@ -94,12 +96,26 @@ float ltCloudEmbedVis(float cloud, float visMult) {
 }
 
 float ltTextureFlashIntensity(float Tin, vec2 lightningPos, float intensity) {
+  if (Tin < 1.0) {
+    float leader = smoothstep(0.15, 1.0, Tin);
+    return leader * pow(max(intensity, 0.35), 2.0) * 0.35;
+  }
   float T0 = Tin - 1.0;
-  float repeatPeriod = map_range(random2d(lightningPos), 0.0, 1.0, 1.5, 3.0);
-  float numFlashes = floor(map_range(random2d(lightningPos * 2.73725), 0.0, 1.0, 1.0, max(intensity - 0.5, 0.0) * 2.0));
-  float minT = max(T0 - repeatPeriod * numFlashes, 0.0);
-  float T = max(mod(T0, repeatPeriod), minT);
-  return max((1.0 / (0.05 + pow(T * 2.0, 3.0))) - 0.005, 0.0) * pow(max(intensity, 0.35), 2.0);
+  float pulses;
+  if (ltFlashPulseCount >= 0.5) {
+    pulses = clamp(floor(ltFlashPulseCount + 0.5), 1.0, 3.0);
+  } else {
+    float r = random2d(lightningPos * 2.73725);
+    pulses = r < 0.45 ? 1.0 : (r < 0.80 ? 2.0 : 3.0);
+  }
+  float period = map_range(random2d(lightningPos * 1.173), 0.0, 1.0, 0.28, 0.48);
+  float pulseIdx = floor(T0 / period);
+  float tInPulse = T0 - min(pulseIdx, pulses - 1.0) * period;
+  if (pulseIdx >= pulses)
+    tInPulse = T0 - (pulses - 1.0) * period;
+  float peak = max((1.0 / (0.05 + pow(tInPulse * 3.2, 2.8))) - 0.004, 0.0);
+  float dim = pulseIdx >= pulses ? 0.55 : max(1.0 - pulseIdx * 0.16, 0.55);
+  return peak * dim * pow(max(intensity, 0.35), 2.0);
 }
 
 // 0 = displayLightning vertical, 1 = chord (horizontal/diagonal), 2 = upward vertical

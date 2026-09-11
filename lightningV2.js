@@ -126,8 +126,8 @@
     precipOnlyLightningChance: 0.38,
 
     leaderSpeed: 1.0,
-    returnStrokeProbability: 0.35,
-    maxReturnStrokes: 4,
+    returnStrokeProbability: 0.55,
+    maxReturnStrokes: 3,
     electricalBurstFrequency: 0.6,
     electricalBurstIntensity: 1.0,
     chargeDissipationRate: 1.0,
@@ -1949,12 +1949,20 @@
 
   function numReturnStrokesForType(ltType, originMag, seed, controls) {
     if (ltType === LT.DRY) return 1;
-    let base = 1;
-    if (shaderRand(seed + 77) < controls.returnStrokeProbability) base = 2;
-    if (ltType === LT.CG_POSITIVE && shaderRand(seed + 113) < 0.62) base = 3;
-    if (ltType === LT.CG_POSITIVE && shaderRand(seed + 131) < 0.28) base = Math.min(controls.maxReturnStrokes, base + 1);
-    if (shaderRand(seed + 199) < 0.08 && originMag > 0.5) base = Math.min(controls.maxReturnStrokes, base + 1);
-    return clamp(base, 1, controls.maxReturnStrokes);
+    // Total flash pulses after leader: always 1, with a chance of 1–2 return strikes.
+    const p = controls.returnStrokeProbability ?? 0.55;
+    const maxStrokes = Math.max(1, Math.min(controls.maxReturnStrokes || 3, 3));
+    let pulses = 1;
+    if (shaderRand(seed + 77) < p) {
+      // Among multi-stroke events: ~64% get 1 return, ~36% get 2 returns.
+      pulses += (shaderRand(seed + 113) < 0.36) ? 2 : 1;
+    }
+    // Positive CG: slightly more likely to re-strike.
+    if (ltType === LT.CG_POSITIVE && shaderRand(seed + 131) < 0.40)
+      pulses = Math.max(pulses, 2);
+    if (shaderRand(seed + 199) < 0.10 && originMag > 0.55)
+      pulses = Math.min(maxStrokes, pulses + 1);
+    return clamp(pulses, 1, maxStrokes);
   }
 
   function brightnessForType(ltType, originMag, controls, opts) {

@@ -13285,14 +13285,17 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       .name('Tornado Update Freq');
     displayOverlays.add(guiControls, 'warningsOverlay')
       .onChange(function() {
-        if (!guiControls.warningsOverlay && warningsOverlayCanvas)
-          warningsOverlayCanvas.style.display = 'none';
-        if (guiControls.warningsOverlay) {
+        if (!guiControls.warningsOverlay) {
+          if (warningsOverlayCanvas)
+            warningsOverlayCanvas.style.display = 'none';
+          if (window.WeatherSandbox && window.WeatherSandbox.eas && window.WeatherSandbox.eas.hideProductCard)
+            window.WeatherSandbox.eas.hideProductCard();
+          if (!guiControls.easAlertsEnabled)
+            clearEasProducts();
+        } else {
           if (soundingOverlayData.length)
             updateEasFromPending(soundingOverlayData, true);
           overlayScan.lastFinishIter = -9999;
-        } else if (!guiControls.easAlertsEnabled) {
-          clearEasProducts();
         }
       })
       .name('Watches / Warnings Overlay');
@@ -19180,6 +19183,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     { id: 'toggleVectorField', name: 'Toggle vector field overlay', category: 'Display', defaultCode: 'Tab',
       preventDefault: true,
       onDown() { setSyncedGuiControl('enableVectorField', !guiControls.enableVectorField); } },
+    { id: 'toggleWarningsOverlay', name: 'Toggle watches / warnings overlay', category: 'Display', defaultCode: 'F4',
+      onDown() { setSyncedGuiControl('warningsOverlay', !guiControls.warningsOverlay); } },
     { id: 'toggleRadarOverlay', name: 'Toggle radar on realistic view', category: 'Radar', defaultCode: 'KeyS',
       onDown() { setSyncedGuiControl('radarOverlay', !guiControls.radarOverlay); } },
     { id: 'displayRisk', name: 'Risk display mode', category: 'Display', defaultCode: 'KeyZ',
@@ -19252,6 +19257,11 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       onDown() { minusPressed = true; }, onUp() { minusPressed = false; } },
     { id: 'clearTool', name: 'Clear tool / exit airplane mode', category: 'Tools', defaultCode: 'Escape',
       onDown() {
+        const easApi = window.WeatherSandbox && window.WeatherSandbox.eas;
+        if (easApi && easApi.isProductCardOpen && easApi.isProductCardOpen()) {
+          easApi.hideProductCard();
+          return;
+        }
         if (guiControls.tool == 'TOOL_NONE' && airplaneMode && confirm('Exit airplane mode?'))
           airplane.disableAirplaneMode();
         else {
@@ -20070,6 +20080,18 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     // debugLog('mousedown');
     if (e.button == 0) { // left
       leftMousePressed = true;
+      if (!SETUP_MODE && guiControls.warningsOverlay && guiControls.tool == 'TOOL_NONE') {
+        const easApi = window.WeatherSandbox && window.WeatherSandbox.eas;
+        if (easApi && typeof easApi.hitTest === 'function') {
+          const hit = easApi.hitTest(
+            mouseX, mouseY, simToScreenX, simToScreenY,
+            canvas.width, canvas.height, sim_res_x, sim_res_y);
+          if (hit && typeof easApi.showProductCard === 'function')
+            easApi.showProductCard(hit);
+          else if (typeof easApi.hideProductCard === 'function')
+            easApi.hideProductCard();
+        }
+      }
       if (SETUP_MODE) {
         startSimulation();
       } else if (multiplayerPeerMode && window.WeatherMpProtocol && window.WeatherMpProtocol.isPlacementTool(guiControls.tool)) {
@@ -20844,7 +20866,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
 
   // load shaders
-  const SHADER_ASSET_VERSION = 85; // bump to bust CDN/browser cache after shader edits
+  const SHADER_ASSET_VERSION = 86; // bump to bust CDN/browser cache after shader edits
 
   var commonSource = await loadSourceFile('shaders/common.glsl');
   var commonDisplaySource = await loadSourceFile('shaders/commonDisplay.glsl');
@@ -25401,6 +25423,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   const uloc_real_ltPrecipGlowStrength = gl.getUniformLocation(realisticDisplayProgram, 'ltPrecipGlowStrength');
   const uloc_real_ltPrecipGlowSize     = gl.getUniformLocation(realisticDisplayProgram, 'ltPrecipGlowSize');
   const uloc_real_ltPrecipGlowSoftness = gl.getUniformLocation(realisticDisplayProgram, 'ltPrecipGlowSoftness');
+  const uloc_real_ltFlashPulseCount    = gl.getUniformLocation(realisticDisplayProgram, 'ltFlashPulseCount');
 
   const uloc_illum_waterTex            = lightningIllumProgram ? gl.getUniformLocation(lightningIllumProgram, 'waterTex') : null;
   const uloc_illum_sunAngle            = lightningIllumProgram ? gl.getUniformLocation(lightningIllumProgram, 'sunAngle') : null;
@@ -28004,6 +28027,21 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       gl.uniform1f(uloc_real_ltPrecipGlowSize, Number.isFinite(guiControls.precipGlowSize) ? guiControls.precipGlowSize : 1);
     if (uloc_real_ltPrecipGlowSoftness)
       gl.uniform1f(uloc_real_ltPrecipGlowSoftness, Number.isFinite(guiControls.precipGlowSoftness) ? guiControls.precipGlowSoftness : 1);
+
+    // Return-stroke pulse count for Enhanced SDF bolts / cloud fill.
+    // >0 uses CPU strike value; 0 lets the shader roll 1–3 pulses (precip path).
+    if (uloc_real_ltFlashPulseCount) {
+      let pulseCount = 0;
+      const activeSt = proceduralLightningState;
+      if (activeSt && activeSt.eventAge >= 0 && activeSt.strikes && activeSt.strikes.length > 0) {
+        const primary = pickPrimaryProceduralStrike(activeSt.strikes);
+        if (primary) {
+          const n = primary.numReturnStrokes || primary.numFlashes || 1;
+          pulseCount = Math.max(1, Math.min(3, Math.round(n)));
+        }
+      }
+      gl.uniform1f(uloc_real_ltFlashPulseCount, pulseCount);
+    }
 
     if (!lightningV2InRealisticShader || !uloc_real_ltNumStrikes)
       return;

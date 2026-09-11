@@ -22,25 +22,25 @@
       type: 'MD', kind: 'md', priority: 15,
       title: 'MESOSCALE DISCUSSION', short: 'MD',
       fill: 'rgba(255,170,40,0.08)', stroke: '#ffb040', text: '#ffe0a8',
-      expireMin: 12, padBars: 0, dashed: true,
+      expireMin: 12, padBars: 5, dashed: true,
     },
     TOR_WARN: {
       type: 'TOR_WARN', kind: 'warning', priority: 100,
       title: 'TORNADO WARNING', short: 'TOR',
       fill: 'rgba(220,0,0,0.30)', stroke: '#ff2020', text: '#ffffff',
-      expireMin: 15, padBars: 0,
+      expireMin: 15, padBars: 1,
     },
     SVR_WARN: {
       type: 'SVR_WARN', kind: 'warning', priority: 70,
       title: 'SEVERE THUNDERSTORM WARNING', short: 'SVR',
       fill: 'rgba(255,170,0,0.24)', stroke: '#ffcc22', text: '#111',
-      expireMin: 15, padBars: 0,
+      expireMin: 15, padBars: 1,
     },
     FFW_WARN: {
       type: 'FFW_WARN', kind: 'warning', priority: 80,
       title: 'FLASH FLOOD WARNING', short: 'FFW',
       fill: 'rgba(0,170,70,0.24)', stroke: '#22dd66', text: '#e8ffe8',
-      expireMin: 15, padBars: 0,
+      expireMin: 15, padBars: 1,
     },
   };
 
@@ -65,6 +65,7 @@
   var crawlEl = null;
   var crawlTextEl = null;
   var crawlProductEl = null;
+  var productCardEl = null;
 
   function wrapX(x, resX, wrap) {
     if (!wrap) return x;
@@ -140,13 +141,14 @@
   }
 
   function qualifiesMd(met) {
-    var init = met.initiation || 0;
     var cape = met.muCape || 0;
+    var shear = met.shear6km || 0;
+    var init = met.initiation || 0;
     var precip = met.colPrecipMax || 0;
-    var watchEnv = cape >= 800 && (met.shear6km || 0) >= 12;
-    if (precip < 0.05 && !hasConvectiveFocus(met)) return false;
-    return (init >= 48 && precip >= 0.05 && cape >= 400)
-      || (init >= 40 && precip >= 0.10 && watchEnv);
+    var env = cape >= 700 && shear >= 10;
+    if (env) return true;
+    var focused = hasConvectiveFocus(met) || precip >= 0.04;
+    return init >= 40 && (focused || env);
   }
 
   function qualifiesTorWarn(tornadoNear) {
@@ -171,8 +173,11 @@
       || (flood >= 28 && accum >= 15 && precip >= 0.10);
   }
 
-  function watchColumnScore(met, tor) {
-    if (tor)
+  function watchColumnScore(met, mode) {
+    if (mode === 'md')
+      return (met.muCape || 0) * 0.02 + (met.shear6km || 0)
+        + (met.initiation || 0) * 0.5 + (met.stp || 0) * 8;
+    if (mode)
       return (met.stp || 0) * 20 + (met.hazardTornado || 0) + (met.srh3km || 0) * 0.05;
     return Math.max(met.hazardLargeHail || 0, met.hazardDamagingWinds || 0, met.hazardHail || 0)
       + (met.estHailIn || 0) * 15 + (met.shear6km || 0);
@@ -262,9 +267,10 @@
     return false;
   }
 
-  function clusterFlags(flags, pending, padBars, minBars, wrap) {
+  function clusterFlags(flags, pending, padBars, minBars, wrap, maxGap) {
     var n = flags.length;
     if (!n) return [];
+    if (maxGap == null) maxGap = 2;
     var spans = [];
     var i = 0;
     while (i < n) {
@@ -279,7 +285,7 @@
           gap = 0;
         } else {
           gap++;
-          if (gap > 2) break;
+          if (gap > maxGap) break;
         }
         j++;
       }
@@ -354,7 +360,7 @@
     var spans = [];
     for (var i = 0; i < detections.length; i++) {
       var d = detections[i];
-      var half = Math.max(2, (d.halfW || 3) + 2);
+      var half = Math.max(3, (d.halfW || 3) + 3);
       var x0 = wrapX(d.x - half, resX, wrap);
       var x1 = wrapX(d.x + half, resX, wrap);
       var sfcY = d.sfcY != null ? d.sfcY : 1;
@@ -477,6 +483,79 @@
     var x = t.getXpos ? t.getXpos() : t.x;
     var n = t.getName ? t.getName() : 'Town';
     return n + '@' + Math.round(x);
+  }
+
+  function prettyTitle(s) {
+    return String(s || '').replace(/\w+/g, function (w) {
+      if (w === 'MD' || w === 'EAS' || w === 'NWS') return w;
+      return w.charAt(0) + w.slice(1).toLowerCase();
+    });
+  }
+
+  function areaPhrase(prod) {
+    var list = prod.towns || [];
+    var names = [];
+    for (var i = 0; i < list.length; i++) {
+      var n = list[i].getName ? list[i].getName() : null;
+      if (n && names.indexOf(n) < 0) names.push(n);
+    }
+    if (!names.length)
+      return prod.kind === 'md' ? 'the discussed area' : 'the warned area';
+    if (names.length === 1) return names[0];
+    if (names.length === 2) return names[0] + ' and ' + names[1];
+    return names.slice(0, -1).join(', ') + ', and ' + names[names.length - 1];
+  }
+
+  function envSnapshot(prod, pending, resX, wrap) {
+    if (!pending || !pending.length) return null;
+    var cape = 0, shear = 0, stp = 0, init = 0, n = 0;
+    for (var i = 0; i < pending.length; i++) {
+      var sx = pending[i].sx;
+      if (!Number.isFinite(sx) || !xInSpan(sx, prod.x0, prod.x1, resX, wrap))
+        continue;
+      var met = m(pending[i]);
+      cape += met.muCape || 0;
+      shear += met.shear6km || 0;
+      stp += met.stp || 0;
+      init += met.initiation || 0;
+      n++;
+    }
+    if (!n) return null;
+    return { cape: cape / n, shear: shear / n, stp: stp / n, init: init / n };
+  }
+
+  function buildDiscussion(prod) {
+    var meta = PRODUCTS[prod.type] || {};
+    var title = prettyTitle(meta.title || prod.type);
+    var until = prod.untilStr ? (' until ' + prod.untilStr) : '';
+    var area = areaPhrase(prod);
+    var parts = [];
+    parts.push('The National Weather Service has issued a ' + title + ' for ' + area + until + '.');
+    if (prod.type === 'MD') {
+      var env = prod.env;
+      if (env) {
+        parts.push('The environment remains favorable for organized storms, with mixed-layer CAPE near '
+          + Math.round(env.cape) + ' J/kg and 0–6 km shear around ' + Math.round(env.shear) + ' m/s.');
+        if (env.stp >= 0.5)
+          parts.push('Significant tornado parameter is near ' + env.stp.toFixed(1) + '.');
+      } else {
+        parts.push('Conditions across this corridor remain favorable for convective organization.');
+      }
+    } else if (prod.type === 'TOR_WARN') {
+      if (prod.tornado && prod.tornado.ef && prod.tornado.ef !== 'EFU')
+        parts.push('A tornado was indicated, rated ' + prod.tornado.ef + '. Take cover now.');
+      else
+        parts.push('A tornado was indicated. Take cover now.');
+    } else if (prod.type === 'SVR_WARN') {
+      parts.push('Destructive winds and large hail are possible. Seek sturdy shelter.');
+    } else if (prod.type === 'FFW_WARN') {
+      parts.push('Move to higher ground. Do not drive through flood waters.');
+    } else if (prod.type === 'TOR_WATCH') {
+      parts.push('Conditions are favorable for tornadoes. Review your safety plan.');
+    } else if (prod.type === 'SVR_WATCH') {
+      parts.push('Conditions are favorable for severe thunderstorms.');
+    }
+    return parts.join(' ');
   }
 
   function buildCrawl(prod, untilStr) {
@@ -768,15 +847,16 @@
 
     torWatch = capWatchFlags(torWatch, pending, true, 0.30);
     svrWatch = capWatchFlags(svrWatch, pending, false, 0.30);
+    mdFlags = capWatchFlags(mdFlags, pending, 'md', 0.55);
 
     var torWatchSpans = mergeSpans(clusterFlags(torWatch, pending, PRODUCTS.TOR_WATCH.padBars, 3, wrap), resX, wrap);
     var svrWatchSpans = mergeSpans(clusterFlags(svrWatch, pending, PRODUCTS.SVR_WATCH.padBars, 3, wrap), resX, wrap);
-    var mdSpans = mergeSpans(clusterFlags(mdFlags, pending, 0, 2, wrap), resX, wrap);
+    var mdSpans = mergeSpans(clusterFlags(mdFlags, pending, PRODUCTS.MD.padBars, 2, wrap, 8), resX, wrap);
     var torWarnSpans = mergeSpans(
-      clusterFlags(torWarn, pending, 0, 1, wrap).concat(tornadoSpans(detections, pending, resX, wrap)),
+      clusterFlags(torWarn, pending, PRODUCTS.TOR_WARN.padBars, 1, wrap).concat(tornadoSpans(detections, pending, resX, wrap)),
       resX, wrap);
-    var svrWarnSpans = mergeSpans(clusterFlags(svrWarn, pending, 0, 1, wrap), resX, wrap);
-    var ffwSpans = mergeSpans(clusterFlags(ffwWarn, pending, 0, 1, wrap), resX, wrap);
+    var svrWarnSpans = mergeSpans(clusterFlags(svrWarn, pending, PRODUCTS.SVR_WARN.padBars, 1, wrap), resX, wrap);
+    var ffwSpans = mergeSpans(clusterFlags(ffwWarn, pending, PRODUCTS.FFW_WARN.padBars, 1, wrap), resX, wrap);
 
     var next = [];
     function take(type, spans, minBars) {
@@ -812,6 +892,8 @@
       var until = new Date(untilBase.getTime() + meta.expireMin * 60 * 1000);
       prod.untilStr = formatClock(until, twelve);
       prod.headline = headlineFor(prod);
+      prod.env = envSnapshot(prod, pending, resX, wrap);
+      prod.bodyText = buildDiscussion(prod);
       prod.crawlText = buildCrawl(prod, prod.untilStr);
     }
 
@@ -844,60 +926,42 @@
     }
   }
 
-  function draw(ctx2d, simToScreenX, simToScreenY, viewW, viewH, simResY) {
-    if (!ctx2d || !products.length) return;
-    ctx2d.save();
-    var sorted = products.slice().sort(function (a, b) {
-      return (PRODUCTS[a.type].priority || 0) - (PRODUCTS[b.type].priority || 0);
-    });
-    for (var i = 0; i < sorted.length; i++) {
-      var p = sorted[i];
-      var meta = PRODUCTS[p.type];
-      var sfcY = Number.isFinite(p.sfcY) ? p.sfcY : 1;
-      var topY = p.kind === 'warning'
-        ? sfcY + Math.max(18, (simResY || 200) * 0.22)
-        : sfcY + Math.max(28, (simResY || 200) * 0.38);
-      var y0 = simToScreenY(topY);
-      var y1 = simToScreenY(Math.max(0, sfcY - 1));
-      var h = Math.abs(y1 - y0);
-      var top = Math.min(y0, y1);
-      if (!Number.isFinite(h) || h < 4) continue;
-
-      function drawBox(xa, xb) {
-        var sx0 = simToScreenX(xa);
-        var sx1 = simToScreenX(xb);
-        var left = Math.min(sx0, sx1);
-        var w = Math.abs(sx1 - sx0);
-        if (w < 3) w = 3;
-        ctx2d.fillStyle = meta.fill;
-        ctx2d.fillRect(left, top, w, h);
-        ctx2d.strokeStyle = meta.stroke;
-        ctx2d.lineWidth = p.kind === 'warning' ? 2.5 : 1.8;
-        if (meta.dashed) ctx2d.setLineDash([7, 5]);
-        else ctx2d.setLineDash([]);
-        ctx2d.strokeRect(left + 0.5, top + 0.5, w - 1, h - 1);
-        ctx2d.setLineDash([]);
-        var label = p.headline || meta.short;
-        ctx2d.font = 'bold 11px Arial, sans-serif';
-        ctx2d.fillStyle = meta.text;
-        ctx2d.textAlign = 'center';
-        ctx2d.textBaseline = 'top';
-        var lx = left + w * 0.5;
-        var ly = top + 4;
-        if (lx > -40 && lx < viewW + 40 && ly > -20 && ly < viewH + 20)
-          ctx2d.fillText(label, lx, ly);
-      }
-
-      if (p.x0 <= p.x1) {
-        drawBox(p.x0, p.x1);
-      } else {
-        drawBox(p.x0, (typeof simToScreenX === 'function' ? p.x0 : p.x0));
-        var resGuess = Math.max(p.x0, p.x1) + 8;
-        drawBox(p.x0, resGuess);
-        drawBox(0, p.x1);
-      }
+  function productTopY(p, simResY) {
+    var sfcY = Number.isFinite(p.sfcY) ? p.sfcY : 1;
+    var frac = 0.38;
+    var minH = 28;
+    if (p.kind === 'warning') {
+      frac = 0.30;
+      minH = 22;
+    } else if (p.type === 'MD') {
+      frac = 0.48;
+      minH = 36;
     }
-    ctx2d.restore();
+    return sfcY + Math.max(minH, (simResY || 200) * frac);
+  }
+
+  function productScreenRects(p, simToScreenX, simToScreenY, simResX, simResY) {
+    var sfcY = Number.isFinite(p.sfcY) ? p.sfcY : 1;
+    var y0 = simToScreenY(productTopY(p, simResY));
+    var y1 = simToScreenY(Math.max(0, sfcY - 1));
+    var h = Math.abs(y1 - y0);
+    var top = Math.min(y0, y1);
+    if (!Number.isFinite(h) || h < 4) return [];
+    var segs;
+    if (!p.wrapped && p.x0 <= p.x1)
+      segs = [[p.x0, p.x1]];
+    else
+      segs = [[p.x0, simResX], [0, p.x1]];
+    var rects = [];
+    for (var i = 0; i < segs.length; i++) {
+      var sx0 = simToScreenX(segs[i][0]);
+      var sx1 = simToScreenX(segs[i][1]);
+      var left = Math.min(sx0, sx1);
+      var w = Math.abs(sx1 - sx0);
+      if (w < 3) w = 3;
+      rects.push({ left: left, top: top, w: w, h: h });
+    }
+    return rects;
   }
 
   function drawWrapped(ctx2d, simToScreenX, simToScreenY, viewW, viewH, simResX, simResY) {
@@ -909,47 +973,96 @@
     for (var i = 0; i < sorted.length; i++) {
       var p = sorted[i];
       var meta = PRODUCTS[p.type];
-      var sfcY = Number.isFinite(p.sfcY) ? p.sfcY : 1;
-      var topY = p.kind === 'warning'
-        ? sfcY + Math.max(18, (simResY || 200) * 0.22)
-        : sfcY + Math.max(28, (simResY || 200) * 0.38);
-      var y0 = simToScreenY(topY);
-      var y1 = simToScreenY(Math.max(0, sfcY - 1));
-      var h = Math.abs(y1 - y0);
-      var top = Math.min(y0, y1);
-      if (!Number.isFinite(h) || h < 4) continue;
-
-      function paint(xa, xb) {
-        var sx0 = simToScreenX(xa);
-        var sx1 = simToScreenX(xb);
-        var left = Math.min(sx0, sx1);
-        var w = Math.abs(sx1 - sx0);
-        if (w < 3) w = 3;
-        if (left + w < -20 || left > viewW + 20) return;
+      var rects = productScreenRects(p, simToScreenX, simToScreenY, simResX, simResY);
+      for (var r = 0; r < rects.length; r++) {
+        var box = rects[r];
+        if (box.left + box.w < -20 || box.left > viewW + 20) continue;
         ctx2d.fillStyle = meta.fill;
-        ctx2d.fillRect(left, top, w, h);
+        ctx2d.fillRect(box.left, box.top, box.w, box.h);
         ctx2d.strokeStyle = meta.stroke;
         ctx2d.lineWidth = p.kind === 'warning' ? 2.5 : 1.8;
         if (meta.dashed) ctx2d.setLineDash([7, 5]);
         else ctx2d.setLineDash([]);
-        ctx2d.strokeRect(left + 0.5, top + 0.5, w - 1, h - 1);
+        ctx2d.strokeRect(box.left + 0.5, box.top + 0.5, box.w - 1, box.h - 1);
         ctx2d.setLineDash([]);
-        ctx2d.font = 'bold 11px Arial, sans-serif';
+        ctx2d.font = 'bold 13px Arial, sans-serif';
         ctx2d.fillStyle = meta.text;
         ctx2d.textAlign = 'center';
         ctx2d.textBaseline = 'top';
-        var label = p.headline || meta.short;
-        ctx2d.fillText(label, left + w * 0.5, top + 4);
-      }
-
-      if (!p.wrapped && p.x0 <= p.x1) {
-        paint(p.x0, p.x1);
-      } else {
-        paint(p.x0, simResX);
-        paint(0, p.x1);
+        ctx2d.fillText(p.headline || meta.short, box.left + box.w * 0.5, box.top + 4);
       }
     }
     ctx2d.restore();
+  }
+
+  function hitTest(screenX, screenY, simToScreenX, simToScreenY, viewW, viewH, simResX, simResY) {
+    if (!products.length) return null;
+    var sorted = products.slice().sort(function (a, b) {
+      return (PRODUCTS[b.type].priority || 0) - (PRODUCTS[a.type].priority || 0);
+    });
+    for (var i = 0; i < sorted.length; i++) {
+      var rects = productScreenRects(sorted[i], simToScreenX, simToScreenY, simResX, simResY);
+      for (var r = 0; r < rects.length; r++) {
+        var b = rects[r];
+        if (screenX >= b.left && screenX <= b.left + b.w && screenY >= b.top && screenY <= b.top + b.h)
+          return sorted[i];
+      }
+    }
+    return null;
+  }
+
+  function ensureProductCard() {
+    if (productCardEl) return productCardEl;
+    productCardEl = document.getElementById('easProductCard');
+    if (!productCardEl) {
+      productCardEl = document.createElement('div');
+      productCardEl.id = 'easProductCard';
+      productCardEl.className = 'eas-product-card';
+      productCardEl.innerHTML =
+        '<div class="eas-product-card-bar"></div>' +
+        '<button type="button" class="eas-product-card-close" aria-label="Close">×</button>' +
+        '<div class="eas-product-card-kicker"></div>' +
+        '<h2 class="eas-product-card-title"></h2>' +
+        '<div class="eas-product-card-until"></div>' +
+        '<p class="eas-product-card-body"></p>';
+      document.body.appendChild(productCardEl);
+    }
+    var closeBtn = productCardEl.querySelector('.eas-product-card-close');
+    if (closeBtn && !closeBtn._easBound) {
+      closeBtn._easBound = true;
+      closeBtn.addEventListener('click', function (e) {
+        e.preventDefault();
+        e.stopPropagation();
+        hideProductCard();
+      });
+    }
+    return productCardEl;
+  }
+
+  function showProductCard(prod) {
+    if (!prod) return hideProductCard();
+    var el = ensureProductCard();
+    var meta = PRODUCTS[prod.type] || {};
+    el.setAttribute('data-type', prod.type || '');
+    var bar = el.querySelector('.eas-product-card-bar');
+    if (bar) bar.style.background = meta.stroke || '#ffb040';
+    var kicker = el.querySelector('.eas-product-card-kicker');
+    if (kicker) kicker.textContent = prod.kind === 'md' ? 'Mesoscale Discussion' : (prod.kind === 'watch' ? 'Watch' : 'Warning');
+    var title = el.querySelector('.eas-product-card-title');
+    if (title) title.textContent = prettyTitle(meta.title || prod.type) + (prod.type === 'MD' && prod.mdNum ? ' ' + prod.mdNum : '');
+    var until = el.querySelector('.eas-product-card-until');
+    if (until) until.textContent = prod.untilStr ? ('Until ' + prod.untilStr) : '';
+    var body = el.querySelector('.eas-product-card-body');
+    if (body) body.textContent = prod.bodyText || buildDiscussion(prod);
+    el.classList.add('visible');
+  }
+
+  function hideProductCard() {
+    if (productCardEl) productCardEl.classList.remove('visible');
+  }
+
+  function isProductCardOpen() {
+    return !!(productCardEl && productCardEl.classList.contains('visible'));
   }
 
   function tick(nowMs, ctx) {
@@ -970,6 +1083,7 @@
     productRev++;
     easQueue.length = 0;
     finishEas();
+    hideProductCard();
   }
 
   function stopAlerts() {
@@ -983,6 +1097,10 @@
     wantsUpdate: wantsUpdate,
     draw: drawWrapped,
     tick: tick,
+    hitTest: hitTest,
+    showProductCard: showProductCard,
+    hideProductCard: hideProductCard,
+    isProductCardOpen: isProductCardOpen,
     getProducts: getProducts,
     getProductRev: getProductRev,
     clear: clear,
