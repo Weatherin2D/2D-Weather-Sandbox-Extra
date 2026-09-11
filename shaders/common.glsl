@@ -762,55 +762,10 @@ vec3 hsv2rgb(vec3 c)
   return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
 }
 
-vec3 sunColor(float scattering) // 0.0 = white     0.5 = gold/orange     1.0 = red
+vec3 sunColor(float scattering) // 0.0 = white     0.5 = orange     1.0 = red
 {
   float val = 1.0 - scattering;
-  // Slightly yellower mid-band so golden hour reads before deep red.
-  float hue = 0.018 + val * 0.125;
-  float sat = min(2.0 - val * 2.0, 1.0);
-  sat = mix(sat, min(sat + 0.12, 1.0),
-            smoothstep(0.18, 0.48, scattering) * (1.0 - smoothstep(0.58, 0.92, scattering)));
-  return hsv2rgb(vec3(hue, sat, 1.0));
-}
-
-// Twilight strength from solar zenith (0 = day, 1 = strong dusk/dawn; 0 again in deep night).
-float cloudTwilightStrength(float absZenithRad)
-{
-  float scatter = clamp(map_range(absZenithRad, 72.0 * deg2rad, 88.0 * deg2rad, 0.0, 1.0), 0.0, 1.0);
-  float deepNight = clamp(map_range(absZenithRad, 88.0 * deg2rad, 96.0 * deg2rad, 0.0, 1.0), 0.0, 1.0);
-  return scatter * (1.0 - deepNight);
-}
-
-// Cloud albedo chroma for sunrise/sunset. morningW: 1 = morning, 0 = evening.
-// elevDeg: solar elevation in degrees (negative below horizon).
-vec3 cloudTwilightAlbedo(float scattering, float morningW, float elevDeg)
-{
-  vec3 paleGold = vec3(1.00, 0.92, 0.72);
-  vec3 gold = vec3(1.00, 0.78, 0.42);
-  vec3 amber = vec3(1.00, 0.55, 0.22);
-  vec3 burnt = vec3(0.95, 0.35, 0.12);
-  vec3 deepRed = vec3(0.85, 0.18, 0.10);
-  vec3 rose = vec3(1.00, 0.55, 0.58);
-
-  float wGolden = smoothstep(4.0, 9.0, elevDeg) * (1.0 - smoothstep(11.0, 17.0, elevDeg));
-  float wRiseSet = smoothstep(-1.5, 2.5, elevDeg) * (1.0 - smoothstep(4.0, 9.0, elevDeg));
-  float wCivil = smoothstep(-12.0, -4.0, elevDeg) * (1.0 - smoothstep(-1.5, 2.5, elevDeg));
-
-  // Evening: pale gold → gold → amber → red as the sun sinks.
-  vec3 evening = mix(paleGold, gold, clamp(scattering * 1.15, 0.0, 1.0));
-  evening = mix(evening, amber, smoothstep(0.32, 0.62, scattering));
-  evening = mix(evening, mix(burnt, deepRed, smoothstep(0.68, 1.0, scattering)),
-                smoothstep(0.52, 0.95, scattering));
-
-  // Morning: red/rose → gold → pale gold as the sun rises.
-  float riseT = clamp((elevDeg + 2.0) / 14.0, 0.0, 1.0);
-  vec3 morning = mix(mix(deepRed, rose, 0.45), mix(gold, paleGold, riseT), riseT);
-
-  vec3 tint = mix(evening, morning, clamp(morningW, 0.0, 1.0));
-  tint = mix(tint, gold, wGolden * 0.55);
-  tint = mix(tint, mix(amber, deepRed, 0.35), wRiseSet * 0.40 * (1.0 - morningW));
-  tint = mix(tint, mix(rose, deepRed, 0.50), wCivil * 0.35 * morningW);
-  return tint;
+  return hsv2rgb(vec3(0.015 + val * 0.15, min(2.0 - val * 2.0, 1.), 1.));
 }
 
 // Color-scale lookup. interpolate != 0 samples the baked ramp with LINEAR

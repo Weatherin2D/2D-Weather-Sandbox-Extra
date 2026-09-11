@@ -968,50 +968,19 @@ vec4 computeCloudSmokeColor(float cloudwater, float precip, float dustAmt, float
   float denseShadow = densDark * thickCloudMask * mix(0.25, 1.0, unlit);
   float darkAmt = pow(clamp(denseShadow, 0.0, 1.0), 1.15);
 
-  // Time-of-day warmth (golden hour / sunrise / sunset) — fades cool navy.
-  vec4 sunColCloud = sampleSunColumn(sunColumnTex, texCoord.x);
-  float absZenithCloud = abs(sunColCloud.g);
-  float twilightAmt = cloudTwilightStrength(absZenithCloud);
-  float elevDegCloud = (PI * 0.5 - absZenithCloud) * rad2deg;
-  float morningWCloud = 1.0 - smoothstep(-0.18, 0.18, sunColCloud.b);
-  vec3 twilightAlbedo = cloudTwilightAlbedo(twilightAmt, morningWCloud, elevDegCloud);
-
   // Greyscale brightness ramp (white → black), then blue-tint at every level.
   float cloudLum = mix(1.0, 0.0, smoothstep(0.0, 1.0, darkAmt));
   cloudLum = mix(cloudLum, cloudLum * densBright, 0.25); // thin wisps stay brighter
   vec3 greyRamp = cloudBrightTint * cloudLum;
   vec3 blueRamp = navyChroma * cloudLum; // same brightness, blue cast throughout
-  // Stronger blue in shadows, still present on lit/mid tones — kill navy at dusk/dawn
+  // Stronger blue in shadows, still present on lit/mid tones
   float blueAmt = mix(0.22, 0.82, darkAmt) * mix(0.35, 1.0, thickCloudMask);
-  blueAmt *= (1.0 - twilightAmt * 0.94);
   vec3 cloudCol = mix(greyRamp, blueRamp, blueAmt);
   float bodyForce = smoothstep(0.40, 0.88, densDark) * thickCloudMask;
   vec3 greyWisp = cloudBrightTint * mix(densBright, 0.55 + densBright * 0.45, unlit * 0.35);
-  // Wisps also get a light cool cast (fades in twilight)
-  greyWisp = mix(greyWisp, greyWisp * navyChroma, 0.18 * (1.0 - twilightAmt * 0.9));
+  // Wisps also get a light cool cast
+  greyWisp = mix(greyWisp, greyWisp * navyChroma, 0.18);
   cloudCol = mix(greyWisp, cloudCol, bodyForce);
-
-  // Shift albedo chroma toward golden/red twilight (preserve luminance).
-  if (twilightAmt > 0.001) {
-    float lumKeep = max(dot(cloudCol, vec3(0.2126, 0.7152, 0.0722)), 1e-4);
-    float faceWarm = mix(0.42, 1.0, clamp(lit, 0.0, 1.2)); // shaded faces still warm a bit
-    float warmAmt = twilightAmt * mix(0.55, 0.98, faceWarm) * mix(0.45, 1.0, thickCloudMask);
-    vec3 warmCloud = twilightAlbedo * lumKeep;
-    warmCloud = mix(warmCloud, cloudBrightTint * twilightAlbedo * lumKeep, 0.22);
-    cloudCol = mix(cloudCol, warmCloud, clamp(warmAmt, 0.0, 1.0));
-
-    // Dark tint / warm shadowed body instead of leftover navy
-    if (darkAmt > 0.15) {
-      vec3 darkWarm = mix(cloudDarkTint, twilightAlbedo * 0.38, twilightAmt * 0.75);
-      float darkLum = max(dot(darkWarm, vec3(0.2126, 0.7152, 0.0722)), 1e-4);
-      cloudCol = mix(cloudCol, darkWarm * (lumKeep / darkLum), darkAmt * twilightAmt * 0.50);
-    }
-
-    // Sky reflect into thin edges and undersides (wired uniform)
-    float edge = (1.0 - thickCloudMask) * 0.70 + unlit * 0.40;
-    float reflectAmt = clamp(skyReflectAmount, 0.0, 1.0) * twilightAmt * clamp(edge, 0.0, 1.0);
-    cloudCol = mix(cloudCol, twilightAlbedo * lumKeep, reflectAmt * 0.85);
-  }
 
   // Precip shafts — same full-range blue tint, brighter than cloud body
   float shaftAmt = clamp(precipWeight / max(totalDensity, 1e-4), 0.0, 1.0);
@@ -1020,12 +989,8 @@ vec4 computeCloudSmokeColor(float cloudwater, float precip, float dustAmt, float
   float shaftLum = mix(0.92, 0.12, smoothstep(0.0, 1.0, shaftDark)); // brighter floor than clouds
   vec3 shaftGrey = mix(precipTint, vec3(shaftLum), 0.65);
   vec3 shaftBlue = navyChroma * shaftLum;
-  float shaftBlueAmt = mix(0.28, 0.75, shaftDark) * (1.0 - twilightAmt * 0.90);
+  float shaftBlueAmt = mix(0.28, 0.75, shaftDark);
   vec3 shaftCol = mix(shaftGrey, shaftBlue, shaftBlueAmt);
-  if (twilightAmt > 0.001) {
-    float shaftLumKeep = max(dot(shaftCol, vec3(0.2126, 0.7152, 0.0722)), 1e-4);
-    shaftCol = mix(shaftCol, twilightAlbedo * shaftLumKeep, twilightAmt * 0.70);
-  }
   shaftCol = mix(shaftCol, precipTint, clamp(lit, 0.0, 1.0) * 0.45 * (1.0 - shaftAmt));
   shaftCol += precipTint * shaftBacklight * lit * shaftAmt * 0.28;
   float spec = pow(clamp(lit, 0.0, 1.0), 4.0) * shaftSpecular * shaftAmt;
@@ -1405,37 +1370,31 @@ void applyAirLightning(vec2 uv, float cloudwater, float precip, float cloudDensi
 
 float rand(float n) { return fract(sin(n) * 43758.5453123); }
 
-// Altitude sunset/sunrise scattering on cloud faces (display-only).
+// Enhanced-V2 altitude sunset scattering on lit cloud faces (display-only).
 void applyAltitudeSunsetOnLight(float sunAng, float cloudOpacityIn, float localLightIntensity)
 {
   float absSun = abs(sunAng);
-  float cloudScattering = cloudTwilightStrength(absSun);
+  float cloudScattering = clamp(map_range(absSun, 75. * deg2rad, 90. * deg2rad, 0., 1.), 0., 1.);
+  // Fade out in deep night so purple wash does not linger.
+  float deepNightGate = 1.0 - clamp(map_range(absSun, 88. * deg2rad, 96. * deg2rad, 0., 1.), 0., 1.);
+  cloudScattering *= deepNightGate;
   if (cloudScattering < 1e-5 || cloudOpacityIn < 1e-4)
     return;
 
-  vec4 sc = sampleSunColumn(sunColumnTex, texCoord.x);
-  float morningW = 1.0 - smoothstep(-0.18, 0.18, sc.b);
-  float elevDeg = (PI * 0.5 - absSun) * rad2deg;
-  vec3 altColor = cloudTwilightAlbedo(cloudScattering, morningW, elevDeg);
-
   float y = clamp(texCoord.y, 0.0, 1.0);
-  // Soft purple only high up in civil twilight (not the main sunset look).
-  vec3 colPurple = vec3(0.55, 0.32, 0.72);
-  float highAlt = smoothstep(0.55, 0.88, y);
-  float civil = smoothstep(-8.0, -2.0, elevDeg) * (1.0 - smoothstep(2.0, 8.0, elevDeg));
-  altColor = mix(altColor, mix(altColor, colPurple, 0.40), highAlt * civil * 0.45);
+  vec3 colPurple = vec3(0.65, 0.38, 0.82);
+  vec3 colPink   = vec3(1.00, 0.50, 0.60);
+  vec3 colOrange = vec3(1.00, 0.52, 0.22);
+  vec3 colYellow = vec3(1.00, 0.88, 0.48);
+  vec3 altColor  = mix(colPurple,
+                     mix(colPink,
+                       mix(colOrange, colYellow, smoothstep(0.45, 0.70, y)),
+                     smoothstep(0.20, 0.45, y)),
+                   smoothstep(0.05, 0.20, y));
+  onLight += altColor * cloudScattering * cloudOpacityIn * localLightIntensity * y * 6.0;
 
-  // Lit faces get a strong golden wash; keep a floor so soft faces still warm.
-  float litGate = mix(0.28, 1.0, clamp(localLightIntensity, 0.0, 1.2));
-  onLight += altColor * cloudScattering * cloudOpacityIn * litGate * mix(1.0, 2.4, y) * 2.6;
-
-  // Shaded undersides / rims: classic golden cloud bottoms from horizon skylight.
-  float shadeGate = 1.0 - smoothstep(0.12, 0.55, localLightIntensity);
-  float underGlow = shadeGate * cloudOpacityIn * cloudScattering * (0.50 + 0.50 * (1.0 - y));
-  onLight += altColor * underGlow * 2.0;
-
-  float altFactor = clamp((y - 0.45) / 0.55, 0.0, 1.0);
-  onLight += altColor * cloudScattering * cloudOpacityIn * altFactor * altFactor * litGate * 3.2;
+  float altFactor = clamp((y - 0.50) / 0.50, 0.0, 1.0);
+  onLight += vec3(cloudScattering * cloudOpacityIn * altFactor * altFactor * localLightIntensity * 8.0);
 }
 
 void main()
@@ -2069,18 +2028,15 @@ void main()
 
   vec3 ambientLight = texture(ambientLightTex, texCoord).rgb;
 
-  // Kill sky-blue ambient wash inside thick cloud/precip so the body stays #14243e —
-  // but ease that kill at dusk/dawn so warm bounce can color the volume.
+  // Kill sky-blue ambient wash inside thick cloud/precip so the body stays #14243e.
   float cloudBodyMask = 0.0;
   if (wall[DISTANCE] != 0 && texCoord.y > 0.0 && texCoord.y <= 1.0)
     cloudBodyMask = smoothstep(0.18, 0.65, opacity) * (1.0 - smoothstep(0.2, 0.55, lightIntensity));
-  float ambKill = mix(0.92, 0.32, scatering);
-  onLight += ambientLight * pow(1. - clamp(-texCoord.y * 15., 0., 1.), 2.5) * (1.0 - cloudBodyMask * ambKill);
+  onLight += ambientLight * pow(1. - clamp(-texCoord.y * 15., 0., 1.), 2.5) * (1.0 - cloudBodyMask * 0.92);
 
 
   // shadowSunTint: 0 = Enhanced neutral shadows; 1 = Full sun-tinted shadows
-  // Near horizon, force warm shadow fill even if the pack uses neutral shadows.
-  float shadowTintAmt = mix(clamp(shadowSunTint, 0.0, 1.0), 1.0, scatering * 0.88);
+  float shadowTintAmt = clamp(shadowSunTint, 0.0, 1.0);
   vec3 shadowTerm = mix(vec3(shadowLight), sunTint * shadowLight, shadowTintAmt);
   finalLight += shadowTerm + onLight;
 
@@ -2126,7 +2082,6 @@ void main()
 
   // Cool blue cast across the whole cloud luminance range (not only mid-shadows).
   // Kill navy while shafts are lightning-bleached so the flash stays white.
-  // Also fade navy hard at sunrise/sunset so warm sunTint / albedo can read.
   if (wall[DISTANCE] != 0 && texCoord.y > 0.0 && texCoord.y <= 1.0 && lightningShaftFlash < 0.08) {
     const vec3 deepCloudNavySat = vec3(0.078431, 0.141176, 0.243137);
     float deepLum = max(dot(deepCloudNavySat, vec3(0.2126, 0.7152, 0.0722)), 1e-4);
@@ -2134,7 +2089,6 @@ void main()
     float lum = max(dot(finalColor, vec3(0.2126, 0.7152, 0.0722)), 0.0);
     float bodyAmt = smoothstep(0.20, 0.70, opacity);
     float blueAmt = mix(0.18, 0.55, bodyAmt) * (0.45 + 0.55 * (1.0 - smoothstep(0.15, 0.55, lightIntensity)));
-    blueAmt *= (1.0 - scatering * 0.96);
     vec3 tinted = navyChroma * lum;
     finalColor = mix(finalColor, tinted, clamp(blueAmt, 0.0, 0.65));
   }
