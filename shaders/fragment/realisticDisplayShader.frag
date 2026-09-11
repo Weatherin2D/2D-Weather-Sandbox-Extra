@@ -2,6 +2,7 @@
 precision highp float;
 precision highp sampler2D;
 precision highp isampler2D;
+precision highp sampler2DArray;
 
 in vec2 fragCoord;    // pixel
 in vec2 texCoord;     // this normalized
@@ -18,7 +19,7 @@ uniform sampler2D waterTex;
 uniform isampler2D wallTex;
 uniform sampler2D lightTex;
 uniform sampler2D noiseTex;
-uniform sampler2D surfaceTextureMap;
+uniform sampler2DArray surfaceTextureMap;
 uniform sampler2D customSurfaceAtlas;
 uniform sampler2D curlTex;
 uniform sampler2D dropletSizeTex;
@@ -155,12 +156,9 @@ const vec3 dryGrassCol = pow(vec3(0.843, 0.588, 0.294), vec3(GAMMA));
 
 vec4 surfaceTexture(int index, vec2 pos)
 {
-#define numTextures 7.;             // number of textures in the map
-  const float texRelHeight = 1. / numTextures;
+  pos.x = fract(pos.x);
   pos.y = clamp(pos.y, 0.01, 0.99); // make sure position is within the subtexture
-  pos /= numTextures;
-  pos.y += float(index) * texRelHeight;
-  return texture(surfaceTextureMap, pos);
+  return texture(surfaceTextureMap, vec3(pos, float(index)));
 }
 
 // customSurfaceAtlas: 8 vertical strips (slot 0..7), same UV convention as surfaceTexture
@@ -181,7 +179,7 @@ vec4 customSurfaceTexture(int slot, vec2 pos)
 bool isFloodTintLandType(int wallType)
 {
   return wallType == WALLTYPE_LAND || wallType == WALLTYPE_FIRE
-      || wallType == WALLTYPE_URBAN || wallType == WALLTYPE_SUBURBAN || wallType == WALLTYPE_AMERICAN_SUBURBAN
+      || isSettlementWall(wallType)
       || wallType == WALLTYPE_INDUSTRIAL || wallType == WALLTYPE_RUNWAY
       || isCustomBase(wallType) || isCustomOverlay(wallType);
 }
@@ -1491,6 +1489,10 @@ void main()
     case WALLTYPE_LAND:
     case WALLTYPE_FOREST2:
     case WALLTYPE_SUBURBAN:
+    case 29: case 30: case 31: case 32: case 33: case 34:
+    case 35: case 36: case 37: case 38: case 39:
+    case 40: case 41: case 42: case 43: case 44: case 45:
+    case 46: case 47: case 48: case 49:
     case 10: case 11: case 12: case 13: case 14: case 15: case 16: case 17: // custom base slots
     case 18: case 19: case 20: case 21: case 22: case 23: case 24: case 25: // custom overlay slots
 
@@ -1721,7 +1723,7 @@ void main()
       float localY = fract(fragCoord.y);
       // ivec4 wallX0Ym = texture(wallTex, texCoordX0Ym);
 
-#define texAspect 3584. / 4096. // height / width of surface atlas (7 strips × 512)
+#define texAspect 512. / 4096. // height / width of one facade strip
 #define maxTreeHeight 40.       // height in meters when vegetation max = 127
 #define maxBuildingHeight 400.  // height in meters upto wich the urban texture reaches
 #define maxAmericanSuburbanHeight 55. // 1–2 story American suburban houses
@@ -1730,7 +1732,7 @@ void main()
       if (isCustomTerrain(wallX0Ym[TYPE])) {
         float heightAboveGround = localY + float(wall[VERT_DISTANCE] - 1);
         float urbanTexHeightNorm = maxBuildingHeight / cellHeight;
-        float urbanTexCoordX = mod(fragCoord.x, resolution.x) * texAspect / urbanTexHeightNorm;
+        float urbanTexCoordX = mod(fragCoord.x, resolution.x) * (3584. / 4096.) / urbanTexHeightNorm;
         float urbanTexCoordY = 1.0 - (heightAboveGround / urbanTexHeightNorm);
         int cslot = customAtlasSlot(wallX0Ym[TYPE]);
         vec4 texCol = customSurfaceTexture(cslot, vec2(urbanTexCoordX, urbanTexCoordY));
@@ -1784,6 +1786,31 @@ void main()
           if (nightTime) {
             shadowLight = 1.0;
             texCol.rgb *= vec3(1.0, 0.85, 0.6);
+          } else {
+            texCol.rgb *= vec3(0.95, 0.97, 1.0);
+            if (length(texCol.rgb) < 0.1)
+              texCol.rgb = texture(noiseTex, fragCoord * 0.3).rgb * 0.3;
+          }
+          color = texCol.rgb;
+          opacity = texCol.a;
+        }
+      } else if (settlementSurfaceIndex(wallX0Ym[TYPE]) >= 0) {
+
+        float heightAboveGround = localY + float(wall[VERT_DISTANCE] - 1);
+        float maxH = settlementMaxHeight(wallX0Ym[TYPE]);
+        float texHeightNorm = maxH / cellHeight;
+        float texCoordX = mod(fragCoord.x, resolution.x) * texAspect / texHeightNorm;
+        float texCoordY = 1.0 - (heightAboveGround / texHeightNorm);
+        int strip = settlementSurfaceIndex(wallX0Ym[TYPE]);
+        vec4 texCol = surfaceTexture(strip, vec2(texCoordX, texCoordY));
+        if (texCol.a > 0.5) {
+          if (nightTime) {
+            shadowLight = 1.0;
+            texCol.rgb *= isAnyUrban(wallX0Ym[TYPE]) ? vec3(1.0, 0.8, 0.5) : vec3(1.0, 0.85, 0.6);
+          } else if (isAnyUrban(wallX0Ym[TYPE])) {
+            texCol.rgb *= vec3(0.8, 0.9, 1.0);
+            if (length(texCol.rgb) < 0.1)
+              texCol.rgb = texture(noiseTex, fragCoord * 0.3).rgb * 0.3;
           } else {
             texCol.rgb *= vec3(0.95, 0.97, 1.0);
             if (length(texCol.rgb) < 0.1)
@@ -1864,7 +1891,7 @@ void main()
 
         vec4 texCol = vec4(0.0);
         if (wallX0Ym[VEGETATION] > GRASS_VEG_MAX &&
-            (wallX0Ym[TYPE] == WALLTYPE_LAND || wallX0Ym[TYPE] == WALLTYPE_FOREST2 || wallX0Ym[TYPE] == WALLTYPE_URBAN || wallX0Ym[TYPE] == WALLTYPE_AMERICAN_SUBURBAN || wallX0Ym[TYPE] == WALLTYPE_SUBURBAN || isCustomBase(wallX0Ym[TYPE]))) { // forest canopy only
+            (wallX0Ym[TYPE] == WALLTYPE_LAND || wallX0Ym[TYPE] == WALLTYPE_FOREST2 || isSettlementWall(wallX0Ym[TYPE]) || isCustomBase(wallX0Ym[TYPE]))) { // forest canopy only
           vec4 surfaceWater = texture(waterTex, texCoordX0Ym);                     // snow on land below
           float snow = surfaceWater[SNOW];
           if (snow * 0.01 / cellHeight > heightAboveGround)

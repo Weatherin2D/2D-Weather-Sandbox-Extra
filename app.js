@@ -629,6 +629,8 @@ const guiControls_default = {
   IR_rate : 1.0,
   invertSun : false,
   tool : 'TOOL_NONE',
+  urbanType : 'Downtown Skyline',
+  suburbanType : 'Gabled Suburb',
   invertTool : false,
   brushSize : 20,
   wholeWidth : false,
@@ -653,6 +655,7 @@ const guiControls_default = {
   IterPerFrame : 10,
   auto_IterPerFrame : true,
   sound : true,
+  easSoundEnabled : true, // EAS tone/voice independent of Enable Sound
   enableBloom : true,
   // Sound volume controls
   soundVolumeWind    : 1.0,
@@ -823,6 +826,7 @@ var labelsLastScanIter = -9999;
 var tornadoOverlayCanvas = null;
 var tornadoLastScanIter = -9999;
 var warningsOverlayCanvas = null;
+var warningsOverlayDrawKey = '';
 
 var radarOverlayCanvas = null;
 var radarImageData = null;
@@ -3426,6 +3430,8 @@ const SOUNDING_VIEW_CONFIGS = [
 
 function isLandSurfaceWallType(wallType)
 {
+  if (window.SettlementAtlas && window.SettlementAtlas.isLandSurfaceWall)
+    return window.SettlementAtlas.isLandSurfaceWall(wallType);
   if (wallType === 1 || wallType === 3 || wallType === 4
     || wallType === 5 || wallType === 6 || wallType === 7
     || wallType === 26 || wallType === 27 // FOREST2 / FIRE_FOREST2
@@ -3501,6 +3507,22 @@ function getSoundingOverlayBarWidth()
   return clamp(w, 0.25, 20);
 }
 
+function overlayOthersWantScan()
+{
+  return !!(guiControls && (guiControls.stormTrackOverlay || guiControls.outflowOverlay || guiControls.labelsOverlay || guiControls.tornadoDetectionOverlay));
+}
+
+function getEasOverlayBarWidth()
+{
+  return Math.max(getSoundingOverlayBarWidth(), 16);
+}
+
+function easScanIntervalIters()
+{
+  const tpi = Number.isFinite(timePerIteration) && timePerIteration > 0 ? timePerIteration : 0.00008;
+  return Math.max(80, Math.round(90 / (tpi * 3600)));
+}
+
 function convectiveRiskRgba(muCape, shear6, stp, dryStrength)
 {
   const dry = Number.isFinite(dryStrength) ? dryStrength : 0;
@@ -3547,6 +3569,7 @@ var overlayScan = {
   chargeAll: null,
   colScratch: null,
   lastFinishIter: -9999,
+  hazardsIfPrecip: false,
 };
 
 function ensureOverlayScanBuffers(simResX, simResY, needCharge)
@@ -3581,9 +3604,9 @@ function readOverlayScanTextures(needCharge, frameBuff, chargeBuff)
   gl.bindFramebuffer(gl.FRAMEBUFFER, null);
 }
 
-function beginOverlayScan(kind, needCharge, needHazards, frameBuff, chargeBuff)
+function beginOverlayScan(kind, needCharge, needHazards, frameBuff, chargeBuff, barWOverride)
 {
-  const barW = getSoundingOverlayBarWidth();
+  const barW = Number.isFinite(barWOverride) ? barWOverride : getSoundingOverlayBarWidth();
   ensureOverlayScanBuffers(sim_res_x, sim_res_y, needCharge);
   readOverlayScanTextures(needCharge, frameBuff, chargeBuff);
   overlayScan.active = true;
@@ -3595,6 +3618,8 @@ function beginOverlayScan(kind, needCharge, needHazards, frameBuff, chargeBuff)
   overlayScan.pending._barWidth = barW;
   overlayScan.needCharge = !!needCharge;
   overlayScan.needHazards = !!needHazards;
+  overlayScan.hazardsIfPrecip = !!(needHazards && guiControls && !guiControls.labelsOverlay
+    && (guiControls.warningsOverlay || guiControls.easAlertsEnabled));
 }
 
 function computeOverlayColumnBundle(baseAll, waterAll, wallAll, chargeAll, sx, simResX, simResY, dz, colScratch, options)
@@ -3634,9 +3659,21 @@ function computeOverlayColumnBundle(baseAll, waterAll, wallAll, chargeAll, sx, s
   }
 
   if (opts.needHazards) {
-    Object.assign(metrics, computeColumnHazardsAndFire(
-      metrics, colScratch.envTempsC, colScratch.waterArr, metrics.soilMoisture_mm,
-      colScratch.vxRaw, colScratch.vyRaw));
+    if (opts.hazardsIfPrecip && (metrics.colPrecipMax || 0) < 0.03) {
+      metrics.hazardTornado = 0;
+      metrics.hazardSupercell = 0;
+      metrics.hazardLargeHail = 0;
+      metrics.hazardHail = 0;
+      metrics.hazardDamagingWinds = 0;
+      metrics.hazardDestructiveWinds = 0;
+      metrics.hazardFlooding = 0;
+      metrics.hazardGiantHail = 0;
+      metrics.hazardPdsTornado = 0;
+    } else {
+      Object.assign(metrics, computeColumnHazardsAndFire(
+        metrics, colScratch.envTempsC, colScratch.waterArr, metrics.soilMoisture_mm,
+        colScratch.vxRaw, colScratch.vyRaw));
+    }
   }
 
   if (opts.needHotspot && chargeAll) {
@@ -3771,10 +3808,9 @@ function updateEasFromPending(pending, force)
     return;
   if (!guiControls || (!guiControls.warningsOverlay && !guiControls.easAlertsEnabled))
     return;
-  runSilentTornadoScan();
   const tornadoApi = window.WeatherSandbox.tornadoDetection;
   const labelApi = window.WeatherSandbox.weatherLabels;
-  api.updateFromScan({
+  const ctx = {
     pending: pending || soundingOverlayData || [],
     tornadoDetections: (tornadoApi && tornadoApi.getDetections) ? tornadoApi.getDetections() : [],
     labels: (labelApi && labelApi.getLabels) ? labelApi.getLabels() : [],
@@ -3789,7 +3825,12 @@ function updateEasFromPending(pending, force)
     getAudioContext: function() {
       return soundSystem && soundSystem.audioCtx ? soundSystem.audioCtx : null;
     },
-  });
+  };
+  if (!ctx.pending || !ctx.pending.length)
+    return;
+  if (!force && typeof api.wantsUpdate === 'function' && !api.wantsUpdate(ctx))
+    return;
+  api.updateFromScan(ctx);
 }
 
 function clearEasProducts()
@@ -3798,6 +3839,7 @@ function clearEasProducts()
     window.WeatherSandbox.eas.clear();
   if (warningsOverlayCanvas)
     warningsOverlayCanvas.style.display = 'none';
+  warningsOverlayDrawKey = '';
 }
 
 function tornadoDetectionUpdateInterval()
@@ -3926,6 +3968,8 @@ function tickOverlayScan()
         updateWeatherLabelsFromPending(overlayScan.pending);
       if (guiControls.tornadoDetectionOverlay)
         updateTornadoDetectionFromScan();
+      else if (guiControls.warningsOverlay || guiControls.easAlertsEnabled)
+        runSilentTornadoScan();
       updateEasFromPending(overlayScan.pending);
       overlayScan.active = false;
       overlayScan.lastFinishIter = iterNum;
@@ -3942,6 +3986,7 @@ function tickOverlayScan()
       {
         lite: true,
         needHazards: overlayScan.needHazards,
+        hazardsIfPrecip: overlayScan.hazardsIfPrecip,
         needHotspot: overlayScan.needCharge,
       });
     if (metrics) {
@@ -7470,11 +7515,15 @@ function applyCustomToolEntitiesCpu()
           windX: baseData[idx],
           windY: baseData[idx + 1],
           charge: 0,
-          isLand: wallType === 1 || wallType === 4 || wallType === 5 || wallType === 6 || wallType === 7 || wallType === 26 || wallType === 27 || wallType === 28 ? 1 : 0,
+          isLand: (window.SettlementAtlas && window.SettlementAtlas.isLandSurfaceWall
+            ? window.SettlementAtlas.isLandSurfaceWall(wallType)
+            : (wallType === 1 || wallType === 4 || wallType === 5 || wallType === 6 || wallType === 7 || wallType === 26 || wallType === 27 || wallType === 28)) ? 1 : 0,
           isWater: wallType === 2 || wallType === 8 ? 1 : 0,
           isFresh: wallType === 8 ? 1 : 0,
           isIce: wallType === 9 ? 1 : 0,
-          isUrban: wallType === 4 || wallType === 7 || wallType === 28 ? 1 : 0,
+          isUrban: (window.SettlementAtlas && window.SettlementAtlas.isSettlementWall
+            ? window.SettlementAtlas.isSettlementWall(wallType)
+            : (wallType === 4 || wallType === 7 || wallType === 28)) ? 1 : 0,
           soilMoisture: waterData[idx + 2],
           snow: 0,
           veg: veg,
@@ -7522,7 +7571,14 @@ function applyCustomToolEntitiesCpu()
 
         const terrainInput = runtime.terrainToInputType(effects.terrain);
         if (terrainInput != null && CUSTOM_WALLTYPE_FROM_INPUT[terrainInput] != null) {
-          wallData[idx] = CUSTOM_WALLTYPE_FROM_INPUT[terrainInput];
+          let paintedType = CUSTOM_WALLTYPE_FROM_INPUT[terrainInput];
+          if (window.SettlementAtlas) {
+            if (terrainInput === 14)
+              paintedType = window.SettlementAtlas.urbanWallTypeFromVariant(window.SettlementAtlas.urbanVariantIndex(guiControls.urbanType));
+            else if (terrainInput === 17)
+              paintedType = window.SettlementAtlas.suburbanWallTypeFromVariant(window.SettlementAtlas.suburbanVariantIndex(guiControls.suburbanType));
+          }
+          wallData[idx] = paintedType;
           if (wallData[idx + 1] === 0) wallData[idx + 1] = 1;
           changed = true;
         }
@@ -10373,7 +10429,9 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
           } else if (wType == 2) { // water
             beachL += Lgain;
             beachR += Rgain;
-          } else if (wType == 4 || wType == 6 || wType == 28) { // urban, industrial, or American suburban
+          } else if (wType == 4 || wType == 6 || wType == 28
+            || (wType >= 29 && wType <= 39)
+            || (wType >= 40 && wType <= 49)) { // urban, industrial, suburban variants
             urbanL += Lgain;
             urbanR += Rgain;
           }
@@ -12079,6 +12137,8 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     guiControls.warningsOverlay = guiControls_default.warningsOverlay;
   if (guiControls.easAlertsEnabled === undefined)
     guiControls.easAlertsEnabled = guiControls_default.easAlertsEnabled;
+  if (guiControls.easSoundEnabled === undefined)
+    guiControls.easSoundEnabled = guiControls_default.easSoundEnabled;
   if (guiControls.easVoiceEnabled === undefined)
     guiControls.easVoiceEnabled = guiControls_default.easVoiceEnabled;
   if (guiControls.easVolume === undefined || !Number.isFinite(guiControls.easVolume))
@@ -12552,7 +12612,6 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         'Ice Cap / Glacier' : 'TOOL_WALL_ICE_CAP',
         'Urban' : 'TOOL_WALL_URBAN',
         'Suburban' : 'TOOL_WALL_SUBURBAN',
-        'American Suburban' : 'TOOL_WALL_AMERICAN_SUBURBAN',
         'Runway' : 'TOOL_WALL_RUNWAY',
         'Industrial' : 'TOOL_WALL_INDUSTRIAL',
         'Fire' : 'TOOL_WALL_FIRE',
@@ -12583,6 +12642,9 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       })
       .name('Tool')
       .listen();
+    const atlas = window.SettlementAtlas;
+    UI_folder.add(guiControls, 'urbanType', atlas ? atlas.urbanGuiOptions() : { 'Downtown Skyline': 'Downtown Skyline' }).name('Urban Type').listen();
+    UI_folder.add(guiControls, 'suburbanType', atlas ? atlas.suburbanGuiOptions() : { 'Gabled Suburb': 'Gabled Suburb' }).name('Suburban Type').listen();
     UI_folder.add(guiControls, 'brushSize', 1, 200, 1).name('Brush Diameter').listen();
     UI_folder.add(guiControls, 'wholeWidth').name('Whole Width Brush').listen();
     UI_folder.add(guiControls, 'brushIntensity', 0.005, 1, 0.001).name('Brush Intensity');
@@ -13531,6 +13593,12 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         soundSystem?.mute();
       }
     });
+    advancedAudio.add(guiControls, 'easSoundEnabled')
+      .onChange(function() {
+        if (!guiControls.easSoundEnabled && window.WeatherSandbox && window.WeatherSandbox.eas)
+          window.WeatherSandbox.eas.stopTones();
+      })
+      .name('EAS Sound');
     advancedAudio.add(guiControls, 'enableBloom').name('Enable Bloom');
 
     var advancedPerformance = advanced_folder.addFolder('Performance');
@@ -19232,7 +19300,10 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     { id: 'toolWallSuburban', name: 'Tool: suburban wall', category: 'Tools', defaultCode: 'KeyH',
       onDown() { setGuiTool('TOOL_WALL_SUBURBAN'); } },
     { id: 'toolWallAmericanSuburban', name: 'Tool: American suburban wall', category: 'Tools', defaultCode: null,
-      onDown() { setGuiTool('TOOL_WALL_AMERICAN_SUBURBAN'); } },
+      onDown() {
+        guiControls.suburbanType = 'American Tract';
+        setGuiTool('TOOL_WALL_SUBURBAN');
+      } },
     { id: 'toolWallRunway', name: 'Tool: runway wall', category: 'Tools', defaultCode: 'BracketRight',
       onDown() { setGuiTool('TOOL_WALL_RUNWAY'); } },
     { id: 'toolWallIndustrial', name: 'Tool: industrial wall', category: 'Tools', defaultCode: 'Backslash',
@@ -20773,7 +20844,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
 
   // load shaders
-  const SHADER_ASSET_VERSION = 83; // bump to bust CDN/browser cache after shader edits
+  const SHADER_ASSET_VERSION = 85; // bump to bust CDN/browser cache after shader edits
 
   var commonSource = await loadSourceFile('shaders/common.glsl');
   var commonDisplaySource = await loadSourceFile('shaders/commonDisplay.glsl');
@@ -21955,13 +22026,16 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
 
   imgElement = await loadImage('resources/img/surfaceTextureMap.png');
 
-  gl.bindTexture(gl.TEXTURE_2D, surfaceTextureMap);
-  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, imgElement.width, imgElement.height, 0, gl.RGBA, gl.UNSIGNED_BYTE, imgElement);
-  // gl.generateMipmap(gl.TEXTURE_2D);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);        // horizontal
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE); // vertical
+  if (window.SettlementAtlas && window.SettlementAtlas.uploadExpandedAtlas) {
+    window.SettlementAtlas.uploadExpandedAtlas(gl, surfaceTextureMap, imgElement);
+  } else {
+    gl.bindTexture(gl.TEXTURE_2D, surfaceTextureMap);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, imgElement.width, imgElement.height, 0, gl.RGBA, gl.UNSIGNED_BYTE, imgElement);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);        // horizontal
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE); // vertical
+  }
 
   function uploadSkyPhaseTexture(tex, img)
   {
@@ -25217,6 +25291,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   const uloc_adv_userInputType         = gl.getUniformLocation(advectionProgram, 'userInputType');
   const uloc_adv_userInputCustomSlot   = gl.getUniformLocation(advectionProgram, 'userInputCustomSlot');
   const uloc_adv_userInputSurfaceKind  = gl.getUniformLocation(advectionProgram, 'userInputSurfaceKind');
+  const uloc_adv_userInputSettlementVariant = gl.getUniformLocation(advectionProgram, 'userInputSettlementVariant');
   const uloc_adv_iterNum               = gl.getUniformLocation(advectionProgram, 'iterNum');
   const uloc_adv_brushOnlyMode         = gl.getUniformLocation(advectionProgram, 'brushOnlyMode');
   const uloc_vel_coriolisStrength      = gl.getUniformLocation(velocityProgram, 'coriolisStrength');
@@ -28098,27 +28173,17 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
 
   function registerRadarLightningStrike(eventKey, simX, simY, ltType)
   {
+    // Spawn already validated the strike — do not re-gate icons on charge/cloud
+    // (icon position can differ from origin, and charge may already be discharging).
     if (!guiControls.radarLightningIcons || registeredLightningEvents.has(eventKey))
       return;
     if (typeof LightningV2 !== 'undefined') {
-      if (!LightningV2.isSimInCloudLayer(simX, simY, sim_res_x, sim_res_y, false))
-        return;
       const clamped = LightningV2.clampLightningSimPos(simX, simY, sim_res_x, sim_res_y, false);
       simX = clamped.x;
       simY = clamped.y;
-      refreshLightningFieldCache();
-      if (lightningFieldCache && ltType) {
-        const charge = readChargeCached(simX, simY);
-        const cloud = readCloudCached(simX, simY);
-        const channelId = channelIdForLtType(ltType);
-        const thresholds = LightningV2.getSpawnThresholds(guiControls, channelId);
-        if (cloud < thresholds.minRawCloud * 0.92)
-          return;
-        if (!LightningV2.isChargeValidForLtType(charge, ltType, guiControls, channelId))
-          return;
-        if (Math.abs(charge) * LightningV2.cloudGate(cloud) < thresholds.minChargeMag * thresholds.minCloudGate * 0.88)
-          return;
-      }
+    } else {
+      simX = clamp(simX, 0, sim_res_x - 1);
+      simY = clamp(simY, sim_res_y * 0.07, sim_res_y * 0.88);
     }
     registeredLightningEvents.add(eventKey);
     radarLightningStrikes.push({
@@ -28142,7 +28207,12 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   {
     if (!guiControls.enablePrecipitation)
       return;
-    if (!isLegacyLightningStyle() && !guiControls.soundThunderEnabled && !guiControls.radarLightningIcons)
+    // V2/procedural activation already registers radar icons + thunder for every strike.
+    // Re-detecting from the particle buffer after charge discharge both misses strikes
+    // and can double-count when checks pass — skip it outside legacy style.
+    if (!isLegacyLightningStyle())
+      return;
+    if (!guiControls.soundThunderEnabled && !guiControls.radarLightningIcons)
       return;
     gl.bindFramebuffer(gl.FRAMEBUFFER, lightningDataFrameBuff);
     gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.FLOAT, particleLightningReadBuffer);
@@ -28152,46 +28222,13 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     if (Math.floor(startIter + 0.5) !== iterNum)
       return;
     const eventKey = 'particle-' + Math.floor(startIter);
-    if (isLegacyLightningStyle()) {
-      if (guiControls.radarLightningIcons)
-        registerRadarLightningStrike(eventKey, clamp(data[0] * sim_res_x, 0, sim_res_x - 1),
-          clamp(data[1] * sim_res_y, sim_res_y * 0.07, sim_res_y * 0.88), 1);
-      if (guiControls.soundThunderEnabled) {
-        const intensity = Math.max(data[3], 1.2);
-        playThunderForStrike(eventKey, data[0], data[1], intensity);
-      }
-      return;
-    }
-    const simX = clamp(data[0] * sim_res_x, 0, sim_res_x - 1);
-    const simY = clamp(data[1] * sim_res_y, sim_res_y * 0.07, sim_res_y * 0.88);
-    refreshLightningFieldCache();
-    const cloud = readCloudCached(simX, simY);
-    const charge = readChargeCached(simX, simY);
-    const cloudGate = cloudGateFromDensity(cloud);
-    if (typeof LightningV2 !== 'undefined') {
-      const thresholds = LightningV2.getSpawnThresholds(guiControls, 'intracloud');
-      if (cloud < thresholds.minRawCloud * 0.92)
-        return;
-      if (cloudGate < thresholds.minCloudGate * 0.92)
-        return;
-      if (Math.abs(charge) < thresholds.minChargeMag * 0.92)
-        return;
-      if (Math.abs(charge) * cloudGate < thresholds.minChargeMag * thresholds.minCloudGate * 0.88)
-        return;
-      if (!LightningV2.isChargeValidForLtType(charge, 1, guiControls, 'intracloud'))
-        return;
-    } else {
-      if (cloudGate < guiControls.cloudLightningThreshold * 0.65)
-        return;
-      if (cloud < (guiControls.chargeMinCloudDensity ?? 0.32) * 0.82)
-        return;
-      if (Math.abs(charge) < 0.22)
-        return;
-    }
     if (guiControls.radarLightningIcons)
-      registerRadarLightningStrike(eventKey, simX, simY, 1);
-    const intensity = Math.max(data[3], 1.2);
-    playThunderForStrike(eventKey, data[0], data[1], intensity);
+      registerRadarLightningStrike(eventKey, clamp(data[0] * sim_res_x, 0, sim_res_x - 1),
+        clamp(data[1] * sim_res_y, sim_res_y * 0.07, sim_res_y * 0.88), 1);
+    if (guiControls.soundThunderEnabled) {
+      const intensity = Math.max(data[3], 1.2);
+      playThunderForStrike(eventKey, data[0], data[1], intensity);
+    }
   }
 
   function shouldShowRadarLightningOverlay()
@@ -28698,9 +28735,6 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     ctx.clearRect(0, 0, radarLightningCanvas.width, radarLightningCanvas.height);
 
     for (const strike of radarLightningStrikes) {
-      if (typeof LightningV2 !== 'undefined'
-          && !LightningV2.isSimInCloudLayer(strike.simX, strike.simY, sim_res_x, sim_res_y, false))
-        continue;
       const sx = simToScreenX(strike.simX);
       const sy = simToScreenY(strike.simY);
       if (sx < -30 || sx > canvas.width + 30 || sy < -30 || sy > canvas.height + 30)
@@ -28801,6 +28835,20 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     return -1;
   }
 
+  function currentSettlementVariant(tool)
+  {
+    const atlas = window.SettlementAtlas;
+    if (!atlas) return 0;
+    const t = tool || guiControls.tool;
+    if (t === 'TOOL_WALL_URBAN')
+      return atlas.urbanVariantIndex(guiControls.urbanType);
+    if (t === 'TOOL_WALL_SUBURBAN')
+      return atlas.suburbanVariantIndex(guiControls.suburbanType);
+    if (t === 'TOOL_WALL_AMERICAN_SUBURBAN')
+      return 1;
+    return 0;
+  }
+
   function computeBrushFromTool(tool, simX, simY, moveX, moveY, painting)
   {
     if (!painting) return { inputType: -1, active: false };
@@ -28843,6 +28891,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       moveY: moveY || 0,
       wrap: !!guiControls.wrapHorizontally,
       invertTool: !!guiControls.invertTool,
+      settlementVariant: currentSettlementVariant(tool),
       active: true,
     };
   }
@@ -28877,6 +28926,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         gl.uniform1i(uloc_adv_userInputCustomSlot, pass.customSlot != null ? pass.customSlot : 0);
       if (uloc_adv_userInputSurfaceKind)
         gl.uniform1i(uloc_adv_userInputSurfaceKind, pass.surfaceKind != null ? pass.surfaceKind : 0);
+      if (uloc_adv_userInputSettlementVariant)
+        gl.uniform1i(uloc_adv_userInputSettlementVariant, pass.settlementVariant != null ? pass.settlementVariant : 0);
       if (uloc_adv_brushOnlyMode)
         gl.uniform1i(uloc_adv_brushOnlyMode, 1);
       gl.uniform1f(uloc_adv_iterNum, iterNum);
@@ -28953,6 +29004,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         gl.uniform1i(uloc_adv_userInputCustomSlot, pass.customSlot != null ? pass.customSlot : 0);
       if (uloc_adv_userInputSurfaceKind)
         gl.uniform1i(uloc_adv_userInputSurfaceKind, pass.surfaceKind != null ? pass.surfaceKind : 0);
+      if (uloc_adv_userInputSettlementVariant)
+        gl.uniform1i(uloc_adv_userInputSettlementVariant, pass.settlementVariant != null ? pass.settlementVariant : 0);
       if (uloc_adv_brushOnlyMode)
         gl.uniform1i(uloc_adv_brushOnlyMode, 1);
       gl.uniform1f(uloc_adv_iterNum, iterNum);
@@ -29390,6 +29443,11 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     proceduralLightningState.frozenVisualAge = null;
     if (msg.iterNum != null)
       iterNum = msg.iterNum;
+    for (let s = 0; s < msg.strikes.length; s++) {
+      const st = msg.strikes[s];
+      const eventKey = 'lt-remote-' + msg.eventId + '-s' + s;
+      registerRadarIconForStrike(st, eventKey);
+    }
   }
 
   function broadcastHostLightningFlash(eventId, channel, strikes)
@@ -29992,7 +30050,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         const src = (guiControls.displayMode === 'DISP_RISK' && riskData.length)
           ? riskData
           : soundingOverlayData;
-        if (src && src.length && (tornadoDue || (iterNum - overlayScan.lastFinishIter) >= riskFreq))
+        if (src && src.length)
           updateEasFromPending(src);
       }
       return;
@@ -30006,8 +30064,9 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       return;
 
     const chargeBuff = even ? chargeFrameBuff_0 : chargeFrameBuff_1;
-    const othersOn = !!(guiControls.stormTrackOverlay || guiControls.outflowOverlay || guiControls.labelsOverlay || easOn);
+    const othersOn = overlayOthersWantScan();
     const othersDue = othersOn && (iterNum - overlayScan.lastFinishIter) >= riskFreq;
+    const easOnlyDue = easOn && !othersOn && (iterNum - overlayScan.lastFinishIter) >= easScanIntervalIters();
 
     if (tornadoDue) {
       beginOverlayScan('sounding', false, needHaz, frameBuff_1, chargeBuff);
@@ -30021,6 +30080,11 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         beginOverlayScan('sounding', false, needHaz, frameBuff_1, chargeBuff);
         tickOverlayScan();
       }
+      return;
+    }
+    if (easOnlyDue) {
+      beginOverlayScan('sounding', false, needHaz, frameBuff_1, chargeBuff, getEasOverlayBarWidth());
+      tickOverlayScan();
     }
   }
 
@@ -30200,6 +30264,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         gl.uniform1i(uloc_adv_wrapHorizontally, guiControls.wrapHorizontally);
       }
         gl.uniform1i(uloc_adv_userInputType, inputType);
+        if (uloc_adv_userInputSettlementVariant)
+          gl.uniform1i(uloc_adv_userInputSettlementVariant, currentSettlementVariant(guiControls.tool));
 
 
       if (isMultiplayerPeer() && window.WeatherMultiplayer && window.WeatherMultiplayer.isPeer()) {
@@ -30410,6 +30476,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
                 gl.uniform1i(uloc_adv_userInputType, inputType);
               else
                 gl.uniform1i(uloc_adv_userInputType, -1);
+              if (uloc_adv_userInputSettlementVariant)
+                gl.uniform1i(uloc_adv_userInputSettlementVariant, currentSettlementVariant(guiControls.tool));
               gl.activeTexture(gl.TEXTURE0);
               gl.bindTexture(gl.TEXTURE_2D, baseTexture_0);
               gl.activeTexture(gl.TEXTURE1);
@@ -30821,7 +30889,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       gl.activeTexture(gl.TEXTURE4);
       gl.bindTexture(gl.TEXTURE_2D, noiseTexture);
       gl.activeTexture(gl.TEXTURE5);
-      gl.bindTexture(gl.TEXTURE_2D, surfaceTextureMap);
+      gl.bindTexture(gl.TEXTURE_2D_ARRAY, surfaceTextureMap);
       gl.activeTexture(gl.TEXTURE6);
       gl.bindTexture(gl.TEXTURE_2D, dropletSizeTexture);
       gl.activeTexture(gl.TEXTURE7);
@@ -30905,7 +30973,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       gl.activeTexture(gl.TEXTURE4);
       gl.bindTexture(gl.TEXTURE_2D, noiseTexture);
       gl.activeTexture(gl.TEXTURE5);
-      gl.bindTexture(gl.TEXTURE_2D, surfaceTextureMap);
+      gl.bindTexture(gl.TEXTURE_2D_ARRAY, surfaceTextureMap);
 
       // draw clouds and terrain
       gl.activeTexture(gl.TEXTURE11);
@@ -31900,17 +31968,26 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       warningsOverlayCanvas.style.cssText = 'position:fixed;top:0;left:0;pointer-events:none;z-index:2;';
       document.body.appendChild(warningsOverlayCanvas);
     }
-    if (warningsOverlayCanvas.width !== canvas.width || warningsOverlayCanvas.height !== canvas.height) {
+    const sizeChanged = warningsOverlayCanvas.width !== canvas.width || warningsOverlayCanvas.height !== canvas.height;
+    if (sizeChanged) {
       warningsOverlayCanvas.width = canvas.width;
       warningsOverlayCanvas.height = canvas.height;
     }
     warningsOverlayCanvas.style.display = 'block';
-    const wc = warningsOverlayCanvas.getContext('2d');
-    wc.clearRect(0, 0, warningsOverlayCanvas.width, warningsOverlayCanvas.height);
-    if (window.WeatherSandbox && window.WeatherSandbox.eas)
-      window.WeatherSandbox.eas.draw(wc, simToScreenX, simToScreenY, canvas.width, canvas.height, sim_res_x, sim_res_y);
+    const easApi = window.WeatherSandbox && window.WeatherSandbox.eas;
+    const rev = easApi && easApi.getProductRev ? easApi.getProductRev() : 0;
+    const drawKey = canvas.width + 'x' + canvas.height + ':'
+      + cam.curXpos.toFixed(4) + ':' + cam.curYpos.toFixed(4) + ':' + cam.curZoom.toFixed(4) + ':' + rev;
+    if (sizeChanged || drawKey !== warningsOverlayDrawKey) {
+      warningsOverlayDrawKey = drawKey;
+      const wc = warningsOverlayCanvas.getContext('2d');
+      wc.clearRect(0, 0, warningsOverlayCanvas.width, warningsOverlayCanvas.height);
+      if (easApi)
+        easApi.draw(wc, simToScreenX, simToScreenY, canvas.width, canvas.height, sim_res_x, sim_res_y);
+    }
   } else if (warningsOverlayCanvas) {
     warningsOverlayCanvas.style.display = 'none';
+    warningsOverlayDrawKey = '';
   }
 
   if (window.WeatherSandbox && window.WeatherSandbox.eas) {

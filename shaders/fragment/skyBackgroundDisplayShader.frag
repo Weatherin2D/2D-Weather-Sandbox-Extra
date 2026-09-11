@@ -182,6 +182,21 @@ float smoothSunGlow(vec2 uv, vec2 center, float radius, float sharpness)
   return exp(-pow(d / max(radius, 1e-5), 2.0) * sharpness);
 }
 
+// 5-tap vertical blur on a 1D sky phase strip — softens baked PNG banding.
+vec3 sampleSkyPhaseStrip(sampler2D tex, float vTex, float texel)
+{
+  float v0 = clamp(vTex - 6.0 * texel, 0.0, 1.0);
+  float v1 = clamp(vTex - 2.5 * texel, 0.0, 1.0);
+  float v2 = clamp(vTex, 0.0, 1.0);
+  float v3 = clamp(vTex + 2.5 * texel, 0.0, 1.0);
+  float v4 = clamp(vTex + 6.0 * texel, 0.0, 1.0);
+  return texture(tex, vec2(0.5, v0)).rgb * 0.10
+       + texture(tex, vec2(0.5, v1)).rgb * 0.22
+       + texture(tex, vec2(0.5, v2)).rgb * 0.36
+       + texture(tex, vec2(0.5, v3)).rgb * 0.22
+       + texture(tex, vec2(0.5, v4)).rgb * 0.10;
+}
+
 // Daytime yellow-white sun with starburst rays; clips at horizon for gradual rise/set
 vec3 renderSun(vec2 uv, vec2 center, float scatter, float horizonLine, out float emit)
 {
@@ -340,11 +355,13 @@ void main()
     float elevDeg = sunElevRad * rad2deg;
     float skyHPhase = (texCoord.y - horizonLine) / max(1.0 - horizonLine, 0.01);
     float vTex = 1.0 - clamp(skyHPhase / 2.0, 0.0, 1.0);
-    vec3 cNight = texture(skyPhaseNight, vec2(0.5, vTex)).rgb;
-    vec3 cCivil = texture(skyPhaseCivil, vec2(0.5, vTex)).rgb;
-    vec3 cRiseSet = texture(skyPhaseSunRiseSet, vec2(0.5, vTex)).rgb;
-    vec3 cGolden = texture(skyPhaseGolden, vec2(0.5, vTex)).rgb;
-    vec3 cEarly = texture(skyPhaseEarly, vec2(0.5, vTex)).rgb;
+    // Soft vertical blur hides residual 8-bit banding in the phase strips.
+    const float SKY_TEXEL = 1.0 / 4096.0;
+    vec3 cNight = sampleSkyPhaseStrip(skyPhaseNight, vTex, SKY_TEXEL);
+    vec3 cCivil = sampleSkyPhaseStrip(skyPhaseCivil, vTex, SKY_TEXEL);
+    vec3 cRiseSet = sampleSkyPhaseStrip(skyPhaseSunRiseSet, vTex, SKY_TEXEL);
+    vec3 cGolden = sampleSkyPhaseStrip(skyPhaseGolden, vTex, SKY_TEXEL);
+    vec3 cEarly = sampleSkyPhaseStrip(skyPhaseEarly, vTex, SKY_TEXEL);
 
     // 1 night, 2 civil twilight, 3 sunrise/sunset, 4 golden hour, 5 early golden → noon procedural
     float wNight = 1.0 - smoothstep(-12.0, -4.0, elevDeg);
@@ -355,6 +372,9 @@ void main()
     float wSum = max(wNight + wCivil + wRiseSet + wGolden + wEarly, 1e-5);
     vec3 phaseSky = (cNight * wNight + cCivil * wCivil + cRiseSet * wRiseSet
                      + cGolden * wGolden + cEarly * wEarly) / wSum;
+    // Subtle screen-space dither breaks remaining posterization without looking noisy.
+    float dither = fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453) - 0.5;
+    phaseSky += dither * (1.0 / 255.0);
     phaseAmt = clamp(wSum, 0.0, 1.0) * (1.0 - smoothstep(22.0, 30.0, elevDeg));
     // Prefer the texture colours over procedural twilight wash.
     daySky = mix(daySky, phaseSky, phaseAmt);

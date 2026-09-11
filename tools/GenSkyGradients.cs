@@ -1,27 +1,41 @@
 using System;
-using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Imaging;
 using System.IO;
 
+/// <summary>
+/// Rebuild sky phase strips as continuous float gradients with Floyd–Steinberg
+/// dithering so 8-bit PNGs do not show horizontal banding stripes.
+/// </summary>
 class GenSkyGradients {
+  static float Clamp01(float v) {
+    if (v < 0f) return 0f;
+    if (v > 1f) return 1f;
+    return v;
+  }
+
   static float Smooth(float t) {
-    t = Math.Max(0f, Math.Min(1f, t));
+    t = Clamp01(t);
     return t * t * (3f - 2f * t);
   }
 
-  static int ClampByte(double v) {
-    if (v < 0) return 0;
-    if (v > 255) return 255;
-    return (int)Math.Round(v);
+  static void Rgb(Color c, out float r, out float g, out float b) {
+    r = c.R / 255f; g = c.G / 255f; b = c.B / 255f;
   }
 
-  static Color Lerp(Color a, Color b, float t) {
-    t = Smooth(t);
+  static Color FromRgb(float r, float g, float b) {
     return Color.FromArgb(
-      ClampByte(a.R + (b.R - a.R) * t),
-      ClampByte(a.G + (b.G - a.G) * t),
-      ClampByte(a.B + (b.B - a.B) * t));
+      (int)Math.Round(Clamp01(r) * 255.0),
+      (int)Math.Round(Clamp01(g) * 255.0),
+      (int)Math.Round(Clamp01(b) * 255.0));
+  }
+
+  static void LerpRgb(float r0, float g0, float b0, float r1, float g1, float b1, float t,
+                      out float r, out float g, out float b) {
+    t = Clamp01(t);
+    r = r0 + (r1 - r0) * t;
+    g = g0 + (g1 - g0) * t;
+    b = b0 + (b1 - b0) * t;
   }
 
   static Color RowMedian(Bitmap src, int y) {
@@ -38,98 +52,147 @@ class GenSkyGradients {
     return Color.FromArgb(rs[m], gs[m], bs[m]);
   }
 
-  static Color[] BuildSeries(Bitmap src) {
-    int usableH = Math.Max(8, (int)(src.Height * 0.985));
-    var series = new Color[usableH];
-    for (int y = 0; y < usableH; y++) series[y] = RowMedian(src, y);
-    // Heavy blur to kill JPEG banding before we pick stops
-    for (int pass = 0; pass < 40; pass++) {
-      var next = new Color[series.Length];
-      for (int i = 0; i < series.Length; i++) {
-        int i0 = Math.Max(0, i - 2);
-        int i1 = Math.Max(0, i - 1);
-        int i2 = Math.Min(series.Length - 1, i + 1);
-        int i3 = Math.Min(series.Length - 1, i + 2);
-        next[i] = Color.FromArgb(
-          (series[i0].R + series[i1].R * 2 + series[i].R * 3 + series[i2].R * 2 + series[i3].R) / 9,
-          (series[i0].G + series[i1].G * 2 + series[i].G * 3 + series[i2].G * 2 + series[i3].G) / 9,
-          (series[i0].B + series[i1].B * 2 + series[i].B * 3 + series[i2].B * 2 + series[i3].B) / 9);
-      }
-      series = next;
+  static void BuildSeries(Bitmap src, out float[] R, out float[] G, out float[] B) {
+    int n = Math.Max(8, src.Height);
+    R = new float[n]; G = new float[n]; B = new float[n];
+    for (int y = 0; y < n; y++) {
+      Color c = RowMedian(src, Math.Min(src.Height - 1, y));
+      R[y] = c.R / 255f; G[y] = c.G / 255f; B[y] = c.B / 255f;
     }
-    return series;
+    // Wide blur in float space — kills discrete bands before resampling.
+    for (int pass = 0; pass < 120; pass++) {
+      var nR = new float[n]; var nG = new float[n]; var nB = new float[n];
+      for (int i = 0; i < n; i++) {
+        int i0 = Math.Max(0, i - 4);
+        int i1 = Math.Max(0, i - 2);
+        int i2 = Math.Min(n - 1, i + 2);
+        int i3 = Math.Min(n - 1, i + 4);
+        nR[i] = (R[i0] + R[i1] * 2f + R[i] * 4f + R[i2] * 2f + R[i3]) / 10f;
+        nG[i] = (G[i0] + G[i1] * 2f + G[i] * 4f + G[i2] * 2f + G[i3]) / 10f;
+        nB[i] = (B[i0] + B[i1] * 2f + B[i] * 4f + B[i2] * 2f + B[i3]) / 10f;
+      }
+      R = nR; G = nG; B = nB;
+    }
   }
 
-  static Color SampleSeries(Color[] series, float u) {
-    u = Math.Max(0f, Math.Min(1f, u));
-    float f = u * (series.Length - 1);
+  static void Sample(float[] R, float[] G, float[] B, float u, out float r, out float g, out float b) {
+    u = Clamp01(u);
+    float f = u * (R.Length - 1);
     int i0 = (int)Math.Floor(f);
-    int i1 = Math.Min(series.Length - 1, i0 + 1);
-    float t = f - i0;
-    // linear here — series already heavily smoothed
-    return Color.FromArgb(
-      ClampByte(series[i0].R + (series[i1].R - series[i0].R) * t),
-      ClampByte(series[i0].G + (series[i1].G - series[i0].G) * t),
-      ClampByte(series[i0].B + (series[i1].B - series[i0].B) * t));
+    int i1 = Math.Min(R.Length - 1, i0 + 1);
+    float t = Smooth(f - i0);
+    LerpRgb(R[i0], G[i0], B[i0], R[i1], G[i1], B[i1], t, out r, out g, out b);
   }
 
-  // Fit a small set of colour stops from the blurred series (relative to colour region only).
-  static void ExtractStops(Color[] series, out Color[] cols, out float[] stops) {
-    float[] us = { 0f, 0.12f, 0.28f, 0.45f, 0.62f, 0.78f, 0.90f, 1f };
-    cols = new Color[us.Length];
-    stops = us;
-    for (int i = 0; i < us.Length; i++) cols[i] = SampleSeries(series, us[i]);
-  }
-
-  static Color SampleStops(Color[] cols, float[] stops, float u) {
-    if (u <= stops[0]) return cols[0];
-    if (u >= stops[stops.Length - 1]) return cols[cols.Length - 1];
-    for (int i = 0; i < stops.Length - 1; i++) {
-      if (u >= stops[i] && u <= stops[i + 1]) {
-        float span = Math.Max(1e-6f, stops[i + 1] - stops[i]);
-        return Lerp(cols[i], cols[i + 1], (u - stops[i]) / span);
-      }
+  static void ExtractColourSpan(float[] sR, float[] sG, float[] sB, float srcBlack,
+                                out float[] cR, out float[] cG, out float[] cB) {
+    int len = Math.Max(256, (int)(sR.Length * (1f - srcBlack)));
+    cR = new float[len]; cG = new float[len]; cB = new float[len];
+    for (int i = 0; i < len; i++) {
+      float u = srcBlack + (1f - srcBlack) * (i / (float)(len - 1));
+      Sample(sR, sG, sB, u, out cR[i], out cG[i], out cB[i]);
     }
-    return cols[cols.Length - 1];
+    for (int pass = 0; pass < 60; pass++) {
+      var nR = new float[len]; var nG = new float[len]; var nB = new float[len];
+      for (int i = 0; i < len; i++) {
+        int i0 = Math.Max(0, i - 3);
+        int i1 = Math.Max(0, i - 1);
+        int i2 = Math.Min(len - 1, i + 1);
+        int i3 = Math.Min(len - 1, i + 3);
+        nR[i] = (cR[i0] + cR[i1] * 2f + cR[i] * 3f + cR[i2] * 2f + cR[i3]) / 9f;
+        nG[i] = (cG[i0] + cG[i1] * 2f + cG[i] * 3f + cG[i2] * 2f + cG[i3]) / 9f;
+        nB[i] = (cB[i0] + cB[i1] * 2f + cB[i] * 3f + cB[i2] * 2f + cB[i3]) / 9f;
+      }
+      cR = nR; cG = nG; cB = nB;
+    }
   }
 
   static void Rebuild(string srcPath, string dstPath, int outW, int outH, float blackFrac) {
     using (var src = new Bitmap(srcPath)) {
-      Color[] series = BuildSeries(src);
-      // Colour character comes from the lower ~62% of the source (below its own black).
-      // Re-sample that region into our colour stops so blackFrac is ours, not JPEG's.
-      float srcBlack = 0.36f;
-      var colourSeries = new Color[Math.Max(8, (int)(series.Length * (1f - srcBlack)))];
-      for (int i = 0; i < colourSeries.Length; i++) {
-        float u = srcBlack + (1f - srcBlack) * (i / (float)(colourSeries.Length - 1));
-        colourSeries[i] = SampleSeries(series, u);
+      float[] sR, sG, sB;
+      BuildSeries(src, out sR, out sG, out sB);
+      float srcBlack = Math.Max(0.08f, Math.Min(0.50f, blackFrac));
+      float[] cR, cG, cB;
+      ExtractColourSpan(sR, sG, sB, srcBlack, out cR, out cG, out cB);
+
+      // Float framebuffer for Floyd–Steinberg (one column, then copy across width).
+      var fr = new float[outH];
+      var fg = new float[outH];
+      var fb = new float[outH];
+      for (int y = 0; y < outH; y++) {
+        float fn = y / (float)(outH - 1);
+        float r, g, b;
+        if (fn <= blackFrac) {
+          float edge = blackFrac * 0.72f;
+          if (fn <= edge) {
+            r = g = b = 0f;
+          } else {
+            float t = Smooth((fn - edge) / Math.Max(1e-6f, blackFrac - edge));
+            // Lift into early colour of the span (skip pure black if present).
+            float zr = cR[Math.Min(cR.Length - 1, Math.Max(1, cR.Length / 40))];
+            float zg = cG[Math.Min(cG.Length - 1, Math.Max(1, cG.Length / 40))];
+            float zb = cB[Math.Min(cB.Length - 1, Math.Max(1, cB.Length / 40))];
+            LerpRgb(0f, 0f, 0f, zr, zg, zb, t, out r, out g, out b);
+          }
+        } else {
+          float u = (fn - blackFrac) / Math.Max(1e-6f, 1f - blackFrac);
+          Sample(cR, cG, cB, u, out r, out g, out b);
+        }
+        fr[y] = r; fg[y] = g; fb[y] = b;
       }
-      Color[] cols; float[] stops;
-      ExtractStops(colourSeries, out cols, out stops);
+
+      // Vertical Floyd–Steinberg on the 1D strip, then light horizontal noise per x.
+      var qr = new byte[outH];
+      var qg = new byte[outH];
+      var qb = new byte[outH];
+      for (int y = 0; y < outH; y++) {
+        float oldR = fr[y], oldG = fg[y], oldB = fb[y];
+        byte nr = (byte)Math.Round(Clamp01(oldR) * 255.0);
+        byte ng = (byte)Math.Round(Clamp01(oldG) * 255.0);
+        byte nb = (byte)Math.Round(Clamp01(oldB) * 255.0);
+        qr[y] = nr; qg[y] = ng; qb[y] = nb;
+        float errR = oldR - nr / 255f;
+        float errG = oldG - ng / 255f;
+        float errB = oldB - nb / 255f;
+        if (y + 1 < outH) {
+          fr[y + 1] += errR * 7f / 16f;
+          fg[y + 1] += errG * 7f / 16f;
+          fb[y + 1] += errB * 7f / 16f;
+        }
+        if (y + 2 < outH) {
+          fr[y + 2] += errR * 5f / 16f;
+          fg[y + 2] += errG * 5f / 16f;
+          fb[y + 2] += errB * 5f / 16f;
+        }
+        if (y + 3 < outH) {
+          fr[y + 3] += errR * 3f / 16f;
+          fg[y + 3] += errG * 3f / 16f;
+          fb[y + 3] += errB * 3f / 16f;
+        }
+        if (y + 4 < outH) {
+          fr[y + 4] += errR * 1f / 16f;
+          fg[y + 4] += errG * 1f / 16f;
+          fb[y + 4] += errB * 1f / 16f;
+        }
+      }
 
       using (var bmp = new Bitmap(outW, outH, PixelFormat.Format24bppRgb)) {
+        var rnd = new Random(0x5C71);
         for (int y = 0; y < outH; y++) {
-          float fn = y / (float)(outH - 1); // 0 top, 1 bottom
-          Color c;
-          if (fn <= blackFrac) {
-            // Pure black through the noon-aligned zenith band, then soft lift into first stop
-            float edge = blackFrac * 0.82f;
-            if (fn <= edge) {
-              c = Color.Black;
-            } else {
-              float t = (fn - edge) / Math.Max(1e-6f, blackFrac - edge);
-              c = Lerp(Color.Black, cols[0], t);
-            }
-          } else {
-            float u = (fn - blackFrac) / Math.Max(1e-6f, 1f - blackFrac);
-            c = SampleStops(cols, stops, u);
+          for (int x = 0; x < outW; x++) {
+            // Tiny per-pixel jitter so LINEAR filtering averages away residual bands.
+            int j = rnd.Next(-1, 2);
+            bmp.SetPixel(x, y, Color.FromArgb(
+              Math.Max(0, Math.Min(255, qr[y] + j)),
+              Math.Max(0, Math.Min(255, qg[y] + j)),
+              Math.Max(0, Math.Min(255, qb[y] + j))));
           }
-          for (int x = 0; x < outW; x++) bmp.SetPixel(x, y, c);
         }
-        Directory.CreateDirectory(Path.GetDirectoryName(dstPath));
+        Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(dstPath)));
         bmp.Save(dstPath, ImageFormat.Png);
-        Console.WriteLine("Wrote " + Path.GetFileName(dstPath) + " from " + Path.GetFileName(srcPath)
-          + "  bot=" + cols[cols.Length - 1].R + "," + cols[cols.Length - 1].G + "," + cols[cols.Length - 1].B);
+        Color hor = FromRgb(cR[cR.Length - 1], cG[cG.Length - 1], cB[cB.Length - 1]);
+        Console.WriteLine("Wrote " + Path.GetFileName(dstPath)
+          + "  horizon=" + hor.R + "," + hor.G + "," + hor.B);
       }
     }
   }
@@ -138,23 +201,41 @@ class GenSkyGradients {
     string skyDir = args.Length > 0 ? args[0] : @"resources\img\sky";
     string srcDir = args.Length > 1 ? args[1] : Path.Combine(skyDir, "_pdf_extract");
 
-    // PDF page order ≠ sensible phase colours: page1 is golden-yellow, page2 is true night-dark.
-    // Remap by appearance to match the user's described phases:
-    //   night, civil twilight, sunrise/sunset, golden hour, early golden
-    var map = new[] {
-      Tuple.Create("img_1.jpg", "sky_night.png"),           // darkest indigo
-      Tuple.Create("img_2.jpg", "sky_civil_twilight.png"),   // dark blue → dusty peach
-      Tuple.Create("img_3.jpg", "sky_sunrise_sunset.png"),   // vivid orange during sun event
-      Tuple.Create("img_0.jpg", "sky_golden_hour.png"),      // yellow-gold just before/after
-      Tuple.Create("img_4.jpg", "sky_early_golden.png"),     // pale blue toward day
+    var fromPdf = new[] {
+      Tuple.Create("img_1.jpg", "sky_night.png"),
+      Tuple.Create("img_2.jpg", "sky_civil_twilight.png"),
+      Tuple.Create("img_3.jpg", "sky_sunrise_sunset.png"),
+      Tuple.Create("img_0.jpg", "sky_golden_hour.png"),
+      Tuple.Create("img_4.jpg", "sky_early_golden.png"),
+    };
+    var fromSelf = new[] {
+      "sky_night.png",
+      "sky_civil_twilight.png",
+      "sky_sunrise_sunset.png",
+      "sky_golden_hour.png",
+      "sky_early_golden.png",
     };
 
-    const int W = 8;
-    const int H = 2048;
+    const int W = 32;
+    const int H = 4096;
     const float blackFrac = 0.38f;
 
-    foreach (var m in map) {
-      Rebuild(Path.Combine(srcDir, m.Item1), Path.Combine(skyDir, m.Item2), W, H, blackFrac);
+    bool usePdf = Directory.Exists(srcDir) && File.Exists(Path.Combine(srcDir, "img_0.jpg"));
+    if (usePdf) {
+      Console.WriteLine("Rebuilding from PDF extracts in " + srcDir);
+      foreach (var m in fromPdf)
+        Rebuild(Path.Combine(srcDir, m.Item1), Path.Combine(skyDir, m.Item2), W, H, blackFrac);
+    } else {
+      Console.WriteLine("PDF extracts missing — re-smoothing existing phase PNGs in " + skyDir);
+      string tmp = Path.Combine(skyDir, "_tmp_smooth");
+      Directory.CreateDirectory(tmp);
+      foreach (var name in fromSelf) {
+        string src = Path.Combine(skyDir, name);
+        string mid = Path.Combine(tmp, name);
+        File.Copy(src, mid, true);
+        Rebuild(mid, src, W, H, blackFrac);
+      }
+      try { Directory.Delete(tmp, true); } catch { /* ignore */ }
     }
   }
 }

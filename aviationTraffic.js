@@ -221,6 +221,9 @@
     gl.readPixels(xLeft, 0, rw, sim_res_y, gl.RGBA_INTEGER, gl.BYTE, wallData);
 
     function canConvertType(t) {
+      const atlas = global.SettlementAtlas;
+      if (atlas && atlas.isSettlementWall && atlas.isSettlementWall(t))
+        return true;
       return t === WALLTYPE_LAND || t === WALLTYPE_URBAN || t === WALLTYPE_RUNWAY
         || t === WALLTYPE_INDUSTRIAL || t === 7; // suburban
     }

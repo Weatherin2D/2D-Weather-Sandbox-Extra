@@ -48,7 +48,10 @@
 
   var products = [];
   var lastUpdateIter = -1;
+  var productRev = 0;
   var UPDATE_MINUTES = 12;
+  var TOR_DELTA_MS = 22;
+  var TOR_NEAR_CELLS = 8;
   var mdSeq = 0;
   var nextId = 1;
   var alertedKeys = Object.create(null);
@@ -146,18 +149,12 @@
       || (init >= 40 && precip >= 0.10 && watchEnv);
   }
 
-  function qualifiesTorWarn(met, tornadoNear, labelTornado) {
-    if (tornadoNear) return true;
-    var precip = met.colPrecipMax || 0;
-    if (labelTornado && precip >= 0.08) return true;
-    var haz = met.hazardTornado || 0;
-    var srh = met.srh3km || 0;
-    var sc = (met.hazardSupercell || 0) >= 16 || isSupercellMode(met.stormModeKey);
-    return haz >= 30 && precip >= 0.12 && srh >= 140 && sc;
+  function qualifiesTorWarn(tornadoNear) {
+    return !!tornadoNear;
   }
 
   function qualifiesSvrWarn(met, labelHail) {
-    if (qualifiesTorWarn(met, false, false)) return false;
+    if (qualifiesTorWarn(false)) return false;
     var precip = met.colPrecipMax || 0;
     if (precip < 0.14) return false;
     var hail = Math.max(met.hazardLargeHail || 0, met.hazardHail || 0, (met.estHailIn || 0) * 22);
@@ -203,8 +200,24 @@
     return out;
   }
 
+  function isTornadicDetection(d) {
+    if (!d) return false;
+    if (d.confirmed === false) return false;
+    return (d.deltaMs || 0) >= TOR_DELTA_MS;
+  }
+
+  function tornadicDetections(detections) {
+    if (!detections || !detections.length) return [];
+    var out = [];
+    for (var i = 0; i < detections.length; i++) {
+      if (isTornadicDetection(detections[i])) out.push(detections[i]);
+    }
+    return out;
+  }
+
   function uncoveredTornado(detections, resX, wrap) {
-    if (!detections || !detections.length) return false;
+    detections = tornadicDetections(detections);
+    if (!detections.length) return false;
     var tors = [];
     var i;
     for (i = 0; i < products.length; i++) {
@@ -225,7 +238,8 @@
   }
 
   function nearestTornado(detections, x, resX, wrap, maxDist) {
-    if (!detections || !detections.length) return null;
+    detections = tornadicDetections(detections);
+    if (!detections.length) return null;
     var best = null;
     var bestD = maxDist;
     for (var i = 0; i < detections.length; i++) {
@@ -334,12 +348,13 @@
   }
 
   function tornadoSpans(detections, pending, resX, wrap) {
-    if (!detections || !detections.length || !pending || !pending.length)
+    detections = tornadicDetections(detections);
+    if (!detections.length || !pending || !pending.length)
       return [];
     var spans = [];
     for (var i = 0; i < detections.length; i++) {
       var d = detections[i];
-      var half = Math.max(10, (d.halfW || 8) + 6);
+      var half = Math.max(2, (d.halfW || 3) + 2);
       var x0 = wrapX(d.x - half, resX, wrap);
       var x1 = wrapX(d.x + half, resX, wrap);
       var sfcY = d.sfcY != null ? d.sfcY : 1;
@@ -558,6 +573,16 @@
     toneNodes = [];
   }
 
+  function silenceAudio() {
+    stopTones();
+    try { if (global.speechSynthesis) global.speechSynthesis.cancel(); } catch (e) { /* ignore */ }
+    if (easActive && easActive.phase !== 'hold') {
+      easActive.phase = 'hold';
+      easActive.holdUntil = performance.now() + 10000;
+      easActive.voiceOn = false;
+    }
+  }
+
   function playDualTone(ac, freqA, freqB, duration, volume, when) {
     var t0 = (when != null ? when : ac.currentTime);
     var t1 = t0 + duration;
@@ -598,9 +623,9 @@
 
   function startEasSequence(item, ctx) {
     var gui = ctx.guiControls || global.guiControls || {};
-    var voiceOn = gui.easVoiceEnabled !== false;
+    var voiceOn = gui.easVoiceEnabled !== false && gui.easSoundEnabled !== false;
     var vol = Number.isFinite(gui.easVolume) ? gui.easVolume : 0.85;
-    var soundOn = gui.sound !== false && gui.easAlertsEnabled !== false;
+    var soundOn = gui.easSoundEnabled !== false && gui.easAlertsEnabled !== false;
     showCrawl(item.prod, item.crawl);
     easActive = {
       prod: item.prod,
@@ -686,6 +711,16 @@
     easQueue.push(item);
   }
 
+  function wantsUpdate(ctx) {
+    ctx = ctx || {};
+    if (ctx.force) return true;
+    if (lastUpdateIter < 0) return true;
+    var iterNum = ctx.iterNum | 0;
+    var interval = itersForMinutes(UPDATE_MINUTES, ctx.timePerIteration);
+    if ((iterNum - lastUpdateIter) >= interval) return true;
+    return uncoveredTornado(ctx.tornadoDetections || [], ctx.simResX | 0, !!ctx.wrapX);
+  }
+
   function updateFromScan(ctx) {
     ctx = ctx || {};
     var pending = ctx.pending || [];
@@ -721,13 +756,12 @@
     for (i = 0; i < n; i++) {
       var met = m(pending[i]);
       var sx = pending[i].sx;
-      var tornadoNear = !!nearestTornado(detections, sx, resX, wrap, 14);
-      var labTor = labelsNear(labels, sx, resX, wrap, 'Tornado', 18);
+      var tornadoNear = !!nearestTornado(detections, sx, resX, wrap, TOR_NEAR_CELLS);
       var labHail = labelsNear(labels, sx, resX, wrap, 'Hail core', 16);
       torWatch[i] = qualifiesTorWatch(met);
       svrWatch[i] = qualifiesSvrWatch(met);
       mdFlags[i] = qualifiesMd(met);
-      torWarn[i] = qualifiesTorWarn(met, tornadoNear, labTor);
+      torWarn[i] = qualifiesTorWarn(tornadoNear);
       svrWarn[i] = qualifiesSvrWarn(met, labHail);
       ffwWarn[i] = qualifiesFfw(met);
     }
@@ -783,6 +817,7 @@
 
     products = next;
     lastUpdateIter = iterNum;
+    productRev++;
 
     if (gui.easAlertsEnabled === false)
       return;
@@ -921,6 +956,10 @@
     tickEas(nowMs != null ? nowMs : performance.now(), ctx || {});
   }
 
+  function getProductRev() {
+    return productRev;
+  }
+
   function getProducts() {
     return products;
   }
@@ -928,6 +967,7 @@
   function clear() {
     products = [];
     lastUpdateIter = -1;
+    productRev++;
     easQueue.length = 0;
     finishEas();
   }
@@ -940,11 +980,14 @@
   var NS = global.WeatherSandbox || (global.WeatherSandbox = {});
   NS.eas = {
     updateFromScan: updateFromScan,
+    wantsUpdate: wantsUpdate,
     draw: drawWrapped,
     tick: tick,
     getProducts: getProducts,
+    getProductRev: getProductRev,
     clear: clear,
     stopAlerts: stopAlerts,
+    stopTones: silenceAudio,
     PRODUCTS: PRODUCTS,
   };
 })(typeof window !== 'undefined' ? window : globalThis);

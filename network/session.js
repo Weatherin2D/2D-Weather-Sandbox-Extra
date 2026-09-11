@@ -676,10 +676,12 @@
         payload.customToolId = brush.customToolId;
       if (Array.isArray(brush.passes) && brush.passes.length)
         payload.passes = brush.passes;
-      if (brush.customSlot != null)
-        payload.customSlot = brush.customSlot;
-      if (brush.surfaceKind != null)
-        payload.surfaceKind = brush.surfaceKind;
+        if (brush.customSlot != null)
+          payload.customSlot = brush.customSlot;
+        if (brush.surfaceKind != null)
+          payload.surfaceKind = brush.surfaceKind;
+        if (brush.settlementVariant != null)
+          payload.settlementVariant = brush.settlementVariant;
       this.transport.sendJson(payload);
     }
 

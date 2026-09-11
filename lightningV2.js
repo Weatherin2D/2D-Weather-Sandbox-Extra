@@ -2224,8 +2224,10 @@
   function canSurfaceSupportFire(wallType, veg, soilMoist, precip) {
       if (wallType === 3 || wallType === 27) // already on fire
         return false;
-      // LAND (1), SUBURBAN (7), FOREST2 (26)
-      if (wallType !== 1 && wallType !== 7 && wallType !== 26)
+      // LAND (1), FOREST2 (26), or soft suburban (not American Tract / urban)
+      const atlas = global.SettlementAtlas;
+      const softSub = atlas && atlas.isSoftSuburban ? atlas.isSoftSuburban(wallType) : wallType === 7;
+      if (wallType !== 1 && wallType !== 26 && !softSub)
         return false;
       return calcFireIntensityJS(veg, soilMoist, precip) >= MIN_LIGHTNING_FIRE_INTENSITY;
     }

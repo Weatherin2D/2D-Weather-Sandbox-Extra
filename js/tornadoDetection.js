@@ -1,6 +1,6 @@
 /**
- * Tornado Detection overlay: narrow near-surface updraft + condensation to ground,
- * intensity from left/right horizontal wind difference.
+ * Tornado Detection overlay: narrow near-surface inbound wind couplet
+ * with condensation to the ground. Intensity is left/right ΔV / EF.
  */
 (function (global) {
   'use strict';
@@ -9,10 +9,12 @@
   var MAX_DETECTIONS = 4;
   var STICKY_CELLS = 22;
   var MIN_UPDRAFT_MS = 10;
-  var MIN_DELTA_MS = 12;
+  var MIN_DELTA_MS = 22;
+  var MAX_HALFW = 6;
+  var INBOUND_SLACK = 4;
 
   var detections = [];
-  var prevDetections = [];
+  var pendingHits = [];
 
   function wrapIdx(x, resX, wrap) {
     if (!wrap)
@@ -76,22 +78,53 @@
     return wallAll[(y * simResX + x) * 4 + 1] !== 0;
   }
 
+  function isInboundCouplet(left, right) {
+    var toward = left - right;
+    if (toward < MIN_DELTA_MS) return false;
+    if (left > 0 && right < 0) return true;
+    return left > -INBOUND_SLACK && right < INBOUND_SLACK;
+  }
+
+  function coupletAt(baseAll, wallAll, x, y, halfW, simResX, wrap) {
+    if (y < 0 || !isFluid(wallAll, x, y, simResX)) return null;
+    var left = sampleVx(baseAll, wrapIdx(x - halfW, simResX, wrap), y, simResX);
+    var right = sampleVx(baseAll, wrapIdx(x + halfW, simResX, wrap), y, simResX);
+    var toward = left - right;
+    return {
+      y: y,
+      left: left,
+      right: right,
+      delta: toward > 0 ? toward : Math.abs(right - left),
+      inbound: isInboundCouplet(left, right),
+    };
+  }
+
+  function bestNearSurfaceCouplet(baseAll, wallAll, x, yLow, yMid, halfW, simResX, simResY, wrap) {
+    var a = yLow >= 0 && yLow < simResY ? coupletAt(baseAll, wallAll, x, yLow, halfW, simResX, wrap) : null;
+    var b = yMid >= 0 && yMid < simResY && yMid !== yLow
+      ? coupletAt(baseAll, wallAll, x, yMid, halfW, simResX, wrap)
+      : null;
+    var best = null;
+    if (a && a.inbound) best = a;
+    if (b && b.inbound && (!best || b.delta > best.delta)) best = b;
+    return best;
+  }
+
   function scanCandidates(waterAll, baseAll, wallAll, simResX, simResY, cellHeight, wrap) {
-    var cloudH = Math.max(2, Math.round(300 / Math.max(8, cellHeight)));
     var upH = Math.max(4, Math.round(700 / Math.max(8, cellHeight)));
     var stride = simResX > 2500 ? 2 : 1;
     var sfc = new Int16Array(simResX);
     var peakVy = new Float32Array(simResX);
-    var peakY = new Int16Array(simResX);
     var cloudOk = new Uint8Array(simResX);
-    var x, y, y1, vy, bestVy, bestY, cloudHit;
+    var x, y, y1, vy, bestVy, cloudHit;
 
     for (x = 0; x < simResX; x += stride) {
       sfc[x] = surfaceYAt(wallAll, x, simResX, simResY);
-      y1 = Math.min(simResY - 1, sfc[x] + cloudH);
       cloudHit = 0;
-      for (y = sfc[x]; y <= y1; y++) {
+      var fluidSeen = 0;
+      for (y = sfc[x]; y < simResY && fluidSeen < 3; y++) {
         if (!isFluid(wallAll, x, y, simResX)) continue;
+        fluidSeen++;
         if (sampleCloud(waterAll, x, y, simResX) >= CLOUD_THRESH) {
           cloudHit = 1;
           break;
@@ -100,17 +133,13 @@
       cloudOk[x] = cloudHit;
       y1 = Math.min(simResY - 1, sfc[x] + upH);
       bestVy = -1e9;
-      bestY = sfc[x] + 1;
       for (y = sfc[x]; y <= y1; y++) {
         if (!isFluid(wallAll, x, y, simResX)) continue;
         vy = sampleVy(baseAll, x, y, simResX);
-        if (vy > bestVy) {
+        if (vy > bestVy)
           bestVy = vy;
-          bestY = y;
-        }
       }
       peakVy[x] = bestVy;
-      peakY[x] = bestY;
     }
 
     var hits = [];
@@ -141,30 +170,32 @@
 
       var halfW = 3;
       var coreFloor = peakVy[x] * 0.55;
-      for (d = stride; d <= 10; d += stride) {
+      for (d = stride; d <= MAX_HALFW; d += stride) {
         var vxL = wrapIdx(x - d, simResX, wrap);
         var vxR = wrapIdx(x + d, simResX, wrap);
         if (peakVy[vxL] >= coreFloor && peakVy[vxR] >= coreFloor)
-          halfW = Math.max(2, Math.min(8, d));
+          halfW = Math.max(2, Math.min(MAX_HALFW, d));
         else
           break;
       }
-      halfW = Math.max(2, Math.min(8, halfW));
-      var ySamp = peakY[x];
-      var left = sampleVx(baseAll, wrapIdx(x - halfW, simResX, wrap), ySamp, simResX);
-      var right = sampleVx(baseAll, wrapIdx(x + halfW, simResX, wrap), ySamp, simResX);
-      var delta = Math.abs(right - left);
-      if (delta < MIN_DELTA_MS)
+      halfW = Math.max(2, Math.min(MAX_HALFW, halfW));
+
+      var yLow = Math.min(simResY - 1, sfc[x] + 1);
+      while (yLow < simResY && !isFluid(wallAll, x, yLow, simResX)) yLow++;
+      var aglCells = Math.max(2, Math.round(120 / Math.max(8, cellHeight)));
+      var yMid = Math.min(simResY - 1, sfc[x] + aglCells);
+      var couplet = bestNearSurfaceCouplet(baseAll, wallAll, x, yLow, yMid, halfW, simResX, simResY, wrap);
+      if (!couplet || couplet.delta < MIN_DELTA_MS || !couplet.inbound)
         continue;
 
       hits.push({
         x: x,
-        y: ySamp,
+        y: couplet.y,
         sfcY: sfc[x],
         updraftMs: peakVy[x],
-        vxLeft: left,
-        vxRight: right,
-        deltaMs: delta,
+        vxLeft: couplet.left,
+        vxRight: couplet.right,
+        deltaMs: couplet.delta,
         halfW: halfW,
       });
     }
@@ -219,16 +250,17 @@
     return out;
   }
 
-  function stickify(next, simResX, wrap) {
-    var used = new Uint8Array(prevDetections.length);
-    var out = [];
+  function confirmHits(next, simResX, wrap) {
+    var used = new Uint8Array(pendingHits.length);
+    var confirmed = [];
+    var newPending = [];
     for (var i = 0; i < next.length; i++) {
       var n = next[i];
       var best = -1;
       var bestD = STICKY_CELLS;
-      for (var p = 0; p < prevDetections.length; p++) {
+      for (var p = 0; p < pendingHits.length; p++) {
         if (used[p]) continue;
-        var d = Math.abs(wrapDx(n.x, prevDetections[p].x, simResX, wrap));
+        var d = Math.abs(wrapDx(n.x, pendingHits[p].x, simResX, wrap));
         if (d < bestD) {
           bestD = d;
           best = p;
@@ -236,17 +268,24 @@
       }
       if (best >= 0) {
         used[best] = 1;
-        var prev = prevDetections[best];
+        var prev = pendingHits[best];
         var dx = wrapDx(n.x, prev.x, simResX, wrap);
         n.x = wrapIdx(Math.round(prev.x + dx * 0.4), simResX, wrap);
         n.y = Math.round(prev.y + (n.y - prev.y) * 0.4);
+        n.age = (prev.age || 1) + 1;
+        n.confirmed = true;
+        confirmed.push(n);
+        newPending.push(n);
+      } else {
+        n.age = 1;
+        n.confirmed = false;
+        newPending.push(n);
       }
-      out.push(n);
     }
-    prevDetections = out.map(function (d) {
-      return { x: d.x, y: d.y };
+    pendingHits = newPending.map(function (d) {
+      return { x: d.x, y: d.y, age: d.age };
     });
-    return out;
+    return confirmed;
   }
 
   function formatDelta(ms) {
@@ -261,6 +300,7 @@
     var simResY = opts.simResY | 0;
     if (!opts.waterAll || !opts.baseAll || !opts.wallAll || simResX < 16 || simResY < 8) {
       detections = [];
+      pendingHits = [];
       return;
     }
     var wrap = !!opts.wrapX;
@@ -268,7 +308,7 @@
     var hits = scanCandidates(
       opts.waterAll, opts.baseAll, opts.wallAll,
       simResX, simResY, cellHeight, wrap);
-    detections = stickify(hits, simResX, wrap);
+    detections = confirmHits(hits, simResX, wrap);
   }
 
   function roundRect(ctx, x, y, w, h, r) {
@@ -325,7 +365,7 @@
 
   function clear() {
     detections = [];
-    prevDetections = [];
+    pendingHits = [];
   }
 
   function getDetections() {

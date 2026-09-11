@@ -116,7 +116,7 @@ bool isSurgeFloodLandType(int wallType)
 {
   return wallType == WALLTYPE_LAND || wallType == WALLTYPE_FIRE
       || wallType == WALLTYPE_FOREST2 || wallType == WALLTYPE_FIRE_FOREST2
-      || wallType == WALLTYPE_URBAN || wallType == WALLTYPE_SUBURBAN || wallType == WALLTYPE_AMERICAN_SUBURBAN
+      || isSettlementWall(wallType)
       || wallType == WALLTYPE_INDUSTRIAL || wallType == WALLTYPE_RUNWAY
       || isCustomBase(wallType);
 }
@@ -295,7 +295,7 @@ void main()
           albedoTotal = mix(albedoSoil, vegAlbedo, clamp(vegCover, 0.0, 1.0));
         } else if (isUrbanLike(wall[TYPE]) || isCustomOverlay(wall[TYPE])) {
           albedoTotal = ALBEDO_URBAN;
-        } else if (wall[TYPE] == WALLTYPE_SUBURBAN) {
+        } else if (isSoftSuburban(wall[TYPE])) {
           albedoTotal = ALBEDO_SUBURBAN;
         } else if (wall[TYPE] == WALLTYPE_INDUSTRIAL) {
           albedoTotal = ALBEDO_INDUSTRIAL;
@@ -360,7 +360,7 @@ void main()
         float surfaceDrag = 0.0015; // water or runway
         if (isUrbanLike(wall[TYPE]) || isCustomOverlay(wall[TYPE]))
           surfaceDrag = 0.040;
-        else if (wall[TYPE] == WALLTYPE_SUBURBAN)
+        else if (isSoftSuburban(wall[TYPE]))
           surfaceDrag = 0.012;
         else if (isAnyFireType(wall[TYPE])) {
           // Burning ground: light open-land drag so horizontal wind can cross fire
@@ -456,11 +456,15 @@ void main()
         }
         // nobreak!
       case WALLTYPE_SUBURBAN:
-        if (wall[TYPE] == WALLTYPE_SUBURBAN)
+      case 40: case 41: case 42: case 43: case 44: case 45:
+      case 46: case 47: case 48: case 49:
+        if (isSoftSuburban(wall[TYPE]))
           water[DUST] += 0.0000004;
         // nobreak!
       case WALLTYPE_AMERICAN_SUBURBAN:
       case WALLTYPE_URBAN:
+      case 29: case 30: case 31: case 32: case 33: case 34:
+      case 35: case 36: case 37: case 38: case 39:
         if (isUrbanLike(wall[TYPE]))
           water[DUST] += 0.000002; // Urban produces smog/dust
         // nobreak!
@@ -534,10 +538,14 @@ void main()
         if (wall[TYPE] == WALLTYPE_INDUSTRIAL)
           wall[VEGETATION] = min(wall[VEGETATION], 15); // limit vegetation in industrial areas
       case WALLTYPE_SUBURBAN:
-        if (wall[TYPE] == WALLTYPE_SUBURBAN)
+      case 40: case 41: case 42: case 43: case 44: case 45:
+      case 46: case 47: case 48: case 49:
+        if (isSoftSuburban(wall[TYPE]))
           wall[VEGETATION] = min(wall[VEGETATION], 100);
       case WALLTYPE_AMERICAN_SUBURBAN:
       case WALLTYPE_URBAN:
+      case 29: case 30: case 31: case 32: case 33: case 34:
+      case 35: case 36: case 37: case 38: case 39:
         if (isUrbanLike(wall[TYPE]))
           wall[VEGETATION] = min(wall[VEGETATION], 75); // limit vegetation in urban areas
       case WALLTYPE_FIRE:
@@ -740,13 +748,13 @@ void main()
           float totalNeighborSoilMoisture = 0.0;
           float totalNeighborSustainedMoisture = 0.0;
 
-          if (wallXmY0[VERT_DISTANCE] == 0 && (isLandOrForest2(wallXmY0[TYPE]) || isUrbanLike(wallXmY0[TYPE]))) {
+          if (wallXmY0[VERT_DISTANCE] == 0 && (isLandOrForest2(wallXmY0[TYPE]) || isSettlementWall(wallXmY0[TYPE]))) {
             totalNeighborSnow += texture(waterTex, texCoordXmY0)[SNOW];
             totalNeighborSoilMoisture += texture(waterTex, texCoordXmY0)[SOIL_MOISTURE];
             totalNeighborSustainedMoisture += texture(waterTex, texCoordXmY0)[SUSTAINED_MOISTURE];
             numNeighbors += 1.;
           }
-          if (wallXpY0[VERT_DISTANCE] == 0 && (isLandOrForest2(wallXpY0[TYPE]) || isUrbanLike(wallXpY0[TYPE]))) {
+          if (wallXpY0[VERT_DISTANCE] == 0 && (isLandOrForest2(wallXpY0[TYPE]) || isSettlementWall(wallXpY0[TYPE]))) {
             totalNeighborSnow += texture(waterTex, texCoordXpY0)[SNOW];
             totalNeighborSoilMoisture += texture(waterTex, texCoordXpY0)[SOIL_MOISTURE];
             totalNeighborSustainedMoisture += texture(waterTex, texCoordXpY0)[SUSTAINED_MOISTURE];

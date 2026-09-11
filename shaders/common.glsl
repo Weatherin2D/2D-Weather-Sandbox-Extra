@@ -141,6 +141,12 @@ float encodeLandWithFlood(float floodMm)
 #define WALLTYPE_FIRE_FOREST2 27
 // Texture-based American suburban (urban-like facade physics, own atlas strip)
 #define WALLTYPE_AMERICAN_SUBURBAN 28
+// Extra urban looks (Downtown remains WALLTYPE_URBAN = 4)
+#define WALLTYPE_URBAN_VARIANTS_BEGIN 29
+#define WALLTYPE_URBAN_VARIANTS_END 39
+// Extra suburban looks (Gabled = 7, American Tract = 28)
+#define WALLTYPE_SUBURBAN_VARIANTS_BEGIN 40
+#define WALLTYPE_SUBURBAN_VARIANTS_END 49
 
 #define DISTANCE 1      // manhattan distance to nearest wall                   0 to 127
 #define VERT_DISTANCE 2 // height above/below ground. Surface = 0               -127 to 127
@@ -155,7 +161,82 @@ bool isForest2Species(int t) { return t == WALLTYPE_FOREST2 || t == WALLTYPE_FIR
 bool isAnyFireType(int t) { return t == WALLTYPE_FIRE || t == WALLTYPE_FIRE_FOREST2; }
 bool isLandOrForest2(int t) { return t == WALLTYPE_LAND || t == WALLTYPE_FOREST2; }
 bool isLandFireOrForest2(int t) { return t == WALLTYPE_LAND || t == WALLTYPE_FIRE || isForest2Species(t); }
-bool isUrbanLike(int t) { return t == WALLTYPE_URBAN || t == WALLTYPE_AMERICAN_SUBURBAN; }
+bool isAnyUrban(int t) {
+  return t == WALLTYPE_URBAN || (t >= WALLTYPE_URBAN_VARIANTS_BEGIN && t <= WALLTYPE_URBAN_VARIANTS_END);
+}
+bool isAnySuburban(int t) {
+  return t == WALLTYPE_SUBURBAN || t == WALLTYPE_AMERICAN_SUBURBAN
+      || (t >= WALLTYPE_SUBURBAN_VARIANTS_BEGIN && t <= WALLTYPE_SUBURBAN_VARIANTS_END);
+}
+// Urban heat-island physics: all urban looks + American Tract (legacy)
+bool isUrbanLike(int t) { return isAnyUrban(t) || t == WALLTYPE_AMERICAN_SUBURBAN; }
+// Milder suburban physics (excludes American Tract)
+bool isSoftSuburban(int t) { return isAnySuburban(t) && t != WALLTYPE_AMERICAN_SUBURBAN; }
+bool isSettlementWall(int t) { return isAnyUrban(t) || isAnySuburban(t); }
+
+int urbanWallTypeFromVariant(int v)
+{
+  v = clamp(v, 0, 11);
+  if (v == 0) return WALLTYPE_URBAN;
+  return WALLTYPE_URBAN_VARIANTS_BEGIN + v - 1;
+}
+int suburbanWallTypeFromVariant(int v)
+{
+  v = clamp(v, 0, 11);
+  if (v == 0) return WALLTYPE_SUBURBAN;
+  if (v == 1) return WALLTYPE_AMERICAN_SUBURBAN;
+  return WALLTYPE_SUBURBAN_VARIANTS_BEGIN + v - 2;
+}
+// Atlas strip for baked extra looks. -1 = use a builtin strip or procedural painter.
+int settlementSurfaceIndex(int t)
+{
+  if (t >= WALLTYPE_URBAN_VARIANTS_BEGIN && t <= WALLTYPE_URBAN_VARIANTS_END)
+    return 7 + (t - WALLTYPE_URBAN_VARIANTS_BEGIN);
+  if (t >= WALLTYPE_SUBURBAN_VARIANTS_BEGIN && t <= WALLTYPE_SUBURBAN_VARIANTS_END)
+    return 18 + (t - WALLTYPE_SUBURBAN_VARIANTS_BEGIN);
+  return -1;
+}
+float settlementMaxHeight(int t)
+{
+  if (t == WALLTYPE_URBAN) return 400.0;
+  if (t == WALLTYPE_SUBURBAN) return 35.0;
+  if (t == WALLTYPE_AMERICAN_SUBURBAN) return 55.0;
+  if (t == 29) return 120.0; // Mid-rise City
+  if (t == 30) return 80.0;  // Historic Old Town
+  if (t == 31) return 35.0;  // Brownstone Rows
+  if (t == 32) return 70.0;  // Waterfront Docks
+  if (t == 33) return 400.0; // Financial Towers
+  if (t == 34) return 90.0;  // Housing Blocks
+  if (t == 35) return 80.0;  // Stadium District
+  if (t == 36) return 110.0; // Civic Center
+  if (t == 37) return 40.0;  // Market District
+  if (t == 38) return 150.0; // Brutalist Towers
+  if (t == 39) return 45.0;  // Small Downtown
+  if (t == 40) return 40.0;  // Townhouses
+  if (t == 41) return 25.0;  // Ranch Houses
+  if (t == 42) return 55.0;  // McMansions
+  if (t == 43) return 45.0;  // Garden Apartments
+  if (t == 44) return 20.0;  // Mobile Homes
+  if (t == 45) return 40.0;  // Victorian Street
+  if (t == 46) return 30.0;  // Mediterranean
+  if (t == 47) return 28.0;  // Cottage Lane
+  if (t == 48) return 32.0;  // Duplex Split-level
+  if (t == 49) return 35.0;  // Strip Commercial
+  return 80.0;
+}
+bool canPaintUrbanOn(int t)
+{
+  return isLandOrForest2(t) || t == WALLTYPE_RUNWAY || t == WALLTYPE_INDUSTRIAL
+      || isAnyUrban(t) || t == WALLTYPE_AMERICAN_SUBURBAN;
+}
+bool canPaintSuburbanOn(int t, int variant)
+{
+  if (isLandOrForest2(t) || t == WALLTYPE_RUNWAY || t == WALLTYPE_INDUSTRIAL || isAnySuburban(t))
+    return true;
+  if (variant == 1 && isAnyUrban(t)) // American Tract may overlay urban
+    return true;
+  return false;
+}
 int igniteFireType(int landType) { return landType == WALLTYPE_FOREST2 ? WALLTYPE_FIRE_FOREST2 : WALLTYPE_FIRE; }
 int extinguishFireType(int fireType) { return fireType == WALLTYPE_FIRE_FOREST2 ? WALLTYPE_FOREST2 : WALLTYPE_LAND; }
 int customAtlasSlot(int t)
