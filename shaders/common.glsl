@@ -230,6 +230,15 @@ vec4 sampleSunColumn(sampler2D sunColumnTex, float texX)
   return texture(sunColumnTex, vec2(texX, 0.5));
 }
 
+// Match CPU autoMinShadowLight: zenith 85° → 0.040 day fill, 100° → 0.005 night fill.
+// Use local column zenith so multi-longitude day regions are not crushed by a night clock.
+float effectiveMinShadowLight(float zenithRad, float globalMinShadow, int autoOn)
+{
+  if (autoOn != 0)
+    return map_rangeC(abs(zenithRad) * rad2deg, 100.0, 85.0, 0.005, 0.040);
+  return globalMinShadow;
+}
+
 float climateTempCFromLatitude(float lat)
 {
   return 30.0 - 55.0 * pow(abs(lat) / 90.0, 1.15);

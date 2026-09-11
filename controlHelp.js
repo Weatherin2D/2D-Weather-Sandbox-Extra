@@ -133,7 +133,12 @@ const ControlHelp = (function() {
     TOOL_STATION: {
       title: 'Weather Station',
       body: 'Click to place a weather station. Shows live conditions (including diagnostic MSLP) and history plots. Double-click a station to open its time-height meteogram.',
-      keys: 'H (then click) · Double-click for meteogram',
+      keys: 'M (then click) · Double-click for meteogram',
+    },
+    TOOL_STATION_2: {
+      title: 'Weather Station 2',
+      body: 'Click to place a synoptic station-model plot: sky cover, wind barb, coded MSLP, present weather, and cloud marks. Same history chart and meteogram as Weather Station.',
+      keys: 'Tool menu (then click) · Double-click for meteogram',
     },
     TOOL_BALLOON: {
       title: 'Weather Balloon',
@@ -174,6 +179,11 @@ const ControlHelp = (function() {
       title: 'Marker',
       body: 'Drop a map marker for reference. Does not affect the simulation physics.',
       keys: 'M (then click)',
+    },
+    TOOL_TOWN: {
+      title: 'Town',
+      body: 'Click the surface to place a named town marker. You will be asked for a name (for example “Springfield”). Click the marker later to rename it, or click it again with this tool to remove it. Towns are labels only — they do not change terrain or weather.',
+      keys: 'Tool menu → Town',
     },
     TOOL_AIRPORT: {
       title: 'Airport',
@@ -264,7 +274,7 @@ const ControlHelp = (function() {
     saturation: 'Color saturation in post-processing.',
     contrast: 'Image contrast in post-processing.',
     starVisibility: 'Brightness of stars at night in the realistic view.',
-    autoMinShadowLight: 'Automatically lift shadow brightness near twilight so night scenes are not pure black.',
+    autoMinShadowLight: 'Automatically set shadow fill from each column\'s local sun angle, so multi-longitude daytime is not crushed by a night clock.',
     minShadowLight: 'Minimum shadow fill light (0 = darkest shadows).',
     enablePrecipitation: 'Master switch for rain, snow, and hail particle simulation.',
     IterPerFrame: 'Physics iterations per rendered frame. Higher = faster simulation time, lower FPS.',
@@ -335,6 +345,10 @@ const ControlHelp = (function() {
     labelsOverlay: 'Name cloud types and weather events in the scene (stratocumulus, altocumulus, supercell, hail core, outflow, lightning, and similar). Tags sit on the feature. Tornado/mesocyclone only appear when rotation and shear are strong.',
     tornadoDetectionOverlay: 'Find small near-surface updrafts with condensation to the ground. Intensity is the left-vs-right wind difference at the vortex, shown with an EF estimate. Separate from the Labels overlay tornado tag.',
     tornadoDetectionUpdateFreq: 'How often (in sim iterations) tornado detection re-scans near-surface winds and cloud. Lower = more frequent updates. Independent of Risk/Sounding Update Freq.',
+    warningsOverlay: 'Draw NWS-style watches, mesoscale discussions, and warnings as horizontal boxes from the surface upward. Products re-evaluate about every 12 sim-minutes (a new tornado can issue a warning immediately). Boxes only appear on storm-focused corridors — not domain-wide CAPE. Overlapping products prefer Tornado Warning, then Flash Flood, then Severe Thunderstorm, then watches, then MDs.',
+    easAlertsEnabled: 'When a placed Town sits inside a Tornado, Severe Thunderstorm, or Flash Flood Warning, play a full EAS attention tone and show a bottom crawl. Watches and mesoscale discussions stay visual only.',
+    easVoiceEnabled: 'After the EAS attention signal, speak the warning crawl with the browser speech engine. Turn off to keep the tone and crawl without voice.',
+    easVolume: 'Volume of the EAS dual-tone attention signal (853 + 960 Hz). Does not change other sim audio.',
     radarOverlay: 'Draw radar data on top of the realistic view.',
     radarOpacity: 'Opacity of the radar overlay.',
     nukeBlastRadius: 'Radius of the thermal blast in cells.',
@@ -605,6 +619,8 @@ const ControlHelp = (function() {
     'airmass-temp': 'Temperature offset this generator applies to nearby air.',
     'airmass-moisture': 'Moisture added or removed by the airmass generator.',
     'marker-label': 'Optional text label for the map marker.',
+    'town-name': 'Name shown on the map for this town.',
+    'town-color': 'Color of the town pin and skyline icon.',
   };
 
   const PANEL_INTRO = {
@@ -862,7 +878,7 @@ const ControlHelp = (function() {
   const WEATHER_STATION_HELP = {
     icon: {
       title: 'Weather station',
-      body: 'Live conditions at this point. Left-click toggles the history chart (day/night cycle on). Right-click toggles solar/IR flux on the chart. Use the station tool + click to remove.',
+      body: 'Live conditions at this point. Left-click toggles the history chart (day/night cycle on). Right-click toggles solar/IR flux. Use the matching station tool and click to remove.',
     },
     chart: {
       title: 'Station history chart',

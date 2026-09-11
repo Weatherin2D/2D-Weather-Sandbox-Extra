@@ -819,7 +819,11 @@
       }
     });
     addCheckboxRow(secEffects, 'Auto shadow light', function() { return guiC().autoMinShadowLight; },
-      function(v) { guiC().autoMinShadowLight = v; }, syncArr);
+      function(v) {
+        guiC().autoMinShadowLight = v;
+        const f = timeChangeFns();
+        if (typeof f.updateSunlight === 'function') f.updateSunlight();
+      }, syncArr);
 
     function renderSkySubTabs() {
       subTabsEl.innerHTML = '';

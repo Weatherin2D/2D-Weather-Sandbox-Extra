@@ -20,6 +20,7 @@ uniform sampler2D ambientLightTex;
 uniform sampler2D sunColumnTex;
 
 uniform float minShadowLight;
+uniform int autoMinShadowLight;
 uniform float starVisibility;
 uniform float starLightEmitStrength;
 uniform float starDensity;
@@ -578,7 +579,8 @@ void main()
 
   float horizonWarmth = scatter * (1.0 - smoothstep(0.04, 0.50, skyHeight));
   vec3 sunlitTint = mix(vec3(1.0), vec3(0.90, 0.68, 0.36), horizonWarmth * 0.48);
-  vec3 finalColor = mixedCol * (light + minShadowLight + airplaneOnLight) * sunlitTint;
+  float localMinShadow = effectiveMinShadowLight(localSunAngle, minShadowLight, autoMinShadowLight);
+  vec3 finalColor = mixedCol * (light + localMinShadow + airplaneOnLight) * sunlitTint;
 
   float shadowLit = max(smoothstep(0.06, 0.28, light), scatter * 0.50);
   // Sun/moon are additive so they stay bright and sit behind clouds (drawn in this pass before terrain)

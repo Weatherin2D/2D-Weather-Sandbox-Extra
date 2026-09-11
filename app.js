@@ -762,6 +762,10 @@ const guiControls_default = {
   labelsOverlay : false, // world-space cloud type / weather event names
   tornadoDetectionOverlay : false, // near-surface vortex markers with wind delta / EF
   tornadoDetectionUpdateFreq : 8, // sim iterations between tornado detection rescans
+  warningsOverlay : true, // NWS-style watches / MDs / warnings boxes
+  easAlertsEnabled : true, // EAS tone + crawl when a town is inside a warning
+  easVoiceEnabled : true,
+  easVolume : 0.85,
   lightningIllumTexture : true,
   lightningIllumBlurStrength : 1.0,
   performanceAutoScaling : true,
@@ -818,6 +822,7 @@ var labelsOverlayCanvas = null;
 var labelsLastScanIter = -9999;
 var tornadoOverlayCanvas = null;
 var tornadoLastScanIter = -9999;
+var warningsOverlayCanvas = null;
 
 var radarOverlayCanvas = null;
 var radarImageData = null;
@@ -3733,7 +3738,66 @@ function clearOutflowFronts()
 
 function overlayWantsBackgroundSoundingScan()
 {
-  return !!(guiControls && (guiControls.stormTrackOverlay || guiControls.outflowOverlay || guiControls.labelsOverlay || guiControls.tornadoDetectionOverlay));
+  return !!(guiControls && (guiControls.stormTrackOverlay || guiControls.outflowOverlay || guiControls.labelsOverlay || guiControls.tornadoDetectionOverlay || guiControls.warningsOverlay || guiControls.easAlertsEnabled));
+}
+
+function overlayScanNeedsHazards()
+{
+  return !!(guiControls && (guiControls.labelsOverlay || guiControls.warningsOverlay || guiControls.easAlertsEnabled));
+}
+
+function runSilentTornadoScan()
+{
+  const api = window.WeatherSandbox && window.WeatherSandbox.tornadoDetection;
+  if (!api || typeof api.updateFromScan !== 'function')
+    return;
+  if (!overlayScan.baseAll || !overlayScan.waterAll || !overlayScan.wallAll)
+    return;
+  api.updateFromScan({
+    waterAll: overlayScan.waterAll,
+    baseAll: overlayScan.baseAll,
+    wallAll: overlayScan.wallAll,
+    simResX: sim_res_x,
+    simResY: sim_res_y,
+    cellHeight: cellHeight,
+    wrapX: !!(guiControls && guiControls.wrapHorizontally),
+  });
+}
+
+function updateEasFromPending(pending, force)
+{
+  const api = window.WeatherSandbox && window.WeatherSandbox.eas;
+  if (!api || typeof api.updateFromScan !== 'function')
+    return;
+  if (!guiControls || (!guiControls.warningsOverlay && !guiControls.easAlertsEnabled))
+    return;
+  runSilentTornadoScan();
+  const tornadoApi = window.WeatherSandbox.tornadoDetection;
+  const labelApi = window.WeatherSandbox.weatherLabels;
+  api.updateFromScan({
+    pending: pending || soundingOverlayData || [],
+    tornadoDetections: (tornadoApi && tornadoApi.getDetections) ? tornadoApi.getDetections() : [],
+    labels: (labelApi && labelApi.getLabels) ? labelApi.getLabels() : [],
+    towns: towns,
+    simResX: sim_res_x,
+    wrapX: !!guiControls.wrapHorizontally,
+    iterNum: iterNum,
+    timePerIteration: timePerIteration,
+    simDateTime: simDateTime,
+    guiControls: guiControls,
+    force: !!force,
+    getAudioContext: function() {
+      return soundSystem && soundSystem.audioCtx ? soundSystem.audioCtx : null;
+    },
+  });
+}
+
+function clearEasProducts()
+{
+  if (window.WeatherSandbox && window.WeatherSandbox.eas)
+    window.WeatherSandbox.eas.clear();
+  if (warningsOverlayCanvas)
+    warningsOverlayCanvas.style.display = 'none';
 }
 
 function tornadoDetectionUpdateInterval()
@@ -3795,6 +3859,7 @@ function refreshBackgroundOverlaysFromPending(pending)
     updateWeatherLabelsFromPending(pending);
   if (guiControls.tornadoDetectionOverlay)
     updateTornadoDetectionFromScan();
+  updateEasFromPending(pending);
   stormTrackLastScanIter = iterNum;
   outflowLastScanIter = iterNum;
   labelsLastScanIter = iterNum;
@@ -3861,6 +3926,7 @@ function tickOverlayScan()
         updateWeatherLabelsFromPending(overlayScan.pending);
       if (guiControls.tornadoDetectionOverlay)
         updateTornadoDetectionFromScan();
+      updateEasFromPending(overlayScan.pending);
       overlayScan.active = false;
       overlayScan.lastFinishIter = iterNum;
       stormTrackLastScanIter = iterNum;
@@ -4257,19 +4323,28 @@ class Weatherstation
 
   #isOnLand = false;
   #isOnWater = false;
+  #plotMode = false;
 
   #time;             // ISO time string of moment of last measurement
   #temperature = 0;  // °C
   #dewpoint = 0;     // °C
   #relativeHumd = 0; // %
   #velocity = 0;     // ms
+  #windU = 0;        // m/s horizontal
+  #windV = 0;        // m/s vertical
   #mslpHpa = 1013.25; // diagnostic mean sea-level pressure
   #soilMoisture = 0; // mm (0–field capacity; separate from flood)
   #floodHeightMm = 0; // mm standing flood height
   #snowHeight = 0;   // cm
   #airQuality = 0;   // AQI
   #waterTemperature = 0;
-  
+  #precipRate = 0;
+  #oktas = 0;
+  #cloudHigh = 0;
+  #cloudMid = 0;
+  #cloudLow = 0;
+  #weatherSymbol = null;
+  #pressureTendHpa = null;
 
   #netIRpow = 0;
   #solarPower = 0;
@@ -4284,10 +4359,16 @@ class Weatherstation
   #displaySunAndIRPower;
 
 
-  constructor(xIn, yIn)
+  constructor(xIn, yIn, opts)
   {
+    opts = opts || {};
     this.#x = Math.floor(xIn);
     this.#y = Math.floor(yIn);
+    this.#plotMode = !!opts.plotMode;
+    if (this.#plotMode) {
+      this.#width = 140;
+      this.#height = 140;
+    }
     this.#mainDiv = document.createElement('div');
     this.#canvas = document.createElement('canvas');
     this.#mainDiv.appendChild(this.#canvas);
@@ -4314,11 +4395,14 @@ class Weatherstation
     this.#weatherIconDiv.style.pointerEvents = 'none';
     this.#weatherIconDiv.textContent = '☀️';
     document.body.appendChild(this.#weatherIconDiv);
+    if (this.#plotMode)
+      this.#weatherIconDiv.style.display = 'none';
 
     let thisObj = this;
     this.#canvas.addEventListener('mousedown', function(event) {
       if (event.button == 0) {     // left mouse button
-        if (guiControls.tool == 'TOOL_STATION') {
+        const removeTool = thisObj.#plotMode ? 'TOOL_STATION_2' : 'TOOL_STATION';
+        if (guiControls.tool == removeTool) {
           thisObj.destroy();       // remove weather station
           event.stopPropagation(); // prevent mousedown on body from firing
         } else {
@@ -4362,6 +4446,8 @@ class Weatherstation
     style.left = '-200px';
 
     style.display = 'none'; // hide initially
+    if (this.#plotMode)
+      style.marginTop = '150px';
 
 
     this.#historyChart = new Chart(ctx, {
@@ -4554,6 +4640,8 @@ class Weatherstation
         precipHint = Math.max(precipHint, Math.max(colWater[idx + 2], 0));
     }
 
+    this.#updatePlotCloudFields(altsM, clouds, precipHint);
+
     // Column sounding metrics for convective meteogram strip (CAPE/CIN/SRH)
     let cape = 0, cin = 0, srh = 0;
     try {
@@ -4618,6 +4706,8 @@ class Weatherstation
     let T = potentialToRealT(baseTextureValues[1 * 4 + 3], this.#y); // temperature in kelvin
 
     this.#temperature = KtoC(T);
+    this.#windU = rawVelocityTo_ms(baseTextureValues[4 + 0]);
+    this.#windV = rawVelocityTo_ms(baseTextureValues[4 + 1]);
     this.#velocity = rawVelocityTo_ms(Math.sqrt(Math.pow(baseTextureValues[2 * 4 + 0], 2) + Math.pow(baseTextureValues[4 + 1], 2)));
 
     // Diagnostic MSLP from a short column above the station (display-only).
@@ -4686,6 +4776,8 @@ class Weatherstation
       this.#relativeHumd = Math.min(this.#relativeHumd, 100.0);
     }
 
+    this.#precipRate = Math.max(0, waterTextureValues[4 + 2] || 0);
+
 
     if (isLandWaterMarkerTotal(waterTextureValues[0])) { // on land surface (flood packed in TOTAL)
       this.#soilMoisture = waterTextureValues[2];
@@ -4753,7 +4845,9 @@ class Weatherstation
     this.#time = simDateTime.toISOString();
     this.#predictWeather();
     this.updateChartJS(); // update chart
+    this.#updatePressureTendency();
     this.#recordMeteogramSample();
+    this.#classifyPresentWeather();
   }
 
   #predictWeather()
@@ -4826,31 +4920,156 @@ class Weatherstation
     }
   }
 
+  #updatePlotCloudFields(altsM, clouds, precipHint)
+  {
+    let low = 0, mid = 0, high = 0;
+    let cloudy = 0;
+    const n = clouds && clouds.length ? clouds.length : 0;
+    for (let i = 0; i < n; i++) {
+      const c = Math.max(0, clouds[i] || 0);
+      const alt = altsM ? altsM[i] : 0;
+      if (c > 0.012) cloudy++;
+      if (alt < 2000) low = Math.max(low, c);
+      else if (alt < 6000) mid = Math.max(mid, c);
+      else high = Math.max(high, c);
+    }
+    this.#cloudLow = low;
+    this.#cloudMid = mid;
+    this.#cloudHigh = high;
+    const coverFromMax = Math.max(low, mid, high) / 0.12;
+    const coverFromCount = n > 0 ? cloudy / n : 0;
+    this.#oktas = Math.max(0, Math.min(8, Math.round(Math.max(coverFromMax, coverFromCount) * 8)));
+    if (precipHint > this.#precipRate)
+      this.#precipRate = precipHint;
+  }
+
+  #classifyPresentWeather()
+  {
+    const precip = this.#precipRate;
+    const temp = this.#temperature;
+    const rh = this.#relativeHumd;
+    const wind = this.#velocity;
+    const solar = this.#solarPower;
+    const snow = this.#snowHeight;
+
+    if (this.#predictedWeather === 'thunderstorms' && precip > 0.02) {
+      this.#weatherSymbol = 'thunderstorm';
+      return;
+    }
+    if (precip > 0.02) {
+      if (temp <= 0.5 || snow > 0.4)
+        this.#weatherSymbol = 'snow';
+      else if (precip < 0.08)
+        this.#weatherSymbol = 'drizzle';
+      else if (precip > 0.18 && (wind > 6 || this.#predictedWeather === 'thunderstorms'))
+        this.#weatherSymbol = 'showers';
+      else
+        this.#weatherSymbol = 'rain';
+      return;
+    }
+    if (rh > 94 && wind < 2.2 && solar < 80) {
+      this.#weatherSymbol = 'fog';
+      return;
+    }
+    this.#weatherSymbol = null;
+  }
+
+  #updatePressureTendency()
+  {
+    this.#pressureTendHpa = null;
+    if (!this.#historyChart || !this.#time) return;
+    const labels = this.#historyChart.data.labels;
+    const ds = this.#historyChart.data.datasets[7];
+    const data = ds && ds.data;
+    if (!labels || !data || labels.length < 2) return;
+    const now = Date.parse(this.#time);
+    if (!Number.isFinite(now)) return;
+    const target = now - 3 * 3600 * 1000;
+    let bestIdx = -1;
+    let bestDiff = Infinity;
+    for (let i = 0; i < labels.length; i++) {
+      const t = Date.parse(labels[i]);
+      if (!Number.isFinite(t) || !Number.isFinite(data[i])) continue;
+      const diff = Math.abs(t - target);
+      if (diff < bestDiff) {
+        bestDiff = diff;
+        bestIdx = i;
+      }
+    }
+    if (bestIdx < 0) return;
+    const sampleT = Date.parse(labels[bestIdx]);
+    if (now - sampleT < 1.5 * 3600 * 1000) return;
+    this.#pressureTendHpa = this.#mslpHpa - data[bestIdx];
+  }
+
   getXpos() { return this.#x; }
 
   getYpos() { return this.#y; }
 
+  isPlotMode() { return this.#plotMode; }
+
+  setPlotMode(plotMode)
+  {
+    plotMode = !!plotMode;
+    if (this.#plotMode === plotMode) return;
+    this.#plotMode = plotMode;
+    this.#width = plotMode ? 140 : 120;
+    this.#height = plotMode ? 140 : 70;
+    this.#canvas.width = this.#width;
+    this.#canvas.height = this.#height;
+    if (this.#weatherIconDiv)
+      this.#weatherIconDiv.style.display = plotMode ? 'none' : '';
+    if (this.#chartCanvas)
+      this.#chartCanvas.style.marginTop = plotMode ? '150px' : '100px';
+  }
+
   setHidden(hidden)
   {
     this.#mainDiv.style.display = hidden ? 'none' : 'block';
-    this.#weatherIconDiv.style.display = hidden ? 'none' : 'block';
+    if (this.#weatherIconDiv)
+      this.#weatherIconDiv.style.display = (hidden || this.#plotMode) ? 'none' : 'block';
     this.#chartCanvas.style.display = 'none'; // hide charts
   }
 
   updateCanvas()
   {
     let screenX = simToScreenX(this.#x) - this.#width / 2;
-    let screenY = simToScreenY(this.#y) - this.#height;
+    let screenY = simToScreenY(this.#y) - (this.#plotMode ? this.#height / 2 : this.#height);
 
-    // if (screenX > 0 && screenX < canvas.width && screenY > 0 && screenY < canvas.height) {
     this.#mainDiv.style.left = screenX + 'px';
     this.#mainDiv.style.top = screenY + 'px';
-    // this.#canvas.style.left = screenX + 'px';
-    // this.#canvas.style.top = screenY + 'px';
     let c = this.#c;
     c.clearRect(0, 0, this.#width, this.#height);
     c.fillStyle = '#00000000';
     c.fillRect(0, 0, this.#width, this.#height);
+
+    if (this.#plotMode) {
+      if (this.#weatherIconDiv)
+        this.#weatherIconDiv.style.display = 'none';
+      const plot = window.WeatherSandbox && window.WeatherSandbox.stationPlot;
+      if (plot && plot.draw) {
+        const tempVal = convertTempToSelectedUnit(this.#temperature);
+        const dewVal = convertTempToSelectedUnit(this.#dewpoint);
+        plot.draw(c, this.#width, this.#height, {
+          tempLabel: Number.isFinite(tempVal) ? String(Math.round(tempVal)) : '',
+          dewLabel: Number.isFinite(dewVal) ? String(Math.round(dewVal)) : '',
+          mslpHpa: this.#mslpHpa,
+          windU: this.#windU,
+          windV: this.#windV,
+          oktas: this.#oktas,
+          weather: this.#weatherSymbol,
+          pressureTendHpa: this.#pressureTendHpa,
+          cloudHigh: this.#cloudHigh,
+          cloudMid: this.#cloudMid,
+          cloudLow: this.#cloudLow,
+          displaySunAndIR: this.#displaySunAndIRPower,
+          rh: this.#relativeHumd,
+          solarPower: this.#solarPower,
+          netIRpow: this.#netIRpow,
+        });
+      }
+      return;
+    }
 
     // Update weather icon div position (above the station)
     this.#weatherIconDiv.style.left = (screenX + this.#width / 2 - 16) + 'px'; // Center the icon
@@ -5884,6 +6103,7 @@ let weatherBalloons = []; // radiosonde balloons collecting vertical soundings
 let skewTTrackedBalloon = null; // balloon feeding the Skew-T when in weather-balloon mode
 let radars = []; // array holding all radars
 let markers = []; // array holding all markers
+let towns = []; // named town labels on the map
 let airmassGenerators = []; // array holding all airmass generators
 let customToolEntities = []; // placeable custom scripted tools
 let synopticSystems = [];   // High / Low placeable pressure systems
@@ -6106,6 +6326,382 @@ class Marker
   getName() { return this.#name; }
   getColor() { return this.#color; }
   setName(name) { this.#name = name; }
+  setColor(color) { this.#color = color; }
+}
+
+function sanitizeTownName(name, fallback)
+{
+  const s = String(name == null ? '' : name).replace(/\s+/g, ' ').trim();
+  if (!s) return fallback || 'Town';
+  return s.length > 48 ? s.slice(0, 48) : s;
+}
+
+function nextTownDefaultName()
+{
+  return 'Town ' + (towns.length + 1);
+}
+
+function promptForTownName(existing)
+{
+  const fallback = existing || nextTownDefaultName();
+  let entered;
+  try {
+    entered = prompt('Name this town:', fallback);
+  } catch (e) {
+    return fallback;
+  }
+  if (entered === null)
+    return fallback;
+  return sanitizeTownName(entered, fallback);
+}
+
+function attachTownPlacementFields(msg)
+{
+  if (!msg || msg.tool !== 'TOOL_TOWN')
+    return msg;
+  if (!msg.name)
+    msg.name = promptForTownName();
+  return msg;
+}
+
+function placeTownAt(simX, simY, opts)
+{
+  opts = opts || {};
+  const fallback = opts.name || nextTownDefaultName();
+  const name = opts.skipPrompt ? sanitizeTownName(opts.name, fallback) : promptForTownName(fallback);
+  const town = new Town(simX, simY, { name: name, color: opts.color });
+  towns.push(town);
+  return town;
+}
+
+function destroyAllTowns()
+{
+  for (let i = towns.length - 1; i >= 0; i--)
+    towns[i].destroy();
+  towns = [];
+}
+
+function buildSavedTownsForGuiControls()
+{
+  if (towns.length === 0)
+    return null;
+  return towns.map(t => ({
+    x: t.getXpos(),
+    y: t.getYpos(),
+    ...t.getSettings(),
+  }));
+}
+
+function restoreSavedTownsFromGuiControls()
+{
+  const saved = guiControls && guiControls.__savedTowns;
+  destroyAllTowns();
+  if (!Array.isArray(saved) || saved.length === 0) {
+    if (guiControls)
+      delete guiControls.__savedTowns;
+    return;
+  }
+
+  for (let i = 0; i < saved.length; i++) {
+    const entry = saved[i];
+    if (!entry || !Number.isFinite(entry.x) || !Number.isFinite(entry.y))
+      continue;
+    placeTownAt(entry.x, entry.y, { name: entry.name, color: entry.color, skipPrompt: true });
+  }
+  delete guiControls.__savedTowns;
+}
+
+function embedSavedTownsInGuiControls(guiControlsForSave)
+{
+  const embeddedTowns = buildSavedTownsForGuiControls();
+  if (embeddedTowns)
+    guiControlsForSave.__savedTowns = embeddedTowns;
+}
+
+function buildSavedWeatherStationKinds()
+{
+  if (!weatherStations.length) return null;
+  const kinds = weatherStations.map(s => (s.isPlotMode && s.isPlotMode()) ? 'plot' : 'readout');
+  if (kinds.every(k => k === 'readout')) return null;
+  return kinds;
+}
+
+function embedSavedWeatherStationKinds(guiControlsForSave)
+{
+  const kinds = buildSavedWeatherStationKinds();
+  if (kinds)
+    guiControlsForSave.__savedWeatherStationKinds = kinds;
+}
+
+function restoreWeatherStationKindsFromGuiControls()
+{
+  const saved = guiControls && guiControls.__savedWeatherStationKinds;
+  if (!Array.isArray(saved) || !weatherStations.length) {
+    if (guiControls)
+      delete guiControls.__savedWeatherStationKinds;
+    return;
+  }
+  const n = Math.min(saved.length, weatherStations.length);
+  for (let i = 0; i < n; i++) {
+    if (saved[i] === 'plot' && weatherStations[i].setPlotMode)
+      weatherStations[i].setPlotMode(true);
+  }
+  delete guiControls.__savedWeatherStationKinds;
+}
+
+class Town
+{
+  #width = 56;
+  #height = 64;
+  #mainDiv;
+  #canvas;
+  #c;
+  #labelEl;
+  #x;
+  #y;
+  #name = 'Town';
+  #color = '#e8b84a';
+  #menuDiv;
+  #hdrTitle;
+  #nameInput;
+
+  constructor(xIn, yIn, opts)
+  {
+    opts = opts || {};
+    this.#x = Math.floor(xIn);
+    this.#y = Math.floor(yIn);
+    this.#name = sanitizeTownName(opts.name, nextTownDefaultName());
+    if (opts.color)
+      this.#color = opts.color;
+
+    this.#mainDiv = document.createElement('div');
+    this.#canvas = document.createElement('canvas');
+    this.#labelEl = document.createElement('div');
+    this.#mainDiv.appendChild(this.#canvas);
+    this.#mainDiv.appendChild(this.#labelEl);
+    document.body.appendChild(this.#mainDiv);
+    this.#canvas.height = this.#height;
+    this.#canvas.width = this.#width;
+
+    this.#mainDiv.style.position = 'absolute';
+    this.#mainDiv.style.width = '0px';
+    this.#mainDiv.style.height = '0px';
+    this.#mainDiv.style.pointerEvents = 'none';
+
+    this.#c = this.#canvas.getContext('2d');
+    this.#canvas.style.position = 'absolute';
+    this.#canvas.style.zIndex = 2;
+    this.#canvas.style.cursor = 'pointer';
+    this.#canvas.style.pointerEvents = 'auto';
+
+    this.#labelEl.style.cssText =
+      'position:absolute;left:50%;transform:translateX(-50%);top:' + (this.#height - 2) + 'px;' +
+      'white-space:nowrap;font:bold 12px Arial,sans-serif;color:#fff;' +
+      'text-shadow:0 1px 2px #000,0 0 6px #000,0 0 10px #000;pointer-events:none;z-index:2;';
+    this.#labelEl.textContent = this.#name;
+
+    const thisObj = this;
+    this.#canvas.addEventListener('mousedown', function(event) {
+      if (event.button == 0) {
+        if (guiControls.tool == 'TOOL_TOWN') {
+          thisObj.destroy();
+          event.stopPropagation();
+        } else {
+          thisObj.toggleMenu();
+          event.stopPropagation();
+        }
+      }
+    });
+    this.#canvas.addEventListener('contextmenu', function(event) { event.preventDefault(); });
+
+    this.createMenu();
+  }
+
+  createMenu()
+  {
+    this.#menuDiv = document.createElement('div');
+    this.#menuDiv.style.cssText =
+      'position:absolute;display:none;z-index:1000;background:#13131f;border:1px solid #252540;' +
+      'border-radius:12px;padding:0;color:white;font-family:Arial,sans-serif;font-size:13px;' +
+      'min-width:240px;box-shadow:0 8px 32px rgba(0,0,0,0.75);overflow:hidden;';
+
+    const thisObj = this;
+    const hdr = document.createElement('div');
+    hdr.style.cssText =
+      'display:flex;justify-content:space-between;align-items:center;padding:11px 14px;' +
+      'background:linear-gradient(135deg,#191930,#0e0e22);border-bottom:1px solid #252540;cursor:move;user-select:none;gap:8px;';
+
+    let dragOffX = 0, dragOffY = 0, dragging = false;
+    hdr.addEventListener('mousedown', (e) => {
+      if (e.target === closeBtn) return;
+      dragging = true;
+      dragOffX = e.clientX - thisObj.#menuDiv.getBoundingClientRect().left;
+      dragOffY = e.clientY - thisObj.#menuDiv.getBoundingClientRect().top;
+      e.preventDefault();
+    });
+    document.addEventListener('mousemove', (e) => {
+      if (!dragging) return;
+      thisObj.#menuDiv.style.left = (e.clientX - dragOffX) + 'px';
+      thisObj.#menuDiv.style.top = (e.clientY - dragOffY) + 'px';
+    });
+    document.addEventListener('mouseup', () => { dragging = false; });
+
+    const hdrTitle = document.createElement('span');
+    hdrTitle.style.cssText = 'font-weight:700;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
+    hdrTitle.textContent = '🏘  ' + this.#name;
+    this.#hdrTitle = hdrTitle;
+
+    const closeBtn = document.createElement('button');
+    closeBtn.textContent = '✕';
+    closeBtn.style.cssText =
+      'background:rgba(255,255,255,0.07);border:none;color:#777;font-size:12px;cursor:pointer;' +
+      'padding:3px 8px;border-radius:5px;line-height:1;flex-shrink:0;';
+    closeBtn.addEventListener('click', () => { thisObj.#menuDiv.style.display = 'none'; });
+    hdr.appendChild(hdrTitle);
+    hdr.appendChild(closeBtn);
+    this.#menuDiv.appendChild(hdr);
+
+    const body = document.createElement('div');
+    body.style.cssText = 'padding:14px 15px 16px;';
+
+    const mkLabel = (text) => {
+      const l = document.createElement('div');
+      l.textContent = text;
+      l.style.cssText =
+        'color:#4a5060;font-size:10px;text-transform:uppercase;letter-spacing:1.2px;font-weight:600;margin-bottom:6px;margin-top:12px;';
+      return l;
+    };
+
+    body.appendChild(mkLabel('Town name'));
+    const nameInput = document.createElement('input');
+    nameInput.type = 'text';
+    nameInput.maxLength = 48;
+    nameInput.value = this.#name;
+    nameInput.setAttribute('data-ch-help', 'town-name');
+    nameInput.setAttribute('data-ch-title', 'Town name');
+    nameInput.style.cssText =
+      'width:100%;box-sizing:border-box;background:#0b0b17;border:1px solid #252540;border-radius:6px;color:#d0d0e0;padding:7px 10px;font-size:12px;';
+    nameInput.addEventListener('input', function() {
+      thisObj.setName(this.value);
+    });
+    nameInput.addEventListener('change', function() {
+      thisObj.setName(sanitizeTownName(this.value, 'Town'));
+      this.value = thisObj.#name;
+    });
+    this.#nameInput = nameInput;
+    body.appendChild(nameInput);
+
+    body.appendChild(mkLabel('Color'));
+    const colorInput = document.createElement('input');
+    colorInput.type = 'color';
+    colorInput.value = this.#color;
+    colorInput.setAttribute('data-ch-help', 'town-color');
+    colorInput.setAttribute('data-ch-title', 'Town color');
+    colorInput.style.cssText =
+      'width:100%;height:40px;box-sizing:border-box;background:#0b0b17;border:1px solid #252540;border-radius:6px;cursor:pointer;';
+    colorInput.addEventListener('input', function() { thisObj.#color = this.value; });
+    body.appendChild(colorInput);
+
+    const removeBtn = document.createElement('button');
+    removeBtn.textContent = 'Remove Town';
+    removeBtn.style.cssText =
+      'width:100%;margin-top:14px;padding:8px;background:#3a1520;border:1px solid #632;color:#faa;' +
+      'border-radius:6px;cursor:pointer;font-size:12px;';
+    removeBtn.addEventListener('click', () => thisObj.destroy());
+    body.appendChild(removeBtn);
+
+    this.#menuDiv.appendChild(body);
+    document.body.appendChild(this.#menuDiv);
+    if (typeof ControlHelp !== 'undefined' && ControlHelp.registerEntityMenu)
+      ControlHelp.registerEntityMenu(this.#menuDiv);
+  }
+
+  toggleMenu()
+  {
+    const screenX = simToScreenX(this.#x);
+    const screenY = simToScreenY(this.#y);
+    this.#menuDiv.style.left = screenX + 'px';
+    this.#menuDiv.style.top = (screenY - 220) + 'px';
+    this.#menuDiv.style.display = (this.#menuDiv.style.display == 'none') ? 'block' : 'none';
+  }
+
+  updateCanvas()
+  {
+    const screenX = simToScreenX(this.#x) - this.#width / 2;
+    const screenY = simToScreenY(this.#y) - this.#height + 6;
+    this.#mainDiv.style.left = screenX + 'px';
+    this.#mainDiv.style.top = screenY + 'px';
+
+    const c = this.#c;
+    const W = this.#width;
+    const H = this.#height;
+    const cx = W / 2;
+    c.clearRect(0, 0, W, H);
+
+    c.strokeStyle = this.#color;
+    c.lineWidth = 2.5;
+    c.beginPath();
+    c.moveTo(cx, H - 4);
+    c.lineTo(cx, 36);
+    c.stroke();
+
+    c.fillStyle = 'rgba(18,18,32,0.92)';
+    c.strokeStyle = this.#color;
+    c.lineWidth = 2;
+    c.beginPath();
+    c.arc(cx, 22, 18, 0, Math.PI * 2);
+    c.fill();
+    c.stroke();
+
+    c.fillStyle = this.#color;
+    c.fillRect(cx - 13, 20, 8, 12);
+    c.beginPath();
+    c.moveTo(cx - 14, 20);
+    c.lineTo(cx - 9, 14);
+    c.lineTo(cx - 4, 20);
+    c.closePath();
+    c.fill();
+
+    c.fillRect(cx - 4, 14, 8, 18);
+    c.fillRect(cx - 5, 12, 10, 3);
+
+    c.fillRect(cx + 6, 18, 8, 14);
+    c.beginPath();
+    c.moveTo(cx + 5, 18);
+    c.lineTo(cx + 10, 13);
+    c.lineTo(cx + 15, 18);
+    c.closePath();
+    c.fill();
+
+    c.fillStyle = 'rgba(18,18,32,0.55)';
+    c.fillRect(cx - 2, 18, 2, 3);
+    c.fillRect(cx + 1, 18, 2, 3);
+    c.fillRect(cx - 2, 23, 2, 3);
+    c.fillRect(cx + 1, 23, 2, 3);
+  }
+
+  destroy()
+  {
+    if (this.#mainDiv) this.#mainDiv.remove();
+    if (this.#menuDiv) this.#menuDiv.remove();
+    const index = towns.indexOf(this);
+    if (index > -1)
+      towns.splice(index, 1);
+  }
+
+  getXpos() { return this.#x; }
+  getYpos() { return this.#y; }
+  getName() { return this.#name; }
+  getColor() { return this.#color; }
+  getSettings() { return { name: this.#name, color: this.#color }; }
+  setName(name)
+  {
+    this.#name = sanitizeTownName(name, this.#name || 'Town');
+    if (this.#labelEl) this.#labelEl.textContent = this.#name;
+    if (this.#hdrTitle) this.#hdrTitle.textContent = '🏘  ' + this.#name;
+    if (this.#nameInput && this.#nameInput.value !== this.#name && document.activeElement !== this.#nameInput)
+      this.#nameInput.value = this.#name;
+  }
   setColor(color) { this.#color = color; }
 }
 
@@ -8305,6 +8901,7 @@ async function loadSnapshotFromDecompressed(decompressed, version, inPlaceApplyF
   skewTTrackedBalloon = null;
   radars = [];
   airmassGenerators = [];
+  destroyAllTowns();
   while (synopticSystems.length)
     synopticSystems[0].destroy();
   if (window.WeatherSandbox && window.WeatherSandbox.synopticBoundaries) {
@@ -8349,9 +8946,18 @@ async function loadSnapshotFromDecompressed(decompressed, version, inPlaceApplyF
   if (!smokeTexF32)
     smokeTexF32 = migrateLegacyAerosolToSmoke(waterTexF32, wallTexI8, sim_res_x, sim_res_y);
 
-  if (inPlaceApplyFn)
+  if (inPlaceApplyFn) {
     await inPlaceApplyFn(baseTexF32, waterTexF32, wallTexI8, precipArray, smokeTexF32);
-  else {
+    try {
+      if (guiControlsFromSaveFile && typeof guiControls !== 'undefined' && guiControls) {
+        const parsed = JSON.parse(guiControlsFromSaveFile);
+        guiControls.__savedTowns = parsed && parsed.__savedTowns;
+        guiControls.__savedWeatherStationKinds = parsed && parsed.__savedWeatherStationKinds;
+      }
+    } catch (e) { /* ignore malformed snapshot settings */ }
+    restoreSavedTownsFromGuiControls();
+    restoreWeatherStationKindsFromGuiControls();
+  } else {
     SETUP_MODE = false;
     await mainScript(baseTexF32, waterTexF32, wallTexI8, precipArray, smokeTexF32);
   }
@@ -8604,6 +9210,7 @@ window.loadData = async function()
     skewTTrackedBalloon = null;
     radars = [];
     airmassGenerators = [];
+    destroyAllTowns();
     while (synopticSystems.length)
       synopticSystems[0].destroy();
     if (window.AviationTraffic)
@@ -8806,6 +9413,7 @@ window.loadData = async function()
       } else if (version == 1939327491) {
         weatherStations = [];
         radars = [];
+        destroyAllTowns();
         debugLog('Oldest save format — simulation textures loaded, default settings used');
       }
 
@@ -11467,6 +12075,14 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     guiControls.labelsOverlay = guiControls_default.labelsOverlay;
   if (guiControls.tornadoDetectionOverlay === undefined)
     guiControls.tornadoDetectionOverlay = guiControls_default.tornadoDetectionOverlay;
+  if (guiControls.warningsOverlay === undefined)
+    guiControls.warningsOverlay = guiControls_default.warningsOverlay;
+  if (guiControls.easAlertsEnabled === undefined)
+    guiControls.easAlertsEnabled = guiControls_default.easAlertsEnabled;
+  if (guiControls.easVoiceEnabled === undefined)
+    guiControls.easVoiceEnabled = guiControls_default.easVoiceEnabled;
+  if (guiControls.easVolume === undefined || !Number.isFinite(guiControls.easVolume))
+    guiControls.easVolume = guiControls_default.easVolume;
   if (guiControls.tornadoDetectionUpdateFreq === undefined || !Number.isFinite(guiControls.tornadoDetectionUpdateFreq))
     guiControls.tornadoDetectionUpdateFreq = guiControls_default.tornadoDetectionUpdateFreq;
   else
@@ -11489,6 +12105,8 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   restoreSavedCustomToolDefinitionsFromGuiControls();
   restoreSavedCustomToolEntitiesFromGuiControls();
   restoreSavedSynopticSystemsFromGuiControls();
+  restoreSavedTownsFromGuiControls();
+  restoreWeatherStationKindsFromGuiControls();
   if (window.WeatherSandbox && window.WeatherSandbox.synopticBoundaries) {
     window.WeatherSandbox.synopticBoundaries.restoreSavedDrylinesFromGuiControls();
     window.WeatherSandbox.synopticBoundaries.restoreSavedSeaBreezesFromGuiControls();
@@ -11949,6 +12567,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         'Wind' : 'TOOL_WIND',
         'Charge' : 'TOOL_CHARGE',
         'Weather Station' : 'TOOL_STATION',
+        'Weather Station 2' : 'TOOL_STATION_2',
         'Weather Balloon' : 'TOOL_BALLOON',
         'Radar Tower' : 'TOOL_RADAR',
         'Airmass Generator' : 'TOOL_AIRMASS',
@@ -11957,6 +12576,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         'Dryline' : 'TOOL_DRYLINE',
         'Sea / Lake Breeze' : 'TOOL_SEA_BREEZE',
         'Marker' : 'TOOL_MARKER',
+        'Town' : 'TOOL_TOWN',
         'Airport' : 'TOOL_AIRPORT',
         'Flight Route' : 'TOOL_FLIGHT_ROUTE',
         'Nuke' : 'TOOL_NUKE',
@@ -12483,7 +13103,8 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       })
       .name('Floodwater Opacity')
       .listen();
-    displayAppearance.add(guiControls, 'autoMinShadowLight').name('Auto Shadow Light');
+    displayAppearance.add(guiControls, 'autoMinShadowLight').name('Auto Shadow Light')
+      .onChange(function() { updateSunlight(); });
     displayAppearance.add(guiControls, 'minShadowLight', 0.0, 0.2, 0.001)
       .onChange(function() {
         if (!guiControls.autoMinShadowLight) {
@@ -12518,6 +13139,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         clearOutflowFronts();
         clearWeatherLabels();
         clearTornadoDetection();
+        clearEasProducts();
       });
     displayOverlays.add(guiControls, 'riskUpdateFrequency', 5, 120, 1)
       .name('Risk/Sounding Update Freq');
@@ -12599,6 +13221,29 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
           tornadoLastScanIter = -9999;
       })
       .name('Tornado Update Freq');
+    displayOverlays.add(guiControls, 'warningsOverlay')
+      .onChange(function() {
+        if (!guiControls.warningsOverlay && warningsOverlayCanvas)
+          warningsOverlayCanvas.style.display = 'none';
+        if (guiControls.warningsOverlay) {
+          if (soundingOverlayData.length)
+            updateEasFromPending(soundingOverlayData, true);
+          overlayScan.lastFinishIter = -9999;
+        } else if (!guiControls.easAlertsEnabled) {
+          clearEasProducts();
+        }
+      })
+      .name('Watches / Warnings Overlay');
+    displayOverlays.add(guiControls, 'easAlertsEnabled')
+      .onChange(function() {
+        if (!guiControls.easAlertsEnabled && window.WeatherSandbox && window.WeatherSandbox.eas)
+          window.WeatherSandbox.eas.stopAlerts();
+        if (guiControls.easAlertsEnabled && soundingOverlayData.length)
+          updateEasFromPending(soundingOverlayData, true);
+      })
+      .name('EAS Alerts (towns)');
+    displayOverlays.add(guiControls, 'easVoiceEnabled').name('EAS Voice');
+    displayOverlays.add(guiControls, 'easVolume', 0, 1, 0.05).name('EAS Volume');
     displayOverlays.add(guiControls, 'enableVectorField').name('Vector Field');
     displayOverlays.add(guiControls, 'displayWeatherStations')
       .onChange(function() {
@@ -18607,6 +19252,13 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         for (let i = 0; i < weatherStations.length; i++)
           weatherStations[i].setHidden(false);
       } },
+    { id: 'toolStation2', name: 'Tool: weather station 2', category: 'Tools', defaultCode: null,
+      onDown() {
+        if (!setGuiTool('TOOL_STATION_2')) return;
+        displayWeatherStations = true;
+        for (let i = 0; i < weatherStations.length; i++)
+          weatherStations[i].setHidden(false);
+      } },
     { id: 'toolBalloon', name: 'Tool: weather balloon', category: 'Tools', defaultCode: null,
       onDown() {
         if (!setGuiTool('TOOL_BALLOON')) return;
@@ -18617,6 +19269,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       } },
     { id: 'toolMarker', name: 'Tool: marker', category: 'Tools', defaultCode: 'KeyN',
       onDown() { setGuiTool('TOOL_MARKER'); } },
+    { id: 'toolTown', name: 'Tool: town', category: 'Tools', defaultCode: null,
+      onDown() { setGuiTool('TOOL_TOWN'); } },
     { id: 'reloadSimulation', name: 'Reload simulation', category: 'Simulation', defaultCode: 'KeyL',
       onDown() {
         if (new Date() - lastSaveTime > 120000)
@@ -19362,6 +20016,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
               placeMsg.paramValues = reg.getParamValues(def);
             }
           }
+          attachTownPlacementFields(placeMsg);
           window.WeatherMultiplayer.emitPlace(placeMsg);
         }
       } else if (multiplayerHostMode && window.WeatherMpProtocol && window.WeatherMpProtocol.isPlacementTool(guiControls.tool)) {
@@ -19379,6 +20034,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
             placementMsg.paramValues = reg.getParamValues(def);
           }
         }
+        attachTownPlacementFields(placementMsg);
         applyRemotePlacement(placementMsg);
         if (window.WeatherMultiplayer && window.WeatherMultiplayer.isHost())
           window.WeatherMultiplayer.broadcastPlaceApply(placementMsg);
@@ -19391,12 +20047,12 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         const def = reg ? reg.getTool(guiControls.tool) : null;
         if (def && simXpos >= 0 && simXpos < sim_res_x && simYpos !== undefined)
           customToolEntities.push(new CustomToolEntity(simXpos, simYpos, def, reg.getParamValues(def)));
-      } else if (guiControls.tool == 'TOOL_STATION') {
+      } else if (guiControls.tool == 'TOOL_STATION' || guiControls.tool == 'TOOL_STATION_2') {
         let simXpos = Math.floor(mouseXinSim * sim_res_x);
         let simYpos = findSimYposAboveSurfaceAtMouseX();
 
         if (simXpos >= 0 && simXpos < sim_res_x)
-          weatherStations.push(new Weatherstation(simXpos, simYpos)); // add weather station
+          weatherStations.push(new Weatherstation(simXpos, simYpos, { plotMode: guiControls.tool == 'TOOL_STATION_2' }));
       } else if (guiControls.tool == 'TOOL_BALLOON') {
         let simXpos = Math.floor(mouseXinSim * sim_res_x);
         let simYpos = findSimYposAboveSurfaceAtMouseX();
@@ -19450,6 +20106,12 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
 
         if (simXpos >= 0 && simXpos < sim_res_x)
           markers.push(new Marker(simXpos, simYpos)); // add marker
+      } else if (guiControls.tool == 'TOOL_TOWN') {
+        let simXpos = Math.floor(mouseXinSim * sim_res_x);
+        let simYpos = findSimYposAboveSurfaceAtMouseX();
+
+        if (simXpos >= 0 && simXpos < sim_res_x && simYpos !== undefined)
+          placeTownAt(simXpos, simYpos);
       } else if (guiControls.tool == 'TOOL_AIRPORT') {
         let simXpos = Math.floor(mouseXinSim * sim_res_x);
         let simYpos = findSimYposAboveSurfaceAtMouseX();
@@ -20111,7 +20773,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
 
   // load shaders
-  const SHADER_ASSET_VERSION = 82; // bump to bust CDN/browser cache after shader edits
+  const SHADER_ASSET_VERSION = 83; // bump to bust CDN/browser cache after shader edits
 
   var commonSource = await loadSourceFile('shaders/common.glsl');
   var commonDisplaySource = await loadSourceFile('shaders/commonDisplay.glsl');
@@ -21450,6 +22112,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     if (uloc_sky_starLightEmitStrength) gl.uniform1f(uloc_sky_starLightEmitStrength, guiControls.starLightEmitStrength);
     if (uloc_sky_starDensity) gl.uniform1f(uloc_sky_starDensity, guiControls.starDensity);
     if (uloc_sky_minShadowLight) gl.uniform1f(uloc_sky_minShadowLight, guiControls.minShadowLight);
+    if (uloc_sky_autoMinShadowLight) gl.uniform1i(uloc_sky_autoMinShadowLight, guiControls.autoMinShadowLight ? 1 : 0);
     if (uloc_sky_timeOfDay) gl.uniform1f(uloc_sky_timeOfDay, guiControls.timeOfDay);
     if (uloc_sky_month) gl.uniform1f(uloc_sky_month, guiControls.month);
   }
@@ -24147,6 +24810,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   gl.uniform2f(gl.getUniformLocation(skyBackgroundDisplayProgram, 'texelSize'), texelSizeX, texelSizeY);
   gl.uniform1f(gl.getUniformLocation(skyBackgroundDisplayProgram, 'simHeight'), guiControls.simHeight);
   gl.uniform1f(gl.getUniformLocation(skyBackgroundDisplayProgram, 'minShadowLight'), minShadowLight);
+  gl.uniform1i(gl.getUniformLocation(skyBackgroundDisplayProgram, 'autoMinShadowLight'), guiControls.autoMinShadowLight ? 1 : 0);
   gl.uniform1f(gl.getUniformLocation(skyBackgroundDisplayProgram, 'sunAngle'), (90 - guiControls.sunAngle) * degToRad);
   gl.uniform1f(gl.getUniformLocation(skyBackgroundDisplayProgram, 'timeOfDay'), guiControls.timeOfDay);
   gl.uniform1f(gl.getUniformLocation(skyBackgroundDisplayProgram, 'month'), guiControls.month);
@@ -24183,6 +24847,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   gl.uniform2f(gl.getUniformLocation(realisticDisplayProgram, 'resolution'), sim_res_x, sim_res_y);
   gl.uniform2f(gl.getUniformLocation(realisticDisplayProgram, 'texelSize'), texelSizeX, texelSizeY);
   gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'minShadowLight'), minShadowLight);
+  gl.uniform1i(gl.getUniformLocation(realisticDisplayProgram, 'autoMinShadowLight'), guiControls.autoMinShadowLight ? 1 : 0);
   gl.uniform1i(gl.getUniformLocation(realisticDisplayProgram, 'baseTex'), 0);
   gl.uniform1i(gl.getUniformLocation(realisticDisplayProgram, 'waterTex'), 1);
   gl.uniform1i(gl.getUniformLocation(realisticDisplayProgram, 'wallTex'), 2);
@@ -24287,6 +24952,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'fogHazeStrength'), guiControls.fogHazeStrength);
         gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'smoothClouds'), guiControls.smoothClouds !== false ? 1.0 : 0.0);
         gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'minShadowLight'), guiControls.minShadowLight);
+        gl.uniform1i(gl.getUniformLocation(realisticDisplayProgram, 'autoMinShadowLight'), guiControls.autoMinShadowLight ? 1 : 0);
         gl.uniform1i(gl.getUniformLocation(realisticDisplayProgram, 'enableRainbows'), guiControls.enableRainbows !== false ? 1 : 0);
         gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'greenHueStartThreshold'), guiControls.greenHueStartThreshold != null ? guiControls.greenHueStartThreshold : 0.8);
         gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'greenHueEndThreshold'), guiControls.greenHueEndThreshold != null ? guiControls.greenHueEndThreshold : 1.8);
@@ -24298,6 +24964,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       if (skyBackgroundDisplayProgram) {
         gl.useProgram(skyBackgroundDisplayProgram);
         gl.uniform1f(gl.getUniformLocation(skyBackgroundDisplayProgram, 'minShadowLight'), guiControls.minShadowLight);
+        gl.uniform1i(gl.getUniformLocation(skyBackgroundDisplayProgram, 'autoMinShadowLight'), guiControls.autoMinShadowLight ? 1 : 0);
       }
     }
 
@@ -24305,7 +24972,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     {
       if (!appearance) return;
       const keys = [ 'exposure', 'saturation', 'contrast', 'bloomStrength', 'enableRainbows',
-        'smoothClouds', 'floodWaterOpacity', 'fogHazeStrength', 'minShadowLight' ];
+        'smoothClouds', 'floodWaterOpacity', 'fogHazeStrength', 'minShadowLight', 'autoMinShadowLight' ];
       for (let i = 0; i < keys.length; i++) {
         const k = keys[i];
         if (appearance[k] !== undefined)
@@ -24502,7 +25169,9 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   const uloc_realistic_sunAzimuth      = gl.getUniformLocation(realisticDisplayProgram,     'sunAzimuth');
   const uloc_realistic_sunColumnTex    = gl.getUniformLocation(realisticDisplayProgram,     'sunColumnTex');
   const uloc_realistic_minShadowLight  = gl.getUniformLocation(realisticDisplayProgram,     'minShadowLight');
+  const uloc_realistic_autoMinShadowLight = gl.getUniformLocation(realisticDisplayProgram,  'autoMinShadowLight');
   const uloc_sky_minShadowLight        = gl.getUniformLocation(skyBackgroundDisplayProgram, 'minShadowLight');
+  const uloc_sky_autoMinShadowLight    = gl.getUniformLocation(skyBackgroundDisplayProgram, 'autoMinShadowLight');
   const uloc_sky_sunAngle              = gl.getUniformLocation(skyBackgroundDisplayProgram, 'sunAngle');
   const uloc_sky_sunColumnTex          = gl.getUniformLocation(skyBackgroundDisplayProgram, 'sunColumnTex');
   const uloc_sky_timeOfDay             = gl.getUniformLocation(skyBackgroundDisplayProgram, 'timeOfDay');
@@ -25135,8 +25804,12 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       gl.uniform1f(uloc_realistic_sunAngle, solarZenithAngle);
       gl.uniform1f(uloc_realistic_sunAzimuth, sunAzimuth);
       gl.uniform1f(uloc_realistic_minShadowLight, minShadowLight);
+      if (uloc_realistic_autoMinShadowLight)
+        gl.uniform1i(uloc_realistic_autoMinShadowLight, guiControls.autoMinShadowLight ? 1 : 0);
       gl.useProgram(skyBackgroundDisplayProgram);
       gl.uniform1f(uloc_sky_minShadowLight, minShadowLight);
+      if (uloc_sky_autoMinShadowLight)
+        gl.uniform1i(uloc_sky_autoMinShadowLight, guiControls.autoMinShadowLight ? 1 : 0);
       gl.uniform1f(uloc_sky_sunAngle, solarZenithAngle);
       gl.uniform1f(uloc_sky_timeOfDay, guiControls.timeOfDay);
       gl.uniform1f(uloc_sky_month, guiControls.month);
@@ -25285,7 +25958,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       window.WeatherMpProtocol.isBrushTool(guiControls.tool);
     if (guiControls.wholeWidth) {
       cursorType = 2.0;
-    } else if (SETUP_MODE || (inputType <= 0 && !bPressed && !customBrushSelected && (guiControls.tool == 'TOOL_NONE' || guiControls.tool == 'TOOL_STATION' || guiControls.tool == 'TOOL_BALLOON' || guiControls.tool == 'TOOL_RADAR' || guiControls.tool == 'TOOL_AIRMASS' || guiControls.tool == 'TOOL_SYNOPTIC_LOW' || guiControls.tool == 'TOOL_SYNOPTIC_HIGH' || guiControls.tool == 'TOOL_DRYLINE' || guiControls.tool == 'TOOL_SEA_BREEZE' || guiControls.tool == 'TOOL_MARKER' || guiControls.tool == 'TOOL_AIRPORT' || guiControls.tool == 'TOOL_FLIGHT_ROUTE' || (window.WeatherMpProtocol && window.WeatherMpProtocol.isCustomToolId && window.WeatherMpProtocol.isCustomToolId(guiControls.tool) && window.WeatherMpProtocol.isPlacementTool(guiControls.tool))))) {
+    } else if (SETUP_MODE || (inputType <= 0 && !bPressed && !customBrushSelected && (guiControls.tool == 'TOOL_NONE' || guiControls.tool == 'TOOL_STATION' || guiControls.tool == 'TOOL_STATION_2' || guiControls.tool == 'TOOL_BALLOON' || guiControls.tool == 'TOOL_RADAR' || guiControls.tool == 'TOOL_AIRMASS' || guiControls.tool == 'TOOL_SYNOPTIC_LOW' || guiControls.tool == 'TOOL_SYNOPTIC_HIGH' || guiControls.tool == 'TOOL_DRYLINE' || guiControls.tool == 'TOOL_SEA_BREEZE' || guiControls.tool == 'TOOL_MARKER' || guiControls.tool == 'TOOL_TOWN' || guiControls.tool == 'TOOL_AIRPORT' || guiControls.tool == 'TOOL_FLIGHT_ROUTE' || (window.WeatherMpProtocol && window.WeatherMpProtocol.isCustomToolId && window.WeatherMpProtocol.isCustomToolId(guiControls.tool) && window.WeatherMpProtocol.isPlacementTool(guiControls.tool))))) {
       cursorType = 0;
     }
     if (inputType === 0)
@@ -28113,6 +28786,10 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       if (weatherBalloons[i].updateCanvas)
         weatherBalloons[i].updateCanvas();
     }
+    for (let i = 0; i < towns.length; i++) {
+      if (towns[i].updateCanvas)
+        towns[i].updateCanvas();
+    }
     if (typeof refreshRadarOverlaySourceDropdown === 'function')
       refreshRadarOverlaySourceDropdown();
   };
@@ -28343,6 +29020,9 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       case 'TOOL_STATION':
         weatherStations.push(new Weatherstation(simX, findSimYposAboveSurfaceAtX(simX)));
         break;
+      case 'TOOL_STATION_2':
+        weatherStations.push(new Weatherstation(simX, findSimYposAboveSurfaceAtX(simX), { plotMode: true }));
+        break;
       case 'TOOL_BALLOON': {
         const y = findSimYposAboveSurfaceAtX(simX);
         if (y !== undefined) launchWeatherBalloon(simX, y);
@@ -28384,6 +29064,12 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       case 'TOOL_MARKER':
         markers.push(new Marker(simX, findSimYposAboveSurfaceAtX(simX)));
         break;
+      case 'TOOL_TOWN': {
+        const y = findSimYposAboveSurfaceAtX(simX);
+        if (y !== undefined)
+          placeTownAt(simX, y, { name: msg.name, skipPrompt: true });
+        break;
+      }
       case 'TOOL_AIRPORT': {
         const y = findSimYposAboveSurfaceAtX(simX);
         if (y !== undefined && window.AviationTraffic)
@@ -28516,6 +29202,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     const embeddedSynoptic = buildSavedSynopticSystemsForGuiControls();
     if (embeddedSynoptic)
       guiControlsForSave.__savedSynopticSystems = embeddedSynoptic;
+    embedSavedTownsInGuiControls(guiControlsForSave);
+    embedSavedWeatherStationKinds(guiControlsForSave);
     if (window.WeatherSandbox && window.WeatherSandbox.synopticBoundaries) {
       const embeddedDrylines = window.WeatherSandbox.synopticBoundaries.buildSavedDrylinesForGuiControls();
       if (embeddedDrylines)
@@ -29289,6 +29977,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     const tornadoFreq = tornadoDetectionUpdateInterval();
     const tornadoOn = !!guiControls.tornadoDetectionOverlay;
     const tornadoDue = tornadoOn && (iterNum - tornadoLastScanIter) >= tornadoFreq;
+    const easOn = !!(guiControls.warningsOverlay || guiControls.easAlertsEnabled);
+    const needHaz = overlayScanNeedsHazards();
 
     if (isSoundingDisplayMode(guiControls.displayMode) || guiControls.displayMode === 'DISP_RISK') {
       if (soundingOverlayData.length && guiControls.labelsOverlay
@@ -29297,6 +29987,13 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       if (tornadoDue && overlayScan.baseAll && overlayScan.waterAll && overlayScan.wallAll) {
         updateTornadoDetectionFromScan();
         tornadoLastScanIter = iterNum;
+      }
+      if (easOn) {
+        const src = (guiControls.displayMode === 'DISP_RISK' && riskData.length)
+          ? riskData
+          : soundingOverlayData;
+        if (src && src.length && (tornadoDue || (iterNum - overlayScan.lastFinishIter) >= riskFreq))
+          updateEasFromPending(src);
       }
       return;
     }
@@ -29309,11 +30006,11 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       return;
 
     const chargeBuff = even ? chargeFrameBuff_0 : chargeFrameBuff_1;
-    const othersOn = !!(guiControls.stormTrackOverlay || guiControls.outflowOverlay || guiControls.labelsOverlay);
+    const othersOn = !!(guiControls.stormTrackOverlay || guiControls.outflowOverlay || guiControls.labelsOverlay || easOn);
     const othersDue = othersOn && (iterNum - overlayScan.lastFinishIter) >= riskFreq;
 
     if (tornadoDue) {
-      beginOverlayScan('sounding', false, !!guiControls.labelsOverlay, frameBuff_1, chargeBuff);
+      beginOverlayScan('sounding', false, needHaz, frameBuff_1, chargeBuff);
       tickOverlayScan();
       return;
     }
@@ -29321,7 +30018,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       if (!tornadoOn && soundingOverlayData.length && (iterNum - overlayScan.lastFinishIter) < riskFreq * 3) {
         refreshBackgroundOverlaysFromPending(soundingOverlayData);
       } else {
-        beginOverlayScan('sounding', false, !!guiControls.labelsOverlay, frameBuff_1, chargeBuff);
+        beginOverlayScan('sounding', false, needHaz, frameBuff_1, chargeBuff);
         tickOverlayScan();
       }
     }
@@ -30926,7 +31623,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         if (overlayScan.active && overlayScan.kind === 'risk') {
           tickOverlayScan();
         } else if (shouldRestartOverlayScan('risk', barW) || (overlayScan.active && overlayScan.kind !== 'risk')) {
-          beginOverlayScan('risk', false, false, frameBuff_1, chargeBuff);
+          beginOverlayScan('risk', false, overlayScanNeedsHazards(), frameBuff_1, chargeBuff);
           tickOverlayScan();
         }
 
@@ -31197,6 +31894,34 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     tornadoOverlayCanvas.style.display = 'none';
   }
 
+  if (guiControls.warningsOverlay) {
+    if (!warningsOverlayCanvas) {
+      warningsOverlayCanvas = document.createElement('canvas');
+      warningsOverlayCanvas.style.cssText = 'position:fixed;top:0;left:0;pointer-events:none;z-index:2;';
+      document.body.appendChild(warningsOverlayCanvas);
+    }
+    if (warningsOverlayCanvas.width !== canvas.width || warningsOverlayCanvas.height !== canvas.height) {
+      warningsOverlayCanvas.width = canvas.width;
+      warningsOverlayCanvas.height = canvas.height;
+    }
+    warningsOverlayCanvas.style.display = 'block';
+    const wc = warningsOverlayCanvas.getContext('2d');
+    wc.clearRect(0, 0, warningsOverlayCanvas.width, warningsOverlayCanvas.height);
+    if (window.WeatherSandbox && window.WeatherSandbox.eas)
+      window.WeatherSandbox.eas.draw(wc, simToScreenX, simToScreenY, canvas.width, canvas.height, sim_res_x, sim_res_y);
+  } else if (warningsOverlayCanvas) {
+    warningsOverlayCanvas.style.display = 'none';
+  }
+
+  if (window.WeatherSandbox && window.WeatherSandbox.eas) {
+    window.WeatherSandbox.eas.tick(performance.now(), {
+      guiControls: guiControls,
+      getAudioContext: function() {
+        return soundSystem && soundSystem.audioCtx ? soundSystem.audioCtx : null;
+      },
+    });
+  }
+
   // Draw H/L pressure labels when in pressure display mode
   if (guiControls.displayMode === 'DISP_PRESSURE') {
     if (!riskCanvas) {
@@ -31354,11 +32079,18 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   }
 
   // Update markers
-  for (i = 0; i < markers.length; i++) {
+    for (i = 0; i < markers.length; i++) {
     const sx = simToScreenX(markers[i].getXpos());
     const sy = simToScreenY(markers[i].getYpos());
     if (sx > -200 && sx < canvas.width + 200 && sy > -200 && sy < canvas.height + 200)
       markers[i].updateCanvas();
+  }
+
+  for (i = 0; i < towns.length; i++) {
+    const sx = simToScreenX(towns[i].getXpos());
+    const sy = simToScreenY(towns[i].getYpos());
+    if (sx > -240 && sx < canvas.width + 240 && sy > -240 && sy < canvas.height + 240)
+      towns[i].updateCanvas();
   }
 
   if (displayAirmassGenerators) {
@@ -31612,6 +32344,8 @@ drawNukeOverlay();
         const embeddedSynoptic = buildSavedSynopticSystemsForGuiControls();
         if (embeddedSynoptic)
           guiControlsForSave.__savedSynopticSystems = embeddedSynoptic;
+        embedSavedTownsInGuiControls(guiControlsForSave);
+        embedSavedWeatherStationKinds(guiControlsForSave);
         if (window.WeatherSandbox && window.WeatherSandbox.synopticBoundaries) {
           const embeddedDrylines = window.WeatherSandbox.synopticBoundaries.buildSavedDrylinesForGuiControls();
           if (embeddedDrylines)

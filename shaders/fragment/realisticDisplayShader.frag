@@ -54,6 +54,7 @@ uniform float dryLapse;
 uniform float sunAngle;
 
 uniform float minShadowLight;
+uniform int autoMinShadowLight;
 
 uniform vec3 view;   // Xpos  Ypos    Zoom
 uniform vec4 cursor; // Xpos   Ypos  Size   type
@@ -1402,7 +1403,8 @@ void main()
   float localSunAngle = sampleSunColumn(sunColumnTex, texCoord.x).g;
   bool nightTime = abs(localSunAngle) > 85.0 * deg2rad; // false = day time
 
-  shadowLight = minShadowLight;
+  float minShadowFill = effectiveMinShadowLight(localSunAngle, minShadowLight, autoMinShadowLight);
+  shadowLight = minShadowFill;
 
   // fragmentColor = vec4(vec3(light),1); return; // View light texture for debugging
 
@@ -1434,7 +1436,7 @@ void main()
       else
         color = vec3(0.0, 0.42, 0.82);
       opacity = 1.0;
-      shadowLight = minShadowLight;
+      shadowLight = minShadowFill;
     } else {
       color = getLandColor(depth);
       opacity = 1.0;
@@ -1632,7 +1634,7 @@ void main()
             color = getLandColor(shoreDepth);
             applyFloodWaterSheet(shoreDepth);
           }
-          shadowLight = minShadowLight;
+          shadowLight = minShadowFill;
         }
       }
       if (wall[VERT_DISTANCE] == 0
@@ -1652,7 +1654,7 @@ void main()
             color = getLandColor(shoreDepth);
             applyFloodWaterSheet(shoreDepth);
           }
-          shadowLight = minShadowLight;
+          shadowLight = minShadowFill;
         }
       }
 
@@ -1883,7 +1885,7 @@ void main()
         if (texCol.a > 0.5) { // if not transparent
           color = texCol.rgb;
 
-          shadowLight = minShadowLight;        // make sure trees are dark at night
+          shadowLight = minShadowFill;        // make sure trees are dark at night
 
           if (isAnyFireType(wallX0Ym[TYPE])) // fire below
             shadowLight = 1.0;
@@ -1910,7 +1912,7 @@ void main()
               applyFloodWaterSheet(localY - 0.6);
             }
             wall = savedWall;
-            shadowLight = minShadowLight; // fire should not light ground
+            shadowLight = minShadowFill; // fire should not light ground
           }
         }
         if (wallXpY0[DISTANCE] == 0 && !isLiquidWaterType(wall[TYPE])) { // wall to the right and below
@@ -1926,7 +1928,7 @@ void main()
               applyFloodWaterSheet(localY - 0.6);
             }
             wall = savedWall;
-            shadowLight = minShadowLight; // fire should not light ground
+            shadowLight = minShadowFill; // fire should not light ground
           }
         }
       }

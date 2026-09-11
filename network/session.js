@@ -699,6 +699,8 @@
         placePayload.toolDef = place.toolDef;
       if (place.paramValues)
         placePayload.paramValues = place.paramValues;
+      if (place.name)
+        placePayload.name = place.name;
       this.transport.sendJson(placePayload);
     }
 
@@ -789,6 +791,7 @@
       };
       if (place.toolDef) msg.toolDef = place.toolDef;
       if (place.paramValues) msg.paramValues = place.paramValues;
+      if (place.name) msg.name = place.name;
       this.transport.sendJson(msg);
     }
 
@@ -910,6 +913,7 @@
             };
             if (msg.toolDef) applyMsg.toolDef = msg.toolDef;
             if (msg.paramValues) applyMsg.paramValues = msg.paramValues;
+            if (msg.name) applyMsg.name = msg.name;
             if (this._hooks.onRemotePlace)
               this._hooks.onRemotePlace(msg.playerId, applyMsg);
             this.broadcastPlaceApply(applyMsg);
