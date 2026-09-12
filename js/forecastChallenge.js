@@ -92,23 +92,16 @@
         leadHours: leadHours,
         startedAtMs: Date.now(),
       };
-      var replay = global.WeatherSandbox && global.WeatherSandbox.replay;
-      if (!replay || typeof replay.startForecast !== 'function') {
-        body.querySelector('#wsFcStatus').textContent = 'Replay / forecast module not loaded.';
-        pendingGuess = null;
-        return;
-      }
       challengeActive = true;
       body.querySelector('#wsFcStatus').textContent = 'Running forecast… hang tight.';
       body.querySelector('#wsFcRun').disabled = true;
-      replay.startForecast(leadHours);
-      var mode = typeof replay.getMode === 'function' ? replay.getMode() : '';
-      if (mode !== 'forecastRun' && mode !== 'forecastView') {
+      var replay = global.WeatherSandbox && global.WeatherSandbox.replay;
+      if (!replay || typeof replay.startForecast !== 'function') {
+        body.querySelector('#wsFcStatus').textContent = 'Replay / forecast module not loaded.';
         challengeActive = false;
-        pendingGuess = null;
-        body.querySelector('#wsFcRun').disabled = false;
-        body.querySelector('#wsFcStatus').textContent = 'Could not start forecast (finish recording first, or try again).';
+        return;
       }
+      replay.startForecast(leadHours);
     };
   }
 

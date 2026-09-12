@@ -165,7 +165,6 @@
    * @param {{timeLine?: string}} [frameOpts]
    */
   function onFrameEnd(canvas, frameOpts) {
-    if (!pendingPng && !motionState) return;
     if (!canvas) return;
     frameOpts = frameOpts || {};
 

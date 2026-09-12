@@ -115,11 +115,6 @@
     }
   }
 
-  function getBuffer(station) {
-    if (!station) return null;
-    return buffers.get(station) || null;
-  }
-
   function openForStation(station) {
     if (!station) return;
     activeStation = station;
@@ -528,7 +523,6 @@
   NS.meteogram = {
     record,
     clearStation,
-    getBuffer,
     openForStation,
     toggleForStation,
     hide,
