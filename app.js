@@ -27680,6 +27680,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     }
 
     const active = findActiveLightningEventJS(iterNum);
+    const prevChannelId = proceduralLightningState.channelId;
     proceduralLightningState.eventAge = active.eventAge;
     proceduralLightningState.eventId = active.eventId;
     proceduralLightningState.channelId = active.channel ? active.channel.id : null;
@@ -27690,13 +27691,23 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       return;
     }
 
-    proceduralLightningState.trackedEventId = active.eventId;
-    proceduralLightningState.trackedChannel = active.channel;
-
     if (proceduralLightningState.builtEventId !== active.eventId
-        || proceduralLightningState.channelId !== active.channel.id) {
+        || prevChannelId !== active.channel.id) {
+      const strikes = buildProceduralStrikesForEvent(active.eventId, active.channel);
+      if (!strikes.length) {
+        // Channel rolled a flash but no eligible origin — do not hold an empty
+        // event. That blocked radar icons while precip SDF bolts still showed.
+        proceduralLightningState.trackedEventId = -1;
+        proceduralLightningState.trackedChannel = null;
+        proceduralLightningState.eventAge = -1;
+        proceduralLightningState.eventId = -1;
+        proceduralLightningState.channelId = null;
+        proceduralLightningState.strikes = [];
+        proceduralLightningState.builtEventId = -1;
+        return;
+      }
       proceduralLightningState.builtEventId = active.eventId;
-      proceduralLightningState.strikes = buildProceduralStrikesForEvent(active.eventId, active.channel);
+      proceduralLightningState.strikes = strikes;
       proceduralLightningState.flashStartMs = performance.now();
       proceduralLightningState.frozenVisualAge = null;
       // Drive Enhanced SDF bolts from Frequency / CG / Spider / etc. spawn channels.
@@ -27725,6 +27736,9 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         }
       }
     }
+
+    proceduralLightningState.trackedEventId = active.eventId;
+    proceduralLightningState.trackedChannel = active.channel;
   }
 
   // Cache key for static lightning settings uniforms — avoids ~25 gl.uniform calls per frame
@@ -28209,6 +28223,13 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     };
   }
 
+  function rememberRadarLightningIter(iter)
+  {
+    if (!Number.isFinite(iter) || iter < 0)
+      return;
+    registeredLightningEvents.add('particle-' + (iter | 0));
+  }
+
   function registerRadarLightningStrike(eventKey, simX, simY, ltType)
   {
     // Spawn already validated the strike — do not re-gate icons on charge/cloud
@@ -28224,12 +28245,17 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       simY = clamp(simY, sim_res_y * 0.07, sim_res_y * 0.88);
     }
     registeredLightningEvents.add(eventKey);
+    rememberRadarLightningIter(iterNum);
+    if (proceduralLightningState) {
+      rememberRadarLightningIter(proceduralLightningState.eventId);
+      rememberRadarLightningIter(proceduralLightningState.builtEventId);
+    }
     radarLightningStrikes.push({
       simX,
       simY,
       expireAt: performance.now() + getRadarLightningIconDurationMs()
     });
-    if (registeredLightningEvents.size > 500)
+    if (registeredLightningEvents.size > 2000)
       registeredLightningEvents.clear();
   }
 
@@ -28241,31 +28267,36 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     registerRadarLightningStrike(eventKey, pos.simX, pos.simY, strike.ltType);
   }
 
+  function v2OwnsLightningDataTex()
+  {
+    const st = proceduralLightningState;
+    return !!(st && st.strikes && st.strikes.length > 0 && st.builtEventId >= 0 && st.eventAge >= 0);
+  }
+
   function detectParticleLightningStrike()
   {
-    if (!guiControls.enablePrecipitation)
-      return;
-    // V2/procedural activation already registers radar icons + thunder for every strike.
-    // Re-detecting from the particle buffer after charge discharge both misses strikes
-    // and can double-count when checks pass — skip it outside legacy style.
-    if (!isLegacyLightningStyle())
-      return;
     if (!guiControls.soundThunderEnabled && !guiControls.radarLightningIcons)
+      return;
+    // SDF bolts can come from precip particles as well as V2. Skip only when V2
+    // already owns the displayed bolt (icons were registered at activation).
+    if (v2OwnsLightningDataTex())
       return;
     gl.bindFramebuffer(gl.FRAMEBUFFER, lightningDataFrameBuff);
     gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.FLOAT, particleLightningReadBuffer);
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     const data = particleLightningReadBuffer;
-    const startIter = data[2];
-    if (Math.floor(startIter + 0.5) !== iterNum)
+    const startIter = Math.floor(data[2] + 0.5);
+    const intensity = data[3];
+    if (!(intensity > 0.5) || !(startIter >= 1))
       return;
-    const eventKey = 'particle-' + Math.floor(startIter);
+    if (iterNum - startIter > 12)
+      return;
+    const eventKey = 'particle-' + startIter;
     if (guiControls.radarLightningIcons)
       registerRadarLightningStrike(eventKey, clamp(data[0] * sim_res_x, 0, sim_res_x - 1),
-        clamp(data[1] * sim_res_y, sim_res_y * 0.07, sim_res_y * 0.88), 1);
+        clamp(data[1] * sim_res_y, sim_res_y * 0.07, sim_res_y * 0.88), intensity > 1.0 ? 5 : 1);
     if (guiControls.soundThunderEnabled) {
-      const intensity = Math.max(data[3], 1.2);
-      playThunderForStrike(eventKey, data[0], data[1], intensity);
+      playThunderForStrike(eventKey, data[0], data[1], Math.max(intensity, 1.2));
     }
   }
 
@@ -28761,6 +28792,11 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       radarLightningCanvas.width = canvas.width;
       radarLightningCanvas.height = canvas.height;
     }
+    const canvasRect = canvas.getBoundingClientRect();
+    radarLightningCanvas.style.left = canvasRect.left + 'px';
+    radarLightningCanvas.style.top = canvasRect.top + 'px';
+    radarLightningCanvas.style.width = canvasRect.width + 'px';
+    radarLightningCanvas.style.height = canvasRect.height + 'px';
     radarLightningCanvas.style.display = 'block';
 
     const now = guiControls.paused && lightningIconsPauseClockMs > 0
@@ -28772,18 +28808,24 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     const ctx = radarLightningCanvas.getContext('2d');
     ctx.clearRect(0, 0, radarLightningCanvas.width, radarLightningCanvas.height);
 
+    const fadeMs = Math.max(200, getRadarLightningIconDurationMs() * 0.16);
     for (const strike of radarLightningStrikes) {
-      const sx = simToScreenX(strike.simX);
       const sy = simToScreenY(strike.simY);
-      if (sx < -30 || sx > canvas.width + 30 || sy < -30 || sy > canvas.height + 30)
+      if (sy < -30 || sy > canvas.height + 30)
         continue;
-      if (sx < 0 || sx > canvas.width || sy < 0 || sy > canvas.height)
-        continue;
-      const fadeMs = Math.max(200, getRadarLightningIconDurationMs() * 0.16);
       const fade = guiControls.paused
         ? 1.0
         : Math.min(1, (strike.expireAt - now) / fadeMs);
-      drawRadarLightningIcon(ctx, sx, sy, 16, fade);
+      const drawAtX = (sx) => {
+        if (sx < -30 || sx > canvas.width + 30)
+          return;
+        drawRadarLightningIcon(ctx, sx, sy, 16, fade);
+      };
+      drawAtX(simToScreenX(strike.simX));
+      if (guiControls.wrapHorizontally) {
+        drawAtX(simToScreenX(strike.simX + sim_res_x));
+        drawAtX(simToScreenX(strike.simX - sim_res_x));
+      }
     }
   }
 
@@ -30329,6 +30371,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
               && window.WeatherSandbox.replay.isPhysicsBlocked())) { // Simulation part
 
         let balloonSimIters = 0;
+        let particleLightningCheckPending = false;
 
         let nightAccelerationActive = !airplaneMode && !guiControls.slowMotion && !guiControls.realtimeMode
           && guiControls.dayNightCycle && guiControls.accelerateNight && guiControls.sunAngle < 0.;
@@ -30369,7 +30412,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
           refreshLightningFieldCache();
           resetLightningFrameCpuCache();
           // June 8: particle lightning runs alongside procedural V2.
-          let particleLightningCheckPending = guiControls.enablePrecipitation;
+          particleLightningCheckPending = guiControls.enablePrecipitation;
 
           for (var i = 0; i < numIterations; i++) { // Simulation loop
             // calc and apply velocity
@@ -30651,7 +30694,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
               if (typeof cachedPrecipFeedbackTexture !== 'undefined' && cachedPrecipFeedbackTexture)
                 copyRadarPrecipCacheFromFeedback();
 
-              if (particleLightningCheckPending && i === 0) {
+              if (!v2OwnsLightningDataTex()) {
                 gl.useProgram(lightningLocationProgram);
                 gl.uniform1f(uloc_lightningLocation_iterNum, iterNum);
                 gl.activeTexture(gl.TEXTURE0);
@@ -30659,8 +30702,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
                 gl.bindFramebuffer(gl.FRAMEBUFFER, lightningDataFrameBuff);
                 gl.drawBuffers([ gl.COLOR_ATTACHMENT0 ]);
                 gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
-                detectParticleLightningStrike();
               }
+              particleLightningCheckPending = true;
 
               even = !even;
             }
@@ -30705,6 +30748,9 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
           }
           iterNum++;
         }
+
+        if (particleLightningCheckPending)
+          detectParticleLightningStrike();
 
         // Update nukes
         for (let i = nukes.length - 1; i >= 0; i--) {
