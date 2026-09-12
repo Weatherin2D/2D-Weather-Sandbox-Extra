@@ -175,7 +175,10 @@
     if (seaBreezeCoastCache.nx && (iterNum - seaBreezeCoastCache.iter) < SEABREEZE_CACHE_ITERS)
       return;
 
-    const wallAll = new Int8Array(sim_res_x * sim_res_y * 4);
+    const need = sim_res_x * sim_res_y * 4;
+    if (!seaBreezeCoastCache.wallAll || seaBreezeCoastCache.wallAll.length !== need)
+      seaBreezeCoastCache.wallAll = new Int8Array(need);
+    const wallAll = seaBreezeCoastCache.wallAll;
     gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_1);
     gl.readBuffer(gl.COLOR_ATTACHMENT2);
     gl.readPixels(0, 0, sim_res_x, sim_res_y, gl.RGBA_INTEGER, gl.BYTE, wallAll);
@@ -252,12 +255,17 @@
     const h = y1 - y0 + 1;
     if (w <= 0 || h <= 0) return;
 
-    const baseData = new Float32Array(w * h * 4);
-    const wallData = new Int8Array(w * h * 4);
+    const baseNeed = w * h * 4;
+    if (!seaBreezeCoastCache.patchBase || seaBreezeCoastCache.patchBase.length < baseNeed) {
+      seaBreezeCoastCache.patchBase = new Float32Array(baseNeed);
+      seaBreezeCoastCache.patchWall = new Int8Array(baseNeed);
+    }
+    const baseData = seaBreezeCoastCache.patchBase;
+    const wallData = seaBreezeCoastCache.patchWall;
     gl.readBuffer(gl.COLOR_ATTACHMENT0);
-    gl.readPixels(x0, y0, w, h, gl.RGBA, gl.FLOAT, baseData);
+    gl.readPixels(x0, y0, w, h, gl.RGBA, gl.FLOAT, baseData.subarray(0, baseNeed));
     gl.readBuffer(gl.COLOR_ATTACHMENT2);
-    gl.readPixels(x0, y0, w, h, gl.RGBA_INTEGER, gl.BYTE, wallData);
+    gl.readPixels(x0, y0, w, h, gl.RGBA_INTEGER, gl.BYTE, wallData.subarray(0, baseNeed));
 
     let changed = false;
     const lowFrac = 0.22;
@@ -311,7 +319,7 @@
 
     [baseTexture_0, baseTexture_1].forEach(tex => {
       gl.bindTexture(gl.TEXTURE_2D, tex);
-      gl.texSubImage2D(gl.TEXTURE_2D, 0, x0, y0, w, h, gl.RGBA, gl.FLOAT, baseData);
+      gl.texSubImage2D(gl.TEXTURE_2D, 0, x0, y0, w, h, gl.RGBA, gl.FLOAT, baseData.subarray(0, baseNeed));
     });
   }
 

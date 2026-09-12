@@ -689,7 +689,7 @@ const guiControls_default = {
   lapseUnit : 'LAPSE_UNIT_C_KM',
   temperatureChangeIterations : 5,
   radarOpacity : 0.8,
-  radarUpdateFrequency : 60,
+  radarUpdateFrequency : 90,
   worldRadarResolution : 20.0,
   worldRadarSensitivity : 0.65,
   worldRadarProduct : 'reflectivity',
@@ -4442,6 +4442,9 @@ class Weatherstation
     this.#x = Math.floor(xIn);
     this.#y = Math.floor(yIn);
     this.#plotMode = !!opts.plotMode;
+    this.#canvasDirty = true;
+    this.#lastScreenX = null;
+    this.#lastScreenY = null;
     if (this.#plotMode) {
       this.#width = 140;
       this.#height = 140;
@@ -4668,8 +4671,12 @@ class Weatherstation
   {
     if (!window.WeatherSandbox || !window.WeatherSandbox.meteogram || typeof gl === 'undefined')
       return;
+    // Skip expensive column CAPE/readPixels when meteogram UI is closed.
+    const mg = window.WeatherSandbox.meteogram;
+    if (!(guiControls && guiControls.displayMeteogram) && !(mg.isOpen && mg.isOpen()))
+      return;
 
-    const nLev = window.WeatherSandbox.meteogram.NUM_LEVELS || 36;
+    const nLev = mg.NUM_LEVELS || 36;
     const y0 = Math.max(0, Math.min(sim_res_y - 1, this.#y));
     const h = Math.max(1, sim_res_y - y0);
     const colBase = new Float32Array(h * 4);
@@ -4775,9 +4782,11 @@ class Weatherstation
 
   measure()
   {
+    this.#canvasDirty = true;
     gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_0);
     gl.readBuffer(gl.COLOR_ATTACHMENT0); // basetexture
-    var baseTextureValues = new Float32Array(4 * 3);
+    if (!this.#scratchBase3) this.#scratchBase3 = new Float32Array(4 * 3);
+    var baseTextureValues = this.#scratchBase3;
     gl.readPixels(this.#x, this.#y - 1, 1, 3, gl.RGBA, gl.FLOAT, baseTextureValues);
 
     let T = potentialToRealT(baseTextureValues[1 * 4 + 3], this.#y); // temperature in kelvin
@@ -4793,15 +4802,24 @@ class Weatherstation
       const depthCells = Math.max(2, Math.round(1500 / dz));
       const y0 = Math.max(0, Math.min(sim_res_y - 1, this.#y));
       const h = Math.max(1, Math.min(depthCells, sim_res_y - y0));
-      const colBase = new Float32Array(h * 4);
-      const colWall = new Int8Array(h * 4);
+      if (!this.#scratchMslpBase || this.#scratchMslpBase.length < h * 4) {
+        this.#scratchMslpBase = new Float32Array(h * 4);
+        this.#scratchMslpWall = new Int8Array(h * 4);
+      }
+      const colBase = this.#scratchMslpBase;
+      const colWall = this.#scratchMslpWall;
       gl.readBuffer(gl.COLOR_ATTACHMENT0);
-      gl.readPixels(this.#x, y0, 1, h, gl.RGBA, gl.FLOAT, colBase);
+      gl.readPixels(this.#x, y0, 1, h, gl.RGBA, gl.FLOAT, colBase.subarray(0, h * 4));
       gl.readBuffer(gl.COLOR_ATTACHMENT2);
-      gl.readPixels(this.#x, y0, 1, h, gl.RGBA_INTEGER, gl.BYTE, colWall);
-      const envTempsC = new Float32Array(sim_res_y);
-      const isFluid = new Array(sim_res_y);
-      const fluidPressure = new Float32Array(sim_res_y);
+      gl.readPixels(this.#x, y0, 1, h, gl.RGBA_INTEGER, gl.BYTE, colWall.subarray(0, h * 4));
+      if (!this.#scratchEnvTemps || this.#scratchEnvTemps.length !== sim_res_y) {
+        this.#scratchEnvTemps = new Float32Array(sim_res_y);
+        this.#scratchIsFluid = new Array(sim_res_y);
+        this.#scratchFluidP = new Float32Array(sim_res_y);
+      }
+      const envTempsC = this.#scratchEnvTemps;
+      const isFluid = this.#scratchIsFluid;
+      const fluidPressure = this.#scratchFluidP;
       for (let y = 0; y < sim_res_y; y++)
         isFluid[y] = false;
       for (let i = 0; i < h; i++) {
@@ -4827,7 +4845,8 @@ class Weatherstation
 
     // gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_0);
     gl.readBuffer(gl.COLOR_ATTACHMENT1); // watertexture
-    var waterTextureValues = new Float32Array(2 * 4);
+    if (!this.#scratchWater2) this.#scratchWater2 = new Float32Array(2 * 4);
+    var waterTextureValues = this.#scratchWater2;
     gl.readPixels(this.#x, this.#y - 1, 1, 2, gl.RGBA, gl.FLOAT, waterTextureValues);
 
     if (waterTextureValues[4 + 0] > 1000.) { // is not air
@@ -5112,6 +5131,14 @@ class Weatherstation
   {
     let screenX = simToScreenX(this.#x) - this.#width / 2;
     let screenY = simToScreenY(this.#y) - (this.#plotMode ? this.#height / 2 : this.#height);
+
+    const posChanged = this.#lastScreenX == null || Math.abs(screenX - this.#lastScreenX) > 0.5
+      || Math.abs(screenY - this.#lastScreenY) > 0.5;
+    if (!this.#canvasDirty && !posChanged)
+      return;
+    this.#canvasDirty = false;
+    this.#lastScreenX = screenX;
+    this.#lastScreenY = screenY;
 
     this.#mainDiv.style.left = screenX + 'px';
     this.#mainDiv.style.top = screenY + 'px';
@@ -10007,7 +10034,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   let hostBrushSyncPending = false;
   const HOST_FULL_SNAPSHOT_INTERVAL_MS = 60000;
   const HOST_SYNC_META_INTERVAL_MS = 200;
-  const HOST_TEXTURE_SYNC_ITER_DELTA = 6;
+  const HOST_TEXTURE_SYNC_ITER_DELTA = 15;
 
   if (!loadingBar)
     await setLoadingBar();
@@ -26686,6 +26713,11 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   {
     if (!guiControls.enablePrecipitation || NUM_DROPLETS < 1)
       return;
+    // Presentation LOD: full-res MAX-blend of all droplets is costly.
+    const needFine = isDropletSizeDisplayMode(guiControls.displayMode) || guiControls.showDrops;
+    const stride = needFine ? 1 : ((useLiteVisualsMode() || guiControls.highResPerformanceMode) ? 3 : 2);
+    if ((frameNum % stride) !== 0)
+      return;
 
     const srcVAO = even ? precipitationVao_0 : precipitationVao_1;
 
@@ -30955,7 +30987,10 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
 
               // Keep last good precip sample for radar before later iters clear it.
               precipFeedbackReadyForRadar = true;
-              if (typeof cachedPrecipFeedbackTexture !== 'undefined' && cachedPrecipFeedbackTexture)
+              // Full-domain copyTex is expensive — only when radar is actually shown.
+              if (typeof cachedPrecipFeedbackTexture !== 'undefined' && cachedPrecipFeedbackTexture
+                  && (isRadarDisplayMode(guiControls.displayMode) || guiControls.radarOverlay)
+                  && shouldUpdateRadarDisplayCache())
                 copyRadarPrecipCacheFromFeedback();
 
               if (!v2OwnsLightningDataTex()) {
@@ -30972,9 +31007,17 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
               even = !even;
             }
 
-            if (displayWeatherStations && iterNum % (guiControls.reducedWeatherStationUpdates ? 416 : 208) == 0) { // ~every 60 in game seconds:  0.00008 *3600 * 208 = 59.9, reduced = every 120 seconds
-              for (i = 0; i < weatherStations.length; i++) {
-                weatherStations[i].measure();
+            {
+              // Under frame pressure, measure less often (display instruments only).
+              let stationEvery = guiControls.reducedWeatherStationUpdates ? 416 : 208;
+              try {
+                if (typeof getSmoothedFramePressure === 'function' && getSmoothedFramePressure() > 0.35)
+                  stationEvery = Math.max(stationEvery, 520);
+              } catch (e) { /* ignore */ }
+              if (displayWeatherStations && iterNum % stationEvery == 0) {
+                for (i = 0; i < weatherStations.length; i++) {
+                  weatherStations[i].measure();
+                }
               }
             }
             if (!airplaneMode && !guiControls.realtimeMode) {
@@ -31073,7 +31116,17 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
           graphX = guiControls.graphFixedPosition ? guiControls.graphFixedX : Math.floor(Math.abs(mod(mouseXinSim * sim_res_x, sim_res_x)));
           graphY = guiControls.graphFixedPosition ? guiControls.graphFixedY : Math.floor(mouseYinSim * sim_res_y);
         }
-        soundingGraph.draw(graphX, graphY);
+        if (!window._soundingDrawState)
+          window._soundingDrawState = { frame: -999, x: -1, y: -1 };
+        const st = window._soundingDrawState;
+        const interval = (typeof useLiteVisualsMode === 'function' && useLiteVisualsMode()) ? 6 : 3;
+        const moved = graphX !== st.x || graphY !== st.y;
+        if (moved || (frameNum - st.frame) >= interval) {
+          soundingGraph.draw(graphX, graphY);
+          st.frame = frameNum;
+          st.x = graphX;
+          st.y = graphY;
+        }
       }
 
     } // END OF NOT SETUP MODE
