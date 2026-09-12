@@ -12524,12 +12524,50 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
     guiControls.resetSettings = function() {
       if (confirm('Are you sure you want to reset all settings to default?')) {
+        if (window.WeatherSandbox && window.WeatherSandbox.guiSettings)
+          window.WeatherSandbox.guiSettings.detachSearch();
         datGui.destroy();                                 // remove datGui completely
         setupDatGui(JSON.stringify(guiControls_default)); // generate new one with new settings
         setGuiUniforms();
         hideOrShowGraph();
         updateSunlight();
       }
+    };
+
+    guiControls.exportSettings = function() {
+      if (!window.WeatherSandbox || !window.WeatherSandbox.guiSettings) {
+        alert('Settings tools not loaded');
+        return;
+      }
+      window.WeatherSandbox.guiSettings.exportSettings(guiControls, guiControls_default);
+    };
+
+    guiControls.importSettings = function() {
+      if (!window.WeatherSandbox || !window.WeatherSandbox.guiSettings) {
+        alert('Settings tools not loaded');
+        return;
+      }
+      window.WeatherSandbox.guiSettings.importSettings({
+        onImport: function(settings) {
+          if (!confirm('Import these settings? Current GUI values will be replaced (simulation state is kept).'))
+            return;
+          const merged = JSON.parse(JSON.stringify(guiControls_default));
+          Object.keys(settings || {}).forEach(function(key) {
+            if (typeof merged[key] === 'function') return;
+            merged[key] = settings[key];
+          });
+          // Keep runtime action hooks out of the serialized blob; setupDatGui reattaches them.
+          if (window.WeatherSandbox && window.WeatherSandbox.guiSettings)
+            window.WeatherSandbox.guiSettings.detachSearch();
+          datGui.destroy();
+          setupDatGui(JSON.stringify(merged));
+          setGuiUniforms();
+          hideOrShowGraph();
+          if (typeof updateSunlight === 'function') updateSunlight();
+          if (typeof datGui !== 'undefined' && datGui && datGui.updateDisplay)
+            datGui.updateDisplay();
+        }
+      });
     };
 
     var fluidParams_folder = datGui.addFolder('Fluid');
@@ -13699,6 +13737,8 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     if (guiControls.showDebugOverlay !== undefined)
       advancedResolution.add(guiControls, 'showDebugOverlay').name('Debug Overlay (F3)').listen();
 
+    advanced_folder.add(guiControls, 'exportSettings').name('Export Settings…');
+    advanced_folder.add(guiControls, 'importSettings').name('Import Settings…');
     advanced_folder.add(guiControls, 'resetSettings').name('Reset all settings');
 
     datGui.add(guiControls, 'paused').onChange(function(value) {
@@ -13777,6 +13817,9 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     ControlHelp.attachSoundingDashboard();
     ControlHelp.attachMultiplayerPanels();
   }
+
+  if (window.WeatherSandbox && window.WeatherSandbox.guiSettings)
+    window.WeatherSandbox.guiSettings.attach(datGui);
   }
 
   function applySyncedGuiChange(key, value)
