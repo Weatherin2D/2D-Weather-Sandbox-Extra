@@ -312,3 +312,113 @@
 #easProductCard[data-type="TOR_WATCH"] .eas-product-card-bar { background: #ff3a3a; }
 #easProductCard[data-type="SVR_WATCH"] .eas-product-card-bar { background: #ff78c8; }
 #easProductCard[data-type="MD"] .eas-product-card-bar { background: #ffb040; }
+
+/* Postcard capture — hide chrome for clean export */
+body.ws-postcard-hide-chrome > *:not(#mainCanvas) {
+  visibility: hidden !important;
+}
+
+/* Forecast challenge */
+.ws-fc-body {
+  padding: 12px 14px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ws-fc-help {
+  margin: 0;
+  color: var(--ws-overlay-muted);
+  line-height: 1.4;
+}
+
+.ws-fc-label {
+  font-size: 11px;
+  color: #aab;
+  margin-top: 4px;
+}
+
+.ws-fc-input {
+  background: var(--ws-overlay-control-bg);
+  color: #eee;
+  border: 1px solid #333;
+  border-radius: 6px;
+  padding: 6px 8px;
+  font: inherit;
+}
+
+.ws-fc-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.ws-fc-status {
+  min-height: 1.2em;
+  color: #9cf;
+}
+
+.ws-fc-score {
+  font-size: 18px;
+  margin-bottom: 8px;
+}
+
+.ws-fc-breakdown {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.ws-fc-row {
+  display: grid;
+  grid-template-columns: 90px 1fr auto;
+  gap: 8px;
+  align-items: start;
+  font-size: 11px;
+  padding: 6px 8px;
+  background: rgba(255, 255, 255, 0.04);
+  border-radius: 6px;
+}
+
+.ws-fc-row span:nth-child(2) {
+  color: #9aa;
+}
+
+/* Chase cam HUD + windshield FX */
+#wsChaseHud {
+  position: fixed;
+  left: 50%;
+  top: 14px;
+  transform: translateX(-50%);
+  z-index: 90;
+  display: none;
+  padding: 6px 14px;
+  border-radius: 999px;
+  background: rgba(8, 12, 20, 0.72);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  color: #e8eef2;
+  font: 600 12px/1.2 "Segoe UI", Tahoma, sans-serif;
+  letter-spacing: 0.04em;
+  pointer-events: none;
+}
+
+#wsChaseRain {
+  position: fixed;
+  inset: 0;
+  z-index: 3;
+  pointer-events: none;
+  display: none;
+  background:
+    repeating-linear-gradient(
+      105deg,
+      transparent 0 14px,
+      rgba(180, 200, 220, 0.07) 14px 15px
+    );
+  opacity: 0;
+  transition: opacity 0.25s ease;
+  mix-blend-mode: screen;
+}
+
+body.ws-chase-cam #wsChaseHud { display: block; }
+body.ws-chase-cam #wsChaseRain { display: block; }
+

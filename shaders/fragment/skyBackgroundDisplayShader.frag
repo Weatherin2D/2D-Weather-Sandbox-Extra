@@ -345,16 +345,15 @@ void main()
   twilightSky = mix(twilightSky, vec3(0.88, 0.62, 0.24), sunWarmth * twilightAmt * 0.55);
 
   // Elevation-keyed sky phase textures (PDF gradients). Noon keeps procedural daySky.
-  // Image top is black, image bottom is horizon colour. WebGL uploads image-top → v=0,
-  // so use 1-y so texture bottom (warm) sits at surface y=0 and black at the sky top.
-  // Sky draws above the sim (texCoord.y > 1). Map the strip across the same vertical
-  // span as zenithBlack (full black ~ skyH 2.0) so the baked black fade sits in the
-  // overscan, not halfway down inside the simulation.
+  // Image top is zenith colour, image bottom is horizon colour. WebGL uploads image-top → v=0,
+  // so use 1-y so texture bottom (warm) sits at surface y=0.
+  // Stretch the full colour strip across the visible sky (+ light overscan). Deep zenith
+  // darkening is procedural only — never a hard baked black lid mid-frame.
   float phaseAmt = 0.0;
   if (useSkyPhaseTextures > 0.5) {
     float elevDeg = sunElevRad * rad2deg;
     float skyHPhase = (texCoord.y - horizonLine) / max(1.0 - horizonLine, 0.01);
-    float vTex = 1.0 - clamp(skyHPhase / 2.0, 0.0, 1.0);
+    float vTex = 1.0 - clamp(skyHPhase / 1.25, 0.0, 1.0);
     // Soft vertical blur hides residual 8-bit banding in the phase strips.
     const float SKY_TEXEL = 1.0 / 4096.0;
     vec3 cNight = sampleSkyPhaseStrip(skyPhaseNight, vTex, SKY_TEXEL);
@@ -372,9 +371,9 @@ void main()
     float wSum = max(wNight + wCivil + wRiseSet + wGolden + wEarly, 1e-5);
     vec3 phaseSky = (cNight * wNight + cCivil * wCivil + cRiseSet * wRiseSet
                      + cGolden * wGolden + cEarly * wEarly) / wSum;
-    // Subtle screen-space dither breaks remaining posterization without looking noisy.
+    // Tiny dither — enough to break posterization, not enough to look grainy.
     float dither = fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453) - 0.5;
-    phaseSky += dither * (1.0 / 255.0);
+    phaseSky += dither * (0.35 / 255.0);
     phaseAmt = clamp(wSum, 0.0, 1.0) * (1.0 - smoothstep(22.0, 30.0, elevDeg));
     // Prefer the texture colours over procedural twilight wash.
     daySky = mix(daySky, phaseSky, phaseAmt);
@@ -404,10 +403,10 @@ void main()
   // Wide smoothstep so multi-lat columns blend day↔twilight without hard pillars
   float twilightBlend = smoothstep(0.0, 1.0, twilightAmt);
   vec3 mixedCol = mix(daySky, twilightSky, twilightBlend);
-  // Noon procedural black-out at the top. When phase textures own the sky, keep their baked
-  // black fade instead of crushing mid-sky colours.
-  float zenithBlack = smoothstep(0.62, 2.0, skyHeight);
-  zenithBlack *= (1.0 - phaseAmt);
+  // Soft zenith deepen only in far overscan. Phase textures carry their own dark-blue
+  // zenith — do not crush them to a hard black lid mid-frame.
+  float zenithBlack = smoothstep(1.20, 2.50, skyHeight);
+  zenithBlack *= mix(1.0, 0.35, phaseAmt);
   mixedCol = mix(mixedCol, vec3(0.0), zenithBlack);
 
   // Star field - only visible at night (sun below horizon)

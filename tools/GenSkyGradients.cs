@@ -111,7 +111,14 @@ class GenSkyGradients {
     using (var src = new Bitmap(srcPath)) {
       float[] sR, sG, sB;
       BuildSeries(src, out sR, out sG, out sB);
-      float srcBlack = Math.Max(0.08f, Math.Min(0.50f, blackFrac));
+      // Skip baked pure-black at the source top — keep the full colour story only.
+      int colourStart = 0;
+      for (int i = 0; i < sR.Length; i++) {
+        float lum = 0.2126f * sR[i] + 0.7152f * sG[i] + 0.0722f * sB[i];
+        if (lum > 0.035f) { colourStart = i; break; }
+      }
+      float srcBlack = colourStart / (float)Math.Max(1, sR.Length - 1);
+      srcBlack = Math.Max(0.02f, Math.Min(0.55f, srcBlack));
       float[] cR, cG, cB;
       ExtractColourSpan(sR, sG, sB, srcBlack, out cR, out cG, out cB);
 
@@ -120,24 +127,10 @@ class GenSkyGradients {
       var fg = new float[outH];
       var fb = new float[outH];
       for (int y = 0; y < outH; y++) {
-        float fn = y / (float)(outH - 1);
+        float fn = y / (float)(outH - 1); // 0 top, 1 bottom
         float r, g, b;
-        if (fn <= blackFrac) {
-          float edge = blackFrac * 0.72f;
-          if (fn <= edge) {
-            r = g = b = 0f;
-          } else {
-            float t = Smooth((fn - edge) / Math.Max(1e-6f, blackFrac - edge));
-            // Lift into early colour of the span (skip pure black if present).
-            float zr = cR[Math.Min(cR.Length - 1, Math.Max(1, cR.Length / 40))];
-            float zg = cG[Math.Min(cG.Length - 1, Math.Max(1, cG.Length / 40))];
-            float zb = cB[Math.Min(cB.Length - 1, Math.Max(1, cB.Length / 40))];
-            LerpRgb(0f, 0f, 0f, zr, zg, zb, t, out r, out g, out b);
-          }
-        } else {
-          float u = (fn - blackFrac) / Math.Max(1e-6f, 1f - blackFrac);
-          Sample(cR, cG, cB, u, out r, out g, out b);
-        }
+        // Full strip is colour zenith → horizon (no hard black lid).
+        Sample(cR, cG, cB, fn, out r, out g, out b);
         fr[y] = r; fg[y] = g; fb[y] = b;
       }
 
@@ -218,7 +211,8 @@ class GenSkyGradients {
 
     const int W = 32;
     const int H = 4096;
-    const float blackFrac = 0.38f;
+    // No baked black lid — colour zenith→horizon only. Procedural zenith darkens overscan.
+    const float blackFrac = 0.0f;
 
     bool usePdf = Directory.Exists(srcDir) && File.Exists(Path.Combine(srcDir, "img_0.jpg"));
     if (usePdf) {

@@ -559,6 +559,7 @@ window.enforceMultiplayerGuardrails = function()
 
 const guiControls_default = {
   vorticity : 0.005,
+  enable3DVortices : false, // experimental: boost curl confinement + tornado markers
   dragMultiplier : 0.001, // 0.01
   wind : 0.0,
   globalEffectsStartAlt : 0,
@@ -757,6 +758,7 @@ const guiControls_default = {
   replayMaxKeyframes : 120,        // ring-buffer cap during live recording
   replayPlaybackSpeed : 1,         // scrub play speed multiplier
   forecastLeadHours : 3,           // free-run forecast lead time
+  postcardWatermark : true,        // presentation: timestamp watermark on postcard export
   floodVizStrength : 0.75, // legacy alias; kept in sync with floodWaterOpacity
   floodWaterOpacity : 0.75, // Display: floodwater opacity (0 = hidden, 1 = full)
   fogHazeStrength : 0.0, // realistic-view near-surface fog/haze strength
@@ -12060,6 +12062,8 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     guiControls.replayPlaybackSpeed = guiControls_default.replayPlaybackSpeed;
   if (guiControls.forecastLeadHours === undefined)
     guiControls.forecastLeadHours = guiControls_default.forecastLeadHours;
+  if (guiControls.postcardWatermark === undefined)
+    guiControls.postcardWatermark = guiControls_default.postcardWatermark;
   if (guiControls.enableDrylines === undefined)
     guiControls.enableDrylines = guiControls_default.enableDrylines;
   if (guiControls.displayDrylines === undefined)
@@ -12133,6 +12137,8 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     guiControls.labelsOverlay = guiControls_default.labelsOverlay;
   if (guiControls.tornadoDetectionOverlay === undefined)
     guiControls.tornadoDetectionOverlay = guiControls_default.tornadoDetectionOverlay;
+  if (guiControls.enable3DVortices === undefined)
+    guiControls.enable3DVortices = guiControls_default.enable3DVortices;
   if (guiControls.warningsOverlay === undefined)
     guiControls.warningsOverlay = guiControls_default.warningsOverlay;
   if (guiControls.easAlertsEnabled === undefined)
@@ -12271,7 +12277,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   function setGuiUniforms()
   { // set all uniforms to new values
     gl.useProgram(boundaryProgram);
-    gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'vorticity'), guiControls.vorticity);
+    gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'vorticity'), getEffectiveVorticity());
     gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'landEvaporation'), guiControls.landEvaporation);
     gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'waterEvaporation'), guiControls.waterEvaporation);
     gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'dynamicWaterTemperature'), guiControls.dynamicWaterTemperature ? 1.0 : 0.0);
@@ -12531,9 +12537,21 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     fluidParams_folder.add(guiControls, 'vorticity', 0.0, 0.010, 0.001)
       .onChange(function() {
         gl.useProgram(boundaryProgram);
-        gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'vorticity'), guiControls.vorticity);
+        gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'vorticity'), getEffectiveVorticity());
       })
       .name('Vorticity');
+    fluidParams_folder.add(guiControls, 'enable3DVortices')
+      .onChange(function() {
+        if (guiControls.enable3DVortices) {
+          guiControls.skipCurlCalculation = false;
+          guiControls.tornadoDetectionOverlay = true;
+          tornadoLastScanIter = -9999;
+        }
+        gl.useProgram(boundaryProgram);
+        gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'vorticity'), getEffectiveVorticity());
+      })
+      .name('3D Vortices (experimental)')
+      .listen();
 
     fluidParams_folder.add(guiControls, 'dragMultiplier', 0.0, 1.0, 0.01)
       .onChange(function() {
@@ -13070,6 +13088,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     displayCamera.add(guiControls, 'cameraMode', {
         'Free Camera' : 'CAM_FREE',
         'Cinematic Camera' : 'CAM_CINEMATIC',
+        'Chase Camera' : 'CAM_CHASE',
       })
       .onChange(function() {
         cinematicCamState.smoothX = null;
@@ -13077,6 +13096,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         cinematicCamState.lockedVy = 0;
         cinematicCamState.lastScanFrame = -9999;
         cinematicCamState.userZoomed = false;
+        if (typeof syncChaseCamChrome === 'function') syncChaseCamChrome();
       })
       .name('Camera Mode')
       .listen();
@@ -13507,6 +13527,13 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       .name('Playback Speed');
     replayFolder.add(guiControls, 'forecastLeadHours', 0.25, 6, 0.25).name('Forecast Lead (h)');
     replayFolder.add(guiControls, 'runForecastNow').name('Forecast Now');
+    guiControls.openForecastChallenge = function() {
+      if (window.WeatherSandbox && window.WeatherSandbox.forecastChallenge)
+        window.WeatherSandbox.forecastChallenge.open();
+      else
+        alert('Forecast challenge module not loaded');
+    };
+    replayFolder.add(guiControls, 'openForecastChallenge').name('Forecast Challenge…');
 
     var advancedSimulation = advanced_folder.addFolder('Simulation');
     advancedSimulation.add(guiControls, 'coriolisStrength', 0.0, 0.02, 0.0005)
@@ -13688,6 +13715,30 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         window.WeatherMultiplayer.broadcastGuiSet('paused', !!value, true);
     }).name('Paused').listen();
     datGui.add(guiControls, 'download').name('Save Simulation to File');
+    guiControls.exportPostcard = function() {
+      if (!window.WeatherSandbox || !window.WeatherSandbox.postcard) {
+        alert('Postcard module not loaded');
+        return;
+      }
+      window.WeatherSandbox.postcard.requestPng({
+        watermark: !!guiControls.postcardWatermark,
+        timeLine: (typeof formatSoundingObsTimeLabel === 'function') ? formatSoundingObsTimeLabel() : '',
+      });
+    };
+    guiControls.exportPostcardMotion = function() {
+      if (!window.WeatherSandbox || !window.WeatherSandbox.postcard) {
+        alert('Postcard module not loaded');
+        return;
+      }
+      window.WeatherSandbox.postcard.requestMotion({
+        durationMs: 3000,
+        watermark: !!guiControls.postcardWatermark,
+        timeLine: (typeof formatSoundingObsTimeLabel === 'function') ? formatSoundingObsTimeLabel() : '',
+      });
+    };
+    datGui.add(guiControls, 'exportPostcard').name('Export Postcard (PNG)');
+    datGui.add(guiControls, 'exportPostcardMotion').name('Export Motion Postcard (3s)');
+    datGui.add(guiControls, 'postcardWatermark').name('Postcard Watermark');
     datGui.add(guiControls, 'openColorScaleEditor').name('Open Color Scale Editor');
     datGui.add(guiControls, 'openKeybindEditor').name('Open Keybind Editor');
     datGui.add(guiControls, 'openShaderMenu').name('Open Shader Menu');
@@ -19172,6 +19223,27 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         cinematicCamState.lockedVy = 0;
         cinematicCamState.lastScanFrame = -9999;
         cinematicCamState.userZoomed = false;
+        if (typeof syncChaseCamChrome === 'function') syncChaseCamChrome();
+      } },
+    { id: 'toggleChaseCam', name: 'Toggle chase camera', category: 'Camera', defaultCode: null,
+      onDown() {
+        guiControls.cameraMode = guiControls.cameraMode === 'CAM_CHASE' ? 'CAM_FREE' : 'CAM_CHASE';
+        cinematicCamState.smoothX = null;
+        cinematicCamState.smoothY = null;
+        cinematicCamState.lockedVy = 0;
+        cinematicCamState.lastScanFrame = -9999;
+        cinematicCamState.userZoomed = false;
+        if (typeof syncChaseCamChrome === 'function') syncChaseCamChrome();
+      } },
+    { id: 'exportPostcard', name: 'Export postcard PNG', category: 'Graph & UI', defaultCode: 'F9',
+      onDown() {
+        if (guiControls && typeof guiControls.exportPostcard === 'function')
+          guiControls.exportPostcard();
+      } },
+    { id: 'openForecastChallenge', name: 'Open forecast challenge', category: 'Graph & UI', defaultCode: null,
+      onDown() {
+        if (window.WeatherSandbox && window.WeatherSandbox.forecastChallenge)
+          window.WeatherSandbox.forecastChallenge.open();
       } },
     { id: 'toggleGraph', name: 'Toggle sounding graph', category: 'Graph & UI', defaultCode: 'KeyG',
       onDown() {
@@ -19656,7 +19728,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     if (!((guiControls.tool == 'TOOL_WALL_FRESH' || guiControls.tool == 'TOOL_WALL_SEA') && leftMousePressed)) // lock y pos while drawing water
       mouseY = event.clientY - rect.top;
 
-    if (middleMousePressed && !isCinematicCameraActive()) {
+    if (middleMousePressed && !isAutoFollowCameraActive()) {
       cam.changeViewXpos(((mouseX - prevMouseX) / cam.curZoom / canvas.width) * 2.0);
       cam.changeViewYpos(-((mouseY - prevMouseY) / cam.curZoom / canvas.width) * 2.0);
       prevMouseX = mouseX;
@@ -20295,7 +20367,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
 
         cam.zoomAtMousePos((curSep / prevSep) - 1.0);
 
-        if (wasTwoFingerTouchBefore && !isCinematicCameraActive()) {
+        if (wasTwoFingerTouchBefore && !isAutoFollowCameraActive()) {
           cam.changeViewYpos(((mouseX - prevMouseX) / cam.curZoom / canvas.width) * 2.0);
           cam.changeViewYpos(((mouseY - prevMouseY) / cam.curZoom / canvas.width) * 2.0);
         }
@@ -24682,7 +24754,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   gl.uniform2f(gl.getUniformLocation(boundaryProgram, 'resolution'), sim_res_x, sim_res_y);
   gl.uniform2f(gl.getUniformLocation(boundaryProgram, 'texelSize'), texelSizeX, texelSizeY);
   gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'vorticity'),
-               guiControls.vorticity);              // can be changed by GUI input
+               getEffectiveVorticity());              // can be changed by GUI / 3D vortices toggle
   gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'lightEffectScale'), 1.0);
   gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'waterTemperature'),
                CtoK(guiControls.waterTemperature)); // can be changed by GUI input
@@ -28437,8 +28509,9 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         + '  reduced=' + (guiControls.reducedPrecipitation ? 'on' : 'off'),
       'Cam: xyz ' + cam.curXpos.toFixed(3) + ' / ' + cam.curYpos.toFixed(3) + ' / ' + cam.curZoom.toFixed(3)
         + '  zoomNorm ' + zoomNorm.toFixed(4)
-        + (guiControls.cameraMode === 'CAM_CINEMATIC'
-          ? ('  cine ' + cinematicCamState.peakX.toFixed(0) + ',' + cinematicCamState.peakY.toFixed(0)
+        + (guiControls.cameraMode === 'CAM_CINEMATIC' || guiControls.cameraMode === 'CAM_CHASE'
+          ? ('  ' + (guiControls.cameraMode === 'CAM_CHASE' ? 'chase' : 'cine') + ' '
+            + cinematicCamState.peakX.toFixed(0) + ',' + cinematicCamState.peakY.toFixed(0)
             + ' w ' + rawVelocityTo_ms(cinematicCamState.peakVy).toFixed(1) + ' m/s')
           : ''),
       'Cursor: ' + (typeof mouseXinSim === 'number' ? mouseXinSim.toFixed(1) : '?')
@@ -29674,22 +29747,24 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         guiControls.auto_IterPerFrame = false;
       },
       buildForecastMeteogram: function(sess) {
-        if (!window.WeatherSandbox || !window.WeatherSandbox.meteogram) return;
-        if (!weatherStations || !weatherStations.length) return;
-        const station = weatherStations[0];
-        window.WeatherSandbox.meteogram.clearStation(station);
-        const pk = window.pako;
-        for (let i = 0; i < sess.keyframes.length; i++) {
-          const kf = sess.keyframes[i];
-          let raw = kf.compressed;
-          if (pk && pk.inflate) raw = pk.inflate(raw);
-          const buf = raw.buffer.slice(raw.byteOffset, raw.byteOffset + raw.byteLength);
-          applyTextureSyncFromBuffer(buf);
-          if (kf.meta && kf.meta.iterNum != null) iterNum = kf.meta.iterNum | 0;
-          station.measure();
+        if (window.WeatherSandbox && window.WeatherSandbox.meteogram && weatherStations && weatherStations.length) {
+          const station = weatherStations[0];
+          window.WeatherSandbox.meteogram.clearStation(station);
+          const pk = window.pako;
+          for (let i = 0; i < sess.keyframes.length; i++) {
+            const kf = sess.keyframes[i];
+            let raw = kf.compressed;
+            if (pk && pk.inflate) raw = pk.inflate(raw);
+            const buf = raw.buffer.slice(raw.byteOffset, raw.byteOffset + raw.byteLength);
+            applyTextureSyncFromBuffer(buf);
+            if (kf.meta && kf.meta.iterNum != null) iterNum = kf.meta.iterNum | 0;
+            station.measure();
+          }
+          window.WeatherSandbox.meteogram.openForStation(station);
+          guiControls.displayMeteogram = true;
         }
-        window.WeatherSandbox.meteogram.openForStation(station);
-        guiControls.displayMeteogram = true;
+        if (window.WeatherSandbox && window.WeatherSandbox.forecastChallenge)
+          window.WeatherSandbox.forecastChallenge.onForecastComplete();
       },
     });
     window.WeatherSandbox.replay.setPlaybackSpeed(guiControls.replayPlaybackSpeed || 1);
@@ -30004,9 +30079,93 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
   }
 
+  function getEffectiveVorticity()
+  {
+    if (!guiControls || guiControls.skipCurlCalculation)
+      return 0.0;
+    var v = Number(guiControls.vorticity);
+    if (!Number.isFinite(v) || v < 0)
+      v = 0.0;
+    // Experimental "3D vortices": stronger curl confinement so storm cores tighten into
+    // vortex-like circulations in the 2D plane (still not true 3D CFD).
+    if (guiControls.enable3DVortices) {
+      var boosted = Math.max(v, 0.006) * 3.0;
+      if (boosted > 0.02) boosted = 0.02;
+      return boosted;
+    }
+    return v;
+  }
+
   function isCinematicCameraActive()
   {
     return !!(guiControls && guiControls.cameraMode === 'CAM_CINEMATIC' && !airplaneMode && !SETUP_MODE);
+  }
+
+  function isChaseCameraActive()
+  {
+    return !!(guiControls && guiControls.cameraMode === 'CAM_CHASE' && !airplaneMode && !SETUP_MODE);
+  }
+
+  function isAutoFollowCameraActive()
+  {
+    return isCinematicCameraActive() || isChaseCameraActive();
+  }
+
+  function ensureChaseCamChrome()
+  {
+    if (typeof document === 'undefined' || !document.body) return;
+    if (!document.getElementById('wsChaseHud')) {
+      var hud = document.createElement('div');
+      hud.id = 'wsChaseHud';
+      hud.textContent = 'CHASE CAM';
+      document.body.appendChild(hud);
+    }
+    if (!document.getElementById('wsChaseRain')) {
+      var rain = document.createElement('div');
+      rain.id = 'wsChaseRain';
+      document.body.appendChild(rain);
+    }
+  }
+
+  function syncChaseCamChrome()
+  {
+    if (typeof document === 'undefined' || !document.body) return;
+    ensureChaseCamChrome();
+    var on = isChaseCameraActive();
+    document.body.classList.toggle('ws-chase-cam', on);
+    var rain = document.getElementById('wsChaseRain');
+    if (rain) {
+      var intensity = 0;
+      if (on && cinematicCamState && Number.isFinite(cinematicCamState.peakVy)) {
+        var ms = typeof rawVelocityTo_ms === 'function' ? rawVelocityTo_ms(cinematicCamState.peakVy) : 0;
+        intensity = Math.max(0, Math.min(0.85, ms / 25));
+      }
+      rain.style.opacity = String(intensity);
+    }
+    var hud = document.getElementById('wsChaseHud');
+    if (hud && on) {
+      var tip = 'CHASE CAM';
+      if (cinematicCamState && cinematicCamState.lockedVy > 0)
+        tip += ' · storm lock';
+      hud.textContent = tip;
+    }
+  }
+
+  function pickChaseTarget()
+  {
+    var td = window.WeatherSandbox && window.WeatherSandbox.tornadoDetection;
+    if (td && typeof td.getDetections === 'function') {
+      var dets = td.getDetections() || [];
+      if (dets.length) {
+        var best = dets[0];
+        for (var i = 1; i < dets.length; i++) {
+          if ((dets[i].age || 0) > (best.age || 0))
+            best = dets[i];
+        }
+        return { x: best.x, y: best.y, vy: cinematicCamState.peakVy || msToRawVelocity(8), fromTornado: true };
+      }
+    }
+    return scanCinematicMaxVerticalVelocity();
   }
 
   function scanCinematicMaxVerticalVelocity()
@@ -30050,21 +30209,22 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
 
   function updateCinematicCamera()
   {
-    if (!isCinematicCameraActive())
+    const chase = isChaseCameraActive();
+    if (!isCinematicCameraActive() && !chase)
       return;
 
     const scanEvery = (typeof useLiteVisualsMode === 'function' && useLiteVisualsMode()) ? 8 : 4;
     if (frameNum - cinematicCamState.lastScanFrame >= scanEvery || cinematicCamState.smoothX == null) {
-      const peak = scanCinematicMaxVerticalVelocity();
+      const peak = chase ? pickChaseTarget() : scanCinematicMaxVerticalVelocity();
       cinematicCamState.lastScanFrame = frameNum;
-      const minVy = msToRawVelocity(1.5);
-      if (peak && peak.vy >= minVy) {
+      const minVy = msToRawVelocity(chase ? 0.8 : 1.5);
+      if (peak && (peak.fromTornado || peak.vy >= minVy)) {
         cinematicCamState.lockedX = peak.x;
         cinematicCamState.lockedY = peak.y;
-        cinematicCamState.lockedVy = peak.vy;
+        cinematicCamState.lockedVy = Math.max(peak.vy || minVy, minVy);
         cinematicCamState.peakX = peak.x;
         cinematicCamState.peakY = peak.y;
-        cinematicCamState.peakVy = peak.vy;
+        cinematicCamState.peakVy = peak.vy || cinematicCamState.peakVy;
       } else if (cinematicCamState.lockedVy > 0) {
         cinematicCamState.lockedVy *= 0.88;
         if (cinematicCamState.lockedVy < minVy)
@@ -30072,8 +30232,10 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       }
     }
 
-    if (cinematicCamState.lockedVy <= 0)
+    if (cinematicCamState.lockedVy <= 0) {
+      if (chase) syncChaseCamChrome();
       return;
+    }
 
     if (cinematicCamState.smoothX == null) {
       cinematicCamState.smoothX = cinematicCamState.lockedX;
@@ -30086,7 +30248,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         else if (dx < -sim_res_x * 0.5)
           dx += sim_res_x;
       }
-      const follow = 0.14;
+      const follow = chase ? 0.18 : 0.14;
       cinematicCamState.smoothX += dx * follow;
       if (guiControls.wrapHorizontally)
         cinematicCamState.smoothX = mod(cinematicCamState.smoothX, sim_res_x);
@@ -30094,17 +30256,21 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     }
 
     const normX = cinematicCamState.smoothX / sim_res_x;
-    // Frame the updraft slightly below center so the anvil/top stays in view.
-    const normY = clamp(cinematicCamState.smoothY / sim_res_y - 0.06, 0.04, 0.96);
+    // Cinematic frames the updraft slightly below center; chase sits lower for a ground POV.
+    const yBias = chase ? 0.12 : -0.06;
+    const normY = clamp(cinematicCamState.smoothY / sim_res_y + yBias, 0.04, 0.96);
     cam.lookAtSimNorm(normX, normY);
 
     if (!cinematicCamState.userZoomed) {
-      const stormZoom = clamp(sim_res_x / 280, 1.8, 6.0);
+      const stormZoom = chase
+        ? clamp(sim_res_x / 220, 2.2, 7.5)
+        : clamp(sim_res_x / 280, 1.8, 6.0);
       if (cam.tarZoom < 1.6 || Math.abs(cam.tarZoom - stormZoom) < 0.6)
         cam.tarZoom += (stormZoom - cam.tarZoom) * 0.04;
       else
         cinematicCamState.userZoomed = true;
     }
+    if (chase) syncChaseCamChrome();
   }
 
   function tickBackgroundSoundingOverlays()
@@ -30184,7 +30350,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       camPanSpeed *= 0.2;
     }
 
-    const cinematicActive = isCinematicCameraActive();
+    const cinematicActive = isAutoFollowCameraActive();
     if (!airplaneMode && !cinematicActive) {
       if (upPressed) {
         // ^
@@ -30508,8 +30674,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
             gl.useProgram(boundaryProgram);
             gl.uniform1f(uniformLocation_boundaryProgram_iterNum, iterNum);
             if (uniformLocation_boundaryProgram_vorticity)
-              gl.uniform1f(uniformLocation_boundaryProgram_vorticity,
-                guiControls.skipCurlCalculation ? 0.0 : guiControls.vorticity);
+              gl.uniform1f(uniformLocation_boundaryProgram_vorticity, getEffectiveVorticity());
             if (uniformLocation_boundaryProgram_lightEffectScale)
               gl.uniform1f(uniformLocation_boundaryProgram_lightEffectScale, getLightingEffectScale());
             gl.activeTexture(gl.TEXTURE0);
@@ -32364,6 +32529,12 @@ drawNukeOverlay();
       if (rp.isForecastRunning())
         rp.tickForecast(iterNum);
       rp.tickPlayback(smoothedFrameMs || 16);
+    }
+
+    if (window.WeatherSandbox && window.WeatherSandbox.postcard && typeof canvas !== 'undefined' && canvas) {
+      window.WeatherSandbox.postcard.onFrameEnd(canvas, {
+        timeLine: (typeof formatSoundingObsTimeLabel === 'function') ? formatSoundingObsTimeLabel() : '',
+      });
     }
 
     frameNum++;
