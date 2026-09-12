@@ -1341,7 +1341,14 @@
       if (!this._alive) return;
       const iters = Math.max(1, numSimIters || 1);
       const dtSec = (typeof timePerIteration === 'number' ? timePerIteration : 0.00008) * 3600 * iters;
-      const atm = this._sampleAtmosphere();
+      // Reuse atmosphere samples — full 1×1 readPixels×4 per plane was a major GPU stall.
+      this._atmSampleAge = (this._atmSampleAge || 0) + 1;
+      const sampleEvery = (typeof getSmoothedFramePressure === 'function' && getSmoothedFramePressure() > 0.35) ? 4 : 2;
+      if (!this._atmCache || this._atmSampleAge >= sampleEvery) {
+        this._atmCache = this._sampleAtmosphere();
+        this._atmSampleAge = 0;
+      }
+      const atm = this._atmCache;
       const path = this._getRoutePathCells();
       if (!path.length) return;
 

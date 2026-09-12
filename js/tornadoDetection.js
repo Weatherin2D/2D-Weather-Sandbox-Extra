@@ -110,9 +110,17 @@
     return best;
   }
 
-  function scanCandidates(waterAll, baseAll, wallAll, simResX, simResY, cellHeight, wrap) {
+  function scanCandidates(waterAll, baseAll, wallAll, simResX, simResY, cellHeight, wrap, opts) {
+    opts = opts || {};
     var upH = Math.max(4, Math.round(700 / Math.max(8, cellHeight)));
     var stride = simResX > 2500 ? 2 : 1;
+    if (opts.coarse) {
+      if (simResX > 1800) stride = Math.max(stride, 4);
+      else if (simResX > 1000) stride = Math.max(stride, 3);
+      else stride = Math.max(stride, 2);
+    } else if (simResX > 1800) {
+      stride = Math.max(stride, 2);
+    }
     var sfc = new Int16Array(simResX);
     var peakVy = new Float32Array(simResX);
     var cloudOk = new Uint8Array(simResX);
@@ -307,7 +315,7 @@
     var cellHeight = opts.cellHeight || 50;
     var hits = scanCandidates(
       opts.waterAll, opts.baseAll, opts.wallAll,
-      simResX, simResY, cellHeight, wrap);
+      simResX, simResY, cellHeight, wrap, { coarse: !!opts.coarse });
     detections = confirmHits(hits, simResX, wrap);
   }
 

@@ -858,7 +858,7 @@ var lightningSummaryFrameBuff = null;
 var lightningSummaryBuffer = null;
 var lightningCacheW = 0;
 var lightningCacheH = 0;
-const LIGHTNING_CACHE_SCALE = 6;
+const LIGHTNING_CACHE_SCALE = 8;
 const LIGHTNING_FLASH_DURATION = 11;
 var particleLightningReadBuffer = new Float32Array(4);
 var procLightningPosArr = new Float32Array(64);
@@ -3521,13 +3521,17 @@ function overlayOthersWantScan()
 
 function getEasOverlayBarWidth()
 {
-  return Math.max(getSoundingOverlayBarWidth(), 16);
+  // Coarser columns for EAS-only background scans (alerts don't need full-res CAPE).
+  const base = getSoundingOverlayBarWidth();
+  const hiRes = (typeof sim_res_x === 'number' && sim_res_x > 1600) ? 32 : 24;
+  return Math.max(base, hiRes);
 }
 
 function easScanIntervalIters()
 {
   const tpi = Number.isFinite(timePerIteration) && timePerIteration > 0 ? timePerIteration : 0.00008;
-  return Math.max(80, Math.round(90 / (tpi * 3600)));
+  // ~2–3 sim-minutes between EAS-only full GPU downloads (was ~90s).
+  return Math.max(160, Math.round(150 / (tpi * 3600)));
 }
 
 function convectiveRiskRgba(muCape, shear6, stp, dryStrength)
@@ -3560,7 +3564,19 @@ function prepareOverlayColumnArrays(simResY)
 }
 
 // Incremental map-overlay scan: spread CAPE work across frames so the sim stays responsive.
-const OVERLAY_SCAN_COLS_PER_FRAME = 12;
+function getOverlayScanColsPerFrame()
+{
+  let pressure = 0;
+  try {
+    if (typeof getSmoothedFramePressure === 'function')
+      pressure = getSmoothedFramePressure();
+  } catch (e) { pressure = 0; }
+  if (pressure > 0.50) return 3;
+  if (pressure > 0.35 || (guiControls && guiControls.highResPerformanceMode)) return 5;
+  if (typeof sim_res_x === 'number' && sim_res_x > 2000) return 6;
+  if (pressure > 0.22) return 8;
+  return 10;
+}
 var overlayScan = {
   active: false,
   kind: null,
@@ -3578,6 +3594,7 @@ var overlayScan = {
   lastFinishIter: -9999,
   hazardsIfPrecip: false,
 };
+var silentTornadoScanSkips = 0;
 
 function ensureOverlayScanBuffers(simResX, simResY, needCharge)
 {
@@ -3805,6 +3822,7 @@ function runSilentTornadoScan()
     simResY: sim_res_y,
     cellHeight: cellHeight,
     wrapX: !!(guiControls && guiControls.wrapHorizontally),
+    coarse: true,
   });
 }
 
@@ -3952,7 +3970,8 @@ function tickOverlayScan()
   const dz = guiControls.simHeight / sim_res_y;
   const isRisk = overlayScan.kind === 'risk';
   let processed = 0;
-  while (processed < OVERLAY_SCAN_COLS_PER_FRAME) {
+  const colsBudget = getOverlayScanColsPerFrame();
+  while (processed < colsBudget) {
     const sx = overlayScan.nextIndex * step;
     if (sx >= sim_res_x) {
       if (isRisk) {
@@ -3975,8 +3994,14 @@ function tickOverlayScan()
         updateWeatherLabelsFromPending(overlayScan.pending);
       if (guiControls.tornadoDetectionOverlay)
         updateTornadoDetectionFromScan();
-      else if (guiControls.warningsOverlay || guiControls.easAlertsEnabled)
-        runSilentTornadoScan();
+      else if (guiControls.warningsOverlay || guiControls.easAlertsEnabled) {
+        // Silent tornado feeds EAS — run every 3rd scan finish, not every finish.
+        silentTornadoScanSkips++;
+        if (silentTornadoScanSkips >= 3) {
+          silentTornadoScanSkips = 0;
+          runSilentTornadoScan();
+        }
+      }
       updateEasFromPending(overlayScan.pending);
       overlayScan.active = false;
       overlayScan.lastFinishIter = iterNum;
@@ -12735,7 +12760,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
     var radiation_folder = datGui.addFolder('Radiation');
 
-    radiation_folder.add(guiControls, 'timeOfDay', 0.0, 23.96, 0.01).onChange(onUpdateTimeOfDaySlider).name('Time of day').listen();
+    radiation_folder.add(guiControls, 'timeOfDay', 0.0, 23.96, 0.01).onChange(onUpdateTimeOfDaySlider).name('Time of day');
 
     radiation_folder.add(guiControls, 'dayNightCycle').name('Day/Night Cycle').listen();
 
@@ -12796,7 +12821,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
     syncMultiLatitudeGuiVisibility();
 
-    radiation_folder.add(guiControls, 'month', 1.0, 12.99, 0.01).onChange(onUpdateMonthSlider).name('Month').listen();
+    radiation_folder.add(guiControls, 'month', 1.0, 12.99, 0.01).onChange(onUpdateMonthSlider).name('Month');
 
     radiation_folder.add(guiControls, 'sunAngle', -10.0, 190.0, 0.1)
       .onChange(function() {
@@ -13051,7 +13076,8 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       })
       .name('Evaporation Rate');
 
-    precipitation_folder.add(guiControls, 'inactiveDroplets', 0, NUM_DROPLETS).listen().name('Inactive Droplets');
+    // No .listen() — per-frame dat.GUI DOM updates for this counter are a measurable FPS tax.
+    precipitation_folder.add(guiControls, 'inactiveDroplets', 0, NUM_DROPLETS).name('Inactive Droplets');
 
     var radar_folder = datGui.addFolder('Radar');
     radarGuiFolder = radar_folder;
@@ -20504,11 +20530,11 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     if (pixels > 2560 * 1440)
       scale = 0.625;
     const pressure = getSmoothedFramePressure();
-    if (pressure > 0.22)
+    if (pressure > 0.18)
       scale = Math.min(scale, 0.75);
-    if (pressure > 0.40)
-      scale = Math.min(scale, 0.5);
-    if (pressure > 0.65)
+    if (pressure > 0.32)
+      scale = Math.min(scale, 0.55);
+    if (pressure > 0.50)
       scale = Math.min(scale, 0.45);
     if (useLiteVisualsMode())
       scale = Math.min(scale, 0.5);
@@ -20531,14 +20557,14 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
 
   function needsAmbientLightBlur()
   {
-    // Cheap, stable bounce light: rebuild every other frame while running.
-    // Never gate on lightning (that used to clear ambient and pulse the scene),
-    // and never run every frame (too expensive).
+    // Ambient bounce is presentation-only — rebuild less often under load.
     if (guiControls.paused)
       return false;
     if (useLiteVisualsMode() || guiControls.highResPerformanceMode)
+      return (frameNum % 4) === 0;
+    if (getSmoothedFramePressure() > 0.30)
       return (frameNum % 3) === 0;
-    return (frameNum & 1) === 0;
+    return (frameNum % 3) === 0;
   }
 
   function shouldRunPrecipitationThisIteration(iterIndex)
@@ -20639,15 +20665,14 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
 
   function getAmbientLevelCount()
   {
-    // Cap adaptive levels by zoom so far-away views skip fine ambient mips.
-    let cap = guiControls.highResPerformanceMode ? 4 : 5;
+    let cap = guiControls.highResPerformanceMode ? 3 : 4;
     if (isUltraHighResSim())
-      cap = Math.min(cap, 3);
+      cap = Math.min(cap, 2);
     const zoomNorm = cam.curZoom / Math.max(sim_res_x, 1);
-    if (zoomNorm < 0.002)
-      cap = Math.min(cap, 3);
-    if (zoomNorm < 0.001 || guiControls.highResPerformanceMode && zoomNorm < 0.003)
-      cap = Math.min(cap, 3);
+    if (zoomNorm < 0.002 || getSmoothedFramePressure() > 0.28)
+      cap = Math.min(cap, 2);
+    if (zoomNorm < 0.001)
+      cap = Math.min(cap, 2);
     return Math.min(ambientLightFBOs.length, cap);
   }
 
@@ -20655,27 +20680,30 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   {
     if (!guiControls.enableBloom)
       return 0;
+    const strength = Number(guiControls.bloomStrength);
+    if (Number.isFinite(strength) && strength <= 0.02)
+      return 0;
     const pressure = getFramePressure();
     const pixels = canvas.width * canvas.height;
     const zoomNorm = cam.curZoom / Math.max(sim_res_x, 1);
-    let cap = 7;
+    // Harder default caps — bloom is pure presentation cost.
+    let cap = 5;
     if (pixels > 1920 * 1080)
-      cap = 6;
+      cap = 4;
     if (pixels > 2560 * 1440)
-      cap = 5;
+      cap = 3;
     if (getResolutionCostFactor() > 2.0)
-      cap = Math.min(cap, 5);
-    if (pressure > 0.45)
-      cap = Math.min(cap, 4);
-    else if (pressure > 0.18)
-      cap = Math.min(cap, 5);
-    if (useLiteVisualsMode() || guiControls.highResPerformanceMode)
       cap = Math.min(cap, 3);
-    // Zoomed far out: wide bloom mips are wasteful — soft scene already.
-    if (zoomNorm < 0.002)
-      cap = Math.min(cap, guiControls.highResPerformanceMode ? 2 : 3);
-    if (zoomNorm < 0.001)
+    if (pressure > 0.35)
+      cap = Math.min(cap, 3);
+    else if (pressure > 0.18)
+      cap = Math.min(cap, 4);
+    if (useLiteVisualsMode() || guiControls.highResPerformanceMode)
       cap = Math.min(cap, 2);
+    if (zoomNorm < 0.002)
+      cap = Math.min(cap, 2);
+    if (zoomNorm < 0.001)
+      cap = Math.min(cap, 1);
     return Math.min(bloomFBOs.length, cap);
   }
 
@@ -26698,8 +26726,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     const flashActive = proceduralLightningState.eventAge >= 0
       && proceduralLightningState.eventAge < getLightningFlashDuration() - 1;
     const cacheThrottle = flashActive
-      ? (useLiteVisualsMode() ? 10 : 7)
-      : (useLiteVisualsMode() ? 6 : 4);
+      ? (useLiteVisualsMode() ? 14 : 10)
+      : (useLiteVisualsMode() ? 10 : 7);
     if (lightningFieldCacheFrame >= frameNum - (cacheThrottle - 1) && lightningFieldCache)
       return;
     if (!lightningSummaryBuffer || lightningCacheW < 1)
@@ -30276,7 +30304,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     if (!isCinematicCameraActive() && !chase)
       return;
 
-    const scanEvery = (typeof useLiteVisualsMode === 'function' && useLiteVisualsMode()) ? 8 : 4;
+    const scanEvery = (typeof useLiteVisualsMode === 'function' && useLiteVisualsMode()) ? 12 : 8;
     if (frameNum - cinematicCamState.lastScanFrame >= scanEvery || cinematicCamState.smoothX == null) {
       const peak = chase ? pickChaseTarget() : scanCinematicMaxVerticalVelocity();
       cinematicCamState.lastScanFrame = frameNum;
@@ -30383,8 +30411,10 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       return;
     }
     if (othersDue) {
-      if (!tornadoOn && soundingOverlayData.length && (iterNum - overlayScan.lastFinishIter) < riskFreq * 3) {
+      // Prefer reusing the last sounding pass for ~4 intervals before another full GPU download.
+      if (!tornadoOn && soundingOverlayData.length && (iterNum - overlayScan.lastFinishIter) < riskFreq * 4) {
         refreshBackgroundOverlaysFromPending(soundingOverlayData);
+        overlayScan.lastFinishIter = iterNum;
       } else {
         beginOverlayScan('sounding', false, needHaz, frameBuff_1, chargeBuff);
         tickOverlayScan();
@@ -30392,8 +30422,14 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       return;
     }
     if (easOnlyDue) {
-      beginOverlayScan('sounding', false, needHaz, frameBuff_1, chargeBuff, getEasOverlayBarWidth());
-      tickOverlayScan();
+      // EAS can refresh from pending without a new full-domain readPixels most of the time.
+      if (soundingOverlayData.length) {
+        updateEasFromPending(soundingOverlayData);
+        overlayScan.lastFinishIter = iterNum;
+      } else {
+        beginOverlayScan('sounding', false, needHaz, frameBuff_1, chargeBuff, getEasOverlayBarWidth());
+        tickOverlayScan();
+      }
     }
   }
 
