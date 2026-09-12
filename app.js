@@ -928,6 +928,7 @@ var minShadowLight = 0.02;
 var saveFileName = '';
 
 var guiControlsFromSaveFile = null;
+var guiSettingsLoadPreserve = false; // true while applying save/import settings (skip Lightning wipe)
 
 // Home-screen startup presets captured from reference save
 // "cfdgds (4) (1).weathersandbox" — visual/shader look + performance toggles.
@@ -1269,6 +1270,9 @@ function applyHighResStartupGuard()
 {
   if (!guiControls)
     return false;
+  // Never clobber Advanced/Display choices restored from a save or settings import.
+  if (guiControlsFromSaveFile != null || guiSettingsLoadPreserve)
+    return false;
   const cells = getSimCellCount();
   if (cells < 700000)
     return false;
@@ -1309,7 +1313,8 @@ function configurePrecipitationGpuCapabilities()
   const ok = precipGpuCapabilities.colorBufferFloat && precipGpuCapabilities.feedbackComplete;
   precipGpuCapabilities.precipAvailable = ok;
 
-  if (precipGpuCapabilities.mobile && guiControls) {
+  const preserveSavedGui = (guiControlsFromSaveFile != null || guiSettingsLoadPreserve);
+  if (precipGpuCapabilities.mobile && guiControls && !preserveSavedGui) {
     guiControls.reducedPrecipitation = true;
     if (guiControls.highResPerformanceMode === false && cellsLikelyHeavy())
       guiControls.highResPerformanceMode = true;
@@ -12013,11 +12018,8 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   } else {
     setupDatGui(guiControlsFromSaveFile);                     // use settings from save file
 
-    for (const [key, value] of Object.entries(guiControls)) { // set numerical values that could not be loaded from the savefile to their defaults.
-      if (value === -1) {
-        guiControls[key] = guiControls_default[key];
-      }
-    }
+    // Note: do not rewrite value === -1 to defaults — several Display/Fluid sliders
+    // legitimately use -1 (e.g. greenHueHue, wind). Missing keys are filled above/below.
 
     // Preserve simulation height from save file (do not derive from resolution)
     if (guiControls.simHeight > 0) {
@@ -12428,8 +12430,8 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
 
     // Cold-start / reset only: apply Lightning V2 Enhanced Realistic.
     // When loading a save, keep serialized lightning (+ shared keys like performanceAutoScaling).
-    const loadingFromSave = guiControlsFromSaveFile != null
-      && strGuiControls === guiControlsFromSaveFile;
+    const loadingFromSave = guiSettingsLoadPreserve
+      || (guiControlsFromSaveFile != null && strGuiControls === guiControlsFromSaveFile);
     if (typeof LightningV2 !== 'undefined') {
       if (!loadingFromSave) {
         Object.keys(LightningV2.DEFAULT_SETTINGS).forEach(key => {
@@ -12560,7 +12562,12 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
           if (window.WeatherSandbox && window.WeatherSandbox.guiSettings)
             window.WeatherSandbox.guiSettings.detachSearch();
           datGui.destroy();
-          setupDatGui(JSON.stringify(merged));
+          guiSettingsLoadPreserve = true;
+          try {
+            setupDatGui(JSON.stringify(merged));
+          } finally {
+            guiSettingsLoadPreserve = false;
+          }
           setGuiUniforms();
           hideOrShowGraph();
           if (typeof updateSunlight === 'function') updateSunlight();
@@ -12580,11 +12587,8 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       .name('Vorticity');
     fluidParams_folder.add(guiControls, 'enable3DVortices')
       .onChange(function() {
-        if (guiControls.enable3DVortices) {
+        if (guiControls.enable3DVortices)
           guiControls.skipCurlCalculation = false;
-          guiControls.tornadoDetectionOverlay = true;
-          tornadoLastScanIter = -9999;
-        }
         gl.useProgram(boundaryProgram);
         gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'vorticity'), getEffectiveVorticity());
       })
@@ -13134,7 +13138,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         cinematicCamState.lockedVy = 0;
         cinematicCamState.lastScanFrame = -9999;
         cinematicCamState.userZoomed = false;
-        if (typeof syncChaseCamChrome === 'function') syncChaseCamChrome();
+        if (typeof syncChaseCamChrome === 'function') syncChaseCamChrome(true);
       })
       .name('Camera Mode')
       .listen();
@@ -19266,7 +19270,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         cinematicCamState.lockedVy = 0;
         cinematicCamState.lastScanFrame = -9999;
         cinematicCamState.userZoomed = false;
-        if (typeof syncChaseCamChrome === 'function') syncChaseCamChrome();
+        if (typeof syncChaseCamChrome === 'function') syncChaseCamChrome(true);
       } },
     { id: 'toggleChaseCam', name: 'Toggle chase camera', category: 'Camera', defaultCode: null,
       onDown() {
@@ -19276,7 +19280,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         cinematicCamState.lockedVy = 0;
         cinematicCamState.lastScanFrame = -9999;
         cinematicCamState.userZoomed = false;
-        if (typeof syncChaseCamChrome === 'function') syncChaseCamChrome();
+        if (typeof syncChaseCamChrome === 'function') syncChaseCamChrome(true);
       } },
     { id: 'exportPostcard', name: 'Export postcard PNG', category: 'Graph & UI', defaultCode: 'F9',
       onDown() {
@@ -30170,12 +30174,24 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     }
   }
 
-  function syncChaseCamChrome()
+  var chaseChromeLastFrame = -9999;
+  var chaseChromeLastOn = null;
+  var chaseChromeLastIntensity = -1;
+  function syncChaseCamChrome(force)
   {
     if (typeof document === 'undefined' || !document.body) return;
-    ensureChaseCamChrome();
     var on = isChaseCameraActive();
-    document.body.classList.toggle('ws-chase-cam', on);
+    // Cheap bail when free-cam and chrome already off.
+    if (!force && !on && chaseChromeLastOn === false)
+      return;
+    if (!force && on && (frameNum - chaseChromeLastFrame) < 4)
+      return;
+    chaseChromeLastFrame = frameNum;
+    ensureChaseCamChrome();
+    if (chaseChromeLastOn !== on) {
+      document.body.classList.toggle('ws-chase-cam', on);
+      chaseChromeLastOn = on;
+    }
     var rain = document.getElementById('wsChaseRain');
     if (rain) {
       var intensity = 0;
@@ -30183,14 +30199,18 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         var ms = typeof rawVelocityTo_ms === 'function' ? rawVelocityTo_ms(cinematicCamState.peakVy) : 0;
         intensity = Math.max(0, Math.min(0.85, ms / 25));
       }
-      rain.style.opacity = String(intensity);
+      if (Math.abs(intensity - chaseChromeLastIntensity) > 0.04) {
+        rain.style.opacity = String(intensity);
+        chaseChromeLastIntensity = intensity;
+      }
     }
     var hud = document.getElementById('wsChaseHud');
     if (hud && on) {
       var tip = 'CHASE CAM';
       if (cinematicCamState && cinematicCamState.lockedVy > 0)
         tip += ' · storm lock';
-      hud.textContent = tip;
+      if (hud.textContent !== tip)
+        hud.textContent = tip;
     }
   }
 
@@ -32574,7 +32594,9 @@ drawNukeOverlay();
       rp.tickPlayback(smoothedFrameMs || 16);
     }
 
-    if (window.WeatherSandbox && window.WeatherSandbox.postcard && typeof canvas !== 'undefined' && canvas) {
+    if (window.WeatherSandbox && window.WeatherSandbox.postcard
+        && window.WeatherSandbox.postcard.isBusy()
+        && typeof canvas !== 'undefined' && canvas) {
       window.WeatherSandbox.postcard.onFrameEnd(canvas, {
         timeLine: (typeof formatSoundingObsTimeLabel === 'function') ? formatSoundingObsTimeLabel() : '',
       });
