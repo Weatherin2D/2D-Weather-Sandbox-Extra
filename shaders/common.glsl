@@ -15,6 +15,9 @@ precision highp isampler2D;
 #define waterHeatExchangeRate 0.0002
 
 #define waterHeatCapacity 50.0     // as multiple of airs heat capacity
+// Land near-surface air has no soil reservoir; this slows diurnal swings so nights
+// cool less abruptly and the afternoon peak lags solar noon (water uses 50).
+#define landHeatCapacity 5.5
 
 #define fullGreenSoilMoisture 50.0 // level of soil moisture where vegetation reaches the greenest color
 

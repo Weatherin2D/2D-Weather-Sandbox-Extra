@@ -151,8 +151,13 @@ void main()
 
     wall[TYPE] = wallX0Ym[TYPE];                     // copy wall type from wall below
 
-    if (!isLiquidWaterType(wall[TYPE]) && wall[TYPE] != WALLTYPE_ICE)
-      base[TEMPERATURE] += light[NET_HEATING] * lightEffectScale; // IR heating/cooling effect
+    if (!isLiquidWaterType(wall[TYPE]) && wall[TYPE] != WALLTYPE_ICE) {
+      float irDelta = light[NET_HEATING] * lightEffectScale; // IR heating/cooling effect
+      // Ground-adjacent land air: thermal inertia so night IR cooling is not instantaneous
+      if (wall[VERT_DISTANCE] == 1 && !isAnyWaterType(wall[TYPE]))
+        irDelta /= landHeatCapacity;
+      base[TEMPERATURE] += irDelta;
+    }
 
     // Latitude-based climate soft-forcing for near-surface air
     if (latitudeBasedTemperature != 0 && wall[VERT_DISTANCE] <= 3) {
@@ -276,7 +281,11 @@ void main()
     if (nextToWall) {
       if (!isAnyWaterType(wall[TYPE])) { // any land
         // Uniform horizontal-surface irradiance (same as water); not screen-space sun direction.
-        float lightPower = max(light[SUNLIGHT] * cos(colSunAngle), 0.0);
+        // Soften zenith falloff so low-sun morning/evening still heats (hard cos delays dawn warmup
+        // and dumps heat too early after noon when paired with σT⁴ cooling).
+        float sunElevFactor = max(cos(colSunAngle), 0.0);
+        sunElevFactor = pow(sunElevFactor, 0.55);
+        float lightPower = light[SUNLIGHT] * sunElevFactor;
 
         float albedoTotal = ALBEDO_INERT;
 
@@ -314,8 +323,8 @@ void main()
 
         lightPower *= (1. - albedoTotal);
         lightPower *= lightHeatingConst;
-        // Standing water spreads/absorbs heat — sun warms flooded tiles much less than dry land
-        lightPower /= mix(1.0, waterHeatCapacity * 0.35, floodFrac);
+        // Land inertia (and standing flood capacity) slow solar response vs bare air
+        lightPower /= mix(landHeatCapacity, waterHeatCapacity * 0.35, floodFrac);
         base[TEMPERATURE] += lightPower * lightEffectScale; // sun heating land
 
         // Mild climate tendency toward latitude-based sea-level temperature
