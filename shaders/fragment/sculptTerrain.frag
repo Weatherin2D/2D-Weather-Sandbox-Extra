@@ -10,6 +10,7 @@ uniform vec2 resolution;
 uniform vec2 texelSize;
 uniform vec4 userInputValues; // xpos Ypos intensity brushRadiusCells
 uniform bool wrapHorizontally;
+uniform int flatSculpt; // 1 = lakes/oceans: set a level height, no circular dome
 
 #define BRUSH_INTENSITY 2
 #define BRUSH_SIZE 3
@@ -41,13 +42,18 @@ void main()
   dxTex *= texelSize.y / texelSize.x;
 
   if (dxTex <= radiusTex) {
-    float dyTex = sqrt(max(radiusTex * radiusTex - dxTex * dxTex, 0.0));
-    float topCells = (userInputValues.y + dyTex) * resolution.y;
-    float botCells = (userInputValues.y - dyTex) * resolution.y;
-    if (userInputValues[BRUSH_INTENSITY] > 0.0)
-      h = max(h, topCells);
-    else
-      h = min(h, max(botCells, minH));
+    if (flatSculpt != 0) {
+      float target = userInputValues.y * resolution.y;
+      h = target;
+    } else {
+      float dyTex = sqrt(max(radiusTex * radiusTex - dxTex * dxTex, 0.0));
+      float topCells = (userInputValues.y + dyTex) * resolution.y;
+      float botCells = (userInputValues.y - dyTex) * resolution.y;
+      if (userInputValues[BRUSH_INTENSITY] > 0.0)
+        h = max(h, topCells);
+      else
+        h = min(h, max(botCells, minH));
+    }
   }
 
   outHeight = clamp(h, minH, maxH);

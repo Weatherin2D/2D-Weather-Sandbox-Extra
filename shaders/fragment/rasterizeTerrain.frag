@@ -21,6 +21,9 @@ uniform int paintSurfaceType; // -1 keep existing surface type
 uniform int paintSurfaceKind; // 0 land 1 fresh 2 sea 3 iceSheet 4 iceCap
 uniform float waterTemperature;
 uniform bool allowCaves;
+uniform vec4 userInputValues; // xpos Ypos intensity brushRadiusCells — used when remeshInBrush != 0
+uniform bool wrapHorizontally;
+uniform int remeshInBrush; // 1 = also remesh columns under the brush (water/ice type paint)
 
 #include "common.glsl"
 
@@ -149,7 +152,22 @@ void main()
 
   // Sculpt only changes H(x) under the brush. Leave every other column alone
   // so oceans, soil moisture and vegetation are not rewritten each stroke.
-  bool columnSculpted = abs(newH - oldH) > 0.05;
+  // Water/ice paint also remeshes columns in the brush when height is unchanged
+  // so a flat lake can convert land at the same elevation.
+  bool inPaintBrush = false;
+  if (remeshInBrush != 0) {
+    float radiusTex = userInputValues[3] * texelSize.y;
+    float dxTex;
+    if (userInputValues.x < -0.5)
+      dxTex = 0.0;
+    else if (wrapHorizontally)
+      dxTex = absHorizontalDist(userInputValues.x, texCoord.x);
+    else
+      dxTex = abs(userInputValues.x - texCoord.x);
+    dxTex *= texelSize.y / texelSize.x;
+    inPaintBrush = dxTex <= radiusTex;
+  }
+  bool columnSculpted = abs(newH - oldH) > 0.05 || inPaintBrush;
   if (paintSurfaceType >= 0 && !columnSculpted) {
     base = prevBase;
     water = prevWater;
@@ -221,6 +239,14 @@ void main()
   }
 
   if (!isSurfaceCell && prevWall[DISTANCE] == 0 && !inNewBand) {
+    if (inPaintBrush && paintSurfaceType >= 0 && isAnyWaterType(paintSurfaceType)
+        && !isAnyWaterType(prevWall[TYPE])) {
+      fillInterior(interiorTypeFor(paintSurfaceType), oldSurfWater);
+      wall[DISTANCE] = 0;
+      wall[VERT_DISTANCE] = int(clamp(yf - (newH - 1.0), -127.0, 0.0));
+      smoke = 0.0;
+      return;
+    }
     base = prevBase;
     water = prevWater;
     smoke = 0.0;

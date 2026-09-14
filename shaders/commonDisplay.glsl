@@ -54,9 +54,74 @@ float sampleTerrainHeight(float fragX)
   return 0.5 * ((2.0 * h1) + (-h0 + h2) * f + (2.0 * h0 - 5.0 * h1 + 4.0 * h2 - h3) * f2 + (-h0 + 3.0 * h1 - 3.0 * h2 + h3) * f3);
 }
 
+float occupancyHeightColumn(int ix)
+{
+  return max(rawTerrainHeightColumn(ix), 1.0);
+}
+
+// Center of the occupancy surface cell (grass, urban, water type live here).
+vec2 occupancySurfaceUV(float fragX)
+{
+  int w = int(resolution.x);
+  int ix = wrapTerrainColumn(int(floor(fragX)), w);
+  float h = occupancyHeightColumn(ix);
+  float sy = clamp(floor(h - 0.001) + 0.5, 0.5, max(resolution.y - 0.5, 0.5));
+  return vec2((float(ix) + 0.5) / max(resolution.x, 1.0), sy / max(resolution.y, 1.0));
+}
+
+vec2 terrainSurfaceUV(float fragX)
+{
+  return occupancySurfaceUV(fragX);
+}
+
+// Salt (2) or fresh (8) water at the column cap. Numeric ids so sky/post
+// can include this file without common.glsl.
+bool displayColumnIsLiquidWater(isampler2D walls, int ix)
+{
+  int w = int(resolution.x);
+  ix = wrapTerrainColumn(ix, w);
+  float h = occupancyHeightColumn(ix);
+  int capY = int(clamp(floor(h - 0.001), 0.0, resolution.y - 1.0));
+  ivec4 surf = texelFetch(walls, ivec2(ix, capY), 0);
+  return surf[1] == 0 && (surf[0] == 2 || surf[0] == 8);
+}
+
+// Lakes/oceans stay piecewise-constant so Catmull-Rom land neighbors cannot
+// pull water into hills. Land ignores water neighbor heights so the shore is
+// a vertical cut instead of a ramp that punches holes beside a flat lake.
+float sampleDisplayTerrainHeight(isampler2D walls, float fragX)
+{
+  int w = int(resolution.x);
+  float x = fragX - 0.5;
+  int i = int(floor(x));
+  int i1 = wrapTerrainColumn(i, w);
+  if (displayColumnIsLiquidWater(walls, i1))
+    return occupancyHeightColumn(i1);
+
+  float f = clamp(x - float(i), 0.0, 1.0);
+  int i0 = wrapTerrainColumn(i - 1, w);
+  int i2 = wrapTerrainColumn(i + 1, w);
+  int i3 = wrapTerrainColumn(i + 2, w);
+  float h1 = occupancyHeightColumn(i1);
+  float h0 = displayColumnIsLiquidWater(walls, i0) ? h1 : occupancyHeightColumn(i0);
+  float h2 = displayColumnIsLiquidWater(walls, i2) ? h1 : occupancyHeightColumn(i2);
+  float h3 = displayColumnIsLiquidWater(walls, i3) ? h2 : occupancyHeightColumn(i3);
+  float f2 = f * f;
+  float f3 = f2 * f;
+  return 0.5 * ((2.0 * h1) + (-h0 + h2) * f + (2.0 * h0 - 5.0 * h1 + 4.0 * h2 - h3) * f2 + (-h0 + 3.0 * h1 - 3.0 * h2 + h3) * f3);
+}
+
 float terrainSlope(float fragX)
 {
   return sampleTerrainHeight(fragX + 0.6) - sampleTerrainHeight(fragX - 0.6);
+}
+
+float displayTerrainSlope(isampler2D walls, float fragX)
+{
+  int ix = wrapTerrainColumn(int(floor(fragX)), int(resolution.x));
+  if (displayColumnIsLiquidWater(walls, ix))
+    return 0.0;
+  return sampleDisplayTerrainHeight(walls, fragX + 0.6) - sampleDisplayTerrainHeight(walls, fragX - 0.6);
 }
 
 bool displayIsTerrain()
@@ -76,7 +141,7 @@ bool fragmentIsCaveAir(isampler2D walls)
 {
   if (texCoord.y <= 0.0 || texCoord.y > 1.0)
     return false;
-  float h = sampleTerrainHeight(fragCoord.x);
+  float h = sampleDisplayTerrainHeight(walls, fragCoord.x);
   if (fragCoord.y >= h)
     return false;
   ivec4 w = texture(walls, texCoord);
@@ -85,25 +150,20 @@ bool fragmentIsCaveAir(isampler2D walls)
   if (fragCoord.y + 1.0 >= h)
     return false;
   int ix = wrapTerrainColumn(int(floor(fragCoord.x)), int(resolution.x));
-  int capY = int(clamp(floor(h) - 1.0, 0.0, resolution.y - 1.0));
+  float hOcc = occupancyHeightColumn(ix);
+  int capY = int(clamp(floor(hOcc - 0.001), 0.0, resolution.y - 1.0));
   return texelFetch(walls, ivec2(ix, capY), 0)[1] == 0;
 }
 
 bool displayIsSolidTerrain(isampler2D walls)
 {
-  return displayIsTerrain() && !fragmentIsCaveAir(walls);
-}
-
-vec2 terrainSurfaceUV(float fragX)
-{
-  float h = sampleTerrainHeight(fragX);
-  float sy = clamp(h - 0.5, 0.5, max(resolution.y - 0.5, 0.5));
-  return vec2(fragX / max(resolution.x, 1.0), sy / max(resolution.y, 1.0));
+  float h = sampleDisplayTerrainHeight(walls, fragCoord.x);
+  return fragCoord.y < h && !fragmentIsCaveAir(walls);
 }
 
 ivec4 sampleColumnSurfaceWall(isampler2D wallTex)
 {
-  return texture(wallTex, terrainSurfaceUV(fragCoord.x));
+  return texture(wallTex, occupancySurfaceUV(fragCoord.x));
 }
 
 void drawCursor(vec4 cursor, vec3 view)            // OFF: cursor.w < 1       Normal round: cursor.w 1 to 2         WHOLE WIDTH: cursor.w >= 2

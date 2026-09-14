@@ -280,6 +280,28 @@ void main()
     }
   }
 
+  bool overlaySurfaceTool = userInputType == 13 || userInputType == 14 || userInputType == 15 || userInputType == 16
+      || userInputType == 17 || userInputType == 20 || userInputType == 21
+      || userInputType == 22 || userInputType == 27 || userInputType == 28
+      || userInputType == 30 || userInputType == 31 || userInputType == 32
+      || userInputType == 33;
+  // Clicking the visible slope/cliff still paints the occupancy surface of this column.
+  if (!inBrush && overlaySurfaceTool && wall[DISTANCE] == 0 && !isAnyWaterType(wall[TYPE])
+      && texture(wallTex, texCoordX0Yp)[DISTANCE] != 0) {
+    float r = userInputValues[BRUSH_SIZE] * texelSize.y;
+    float dy = userInputValues.y - texCoord.y;
+    if (userInputValues.x < -0.5) {
+      if (dy <= r && dy >= -r * 8.0)
+        inBrush = true;
+    } else {
+      float dx = wrapHorizontally ? absHorizontalDist(userInputValues.x, texCoord.x)
+                                  : abs(userInputValues.x - texCoord.x);
+      dx *= texelSize.y / texelSize.x;
+      if (dx < r && dy <= r && dy >= -r * 8.0)
+        inBrush = true;
+    }
+  }
+
   if (inBrush) {
     if (userInputType == 1) {                                              // temperature
       base[3] += userInputValues[BRUSH_INTENSITY];

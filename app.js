@@ -636,6 +636,8 @@ const guiControls_default = {
   wholeWidth : false,
   brushIntensity : 0.01,
   allowCaves : false,
+  freshWaterSurfaceOnly : false,
+  saltWaterSurfaceOnly : false,
   showGraph : false,
   soundingShowWindBarbs : true,
   soundingShowParcels : true,
@@ -12147,6 +12149,14 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     guiControls.enableGlacierFormation = guiControls_default.enableGlacierFormation;
   else
     guiControls.enableGlacierFormation = !!guiControls.enableGlacierFormation;
+  if (guiControls.freshWaterSurfaceOnly === undefined)
+    guiControls.freshWaterSurfaceOnly = guiControls_default.freshWaterSurfaceOnly;
+  else
+    guiControls.freshWaterSurfaceOnly = !!guiControls.freshWaterSurfaceOnly;
+  if (guiControls.saltWaterSurfaceOnly === undefined)
+    guiControls.saltWaterSurfaceOnly = guiControls_default.saltWaterSurfaceOnly;
+  else
+    guiControls.saltWaterSurfaceOnly = !!guiControls.saltWaterSurfaceOnly;
   if (guiControls.enableGlacierMelting === undefined)
     guiControls.enableGlacierMelting = guiControls_default.enableGlacierMelting;
   else
@@ -12915,6 +12925,27 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'saltwaterFreezePointC'), guiControls.saltwaterFreezePointC);
       })
       .name('Saltwater Freeze Point (°C)');
+
+    water_folder.add(guiControls, 'freshWaterSurfaceOnly')
+      .onChange(function() {
+        if (realisticDisplayProgram) {
+          gl.useProgram(realisticDisplayProgram);
+          gl.uniform1i(gl.getUniformLocation(realisticDisplayProgram, 'freshWaterSurfaceOnly'),
+                       guiControls.freshWaterSurfaceOnly ? 1 : 0);
+        }
+      })
+      .name('Freshwater: Surface Only')
+      .listen();
+    water_folder.add(guiControls, 'saltWaterSurfaceOnly')
+      .onChange(function() {
+        if (realisticDisplayProgram) {
+          gl.useProgram(realisticDisplayProgram);
+          gl.uniform1i(gl.getUniformLocation(realisticDisplayProgram, 'saltWaterSurfaceOnly'),
+                       guiControls.saltWaterSurfaceOnly ? 1 : 0);
+        }
+      })
+      .name('Saltwater: Surface Only')
+      .listen();
 
     water_folder.add(guiControls, 'enableGlacierFormation').name('Enable Glacier Formation').onChange(function() {
       gl.useProgram(advectionProgram);
@@ -20977,7 +21008,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
 
   // load shaders
-  const SHADER_ASSET_VERSION = 92; // bump to bust CDN/browser cache after shader edits
+  const SHADER_ASSET_VERSION = 94; // bump to bust CDN/browser cache after shader edits
 
   var commonSource = await loadSourceFile('shaders/common.glsl');
   var commonDisplaySource = await loadSourceFile('shaders/commonDisplay.glsl');
@@ -24787,6 +24818,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   gl.uniform1i(gl.getUniformLocation(sculptTerrainProgram, 'terrainHeightTex'), 0);
   gl.uniform2f(gl.getUniformLocation(sculptTerrainProgram, 'texelSize'), texelSizeX, texelSizeY);
   gl.uniform2f(gl.getUniformLocation(sculptTerrainProgram, 'resolution'), sim_res_x, sim_res_y);
+  gl.uniform1i(gl.getUniformLocation(sculptTerrainProgram, 'flatSculpt'), 0);
 
   gl.useProgram(rasterizeTerrainProgram);
   gl.uniform1i(gl.getUniformLocation(rasterizeTerrainProgram, 'baseTex'), 0);
@@ -24801,6 +24833,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   gl.uniform4fv(gl.getUniformLocation(rasterizeTerrainProgram, 'initial_Tv'), initial_T);
   gl.uniform1f(gl.getUniformLocation(rasterizeTerrainProgram, 'waterTemperature'), CtoK(guiControls.waterTemperature));
   gl.uniform1i(gl.getUniformLocation(rasterizeTerrainProgram, 'allowCaves'), guiControls.allowCaves ? 1 : 0);
+  gl.uniform1i(gl.getUniformLocation(rasterizeTerrainProgram, 'remeshInBrush'), 0);
 
   gl.useProgram(rebuildHeightFromWallsProgram);
   gl.uniform1i(gl.getUniformLocation(rebuildHeightFromWallsProgram, 'wallTex'), 0);
@@ -25163,6 +25196,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'greenHueBrightness'), guiControls.greenHueBrightness != null ? guiControls.greenHueBrightness : 1.25);
   gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'greenHueSaturation'), guiControls.greenHueSaturation != null ? guiControls.greenHueSaturation : 1.05);
   gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'greenHueHue'), guiControls.greenHueHue != null ? guiControls.greenHueHue : 0.0);
+  gl.uniform1i(gl.getUniformLocation(realisticDisplayProgram, 'freshWaterSurfaceOnly'), guiControls.freshWaterSurfaceOnly ? 1 : 0);
+  gl.uniform1i(gl.getUniformLocation(realisticDisplayProgram, 'saltWaterSurfaceOnly'), guiControls.saltWaterSurfaceOnly ? 1 : 0);
   uploadCloudsRainUniforms();
 
   if (lightningIllumProgram) {
@@ -25267,6 +25302,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'greenHueBrightness'), guiControls.greenHueBrightness != null ? guiControls.greenHueBrightness : 1.25);
         gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'greenHueSaturation'), guiControls.greenHueSaturation != null ? guiControls.greenHueSaturation : 1.05);
         gl.uniform1f(gl.getUniformLocation(realisticDisplayProgram, 'greenHueHue'), guiControls.greenHueHue != null ? guiControls.greenHueHue : 0.0);
+        gl.uniform1i(gl.getUniformLocation(realisticDisplayProgram, 'freshWaterSurfaceOnly'), guiControls.freshWaterSurfaceOnly ? 1 : 0);
+        gl.uniform1i(gl.getUniformLocation(realisticDisplayProgram, 'saltWaterSurfaceOnly'), guiControls.saltWaterSurfaceOnly ? 1 : 0);
       }
       if (skyBackgroundDisplayProgram) {
         gl.useProgram(skyBackgroundDisplayProgram);
@@ -25460,8 +25497,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     gl.viewport(0, 1, sim_res_x, 1);
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, latestTerrainHeightTexture);
-    gl.activeTexture(gl.TEXTURE1);
-    gl.bindTexture(gl.TEXTURE_2D, sunColumnTexture);
+    // Do not bind sunColumnTexture as a sampler here — it is the color attachment
+    // and that feedback path can reset the GPU on some drivers.
     gl.bindFramebuffer(gl.FRAMEBUFFER, sunColumnFrameBuff);
     gl.drawBuffers([ gl.COLOR_ATTACHMENT0 ]);
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
@@ -25530,15 +25567,25 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     syncHeightToSunColumn();
   }
 
-  function rasterizeTerrainFromHeight(paintType, surfaceKind)
+  function rasterizeTerrainFromHeight(paintType, surfaceKind, brush, opts)
   {
     const srcH = latestTerrainHeightTexture;
     const oldH = srcH === terrainHeightTexture_0 ? terrainHeightTexture_1 : terrainHeightTexture_0;
+    const cavesOn = opts && Object.prototype.hasOwnProperty.call(opts, 'allowCaves')
+      ? !!opts.allowCaves
+      : !!guiControls.allowCaves;
     gl.useProgram(rasterizeTerrainProgram);
     gl.uniform1i(gl.getUniformLocation(rasterizeTerrainProgram, 'paintSurfaceType'), paintType);
     gl.uniform1i(gl.getUniformLocation(rasterizeTerrainProgram, 'paintSurfaceKind'), surfaceKind);
     gl.uniform1f(gl.getUniformLocation(rasterizeTerrainProgram, 'waterTemperature'), CtoK(guiControls.waterTemperature));
-    gl.uniform1i(gl.getUniformLocation(rasterizeTerrainProgram, 'allowCaves'), guiControls.allowCaves ? 1 : 0);
+    gl.uniform1i(gl.getUniformLocation(rasterizeTerrainProgram, 'allowCaves'), cavesOn ? 1 : 0);
+    const remesh = brush && (paintType === 2 || paintType === 8 || paintType === 9) ? 1 : 0;
+    gl.uniform1i(gl.getUniformLocation(rasterizeTerrainProgram, 'remeshInBrush'), remesh);
+    if (brush) {
+      gl.uniform4f(gl.getUniformLocation(rasterizeTerrainProgram, 'userInputValues'),
+                   brush.x, brush.y, brush.intensity, brush.radius);
+      gl.uniform1i(gl.getUniformLocation(rasterizeTerrainProgram, 'wrapHorizontally'), brush.wrap ? 1 : 0);
+    }
     gl.uniform4fv(gl.getUniformLocation(rasterizeTerrainProgram, 'initial_Tv'), initial_T);
     gl.viewport(0, 0, sim_res_x, sim_res_y);
     gl.activeTexture(gl.TEXTURE0);
@@ -25591,6 +25638,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     gl.useProgram(sculptTerrainProgram);
     gl.uniform4f(gl.getUniformLocation(sculptTerrainProgram, 'userInputValues'), x, y, intensity, brushRadius);
     gl.uniform1i(gl.getUniformLocation(sculptTerrainProgram, 'wrapHorizontally'), wrap ? 1 : 0);
+    gl.uniform1i(gl.getUniformLocation(sculptTerrainProgram, 'flatSculpt'), (inputType === 12 || inputType === 24) ? 1 : 0);
     gl.viewport(0, 0, sim_res_x, 1);
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, srcH);
@@ -25601,7 +25649,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     window.latestTerrainHeightTexture = latestTerrainHeightTexture;
     gl.viewport(0, 0, sim_res_x, sim_res_y);
     syncHeightToSunColumn();
-    rasterizeTerrainFromHeight(sculptSurfaceTypeForInput(inputType, customSlot), sculptSurfaceKindForInput(inputType));
+    rasterizeTerrainFromHeight(sculptSurfaceTypeForInput(inputType, customSlot), sculptSurfaceKindForInput(inputType),
+      { x: x, y: y, intensity: intensity, radius: brushRadius, wrap: wrap });
   }
 
   function rebuildTerrainHeightFromWalls(wallSrc)
@@ -25613,6 +25662,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     const dstFbo = dstH === terrainHeightTexture_1 ? heightFrameBuff_1 : heightFrameBuff_0;
     const otherH = dstH === terrainHeightTexture_0 ? terrainHeightTexture_1 : terrainHeightTexture_0;
     gl.useProgram(rebuildHeightFromWallsProgram);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     gl.viewport(0, 0, sim_res_x, 1);
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, wallSrc);
@@ -25657,7 +25707,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     gl.drawBuffers([ gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1, gl.COLOR_ATTACHMENT2, gl.COLOR_ATTACHMENT3 ]);
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
     runSetupHeightPass();
-    rasterizeTerrainFromHeight(-1, 0);
+    rasterizeTerrainFromHeight(-1, 0, null, { allowCaves: false });
   } else {
     applyLoadedTerrainHeight(initialHeightTex, initialWallTex);
   }
@@ -30711,7 +30761,9 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       gl.drawBuffers([ gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1, gl.COLOR_ATTACHMENT2, gl.COLOR_ATTACHMENT3 ]);
       gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
       runSetupHeightPass();
-      rasterizeTerrainFromHeight(-1, 0);
+      // Setup generates solid mountains. Keeping allowCaves on here leaves air
+      // pockets under H(x) and can crash the solver as soon as you paint.
+      rasterizeTerrainFromHeight(-1, 0, null, { allowCaves: false });
       }
     } else {
       // NOT SETUP MODE:

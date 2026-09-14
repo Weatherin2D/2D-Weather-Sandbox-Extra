@@ -118,6 +118,10 @@ uniform float greenHueBrightness;
 uniform float greenHueSaturation;
 uniform float greenHueHue;
 
+// 1 = lake/ocean color only on the surface cell; underground is soil/rock.
+uniform int freshWaterSurfaceOnly;
+uniform int saltWaterSurfaceOnly;
+
 out vec4 fragmentColor;
 
 #define SAMPLE_TERRAIN_HEIGHT_FROM_SUN_COLUMN
@@ -1455,13 +1459,24 @@ void main()
   wall = texture(wallTex, bndFragCoord * texelSize);                           // texCoord
   lightIntensity = normalizedSunlightAt(bndFragCoord * texelSize);
 
-  gTerrainH = sampleTerrainHeight(fragCoord.x);
-  gTerrainSlope = terrainSlope(fragCoord.x);
+  float hSolid = sampleDisplayTerrainHeight(wallTex, fragCoord.x);
+  gTerrainSlope = displayTerrainSlope(wallTex, fragCoord.x);
+  gTerrainH = hSolid;
+  int colIx = wrapTerrainColumn(int(floor(fragCoord.x)), int(resolution.x));
+  bool waterColumn = displayColumnIsLiquidWater(wallTex, colIx);
+  if (waterColumn) {
+    float windU = texture(baseTex, vec2(texCoord.x, clamp((hSolid + 0.5) / max(resolution.y, 1.0), 0.0, 1.0)))[VX] * 10.0;
+    float waveL = 0.045 * sin(fragCoord.x * 2.3 + iterNum * 0.006) + 0.028 * sin(fragCoord.x * 3.7 + iterNum * 0.011);
+    float waveR = 0.045 * sin(fragCoord.x * 2.3 - iterNum * 0.006) + 0.028 * sin(fragCoord.x * 3.7 - iterNum * 0.011);
+    float wave = waveL * max(-windU, 0.0) + waveR * max(windU, 0.0);
+    gTerrainH = hSolid - 0.18 + clamp(wave, -0.10, 0.16);
+    gTerrainSlope = 0.0;
+  }
   belowTerrain = fragCoord.y < gTerrainH && !fragmentIsCaveAir(wallTex);
 
   ivec4 wallX0Ym = texture(wallTex, texCoordX0Ym);
   if (belowTerrain) {
-    vec2 surfUV = terrainSurfaceUV(fragCoord.x);
+    vec2 surfUV = occupancySurfaceUV(fragCoord.x);
     wall = texture(wallTex, surfUV);
     water = texture(waterTex, surfUV);
     wallX0Ym = wall;
@@ -1498,7 +1513,14 @@ void main()
     // Lakes/ocean/ice: solid body colors (no flood fade, no fade-to-black).
     // Flooded land: floodwater sheet fades to 0 opacity with depth.
     if (isAnyWaterType(wall[TYPE])) {
-      if (wall[TYPE] == WALLTYPE_FRESH_WATER)
+      bool shallowFill = (wall[TYPE] == WALLTYPE_FRESH_WATER && freshWaterSurfaceOnly != 0)
+                      || (wall[TYPE] == WALLTYPE_WATER && saltWaterSurfaceOnly != 0);
+      if (shallowFill && depth >= 1.05) {
+        vec3 dirt = mix(bareDrySoilCol, bareWetSoilCol, 0.40);
+        const vec3 rockCol = vec3(0.55, 0.50, 0.48);
+        color = mix(dirt, rockCol, smoothstep(1.0, 8.0, depth));
+        color *= texture(noiseTex, vec2(texCoord.x * resolution.x, texCoord.y * resolution.y) * 0.2).rgb;
+      } else if (wall[TYPE] == WALLTYPE_FRESH_WATER)
         color = vec3(0.15, 0.65, 0.95);
       else if (wall[TYPE] == WALLTYPE_ICE)
         color = getIceColor(water[SNOW]);
@@ -1825,7 +1847,7 @@ void main()
     if (heightAboveGround >= 0.0 && heightAboveGround < 10.0) { // near interpolated surface
       float localX = fract(fragCoord.x);
       float localY = fract(fragCoord.y);
-      wallX0Ym = texture(wallTex, terrainSurfaceUV(fragCoord.x));
+      wallX0Ym = texture(wallTex, occupancySurfaceUV(fragCoord.x));
 
 #define texAspect 512. / 4096. // height / width of one facade strip
 #define maxTreeHeight 40.       // height in meters when vegetation max = 127
@@ -1998,7 +2020,7 @@ void main()
         vec4 texCol = vec4(0.0);
         if (wallX0Ym[VEGETATION] > GRASS_VEG_MAX &&
             (wallX0Ym[TYPE] == WALLTYPE_LAND || wallX0Ym[TYPE] == WALLTYPE_FOREST2 || isSettlementWall(wallX0Ym[TYPE]) || isCustomBase(wallX0Ym[TYPE]))) { // forest canopy only
-          vec4 surfaceWater = texture(waterTex, terrainSurfaceUV(fragCoord.x));                     // snow on land below
+          vec4 surfaceWater = texture(waterTex, occupancySurfaceUV(fragCoord.x));                     // snow on land below
           float snow = surfaceWater[SNOW];
           if (snow * 0.01 / cellHeight > treeHeightNorm)
             texCol = vec4(vec3(1.), 1.);                                                                                                                          // show white snow layer above ground

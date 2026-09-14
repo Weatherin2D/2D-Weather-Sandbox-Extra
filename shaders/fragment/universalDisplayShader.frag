@@ -72,8 +72,10 @@ vec4 floodDepthColor(float depthMm)
 void main()
 {
   bool solidTerrain = displayIsSolidTerrain(wallTex);
-  bool atSurface = solidTerrain && abs(fragCoord.y - sampleTerrainHeight(fragCoord.x)) < 1.05;
-  vec4 cell = texture(anyTex, atSurface ? terrainSurfaceUV(fragCoord.x) : texCoord);
+  int colIx = wrapTerrainColumn(int(floor(fragCoord.x)), int(resolution.x));
+  float surfaceH = occupancyHeightColumn(colIx);
+  bool atSurface = solidTerrain && abs(fragCoord.y - surfaceH) < 1.05;
+  vec4 cell = texture(anyTex, atSurface ? occupancySurfaceUV(fragCoord.x) : texCoord);
   ivec4 wall = solidTerrain ? sampleColumnSurfaceWall(wallTex) : texture(wallTex, texCoord);
 
   float raw = cell[quantityIndex];

@@ -217,6 +217,8 @@ const ControlHelp = (function() {
     brushIntensity: 'Strength of each paint stroke. Higher values change fields faster.',
     invertTool: 'Reverses the tool effect — e.g. cool instead of heat, remove instead of add.',
     allowCaves: 'When on, invert land/water/ice punches caves and overhangs instead of lowering the whole column. The mountain skyline stays smooth; turn off to fill interiors again.',
+    freshWaterSurfaceOnly: 'When on, lake color only fills the surface cell instead of a solid blue column through the ground.',
+    saltWaterSurfaceOnly: 'When on, ocean color only fills the surface cell instead of a solid blue column through the ground.',
     airTrafficEnabled: 'Enable NPC planes flying between airports on flight routes.',
     airTrafficMaxPlanes: 'Maximum number of AI aircraft allowed in the simulation at once.',
     airTrafficFreqMult: 'Global multiplier on airport departure rates.',
