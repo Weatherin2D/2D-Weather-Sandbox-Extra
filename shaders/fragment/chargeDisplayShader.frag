@@ -34,7 +34,7 @@ void main()
   ivec4 wall = texture(wallTex, texCoord);
   vec2  chargeVal = texture(chargeTex, texCoord).rg;
 
-  if (wall[DISTANCE] == 0) {
+  if (displayIsSolidTerrain(wallTex)) {
     // Wall cell: show ground/surface charge from G channel
     // Also sample the air cell directly above to show induced charge more clearly
     vec2 aboveCoord = vec2(texCoord.x, texCoord.y + texelSize.y);

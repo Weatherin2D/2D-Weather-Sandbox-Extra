@@ -309,9 +309,13 @@ vec2 sunlightDirection(float sunZenithAngle, float sunAzimuth)
 }
 
 // sunColumnTex RGBA: R=top sun intensity, G=zenith rad, B=azimuth rad, A=climate sea-level °C
+// Row 0 = sun/climate. Optional row 1 = terrain height in cells (realistic silhouette).
 vec4 sampleSunColumn(sampler2D sunColumnTex, float texX)
 {
-  return texture(sunColumnTex, vec2(texX, 0.5));
+  ivec2 sz = textureSize(sunColumnTex, 0);
+  int x = int(floor(texX * float(max(sz.x, 1))));
+  x = clamp(x, 0, sz.x - 1);
+  return texelFetch(sunColumnTex, ivec2(x, 0), 0);
 }
 
 // Match CPU autoMinShadowLight: zenith 85° → 0.040 day fill, 100° → 0.005 night fill.

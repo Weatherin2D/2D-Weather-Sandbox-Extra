@@ -333,7 +333,7 @@ const radToDeg = 57.2957795;
 const kmToMil = 0.62137;
 const mToFt = 3.28084;
 
-const saveFileVersionID = 263574039; // Uint32 id — includes smoke aerosol texture (separate dust/smoke)
+const saveFileVersionID = 263574040; // Uint32 id — includes 1D terrain heightfield
 
 var multiplayerPeerMode = false;
 var multiplayerHostMode = false;
@@ -635,7 +635,7 @@ const guiControls_default = {
   brushSize : 20,
   wholeWidth : false,
   brushIntensity : 0.01,
-  allowCaves : true,
+  allowCaves : false,
   showGraph : false,
   soundingShowWindBarbs : true,
   soundingShowParcels : true,
@@ -8939,9 +8939,19 @@ async function loadSnapshotFromDecompressed(decompressed, version, inPlaceApplyF
   if (typeof saveVersionHasSmokeField === 'function' && saveVersionHasSmokeField(version)
       && typeof consumeOptionalSmokeFieldFromSave === 'function') {
     const smokeResult = consumeOptionalSmokeFieldFromSave(
-      buffer, byteOffset, sliceEnd, cellCount, totalBytes);
+      buffer, byteOffset, sliceEnd, cellCount, totalBytes,
+      saveVersionHasTerrainHeight(version) ? sim_res_x * Float32Array.BYTES_PER_ELEMENT : 0);
     smokeTexF32 = smokeResult.smokeTexF32;
     sliceEnd = smokeResult.sliceEnd;
+  }
+
+  let heightF32 = null;
+  if (typeof saveVersionHasTerrainHeight === 'function' && saveVersionHasTerrainHeight(version)
+      && typeof consumeOptionalTerrainHeightFromSave === 'function') {
+    const heightResult = consumeOptionalTerrainHeightFromSave(
+      buffer, byteOffset, sliceEnd, sim_res_x, totalBytes);
+    heightF32 = heightResult.heightF32;
+    sliceEnd = heightResult.sliceEnd;
   }
 
   let precipArray = null;
@@ -9009,7 +9019,7 @@ async function loadSnapshotFromDecompressed(decompressed, version, inPlaceApplyF
     smokeTexF32 = migrateLegacyAerosolToSmoke(waterTexF32, wallTexI8, sim_res_x, sim_res_y);
 
   if (inPlaceApplyFn) {
-    await inPlaceApplyFn(baseTexF32, waterTexF32, wallTexI8, precipArray, smokeTexF32);
+    await inPlaceApplyFn(baseTexF32, waterTexF32, wallTexI8, precipArray, smokeTexF32, heightF32);
     try {
       if (guiControlsFromSaveFile && typeof guiControls !== 'undefined' && guiControls) {
         const parsed = JSON.parse(guiControlsFromSaveFile);
@@ -9021,7 +9031,7 @@ async function loadSnapshotFromDecompressed(decompressed, version, inPlaceApplyF
     restoreWeatherStationKindsFromGuiControls();
   } else {
     SETUP_MODE = false;
-    await mainScript(baseTexF32, waterTexF32, wallTexI8, precipArray, smokeTexF32);
+    await mainScript(baseTexF32, waterTexF32, wallTexI8, precipArray, smokeTexF32, heightF32);
   }
 }
 
@@ -9176,26 +9186,32 @@ function saveVersionHasSmokeField(version)
   return version === saveFileVersionID || version === 263574039;
 }
 
+function saveVersionHasTerrainHeight(version)
+{
+  return version === saveFileVersionID;
+}
+
 /**
  * Consume an optional R32F smoke field after wall, or recover when missing/truncated.
  * Returns { smokeTexF32, sliceEnd } where sliceEnd is after smoke (or afterWall if absent).
  */
-function consumeOptionalSmokeFieldFromSave(buffer, byteOffset, afterWall, cellCount, totalBytes)
+function consumeOptionalSmokeFieldFromSave(buffer, byteOffset, afterWall, cellCount, totalBytes, extraAfterSmokeBytes)
 {
   const smokeBytes = cellCount * Float32Array.BYTES_PER_ELEMENT;
   const remaining = totalBytes - afterWall;
+  const afterSmokeExtra = extraAfterSmokeBytes || 0;
 
   // Full smoke field present — use it
   if (smokeBytes > 0 && afterWall + smokeBytes <= totalBytes) {
     // Ambiguous files: prefer layout only if post-smoke droplet count looks sane
     let preferSmoke = true;
-    if (afterWall + smokeBytes + 4 <= totalBytes) {
+    if (afterWall + smokeBytes + afterSmokeExtra + 4 <= totalBytes) {
       try {
-        const dropsWithSmoke = new Uint32Array(buffer, byteOffset + afterWall + smokeBytes, 1)[0];
+        const dropsWithSmoke = new Uint32Array(buffer, byteOffset + afterWall + smokeBytes + afterSmokeExtra, 1)[0];
         const dropsWithout = new Uint32Array(buffer, byteOffset + afterWall, 1)[0];
         const maxDrops = Math.max(getDropletCap(false) * 2, 120000);
         const withOk = dropsWithSmoke > 0 && dropsWithSmoke <= maxDrops
-          && (afterWall + smokeBytes + 4 + dropsWithSmoke * 20) <= totalBytes + 1024;
+          && (afterWall + smokeBytes + afterSmokeExtra + 4 + dropsWithSmoke * 20) <= totalBytes + 1024;
         const withoutOk = dropsWithout > 0 && dropsWithout <= maxDrops
           && (afterWall + 4 + dropsWithout * 20) <= totalBytes + 1024;
         if (withoutOk && !withOk)
@@ -9231,6 +9247,20 @@ function consumeOptionalSmokeFieldFromSave(buffer, byteOffset, afterWall, cellCo
   if (remaining <= 0)
     console.warn('Save has no smoke field or trailing data after wall; recovering with simulation textures only.');
   return { smokeTexF32: null, sliceEnd: afterWall };
+}
+
+function consumeOptionalTerrainHeightFromSave(buffer, byteOffset, afterPrev, resX, totalBytes)
+{
+  const heightBytes = resX * Float32Array.BYTES_PER_ELEMENT;
+  if (heightBytes > 0 && afterPrev + heightBytes <= totalBytes) {
+    try {
+      const src = new Float32Array(buffer, byteOffset + afterPrev, resX);
+      return { heightF32: new Float32Array(src), sliceEnd: afterPrev + heightBytes };
+    } catch (e) {
+      console.warn('Terrain height field unreadable, reconstructing from walls:', e.message);
+    }
+  }
+  return { heightF32: null, sliceEnd: afterPrev };
 }
 
 function saveVersionHasAirmass(version)
@@ -9361,11 +9391,22 @@ window.loadData = async function()
       // Optional dedicated smoke field (v263574039+). Recover if truncated or mislabeled.
       if (saveVersionHasSmokeField(version)) {
         const smokeResult = consumeOptionalSmokeFieldFromSave(
-          buffer, byteOffset, sliceEnd, cellCount, bytes.byteLength);
+          buffer, byteOffset, sliceEnd, cellCount, bytes.byteLength,
+          saveVersionHasTerrainHeight(version) ? sim_res_x * Float32Array.BYTES_PER_ELEMENT : 0);
         smokeTexF32 = smokeResult.smokeTexF32;
         sliceEnd = smokeResult.sliceEnd;
         debugLog('after optional smoke field, slice at', sliceEnd, 'of', bytes.byteLength,
           smokeTexF32 ? '(smoke loaded)' : '(no smoke field)');
+      }
+
+      let heightF32 = null;
+      if (saveVersionHasTerrainHeight(version)) {
+        const heightResult = consumeOptionalTerrainHeightFromSave(
+          buffer, byteOffset, sliceEnd, sim_res_x, bytes.byteLength);
+        heightF32 = heightResult.heightF32;
+        sliceEnd = heightResult.sliceEnd;
+        debugLog('after optional terrain height, slice at', sliceEnd,
+          heightF32 ? '(height loaded)' : '(no height field)');
       }
 
       // Read precipitation: format stores droplet count (263574037 and newer)
@@ -9483,7 +9524,7 @@ window.loadData = async function()
         sanitizeFloodWaterTexture(waterTexF32, wallTexI8, sim_res_x, sim_res_y);
         if (!smokeTexF32)
           smokeTexF32 = migrateLegacyAerosolToSmoke(waterTexF32, wallTexI8, sim_res_x, sim_res_y);
-        await mainScript(baseTexF32, waterTexF32, wallTexI8, precipArray, smokeTexF32);
+        await mainScript(baseTexF32, waterTexF32, wallTexI8, precipArray, smokeTexF32, heightF32);
       } catch (e) {
         console.error('Failed to load save file', e);
         alert('Failed to load save file: ' + e.message);
@@ -9970,7 +10011,7 @@ async function prepareSounding()
   }
 }
 
-async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initialRainDrops, initialSmokeTex)
+async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initialRainDrops, initialSmokeTex, initialHeightTex)
 {
   let hostIterAtLastTextureSync = 0;
   let lastHostSnapshotBroadcast = 0;
@@ -12697,8 +12738,25 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     UI_folder.add(guiControls, 'invertTool').name('Invert Tool (charge − / +)').listen();
     UI_folder.add(guiControls, 'allowCaves')
       .onChange(function() {
-        gl.useProgram(boundaryProgram);
-        gl.uniform1i(gl.getUniformLocation(boundaryProgram, 'allowCaves'), guiControls.allowCaves ? 1 : 0);
+        const cavesOn = guiControls.allowCaves ? 1 : 0;
+        if (boundaryProgram) {
+          gl.useProgram(boundaryProgram);
+          gl.uniform1i(gl.getUniformLocation(boundaryProgram, 'allowCaves'), cavesOn);
+        }
+        if (advectionProgram) {
+          gl.useProgram(advectionProgram);
+          const loc = gl.getUniformLocation(advectionProgram, 'allowCaves');
+          if (loc)
+            gl.uniform1i(loc, cavesOn);
+        }
+        if (rasterizeTerrainProgram) {
+          gl.useProgram(rasterizeTerrainProgram);
+          const loc = gl.getUniformLocation(rasterizeTerrainProgram, 'allowCaves');
+          if (loc)
+            gl.uniform1i(loc, cavesOn);
+        }
+        if (!guiControls.allowCaves && typeof rasterizeTerrainFromHeight === 'function' && latestTerrainHeightTexture)
+          rasterizeTerrainFromHeight(-1, 0);
       })
       .name('Allow Caves');
 
@@ -13135,6 +13193,8 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
           horizontalDisplayMult = 3.0;
         else
           horizontalDisplayMult = 1.0;
+        if (typeof bindTerrainHeightDisplayUniforms === 'function')
+          bindTerrainHeightDisplayUniforms();
       })
       .name('Wrap Horizontally');
     displayCamera.add(guiControls, 'SmoothCam').onChange(function() { cam.smooth = guiControls.SmoothCam; }).name('Smooth Camera');
@@ -20917,7 +20977,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
 
   // load shaders
-  const SHADER_ASSET_VERSION = 87; // bump to bust CDN/browser cache after shader edits
+  const SHADER_ASSET_VERSION = 92; // bump to bust CDN/browser cache after shader edits
 
   var commonSource = await loadSourceFile('shaders/common.glsl');
   var commonDisplaySource = await loadSourceFile('shaders/commonDisplay.glsl');
@@ -20956,6 +21016,11 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   const lightningLocationShader = await loadShader('lightningLocationShader.frag');
 
   const setupShader = await loadShader('setupShader.frag');
+  const setupHeightShader = await loadShader('setupHeight.frag');
+  const sculptTerrainShader = await loadShader('sculptTerrain.frag');
+  const rasterizeTerrainShader = await loadShader('rasterizeTerrain.frag');
+  const rebuildHeightFromWallsShader = await loadShader('rebuildHeightFromWalls.frag');
+  const copyHeightToSunColumnShader = await loadShader('copyHeightToSunColumn.frag');
 
   const temperatureDisplayShader = await loadShader('temperatureDisplayShader.frag');
   const temperatureChangeDisplayShader = await loadShader('temperatureChangeDisplayShader.frag');
@@ -21012,6 +21077,11 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   lightningIllumProgram = null;
   const lightningLocationProgram = createProgram(simVertexShader, lightningLocationShader);
   const setupProgram = createProgram(simVertexShader, setupShader);
+  const setupHeightProgram = createProgram(simVertexShader, setupHeightShader);
+  const sculptTerrainProgram = createProgram(simVertexShader, sculptTerrainShader);
+  const rasterizeTerrainProgram = createProgram(simVertexShader, rasterizeTerrainShader);
+  const rebuildHeightFromWallsProgram = createProgram(simVertexShader, rebuildHeightFromWallsShader);
+  const copyHeightToSunColumnProgram = createProgram(simVertexShader, copyHeightToSunColumnShader);
   gl.deleteShader(simVertexShader);
 
   const chargeDisplayProgram = createProgram(dispVertexShader, chargeDisplayShader);
@@ -21514,6 +21584,11 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   const smokeTexture_1 = gl.createTexture();
   const wallTexture_0 = gl.createTexture();
   const wallTexture_1 = gl.createTexture();
+  const terrainHeightTexture_0 = gl.createTexture();
+  const terrainHeightTexture_1 = gl.createTexture();
+  let latestTerrainHeightTexture = terrainHeightTexture_0;
+  window.terrainHeightTexture_0 = terrainHeightTexture_0;
+  window.terrainHeightTexture_1 = terrainHeightTexture_1;
 
   window.baseTexture_0 = baseTexture_0;
   window.baseTexture_1 = baseTexture_1;
@@ -21523,6 +21598,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   window.smokeTexture_1 = smokeTexture_1;
   window.wallTexture_0 = wallTexture_0;
   window.wallTexture_1 = wallTexture_1;
+  window.latestTerrainHeightTexture = latestTerrainHeightTexture;
 
   const curlTexture = gl.createTexture();
   const divergenceTexture = gl.createTexture();
@@ -21625,6 +21701,9 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   const frameBuff_1 = gl.createFramebuffer();
 
   const curlFrameBuff = gl.createFramebuffer();
+  const heightFrameBuff_0 = gl.createFramebuffer();
+  const heightFrameBuff_1 = gl.createFramebuffer();
+  const sunColumnFrameBuff = gl.createFramebuffer();
   const divergenceFrameBuff = gl.createFramebuffer();
   const capeFrameBuff = gl.createFramebuffer();
   const chargeFrameBuff_0 = gl.createFramebuffer();
@@ -21711,6 +21790,19 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
     // gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+    const heightInit = new Float32Array(sim_res_x);
+    heightInit.fill(1.0);
+    [terrainHeightTexture_0, terrainHeightTexture_1].forEach((tex) => {
+      gl.bindTexture(gl.TEXTURE_2D, tex);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.R32F, sim_res_x, 1, 0, gl.RED, gl.FLOAT, heightInit);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    });
+    latestTerrainHeightTexture = terrainHeightTexture_0;
+    window.latestTerrainHeightTexture = latestTerrainHeightTexture;
 
     for (let i = 0; i < temperatureChangeHistoryTextures.length; i++) {
       gl.bindTexture(gl.TEXTURE_2D, temperatureChangeHistoryTextures[i]);
@@ -21854,6 +21946,11 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT2, gl.TEXTURE_2D, wallTexture_1, 0);
   gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT3, gl.TEXTURE_2D, smokeTexture_1, 0);
 
+  gl.bindFramebuffer(gl.FRAMEBUFFER, heightFrameBuff_0);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, terrainHeightTexture_0, 0);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, heightFrameBuff_1);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, terrainHeightTexture_1, 0);
+
 
   gl.bindTexture(gl.TEXTURE_2D, curlTexture);
   gl.texImage2D(gl.TEXTURE_2D, 0, gl.R32F, sim_res_x, sim_res_y, 0, gl.RED, gl.FLOAT, null);
@@ -21967,11 +22064,13 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   sunColumnElevationDeg = new Float32Array(sim_res_x);
   window.sunColumnElevationDeg = sunColumnElevationDeg;
   gl.bindTexture(gl.TEXTURE_2D, sunColumnTexture);
-  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, sim_res_x, 1, 0, gl.RGBA, gl.FLOAT, sunColumnData);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, sim_res_x, 2, 0, gl.RGBA, gl.FLOAT, new Float32Array(sim_res_x * 2 * 4));
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, sunColumnFrameBuff);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, sunColumnTexture, 0);
 
 
   gl.bindTexture(gl.TEXTURE_2D, precipitationFeedbackTexture);
@@ -22286,6 +22385,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       cloudOpacityMult : 1.0,
       rainOpacityMult : 1.35,
       cloudSoftness : 1.0,
+      cloudVisualSoften : 1.0,
       shaftSpecular : 0.1,
       skyReflectAmount : 0.05,
       refractDistort : 0.0,
@@ -22353,6 +22453,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     u1('cloudOpacityMult', cr.cloudOpacityMult);
     u1('rainOpacityMult', cr.rainOpacityMult);
     u1('cloudSoftness', cr.cloudSoftness);
+    u1('cloudVisualSoften', cr.cloudVisualSoften != null ? cr.cloudVisualSoften : 1.0);
     u1('shaftSpecular', cr.shaftSpecular);
     u1('skyReflectAmount', cr.skyReflectAmount);
     u1('refractDistort', cr.refractDistort);
@@ -24678,6 +24779,37 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
 
   gl.uniform4fv(gl.getUniformLocation(setupProgram, 'initial_Tv'), initial_T);
 
+  gl.useProgram(setupHeightProgram);
+  gl.uniform2f(gl.getUniformLocation(setupHeightProgram, 'texelSize'), texelSizeX, texelSizeY);
+  gl.uniform2f(gl.getUniformLocation(setupHeightProgram, 'resolution'), sim_res_x, sim_res_y);
+
+  gl.useProgram(sculptTerrainProgram);
+  gl.uniform1i(gl.getUniformLocation(sculptTerrainProgram, 'terrainHeightTex'), 0);
+  gl.uniform2f(gl.getUniformLocation(sculptTerrainProgram, 'texelSize'), texelSizeX, texelSizeY);
+  gl.uniform2f(gl.getUniformLocation(sculptTerrainProgram, 'resolution'), sim_res_x, sim_res_y);
+
+  gl.useProgram(rasterizeTerrainProgram);
+  gl.uniform1i(gl.getUniformLocation(rasterizeTerrainProgram, 'baseTex'), 0);
+  gl.uniform1i(gl.getUniformLocation(rasterizeTerrainProgram, 'waterTex'), 1);
+  gl.uniform1i(gl.getUniformLocation(rasterizeTerrainProgram, 'wallTex'), 2);
+  gl.uniform1i(gl.getUniformLocation(rasterizeTerrainProgram, 'smokeTex'), 3);
+  gl.uniform1i(gl.getUniformLocation(rasterizeTerrainProgram, 'terrainHeightTex'), 4);
+  gl.uniform1i(gl.getUniformLocation(rasterizeTerrainProgram, 'oldHeightTex'), 5);
+  gl.uniform2f(gl.getUniformLocation(rasterizeTerrainProgram, 'texelSize'), texelSizeX, texelSizeY);
+  gl.uniform2f(gl.getUniformLocation(rasterizeTerrainProgram, 'resolution'), sim_res_x, sim_res_y);
+  gl.uniform1f(gl.getUniformLocation(rasterizeTerrainProgram, 'dryLapse'), dryLapse);
+  gl.uniform4fv(gl.getUniformLocation(rasterizeTerrainProgram, 'initial_Tv'), initial_T);
+  gl.uniform1f(gl.getUniformLocation(rasterizeTerrainProgram, 'waterTemperature'), CtoK(guiControls.waterTemperature));
+  gl.uniform1i(gl.getUniformLocation(rasterizeTerrainProgram, 'allowCaves'), guiControls.allowCaves ? 1 : 0);
+
+  gl.useProgram(rebuildHeightFromWallsProgram);
+  gl.uniform1i(gl.getUniformLocation(rebuildHeightFromWallsProgram, 'wallTex'), 0);
+  gl.uniform2f(gl.getUniformLocation(rebuildHeightFromWallsProgram, 'resolution'), sim_res_x, sim_res_y);
+
+  gl.useProgram(copyHeightToSunColumnProgram);
+  gl.uniform1i(gl.getUniformLocation(copyHeightToSunColumnProgram, 'terrainHeightTex'), 0);
+  gl.uniform1i(gl.getUniformLocation(copyHeightToSunColumnProgram, 'sunColumnTex'), 1);
+
   gl.useProgram(advectionProgram);
   gl.uniform1i(gl.getUniformLocation(advectionProgram, 'baseTex'), 0);
   gl.uniform1i(gl.getUniformLocation(advectionProgram, 'waterTex'), 1);
@@ -24693,6 +24825,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
                CtoK(guiControls.waterTemperature)); // can be changed by GUI input
   gl.uniform1f(gl.getUniformLocation(advectionProgram, 'maxWaterTemperatureC'), guiControls.maxWaterTemperatureC);
   gl.uniform1f(gl.getUniformLocation(advectionProgram, 'enableGlacierFormation'), guiControls.enableGlacierFormation ? 1.0 : 0.0);
+  gl.uniform1i(gl.getUniformLocation(advectionProgram, 'allowCaves'), guiControls.allowCaves ? 1 : 0);
 
   gl.uniform4fv(gl.getUniformLocation(advectionProgram, 'realWorldSounding_Tv'), realWorldSounding_T);
   gl.uniform4fv(gl.getUniformLocation(advectionProgram, 'realWorldSounding_Wv'), realWorldSounding_W);
@@ -24748,6 +24881,9 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   // gl.uniform1fv(gl.getUniformLocation(boundaryProgram, 'initial_T'), initial_T);
   gl.uniform4fv(gl.getUniformLocation(boundaryProgram, 'initial_Tv'), initial_T);
   gl.uniform1i(gl.getUniformLocation(boundaryProgram, 'allowCaves'), guiControls.allowCaves ? 1 : 0);
+  gl.useProgram(advectionProgram);
+  gl.uniform1i(gl.getUniformLocation(advectionProgram, 'allowCaves'), guiControls.allowCaves ? 1 : 0);
+  gl.useProgram(boundaryProgram);
   gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'meltingHeat'), guiControls.meltingHeat);
   gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'dynamicWaterTemperature'), guiControls.dynamicWaterTemperature ? 1.0 : 0.0);
   gl.uniform1i(gl.getUniformLocation(boundaryProgram, 'latitudeBasedTemperature'), guiControls.latitudeBasedTemperature ? 1 : 0);
@@ -25065,6 +25201,30 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   gl.uniform1i(gl.getUniformLocation(IRtempDisplayProgram, 'wallTex'), 2);
   gl.uniform1i(gl.getUniformLocation(IRtempDisplayProgram, 'colorScalesTex'), 9);
 
+  const terrainDisplayPrograms = [
+    temperatureDisplayProgram, temperatureChangeDisplayProgram, airQualityDisplayProgram,
+    humidityDisplayProgram, thetaeDisplayProgram, dewpointDisplayProgram, wetbulbDisplayProgram,
+    precipTypeDisplayProgram, precipDisplayProgram, universalDisplayProgram, chargeDisplayProgram,
+    dropletSizeDisplayProgram, IRtempDisplayProgram, realisticDisplayProgram,
+  ];
+  function bindTerrainHeightDisplayUniforms()
+  {
+    const wrap = guiControls.wrapHorizontally ? 1 : 0;
+    for (let i = 0; i < terrainDisplayPrograms.length; i++) {
+      const prog = terrainDisplayPrograms[i];
+      if (!prog) continue;
+      gl.useProgram(prog);
+      const hLoc = gl.getUniformLocation(prog, 'terrainHeightTex');
+      if (hLoc)
+        gl.uniform1i(hLoc, 3);
+      const wLoc = gl.getUniformLocation(prog, 'wrapHorizontally');
+      if (wLoc)
+        gl.uniform1i(wLoc, wrap);
+    }
+  }
+  bindTerrainHeightDisplayUniforms();
+  window.bindTerrainHeightDisplayUniforms = bindTerrainHeightDisplayUniforms;
+
   gl.useProgram(postProcessingProgram);
   gl.uniform1i(gl.getUniformLocation(postProcessingProgram, 'hdrTex'), 0);
   gl.uniform1i(gl.getUniformLocation(postProcessingProgram, 'bloomTex'), 1);
@@ -25261,6 +25421,228 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
 
   gl.bindVertexArray(fluidVao);
 
+  function isTerrainSculptInputType(t)
+  {
+    return t === 10 || t === 11 || t === 12 || t === 24 || t === 25 || t === 26 || t === 29;
+  }
+
+  function sculptSurfaceTypeForInput(inputType, customSlot)
+  {
+    if (inputType === 10) return 0;
+    if (inputType === 11) return 1;
+    if (inputType === 12) return 8;
+    if (inputType === 24) return 2;
+    if (inputType === 25 || inputType === 26) return 9;
+    if (inputType === 29) return 10 + Math.max(0, Math.min(7, customSlot | 0));
+    return -1;
+  }
+
+  function sculptSurfaceKindForInput(inputType)
+  {
+    if (inputType === 12) return 1;
+    if (inputType === 24) return 2;
+    if (inputType === 25) return 3;
+    if (inputType === 26) return 4;
+    return 0;
+  }
+
+  function bindLatestTerrainHeightUnit(unit)
+  {
+    gl.activeTexture(gl.TEXTURE0 + (unit || 3));
+    gl.bindTexture(gl.TEXTURE_2D, latestTerrainHeightTexture);
+  }
+
+  function syncHeightToSunColumn()
+  {
+    if (!copyHeightToSunColumnProgram || !sunColumnFrameBuff)
+      return;
+    gl.useProgram(copyHeightToSunColumnProgram);
+    gl.viewport(0, 1, sim_res_x, 1);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, latestTerrainHeightTexture);
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, sunColumnTexture);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, sunColumnFrameBuff);
+    gl.drawBuffers([ gl.COLOR_ATTACHMENT0 ]);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    gl.viewport(0, 0, sim_res_x, sim_res_y);
+  }
+
+  function uploadTerrainHeightFromArray(arr)
+  {
+    const data = arr && arr.length === sim_res_x ? arr : new Float32Array(sim_res_x);
+    if (!arr || arr.length !== sim_res_x)
+      data.fill(1.0);
+    [terrainHeightTexture_0, terrainHeightTexture_1].forEach((tex) => {
+      gl.bindTexture(gl.TEXTURE_2D, tex);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.R32F, sim_res_x, 1, 0, gl.RED, gl.FLOAT, data);
+    });
+    latestTerrainHeightTexture = terrainHeightTexture_0;
+    window.latestTerrainHeightTexture = latestTerrainHeightTexture;
+    syncHeightToSunColumn();
+  }
+
+  function reconstructTerrainHeightFromWalls(wallTexI8)
+  {
+    const heights = new Float32Array(sim_res_x);
+    heights.fill(1.0);
+    if (!wallTexI8)
+      return heights;
+    for (let x = 0; x < sim_res_x; x++) {
+      let top = 1.0;
+      for (let y = 0; y < sim_res_y; y++) {
+        if (wallTexI8[(y * sim_res_x + x) * 4 + 1] === 0)
+          top = y + 1.0;
+      }
+      heights[x] = Math.max(1.0, Math.min(top, sim_res_y - 1));
+    }
+    return heights;
+  }
+
+  function readTerrainHeightToArray()
+  {
+    const heights = new Float32Array(sim_res_x);
+    const fbo = latestTerrainHeightTexture === terrainHeightTexture_1 ? heightFrameBuff_1 : heightFrameBuff_0;
+    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, fbo);
+    gl.readBuffer(gl.COLOR_ATTACHMENT0);
+    gl.pixelStorei(gl.PACK_ALIGNMENT, 1);
+    gl.readPixels(0, 0, sim_res_x, 1, gl.RED, gl.FLOAT, heights);
+    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, null);
+    return heights;
+  }
+
+  function runSetupHeightPass()
+  {
+    gl.useProgram(setupHeightProgram);
+    gl.uniform1f(gl.getUniformLocation(setupHeightProgram, 'seed'), mouseXinSim);
+    gl.uniform1f(gl.getUniformLocation(setupHeightProgram, 'heightMult'), ((canvas.height - mouseY) / canvas.height) * 2.0);
+    gl.uniform2f(gl.getUniformLocation(setupHeightProgram, 'resolution'), sim_res_x, sim_res_y);
+    gl.uniform2f(gl.getUniformLocation(setupHeightProgram, 'texelSize'), texelSizeX, texelSizeY);
+    gl.viewport(0, 0, sim_res_x, 1);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, heightFrameBuff_0);
+    gl.drawBuffers([ gl.COLOR_ATTACHMENT0 ]);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, heightFrameBuff_1);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    latestTerrainHeightTexture = terrainHeightTexture_0;
+    window.latestTerrainHeightTexture = latestTerrainHeightTexture;
+    gl.viewport(0, 0, sim_res_x, sim_res_y);
+    syncHeightToSunColumn();
+  }
+
+  function rasterizeTerrainFromHeight(paintType, surfaceKind)
+  {
+    const srcH = latestTerrainHeightTexture;
+    const oldH = srcH === terrainHeightTexture_0 ? terrainHeightTexture_1 : terrainHeightTexture_0;
+    gl.useProgram(rasterizeTerrainProgram);
+    gl.uniform1i(gl.getUniformLocation(rasterizeTerrainProgram, 'paintSurfaceType'), paintType);
+    gl.uniform1i(gl.getUniformLocation(rasterizeTerrainProgram, 'paintSurfaceKind'), surfaceKind);
+    gl.uniform1f(gl.getUniformLocation(rasterizeTerrainProgram, 'waterTemperature'), CtoK(guiControls.waterTemperature));
+    gl.uniform1i(gl.getUniformLocation(rasterizeTerrainProgram, 'allowCaves'), guiControls.allowCaves ? 1 : 0);
+    gl.uniform4fv(gl.getUniformLocation(rasterizeTerrainProgram, 'initial_Tv'), initial_T);
+    gl.viewport(0, 0, sim_res_x, sim_res_y);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, baseTexture_0);
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, waterTexture_0);
+    gl.activeTexture(gl.TEXTURE2);
+    gl.bindTexture(gl.TEXTURE_2D, wallTexture_0);
+    gl.activeTexture(gl.TEXTURE3);
+    gl.bindTexture(gl.TEXTURE_2D, smokeTexture_0);
+    gl.activeTexture(gl.TEXTURE4);
+    gl.bindTexture(gl.TEXTURE_2D, srcH);
+    gl.activeTexture(gl.TEXTURE5);
+    gl.bindTexture(gl.TEXTURE_2D, oldH);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_1);
+    gl.drawBuffers([ gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1, gl.COLOR_ATTACHMENT2, gl.COLOR_ATTACHMENT3 ]);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_1);
+    gl.readBuffer(gl.COLOR_ATTACHMENT0);
+    gl.bindTexture(gl.TEXTURE_2D, baseTexture_0);
+    gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, sim_res_x, sim_res_y);
+    gl.readBuffer(gl.COLOR_ATTACHMENT1);
+    gl.bindTexture(gl.TEXTURE_2D, waterTexture_0);
+    gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, sim_res_x, sim_res_y);
+    gl.readBuffer(gl.COLOR_ATTACHMENT2);
+    gl.bindTexture(gl.TEXTURE_2D, wallTexture_0);
+    gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, sim_res_x, sim_res_y);
+    gl.readBuffer(gl.COLOR_ATTACHMENT3);
+    gl.bindTexture(gl.TEXTURE_2D, smokeTexture_0);
+    gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, sim_res_x, sim_res_y);
+    gl.readBuffer(gl.COLOR_ATTACHMENT0);
+    gl.bindTexture(gl.TEXTURE_2D, baseTexture_1);
+    gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, sim_res_x, sim_res_y);
+    gl.readBuffer(gl.COLOR_ATTACHMENT1);
+    gl.bindTexture(gl.TEXTURE_2D, waterTexture_1);
+    gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, sim_res_x, sim_res_y);
+    gl.readBuffer(gl.COLOR_ATTACHMENT2);
+    gl.bindTexture(gl.TEXTURE_2D, wallTexture_1);
+    gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, sim_res_x, sim_res_y);
+    gl.readBuffer(gl.COLOR_ATTACHMENT3);
+    gl.bindTexture(gl.TEXTURE_2D, smokeTexture_1);
+    gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, sim_res_x, sim_res_y);
+  }
+
+  function applyTerrainSculpt(x, y, intensity, brushRadius, wrap, inputType, customSlot)
+  {
+    const srcH = latestTerrainHeightTexture;
+    const dstH = srcH === terrainHeightTexture_0 ? terrainHeightTexture_1 : terrainHeightTexture_0;
+    const dstFbo = dstH === terrainHeightTexture_1 ? heightFrameBuff_1 : heightFrameBuff_0;
+    gl.useProgram(sculptTerrainProgram);
+    gl.uniform4f(gl.getUniformLocation(sculptTerrainProgram, 'userInputValues'), x, y, intensity, brushRadius);
+    gl.uniform1i(gl.getUniformLocation(sculptTerrainProgram, 'wrapHorizontally'), wrap ? 1 : 0);
+    gl.viewport(0, 0, sim_res_x, 1);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, srcH);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, dstFbo);
+    gl.drawBuffers([ gl.COLOR_ATTACHMENT0 ]);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    latestTerrainHeightTexture = dstH;
+    window.latestTerrainHeightTexture = latestTerrainHeightTexture;
+    gl.viewport(0, 0, sim_res_x, sim_res_y);
+    syncHeightToSunColumn();
+    rasterizeTerrainFromHeight(sculptSurfaceTypeForInput(inputType, customSlot), sculptSurfaceKindForInput(inputType));
+  }
+
+  function rebuildTerrainHeightFromWalls(wallSrc)
+  {
+    if (!rebuildHeightFromWallsProgram || !wallSrc)
+      return;
+    const srcH = latestTerrainHeightTexture;
+    const dstH = srcH === terrainHeightTexture_0 ? terrainHeightTexture_1 : terrainHeightTexture_0;
+    const dstFbo = dstH === terrainHeightTexture_1 ? heightFrameBuff_1 : heightFrameBuff_0;
+    const otherH = dstH === terrainHeightTexture_0 ? terrainHeightTexture_1 : terrainHeightTexture_0;
+    gl.useProgram(rebuildHeightFromWallsProgram);
+    gl.viewport(0, 0, sim_res_x, 1);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, wallSrc);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, dstFbo);
+    gl.drawBuffers([ gl.COLOR_ATTACHMENT0 ]);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    latestTerrainHeightTexture = dstH;
+    window.latestTerrainHeightTexture = latestTerrainHeightTexture;
+    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, dstFbo);
+    gl.readBuffer(gl.COLOR_ATTACHMENT0);
+    gl.bindTexture(gl.TEXTURE_2D, otherH);
+    gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, sim_res_x, 1);
+    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, null);
+    gl.viewport(0, 0, sim_res_x, sim_res_y);
+    syncHeightToSunColumn();
+  }
+
+  window.__uploadTerrainHeightFromArray = uploadTerrainHeightFromArray;
+  window.__rasterizeTerrainFromHeight = function() { rasterizeTerrainFromHeight(-1, 0); };
+  window.__readTerrainHeightToArray = readTerrainHeightToArray;
+
+  function applyLoadedTerrainHeight(heightF32, wallTexI8)
+  {
+    if (heightF32 && heightF32.length === sim_res_x) {
+      uploadTerrainHeightFromArray(heightF32);
+      return;
+    }
+    uploadTerrainHeightFromArray(reconstructTerrainHeightFromWalls(wallTexI8));
+  }
+
   // if no save file was loaded
   // Use setup shader to set initial conditions
   if (initialWallTex == null) {
@@ -25274,6 +25656,10 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_1);
     gl.drawBuffers([ gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1, gl.COLOR_ATTACHMENT2, gl.COLOR_ATTACHMENT3 ]);
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    runSetupHeightPass();
+    rasterizeTerrainFromHeight(-1, 0);
+  } else {
+    applyLoadedTerrainHeight(initialHeightTex, initialWallTex);
   }
 
 
@@ -29048,6 +29434,11 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     for (let p = 0; p < passes.length; p++) {
       const pass = passes[p];
       if (!pass || pass.inputType < 0) continue;
+      if (isTerrainSculptInputType(pass.inputType) && !guiControls.allowCaves) {
+        applyTerrainSculpt(pass.x, pass.y, pass.intensity, pass.brushSize * 0.5,
+          pass.wrap, pass.inputType, pass.customSlot);
+        continue;
+      }
       gl.useProgram(advectionProgram);
       gl.uniform1i(uloc_adv_userInputType, pass.inputType);
       gl.uniform4f(uloc_adv_userInputValues, pass.x, pass.y, pass.intensity, pass.brushSize * 0.5);
@@ -29113,6 +29504,14 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       gl.uniform1i(uloc_adv_brushOnlyMode, 0);
       gl.uniform1i(uloc_adv_userInputType, -1);
     }
+    if (guiControls.allowCaves) {
+      for (let p = 0; p < passes.length; p++) {
+        if (passes[p] && isTerrainSculptInputType(passes[p].inputType)) {
+          rebuildTerrainHeightFromWalls(wallTexture_0);
+          break;
+        }
+      }
+    }
   }
 
   /**
@@ -29126,6 +29525,11 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     for (let p = 0; p < passes.length; p++) {
       const pass = passes[p];
       if (!pass || pass.inputType < 0) continue;
+      if (isTerrainSculptInputType(pass.inputType) && !guiControls.allowCaves) {
+        applyTerrainSculpt(pass.x, pass.y, pass.intensity, pass.brushSize * 0.5,
+          pass.wrap, pass.inputType, pass.customSlot);
+        continue;
+      }
       gl.useProgram(advectionProgram);
       gl.uniform1i(uloc_adv_userInputType, pass.inputType);
       gl.uniform4f(uloc_adv_userInputValues, pass.x, pass.y, pass.intensity, pass.brushSize * 0.5);
@@ -29171,6 +29575,14 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       gl.useProgram(advectionProgram);
       gl.uniform1i(uloc_adv_brushOnlyMode, 0);
       gl.uniform1i(uloc_adv_userInputType, -1);
+    }
+    if (guiControls.allowCaves) {
+      for (let p = 0; p < passes.length; p++) {
+        if (passes[p] && isTerrainSculptInputType(passes[p].inputType)) {
+          rebuildTerrainHeightFromWalls(wallTexture_1);
+          break;
+        }
+      }
     }
   }
 
@@ -29417,7 +29829,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
 
     let saveDataArray = [
       Uint16Array.of(sim_res_x), Uint16Array.of(sim_res_y), baseTextureValues, waterTextureValues, wallTextureValues,
-      smokeTextureValues,
+      smokeTextureValues, readTerrainHeightToArray(),
       Uint32Array.of(rainDrops.length / 5), precipBufferValues, Uint16Array.of(weatherStations.length),
       weatherStationsPositions, Uint16Array.of(radars.length), radarsPositions, Uint16Array.of(airmassGenerators.length), airmassPositions,
       Uint32Array.of(strGuiControls.length), strGuiControls,
@@ -29593,7 +30005,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     });
   }
 
-  window.__applySnapshotInPlace = async function(baseTexF32, waterTexF32, wallTexI8, precipArray, smokeTexF32)
+  window.__applySnapshotInPlace = async function(baseTexF32, waterTexF32, wallTexI8, precipArray, smokeTexF32, heightF32)
   {
     gl.bindTexture(gl.TEXTURE_2D, baseTexture_0);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, sim_res_x, sim_res_y, 0, gl.RGBA, gl.FLOAT, baseTexF32);
@@ -29612,6 +30024,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.R32F, sim_res_x, sim_res_y, 0, gl.RED, gl.FLOAT, smokeData);
     gl.bindTexture(gl.TEXTURE_2D, smokeTexture_1);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.R32F, sim_res_x, sim_res_y, 0, gl.RED, gl.FLOAT, smokeData);
+    applyLoadedTerrainHeight(heightF32, wallTexI8);
     if (precipArray && precipVertexBuffer_0) {
       gl.bindBuffer(gl.ARRAY_BUFFER, precipVertexBuffer_0);
       gl.bufferData(gl.ARRAY_BUFFER, precipArray, gl.DYNAMIC_DRAW);
@@ -30052,6 +30465,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       gl.useProgram(advectionProgram);
       gl.uniform1i(uloc_adv_brushOnlyMode, 0);
     }
+    if (guiControls.allowCaves && isTerrainSculptInputType(inputType))
+      rebuildTerrainHeightFromWalls(wallTexture_1);
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
   }
 
@@ -30295,6 +30710,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_1);
       gl.drawBuffers([ gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1, gl.COLOR_ATTACHMENT2, gl.COLOR_ATTACHMENT3 ]);
       gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+      runSetupHeightPass();
+      rasterizeTerrainFromHeight(-1, 0);
       }
     } else {
       // NOT SETUP MODE:
@@ -30412,6 +30829,13 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         (inputType > 0 || isPaintingCustomBrushTool());
       if (hostPaintingLocally)
         hostBrushSyncPending = true;
+
+      const replayBlocked = window.WeatherSandbox && window.WeatherSandbox.replay
+        && window.WeatherSandbox.replay.isPhysicsBlocked();
+      if (leftMousePressed && isTerrainSculptInputType(inputType) && !guiControls.allowCaves && !isMultiplayerPeer() && !replayBlocked) {
+        applyTerrainSculpt(brushPosXinSim, mouseYinSim, brushIntensity, guiControls.brushSize * 0.5,
+          guiControls.wrapHorizontally, inputType, 0);
+      }
 
 
       // guiControls.IterPerFrame = 1.0 / timePerIteration * 3600 / 60.0;
@@ -30825,13 +31249,20 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
             window.AviationTraffic.step(trafficIters);
         }
 
+        if (guiControls.allowCaves && leftMousePressed && isTerrainSculptInputType(inputType)
+            && !isMultiplayerPeer() && !replayBlocked)
+          rebuildTerrainHeightFromWalls(wallTexture_1);
+
       } // end of simulation part
       else if (guiControls.paused && !isMultiplayerPeer() && leftMousePressed &&
                (inputType > 0 || isPaintingCustomBrushTool())
                && !(window.WeatherSandbox && window.WeatherSandbox.replay
                     && window.WeatherSandbox.replay.isPhysicsBlocked())) {
         // Edit while paused: apply brush without advancing weather
-        if (isPaintingCustomBrushTool())
+        if (isTerrainSculptInputType(inputType)) {
+          if (guiControls.allowCaves)
+            applyPausedBrushEdit();
+        } else if (isPaintingCustomBrushTool())
           applyPausedBrushEdit(getLocalCustomBrushPayload());
         else
           applyPausedBrushEdit();
@@ -31325,6 +31756,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       gl.bindTexture(gl.TEXTURE_2D, waterTexture_1);
       gl.activeTexture(gl.TEXTURE2);
       gl.bindTexture(gl.TEXTURE_2D, wallTexture_1);
+      bindLatestTerrainHeightUnit(3);
       gl.activeTexture(gl.TEXTURE9);
       gl.bindTexture(gl.TEXTURE_2D, colorScalesTexture);
 
@@ -32587,7 +33019,7 @@ drawNukeOverlay();
 
         let saveDataArray = [
           Uint16Array.of(sim_res_x), Uint16Array.of(sim_res_y), baseTextureValues, waterTextureValues, wallTextureValues,
-          smokeTextureValues,
+          smokeTextureValues, readTerrainHeightToArray(),
           Uint32Array.of(rainDrops.length / 5), precipBufferValues, Uint16Array.of(weatherStations.length),
           weatherStationsPositions, Uint16Array.of(radars.length), radarsPositions, Uint16Array.of(airmassGenerators.length), airmassPositions,
           Uint32Array.of(strGuiControls.length), strGuiControls,

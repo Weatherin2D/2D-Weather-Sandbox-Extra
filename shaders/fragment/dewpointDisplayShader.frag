@@ -38,7 +38,7 @@ void main()
   vec4 water = bilerpWall(waterTex, wallTex, fragCoord);
   ivec2 wall = texture(wallTex, texCoord).xy;
 
-  if (wall[DISTANCE] == 0) {
+  if (displayIsSolidTerrain(wallTex)) {
     switch (wall[TYPE]) {
     case WALLTYPE_INERT:
       fragmentColor = vec4(0, 0, 0, 1.);

@@ -36,7 +36,7 @@ void main()
 
   float realTempC = KtoC(potentialToRealT(base[3]));
 
-  if (wall[1] == 0) {  // is wall
+  if (displayIsSolidTerrain(wallTex)) {  // is wall
     switch (wall[0]) { // wall type
     case 0:
       fragmentColor = vec4(0, 0, 0, 1);

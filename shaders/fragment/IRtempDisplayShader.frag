@@ -33,7 +33,7 @@ void main()
 
   float IRtemp = KtoC(IR_temp(light[upOrDown + 2])); // index 2 or 3
 
-  if (wall[1] == 0) {                                // is wall
+  if (displayIsSolidTerrain(wallTex)) {                                // is wall
     switch (wall[0]) {                               // wall type
     case 0:
       fragmentColor = vec4(0, 0, 0, 1);

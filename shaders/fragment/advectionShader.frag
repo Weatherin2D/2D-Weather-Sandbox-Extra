@@ -50,6 +50,7 @@ uniform float maxWaterTemperatureC;
 uniform float enableGlacierFormation;
 uniform float iterNum;
 uniform int brushOnlyMode; // 1 = copy fields + apply brush only (pause-edit; no advection/physics)
+uniform bool allowCaves;
 
 layout(location = 0) out vec4 base;
 layout(location = 1) out vec4 water;
@@ -321,40 +322,71 @@ void main()
       if (userInputValues[BRUSH_INTENSITY] > 0.0) { // build wall if positive value else remove wall
 
         bool setWall = false;
+        bool prevWallWasSolid = wall[DISTANCE] == 0;
+        int prevWallType = wall[TYPE];
 
         switch (userInputType) {       // set wall type
-        case 10:
-          wall[TYPE] = WALLTYPE_INERT; // inert wall
-          setWall = true;
+        case 10: // inert
+          if (allowCaves) {
+            if (wall[DISTANCE] == 0 && wall[TYPE] == WALLTYPE_INERT)
+              break;
+            wall[TYPE] = WALLTYPE_INERT;
+            setWall = true;
+          }
           break;
-        case 11:
-          wall[TYPE] = WALLTYPE_LAND; // land
-          setWall = true;
+        case 11: // land
+          if (allowCaves) {
+            if (wall[DISTANCE] == 0 && (isLandFireOrForest2(wall[TYPE]) || isSettlementWall(wall[TYPE])
+                || wall[TYPE] == WALLTYPE_RUNWAY || wall[TYPE] == WALLTYPE_INDUSTRIAL
+                || isCustomTerrain(wall[TYPE])))
+              break; // already land-like: keep soil moisture and vegetation
+            wall[TYPE] = WALLTYPE_LAND;
+            setWall = true;
+          }
           break;
-        case 12:
-          wall[TYPE] = WALLTYPE_FRESH_WATER; // fresh water lake
-          setWall = true;
+        case 12: // fresh water
+          if (allowCaves) {
+            if (wall[DISTANCE] == 0 && wall[TYPE] == WALLTYPE_FRESH_WATER)
+              break;
+            wall[TYPE] = WALLTYPE_FRESH_WATER;
+            setWall = true;
+          }
           break;
-        case 24:
-          wall[TYPE] = WALLTYPE_WATER; // salt water / ocean
-          setWall = true;
+        case 24: // salt water
+          if (allowCaves) {
+            if (wall[DISTANCE] == 0 && wall[TYPE] == WALLTYPE_WATER)
+              break;
+            wall[TYPE] = WALLTYPE_WATER;
+            setWall = true;
+          }
           break;
-        case 25:                                               // ice sheet
-          if (texture(wallTex, texCoordX0Yp)[DISTANCE] != 0) { // no wall directly above
+        case 25: // ice sheet
+          if (allowCaves && texture(wallTex, texCoordX0Yp)[DISTANCE] != 0) {
             wall[TYPE] = WALLTYPE_ICE;
             water[SALINITY] = oceanSalinityPpt;
             water[SNOW] = max(water[SNOW], 5.0 + userInputValues[BRUSH_INTENSITY] * 20.0);
             setWall = true;
           }
           break;
-        case 26:                                               // ice cap / glacier
-          if (texture(wallTex, texCoordX0Yp)[DISTANCE] != 0) {
+        case 26: // ice cap
+          if (allowCaves && texture(wallTex, texCoordX0Yp)[DISTANCE] != 0) {
             wall[TYPE] = WALLTYPE_ICE;
             water[SALINITY] = landIceSalinityMarker;
             water[SNOW] = max(water[SNOW], 50.0 + userInputValues[BRUSH_INTENSITY] * 200.0);
             setWall = true;
           }
           break;
+        case 29: { // custom base terrain
+          if (allowCaves) {
+            int slot = clamp(userInputCustomSlot, 0, 7);
+            int dest = makeCustomBaseType(slot);
+            if (wall[DISTANCE] == 0 && wall[TYPE] == dest)
+              break;
+            wall[TYPE] = dest;
+            setWall = true;
+          }
+          break;
+        }
         case 13:                                                                                                     // set fire
           if (wall[DISTANCE] == 0 && isLandOrForest2(wall[TYPE]) && texture(wallTex, texCoordX0Yp)[DISTANCE] != 0) { // if land wall and no wall above
             wall[TYPE] = igniteFireType(wall[TYPE]);
@@ -450,12 +482,6 @@ void main()
               wall[VEGETATION] = min(wall[VEGETATION] + 1, FOREST_VEG_MAX);
           }
           break;
-        case 29: { // custom base terrain (mountains / land replacement)
-          int slot = clamp(userInputCustomSlot, 0, 7);
-          wall[TYPE] = makeCustomBaseType(slot);
-          setWall = true;
-          break;
-        }
         case 30: // custom overlay on land (urban-like gate)
           if (wall[DISTANCE] == 0 &&
               (isLandOrForest2(wall[TYPE]) || isCustomBase(wall[TYPE]) ||
@@ -468,13 +494,20 @@ void main()
         }
 
         if (setWall) {
+          bool alreadySolid = prevWallWasSolid;
           wall[DISTANCE] = 0;         // set wall
-          base[TEMPERATURE] = 1000.0; // indicate this is wall and no snow cooling
+          if (!alreadySolid)
+            base[TEMPERATURE] = 1000.0; // indicate this is wall and no snow cooling
                                       // water = vec4(0.0);
 
           if (wall[TYPE] == WALLTYPE_LAND) {
-            water[SOIL_MOISTURE] = 25.0;
-            water[SUSTAINED_MOISTURE] = 25.0;
+            if (!alreadySolid || isAnyWaterType(prevWallType)) {
+              water[TOTAL] = WATER_MARKER_LAND;
+              water[SOIL_MOISTURE] = 25.0;
+              water[SUSTAINED_MOISTURE] = 25.0;
+              if (isAnyWaterType(prevWallType))
+                wall[VEGETATION] = 0;
+            }
             // wall[VEGETATION] = 100;
           } else if (wall[TYPE] == WALLTYPE_FRESH_WATER) {
             base[TEMPERATURE] = waterTemperature;
@@ -506,7 +539,7 @@ void main()
               base[TEMPERATURE] = CtoK(-5.0);
               water[SALINITY] = landIceSalinityMarker;
               water[SNOW] = max(water[SNOW], 50.0 + userInputValues[BRUSH_INTENSITY] * 200.0);
-            } else {
+            } else if (!alreadySolid) {
               water[SOIL_MOISTURE] = 25.0;
               water[SUSTAINED_MOISTURE] = 25.0;
             }
@@ -546,17 +579,10 @@ void main()
             water[TOTAL] = encodeLandWithFlood(floodMm);
           } else if (userInputType == 21) {
             water[SNOW] += userInputValues[BRUSH_INTENSITY] * 0.5; // remove snow / ice thickness
-          } else if (userInputType == 25 || userInputType == 26) {
-            if (wall[TYPE] == WALLTYPE_ICE) {
-              if (isLandOriginIce(water[SALINITY]) || userInputType == 26) {
-                wall[TYPE] = WALLTYPE_LAND;
-                water[SNOW] = iceCapFormSnowCm; // max snow before glacier compaction
-                water[SOIL_MOISTURE] = 25.0;
-                water[SUSTAINED_MOISTURE] = 25.0;
-              } else {
-                wall[TYPE] = liquidWaterTypeFromSalinity(water[SALINITY]);
-              }
-            }
+          } else if (!allowCaves && (userInputType == 10 || userInputType == 11 || userInputType == 12
+                     || userInputType == 24 || userInputType == 25 || userInputType == 26
+                     || userInputType == 29)) {
+            // Heightfield sculpt handles raise/lower; do not punch grid cells.
           } else if (userInputType == 22 || userInputType == 27) {
             wall[VEGETATION] = max(wall[VEGETATION] - 1, 0);
             if (wall[VEGETATION] <= GRASS_VEG_MAX) {

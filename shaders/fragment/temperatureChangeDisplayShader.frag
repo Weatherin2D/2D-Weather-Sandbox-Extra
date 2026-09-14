@@ -48,7 +48,7 @@ void main()
   }
   float t = map_rangeC(diff, rangeMin, rangeMax, 0.0, 1.0);
 
-  if (wall[1] == 0) {
+  if (displayIsSolidTerrain(wallTex)) {
     switch (wall[0]) {
       case 0:
         fragmentColor = vec4(0, 0, 0, 1);

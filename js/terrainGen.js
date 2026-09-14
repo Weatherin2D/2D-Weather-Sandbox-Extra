@@ -61,8 +61,9 @@
   }
 
   /**
-   * Build column heights (solid wall top index inclusive).
-   * @returns {{ heights: Int16Array, isOcean: Uint8Array }}
+   * Build column heights as float surface Y in cell units (H).
+   * Physics walls are cells with y < H. Display interpolates this curve.
+   * @returns {{ heights: Float32Array, isOcean: Uint8Array, isLake: Uint8Array, seaCells: number }}
    */
   function buildHeightmap(opts) {
     const resX = opts.resX;
@@ -75,52 +76,48 @@
     const octaves = 2 + Math.round(roughness * 5);
     const lakeChance = clamp(opts.lakeChance != null ? opts.lakeChance : 0.08, 0, 0.5);
 
-    const heights = new Int16Array(resX);
+    const heights = new Float32Array(resX);
     const isOcean = new Uint8Array(resX);
     const isLake = new Uint8Array(resX);
 
-    const seaCells = Math.max(0, Math.floor(seaFrac * resY));
-    const maxLand = Math.max(seaCells + 1, Math.floor(mountainFrac * resY));
+    const seaH = Math.max(1, seaFrac * resY);
+    const maxLandH = Math.max(seaH + 1, mountainFrac * resY);
 
     for (let x = 0; x < resX; x++) {
       let n = fbmHeight(x, resX, seed, octaves, wrap);
-      // Bias so valleys can go to sea
       n = Math.pow(clamp(n, 0, 1), 1.1);
-      let h = Math.floor(seaCells + n * (maxLand - seaCells));
-      h = clamp(h, 0, resY - 2);
+      let h = seaH + n * (maxLandH - seaH);
+      h = clamp(h, 1, resY - 1);
       heights[x] = h;
-      isOcean[x] = h <= seaCells ? 1 : 0;
+      isOcean[x] = h <= seaH + 0.05 ? 1 : 0;
     }
 
-    // Smooth a little for nicer slopes
-    const smooth = new Int16Array(resX);
+    const smooth = new Float32Array(resX);
     for (let x = 0; x < resX; x++) {
       const xm = wrap ? (x - 1 + resX) % resX : Math.max(0, x - 1);
       const xp = wrap ? (x + 1) % resX : Math.min(resX - 1, x + 1);
-      smooth[x] = Math.round((heights[xm] + heights[x] * 2 + heights[xp]) * 0.25);
+      smooth[x] = (heights[xm] + heights[x] * 2 + heights[xp]) * 0.25;
     }
     for (let x = 0; x < resX; x++) {
-      heights[x] = smooth[x];
-      isOcean[x] = heights[x] <= seaCells ? 1 : 0;
+      heights[x] = clamp(smooth[x], 1, resY - 1);
+      isOcean[x] = heights[x] <= seaH + 0.05 ? 1 : 0;
     }
 
-    // Occasional inland lakes in low basins
     if (lakeChance > 0) {
       for (let x = 2; x < resX - 2; x++) {
         if (isOcean[x]) continue;
         const basin = heights[x] < heights[x - 1] && heights[x] < heights[x + 1];
         if (basin && hash2(x, seed + 99) < lakeChance) {
           isLake[x] = 1;
-          heights[x] = Math.max(seaCells, heights[x] - Math.max(1, Math.floor(resY * 0.02)));
+          heights[x] = Math.max(seaH, heights[x] - Math.max(1, resY * 0.02));
         }
       }
     }
 
-    // Enforce y=0 always wall: height at least 0
     for (let x = 0; x < resX; x++)
-      heights[x] = Math.max(0, heights[x]);
+      heights[x] = Math.max(1, heights[x]);
 
-    return { heights, isOcean, isLake, seaCells };
+    return { heights, isOcean, isLake, seaCells: seaH };
   }
 
   /**
@@ -170,7 +167,8 @@
 
       for (let y = 0; y < resY; y++) {
         const i = (y * resX + x) * 4;
-        const isWall = y === 0 || y <= h;
+        const isWall = y === 0 || y < h;
+        const isSurface = isWall && (y + 1 >= h);
 
         if (isWall) {
           wall[i] = surfaceType;
@@ -191,7 +189,9 @@
           } else {
             // Land surface moisture / veg / snow by altitude
             const altM = h * dz;
-            const veg = clamp(Math.floor(90 - (h / resY) * 40 + hash2(x, opts.seed) * 40), 20, 120);
+            const veg = isSurface
+              ? clamp(Math.floor(90 - (h / resY) * 40 + hash2(x, opts.seed) * 40), 20, 120)
+              : 0;
             wall[i + 3] = veg;
             water[i] = WATER_MARKER_LAND;
             water[i + 1] = 22 + hash2(x, opts.seed + 3) * 10; // sustained moisture
@@ -247,7 +247,7 @@
       }
     }
 
-    await window.__applySnapshotInPlace(base, water, wall, null);
+    await window.__applySnapshotInPlace(base, water, wall, null, null, map.heights);
     return { heights: map.heights, seaCells: map.seaCells };
   }
 

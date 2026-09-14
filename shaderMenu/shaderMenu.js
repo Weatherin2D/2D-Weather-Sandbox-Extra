@@ -581,6 +581,8 @@
       function(v) { setCR({ rainOpacityMult: v }); }, 0, 2, 0.01, syncArr);
     addSlider(transparency, 'Cloud softness', '', function() { return cloudsRainS().cloudSoftness; },
       function(v) { setCR({ cloudSoftness: v }); }, 0, 2, 0.01, syncArr);
+    addSlider(transparency, 'Cloud visual soften', 'Display-only soft upsample for low-res clouds (needs Smooth clouds)', function() { return cloudsRainS().cloudVisualSoften; },
+      function(v) { setCR({ cloudVisualSoften: v }); }, 0, 2, 0.01, syncArr);
 
     const reflections = addGroup(sectionEl, 'Reflections');
     addSlider(reflections, 'Shaft specular', '', function() { return cloudsRainS().shaftSpecular; },

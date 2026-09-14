@@ -20,6 +20,7 @@
     cloudOpacityMult: 1.0,
     rainOpacityMult: 1.35,
     cloudSoftness: 1.0,
+    cloudVisualSoften: 1.0,
     shaftSpecular: 0.1,
     skyReflectAmount: 0.05,
     refractDistort: 0.0,

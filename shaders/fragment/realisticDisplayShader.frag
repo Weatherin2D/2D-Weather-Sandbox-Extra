@@ -21,7 +21,6 @@ uniform sampler2D lightTex;
 uniform sampler2D noiseTex;
 uniform sampler2DArray surfaceTextureMap;
 uniform sampler2D customSurfaceAtlas;
-uniform sampler2D curlTex;
 uniform sampler2D dropletSizeTex;
 uniform sampler2D lightningTex;
 uniform sampler2D lightningDataTex;
@@ -83,6 +82,8 @@ uniform float cloudDensityScale;
 uniform float cloudOpacityMult;
 uniform float rainOpacityMult;
 uniform float cloudSoftness;
+// Display-only multi-cell soft upsample of CLOUD/precip (0 = Hermite only, 2 = strongest).
+uniform float cloudVisualSoften;
 uniform float shaftSpecular;
 uniform float skyReflectAmount;
 uniform float refractDistort;
@@ -119,6 +120,7 @@ uniform float greenHueHue;
 
 out vec4 fragmentColor;
 
+#define SAMPLE_TERRAIN_HEIGHT_FROM_SUN_COLUMN
 #include "common.glsl"
 
 #include "commonDisplay.glsl"
@@ -127,6 +129,9 @@ out vec4 fragmentColor;
 vec4 base, water;
 ivec4 wall;
 float lightIntensity;
+float gTerrainH;
+float gTerrainSlope;
+bool belowTerrain;
 
 vec3 color;
 float opacity = 1.0;
@@ -228,14 +233,20 @@ vec3 getLandColor(float depth)
 
   vec3 surfCol = mix(bareSoilCol, vegetationCol, grassBiomass(wall[VEGETATION]) / float(GRASS_VEG_MAX));
 
-  const vec3 rockCol = vec3(0.70);                                 // gray rock
+  const vec3 rockCol = vec3(0.55, 0.50, 0.48); // mountain rock
 
-  vec3 color = mix(surfCol, rockCol, clamp(depth * 0.35, 0., 1.)); // * 0.15
+  float slopeAmt = smoothstep(0.40, 2.1, abs(gTerrainSlope));
+  vec3 color = mix(surfCol, rockCol, clamp(max(depth * 0.35, slopeAmt * 0.95), 0., 1.));
 
+  float slopeShade = clamp(0.70 + 0.40 * dot(normalize(vec2(-gTerrainSlope, 1.0)), vec2(0.22, 0.98)), 0.52, 1.12);
+  color *= slopeShade;
 
   color *= texture(noiseTex, vec2(texCoord.x * resolution.x, texCoord.y * resolution.y) * 0.2).rgb;                                   // add noise texture
 
-  color = mix(color, vec3(1.0), clamp(min(water[SNOW], fullWhiteSnowHeight) / fullWhiteSnowHeight - max(depth * 0.3, 0.), 0.0, 1.0)); // mix in white for snow cover
+  float elevM = gTerrainH * cellHeight;
+  float elevSnow = smoothstep(1600.0, 3800.0, elevM) * (1.0 - slopeAmt * 0.28);
+  float snowAmt = max(min(water[SNOW], fullWhiteSnowHeight) / fullWhiteSnowHeight, elevSnow);
+  color = mix(color, vec3(1.0), clamp(snowAmt - max(depth * 0.3, 0.), 0.0, 1.0)); // mix in white for snow cover
 
   return color;
 }
@@ -959,6 +970,19 @@ vec4 computeCloudSmokeColor(float cloudwater, float precip, float dustAmt, float
   cloudOpacity *= mix(cloudOpacityMult, rainOpacityMult, clamp(precipWeight / max(totalDensity, 1e-4), 0.0, 1.0));
   cloudOpacity = clamp(cloudOpacity, 0.0, 1.0);
 
+  // Sub-cell noise detail so soft-upsampled low-res clouds don't look like blurry blocks.
+  // Single noise tap; skip on low quality / empty / soft off.
+  if (cloudVisualSoften > 0.01 && cloudOpacity > 0.02 && visualQuality >= 0.55) {
+    float softenAmt = clamp(cloudVisualSoften, 0.0, 2.0);
+    float edge = smoothstep(0.04, 0.32, cloudOpacity) * (1.0 - smoothstep(0.55, 0.95, cloudOpacity));
+    if (edge > 0.01) {
+      vec2 nUV = fragCoord * 0.07 + vec2(iterNum * 0.0011, iterNum * 0.0007);
+      float n = texture(noiseTex, nUV * 0.08).r;
+      float detailAmp = 0.10 * softenAmt * edge;
+      cloudOpacity = clamp(cloudOpacity * mix(1.0 - detailAmp, 1.0 + detailAmp, n), 0.0, 1.0);
+    }
+  }
+
   float thickCloudMask = smoothstep(0.28, 0.82, cloudOpacity);
   float lit = pow(clamp(localLightIntensity, 0.0, 1.5), mix(1.0, 0.65, cloudLightResponse)) * mix(0.55, 1.35, cloudLightResponse);
   // Density must be high before darkness kicks in — unlit alone must not blacken the whole cloud.
@@ -1411,11 +1435,16 @@ void main()
 
   vec2 bndFragCoord = vec2(fragCoord.x, clamp(fragCoord.y, 0., resolution.y)); // bound y within range
   // Smooth clouds: Hermite-interpolated samples restore soft edges (avoids blocky cells).
+  // Optional cloudVisualSoften adds multi-cell soft upsample of CLOUD/precip only.
   // When off, keep distance-LOD cheap path (nearest / linear bilerp).
   bool farZoom = view[2] / resolution.x <= 0.0025;
+  // Soft upsample is wasted when cells are sub-pixel (far) or quality is already cheap.
+  float softCloudQuality = (farZoom || visualQuality < 0.45) ? 0.0 : visualQuality;
   if (smoothClouds > 0.5) {
     base = smoothBilerpWallVis(baseTex, wallTex, bndFragCoord);
-    water = smoothBilerpWallVis(waterTex, wallTex, bndFragCoord);
+    water = cloudVisualSoften > 0.001
+      ? softCloudBilerpWallVis(waterTex, wallTex, bndFragCoord, cloudVisualSoften, softCloudQuality)
+      : smoothBilerpWallVis(waterTex, wallTex, bndFragCoord);
   } else if (farZoom || visualQuality < 0.45) {
     base = texture(baseTex, bndFragCoord * texelSize);
     water = texture(waterTex, bndFragCoord * texelSize);
@@ -1426,7 +1455,17 @@ void main()
   wall = texture(wallTex, bndFragCoord * texelSize);                           // texCoord
   lightIntensity = normalizedSunlightAt(bndFragCoord * texelSize);
 
+  gTerrainH = sampleTerrainHeight(fragCoord.x);
+  gTerrainSlope = terrainSlope(fragCoord.x);
+  belowTerrain = fragCoord.y < gTerrainH && !fragmentIsCaveAir(wallTex);
+
   ivec4 wallX0Ym = texture(wallTex, texCoordX0Ym);
+  if (belowTerrain) {
+    vec2 surfUV = terrainSurfaceUV(fragCoord.x);
+    wall = texture(wallTex, surfUV);
+    water = texture(waterTex, surfUV);
+    wallX0Ym = wall;
+  }
 
   float realTemp = potentialToRealT(base[TEMPERATURE]);
 
@@ -1452,9 +1491,9 @@ void main()
   icccSurf = vec3(0.0);
   precipBoltShafts = vec3(0.0);
 
-  if (texCoord.y < 0.) {                                     // below simulation area
+  if (texCoord.y < 0. || (belowTerrain && texCoord.y <= 1.0)) { // underground or smooth terrain silhouette
 
-    float depth = float(-wall[VERT_DISTANCE]) - fragCoord.y; // depth into subsurface column
+    float depth = gTerrainH - fragCoord.y; // depth below interpolated surface
 
     // Lakes/ocean/ice: solid body colors (no flood fade, no fade-to-black).
     // Flooded land: floodwater sheet fades to 0 opacity with depth.
@@ -1475,13 +1514,35 @@ void main()
 
     lightIntensity = texture(lightTex, vec2(texCoord.x, texelSize.y))[0] / standardSunBrightness;
     // Only darken non-flood land underground; floodwater uses opacity fade instead
-    if (floodSheetOpacity(depth) <= 0.0)
+    if (texCoord.y < 0.0 && floodSheetOpacity(depth) <= 0.0)
       lightIntensity *= pow(0.5, -fragCoord.y);
+
+    // Surface-only overlays (runway paint, suburban lots) sit on the top of the silhouette
+    if (depth < 1.05 && wall[TYPE] == WALLTYPE_RUNWAY) {
+      vec2 modTexCoord = mod(vec2(fragCoord.x, gTerrainH), 1.0);
+      color = vec3(0.1);
+      color *= texture(noiseTex, vec2(texCoord.x * resolution.x, texCoord.y * resolution.y) * 0.2).rgb;
+      if (length(modTexCoord - vec2(0.7, 0.97)) < 0.03)
+        onLight += vec3(1., 0.8, 0.3) * 300.0;
+      applyFloodWaterSheet(0.0);
+    } else if (depth < 1.05 && wall[TYPE] == WALLTYPE_SUBURBAN) {
+      color = getSuburbanGroundColor(suburbanWorldX(fragCoord.x));
+      color *= texture(noiseTex, vec2(texCoord.x * resolution.x, texCoord.y * resolution.y) * 0.2).rgb;
+      color = mix(color, vec3(1.0), clamp(min(water[SNOW], fullWhiteSnowHeight) / fullWhiteSnowHeight, 0.0, 1.0));
+      applyFloodWaterSheet(0.0);
+    } else if (isAnyWaterType(wall[TYPE]) && depth < 1.15) {
+      float windSpeed = texture(baseTex, vec2(texCoord.x, clamp((gTerrainH + 0.5) / resolution.y, 0.0, 1.0)))[VX] * 10.;
+      float wave = 0.04 * sin(fragCoord.x * 2.3 + iterNum * 0.006) * max(-windSpeed, 0.)
+                 + 0.03 * sin(fragCoord.x * 3.7 + iterNum * 0.011) * max(windSpeed, 0.);
+      color *= 0.88 + 0.14 * (0.5 + 0.5 * sin(fragCoord.x * 5.1 + iterNum * 0.02)) + wave;
+    }
 
   } else if (texCoord.y > 1.0) {                                                                  // above simulation area
     // color = vec3(0); // no need to set
     opacity = 0.0;                  // completely transparent
-  } else if (wall[DISTANCE] == 0) { // is wall
+  } else if (false) { // discrete wall cells replaced by heightfield silhouette
+#if 0
+
                                     // color = getWallColor(texCoord);
 
     ivec4 wallXmY0 = texture(wallTex, texCoordXmY0);
@@ -1609,7 +1670,9 @@ void main()
         vec2 airUV = airFC * texelSize;
         vec2 airBnd = vec2(airFC.x, clamp(airFC.y, 0., resolution.y));
         vec4 airWater = smoothClouds > 0.5
-          ? smoothBilerpWallVis(waterTex, wallTex, airBnd)
+          ? (cloudVisualSoften > 0.001
+            ? softCloudBilerpWallVis(waterTex, wallTex, airBnd, cloudVisualSoften, softCloudQuality)
+            : smoothBilerpWallVis(waterTex, wallTex, airBnd))
           : ((farZoom || visualQuality < 0.45)
             ? texture(waterTex, airBnd * texelSize)
             : bilerpWallVis(waterTex, wallTex, airBnd));
@@ -1694,7 +1757,15 @@ void main()
 
       break;
     }
+#endif
   } else { // air
+
+    // Rasterized occupancy can poke above the interpolated skyline. Wall moisture
+    // is stored in the CLOUD channel, which otherwise shades as opaque white "cloud" stairs.
+    if (wall[DISTANCE] == 0) {
+      opacity = 0.0;
+      color = vec3(0.0);
+    } else {
 
     float rainSnowFactorAir = map_rangeC(KtoC(realTemp), 0.0, 5.0, 0.0, 1.0);
     // Smooth smoke the same way as dust/cloud in waterTex (smoke lives in a separate texture)
@@ -1750,10 +1821,11 @@ void main()
     }
 
 
-    if (wall[VERT_DISTANCE] >= 0 && wall[VERT_DISTANCE] < 10) { // near surface
+    float heightAboveGround = fragCoord.y - gTerrainH;
+    if (heightAboveGround >= 0.0 && heightAboveGround < 10.0) { // near interpolated surface
       float localX = fract(fragCoord.x);
       float localY = fract(fragCoord.y);
-      // ivec4 wallX0Ym = texture(wallTex, texCoordX0Ym);
+      wallX0Ym = texture(wallTex, terrainSurfaceUV(fragCoord.x));
 
 #define texAspect 512. / 4096. // height / width of one facade strip
 #define maxTreeHeight 40.       // height in meters when vegetation max = 127
@@ -1762,7 +1834,7 @@ void main()
 
       // Surface facade detail (urban, industrial, suburban, trees) stays visible at all zoom levels.
       if (isCustomTerrain(wallX0Ym[TYPE])) {
-        float heightAboveGround = localY + float(wall[VERT_DISTANCE] - 1);
+        float heightAboveGround = fragCoord.y - gTerrainH;
         float urbanTexHeightNorm = maxBuildingHeight / cellHeight;
         float urbanTexCoordX = mod(fragCoord.x, resolution.x) * (3584. / 4096.) / urbanTexHeightNorm;
         float urbanTexCoordY = 1.0 - (heightAboveGround / urbanTexHeightNorm);
@@ -1780,7 +1852,7 @@ void main()
         }
       } else if (wallX0Ym[TYPE] == WALLTYPE_URBAN) {
 
-        float heightAboveGround = localY + float(wall[VERT_DISTANCE] - 1);
+        float heightAboveGround = fragCoord.y - gTerrainH;
 
         float urbanTexHeightNorm = maxBuildingHeight / cellHeight; // example: 200 / 40 = 5
 
@@ -1808,7 +1880,7 @@ void main()
         }
       } else if (wallX0Ym[TYPE] == WALLTYPE_AMERICAN_SUBURBAN) {
 
-        float heightAboveGround = localY + float(wall[VERT_DISTANCE] - 1);
+        float heightAboveGround = fragCoord.y - gTerrainH;
         float amerTexHeightNorm = maxAmericanSuburbanHeight / cellHeight;
         float amerTexCoordX = mod(fragCoord.x, resolution.x) * texAspect / amerTexHeightNorm;
         float amerTexCoordY = 1.0 - (heightAboveGround / amerTexHeightNorm);
@@ -1828,7 +1900,7 @@ void main()
         }
       } else if (settlementSurfaceIndex(wallX0Ym[TYPE]) >= 0) {
 
-        float heightAboveGround = localY + float(wall[VERT_DISTANCE] - 1);
+        float heightAboveGround = fragCoord.y - gTerrainH;
         float maxH = settlementMaxHeight(wallX0Ym[TYPE]);
         float texHeightNorm = maxH / cellHeight;
         // Suburban extras keep American Tract lot width; Y still uses per-type height.
@@ -1856,7 +1928,7 @@ void main()
         }
       } else if (wallX0Ym[TYPE] == WALLTYPE_INDUSTRIAL) {
 
-        float heightAboveGround = localY + float(wall[VERT_DISTANCE] - 1);
+        float heightAboveGround = fragCoord.y - gTerrainH;
 
         float urbanTexHeightNorm = maxBuildingHeight / cellHeight; // example: 200 / 40 = 5
 
@@ -1884,7 +1956,7 @@ void main()
         }
       } else if (wallX0Ym[TYPE] == WALLTYPE_SUBURBAN) {
 
-        float heightAboveGround = localY + float(wall[VERT_DISTANCE] - 1);
+        float heightAboveGround = fragCoord.y - gTerrainH;
         float suburbanTexHeightNorm = maxSuburbanBuildingHeight / cellHeight;
 
         if (heightAboveGround < suburbanTexHeightNorm) {
@@ -1905,20 +1977,19 @@ void main()
       }
 
 
-      if (wall[VERT_DISTANCE] == 1) {                                                 // 1 above surface
-                                                                                      //  if (wallX0Ym[VERT_DISTANCE] == 0) {
+      if (heightAboveGround >= 0.0 && heightAboveGround < maxTreeHeight / cellHeight) { // trees sit on interpolated surface
 
         float treeTexHeightNorm = maxTreeHeight / cellHeight;                         // example: 40 / 120 = 0.333
 
-        float treeTexCoordY = localY / treeTexHeightNorm;                             // full height trees
+        float treeTexCoordY = heightAboveGround / treeTexHeightNorm;                   // full height trees
 
         treeTexCoordY += map_rangeC(float(wallX0Ym[VEGETATION]), float(FOREST_VEG_MAX), float(FOREST_VEG_MIN), 0., 1.0); // tree height from forest biomass
 
         float treeTexCoordX = fragCoord.x * texAspect / treeTexHeightNorm;            // static scaled trees
 
-        float heightAboveGround = localY / treeTexHeightNorm;
+        float treeHeightNorm = heightAboveGround / treeTexHeightNorm;
 
-        treeTexCoordX -= base.x * heightAboveGround * 1.00; // 2.5  trees waving with the wind effect
+        treeTexCoordX -= base.x * treeHeightNorm * 1.00; // 2.5  trees waving with the wind effect
 
         treeTexCoordX *= 0.72;                              // Trees only go up to 72% of the texture height
         treeTexCoordY *= 0.72;                              // Trees only go up to 72% of the texture height
@@ -1927,9 +1998,9 @@ void main()
         vec4 texCol = vec4(0.0);
         if (wallX0Ym[VEGETATION] > GRASS_VEG_MAX &&
             (wallX0Ym[TYPE] == WALLTYPE_LAND || wallX0Ym[TYPE] == WALLTYPE_FOREST2 || isSettlementWall(wallX0Ym[TYPE]) || isCustomBase(wallX0Ym[TYPE]))) { // forest canopy only
-          vec4 surfaceWater = texture(waterTex, texCoordX0Ym);                     // snow on land below
+          vec4 surfaceWater = texture(waterTex, terrainSurfaceUV(fragCoord.x));                     // snow on land below
           float snow = surfaceWater[SNOW];
-          if (snow * 0.01 / cellHeight > heightAboveGround)
+          if (snow * 0.01 / cellHeight > treeHeightNorm)
             texCol = vec4(vec3(1.), 1.);                                                                                                                          // show white snow layer above ground
           else {                                                                                                                                                  // display vegetation
             float treeScale = wallX0Ym[TYPE] == WALLTYPE_SUBURBAN ? 0.55 : 1.0;
@@ -1955,45 +2026,6 @@ void main()
           opacity = 1. - (1. - opacity) * (1. - texCol.a); // alpha blending
         }
       }
-
-      if (wall[VERT_DISTANCE] == 1) {
-        // draw 45° slopes (land and glaciers; skip open water)
-        ivec4 wallXmY0 = texture(wallTex, texCoordXmY0);
-        ivec4 wallXpY0 = texture(wallTex, texCoordXpY0);
-
-        if (wallXmY0[DISTANCE] == 0 && !isLiquidWaterType(wall[TYPE])) { // wall to the left and below
-          if (localX + localY < 1.0) {
-            opacity = 1.0;
-            water = texture(waterTex, texCoordX0Ym);
-            ivec4 savedWall = wall;
-            wall = wallX0Ym;
-            if (wall[TYPE] == WALLTYPE_ICE)
-              color = getIceColor(water[SNOW]);
-            else {
-              color = getLandColor(localY - 0.6);
-              applyFloodWaterSheet(localY - 0.6);
-            }
-            wall = savedWall;
-            shadowLight = minShadowFill; // fire should not light ground
-          }
-        }
-        if (wallXpY0[DISTANCE] == 0 && !isLiquidWaterType(wall[TYPE])) { // wall to the right and below
-          if (localY - localX < 0.0) {
-            opacity = 1.0;
-            water = texture(waterTex, texCoordX0Ym);
-            ivec4 savedWall = wall;
-            wall = wallX0Ym;
-            if (wall[TYPE] == WALLTYPE_ICE)
-              color = getIceColor(water[SNOW]);
-            else {
-              color = getLandColor(localY - 0.6);
-              applyFloodWaterSheet(localY - 0.6);
-            }
-            wall = savedWall;
-            shadowLight = minShadowFill; // fire should not light ground
-          }
-        }
-      }
     }
     float arrow = vectorField(base.xy, displayVectorField);
 
@@ -2006,6 +2038,7 @@ void main()
     // color.b -= arrow;
     // opacity += arrow;
     // lightIntensity += arrow;
+    }
   }
 
 
@@ -2030,7 +2063,7 @@ void main()
 
   // Kill sky-blue ambient wash inside thick cloud/precip so the body stays #14243e.
   float cloudBodyMask = 0.0;
-  if (wall[DISTANCE] != 0 && texCoord.y > 0.0 && texCoord.y <= 1.0)
+  if (!belowTerrain && texCoord.y > 0.0 && texCoord.y <= 1.0)
     cloudBodyMask = smoothstep(0.18, 0.65, opacity) * (1.0 - smoothstep(0.2, 0.55, lightIntensity));
   onLight += ambientLight * pow(1. - clamp(-texCoord.y * 15., 0., 1.), 2.5) * (1.0 - cloudBodyMask * 0.92);
 
@@ -2057,7 +2090,7 @@ void main()
   }
 
   // June 8 flash spill compositing (harmony-scaled earlier)
-  if (wall[DISTANCE] == 0)
+  if (belowTerrain)
     finalLight += icccSurf + precipBoltShafts;
   else if (texCoord.y > 0.0 && texCoord.y <= 1.0)
     finalLight += icccCloud + icccSurf * max(precipF, 0.22);
@@ -2082,7 +2115,7 @@ void main()
 
   // Cool blue cast across the whole cloud luminance range (not only mid-shadows).
   // Kill navy while shafts are lightning-bleached so the flash stays white.
-  if (wall[DISTANCE] != 0 && texCoord.y > 0.0 && texCoord.y <= 1.0 && lightningShaftFlash < 0.08) {
+  if (!belowTerrain && texCoord.y > 0.0 && texCoord.y <= 1.0 && lightningShaftFlash < 0.08) {
     const vec3 deepCloudNavySat = vec3(0.078431, 0.141176, 0.243137);
     float deepLum = max(dot(deepCloudNavySat, vec3(0.2126, 0.7152, 0.0722)), 1e-4);
     vec3 navyChroma = mix(vec3(1.0), deepCloudNavySat / deepLum, 0.78);
@@ -2110,7 +2143,7 @@ void main()
   }
 
   // Near-surface fog / haze in moist cool air (off when fogHazeStrength == 0)
-  if (fogHazeStrength > 0.0 && wall[DISTANCE] > 0 && lightningShaftFlash < 0.08) {
+  if (fogHazeStrength > 0.0 && !belowTerrain && lightningShaftFlash < 0.08) {
     float rhFog = relativeHumd(realTemp, water[TOTAL]);
     float nearSfc = 1.0 - smoothstep(0.0, 0.14, texCoord.y);
     float cool = 1.0 - smoothstep(2.0, 18.0, KtoC(realTemp));
@@ -2122,7 +2155,7 @@ void main()
   }
 
   // Soft wet highlight — keep flood tint lit/shadowed so ponding stays visible after lighting
-  if (wall[DISTANCE] == 0 && isFloodTintLandType(wall[TYPE]) && floodPondingMm() > 0.0) {
+  if (belowTerrain && isFloodTintLandType(wall[TYPE]) && floodPondingMm() > 0.0) {
     float depthLit = float(-wall[VERT_DISTANCE]) - fract(fragCoord.y);
     float floodA = floodSheetOpacity(max(depthLit, 0.0));
     if (floodA > 0.0) {

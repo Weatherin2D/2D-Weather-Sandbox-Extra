@@ -36,7 +36,7 @@ void main()
   vec4 sizes = bilerp(dropletSizeTex, fragCoord);
   float sizeMm = (sizeChannel == 0) ? sizes.r : sizes.g;
 
-  if (wall[DISTANCE] == 0) {
+  if (displayIsSolidTerrain(wallTex)) {
     switch (wall[TYPE]) {
     case 0:
       fragmentColor = vec4(0.0, 0.0, 0.0, 1.0);

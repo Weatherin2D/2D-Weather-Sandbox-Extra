@@ -71,8 +71,10 @@ vec4 floodDepthColor(float depthMm)
 
 void main()
 {
-  vec4 cell = texture(anyTex, texCoord);
-  ivec4 wall = texture(wallTex, texCoord);
+  bool solidTerrain = displayIsSolidTerrain(wallTex);
+  bool atSurface = solidTerrain && abs(fragCoord.y - sampleTerrainHeight(fragCoord.x)) < 1.05;
+  vec4 cell = texture(anyTex, atSurface ? terrainSurfaceUV(fragCoord.x) : texCoord);
+  ivec4 wall = solidTerrain ? sampleColumnSurfaceWall(wallTex) : texture(wallTex, texCoord);
 
   float raw = cell[quantityIndex];
   if (floodThreshold > 0.0)
@@ -80,13 +82,11 @@ void main()
   float val = raw * dispMultiplier;
 
   // Soil moisture / flood / snow depth are stored on surface wall cells, not fluid air.
-  // Underground cells copy soil moisture from above — only color VERT_DISTANCE == 0.
   bool snowDepthView = colorScaleColumn == 62;
   bool surfaceFieldView = floodThreshold > 0.0 || colorScaleColumn == 14 || snowDepthView;
-  bool atSurface = wall[DISTANCE] == 0 && wall[VERT_DISTANCE] == 0;
   bool validSurfaceWall = snowDepthView ? isSnowSurfaceWall(wall[TYPE]) : isLandSurfaceWall(wall[TYPE]);
 
-  if (wall[DISTANCE] == 0) {  // is wall
+  if (solidTerrain) {  // is wall
     if (surfaceFieldView && validSurfaceWall && atSurface) {
       if (floodThreshold > 0.0) {
         if (raw <= 0.05)

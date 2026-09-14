@@ -48,7 +48,7 @@ void main()
   float realTemp = potentialToRealT(base[TEMPERATURE]);
   float tC = KtoC(realTemp);
 
-  if (wall[DISTANCE] == 0) {
+  if (displayIsSolidTerrain(wallTex)) {
     switch (wall[TYPE]) {
     case WALLTYPE_INERT:
       fragmentColor = vec4(0, 0, 0, 1.);
