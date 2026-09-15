@@ -25489,6 +25489,19 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     gl.bindTexture(gl.TEXTURE_2D, latestTerrainHeightTexture);
   }
 
+  function unbindSimAttachmentSamplers()
+  {
+    // Display / lighting / overlays leave ping-pong attachments bound on sampler
+    // units. Rendering or copyTexSubImage2D into those textures while they are
+    // still sampled is a framebuffer feedback path that TDRs the GPU (same class
+    // as the land-tool crash). Pause-edit hits this every stroke because it
+    // writes frameBuff_1 right after a display pass.
+    for (let i = 0; i < 16; i++) {
+      gl.activeTexture(gl.TEXTURE0 + i);
+      gl.bindTexture(gl.TEXTURE_2D, null);
+    }
+  }
+
   function unbindSunColumnFromSamplers()
   {
     // Lighting / sky / realistic display leave sunColumnTexture bound on sampler
@@ -25500,6 +25513,28 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       gl.activeTexture(gl.TEXTURE0 + units[i]);
       gl.bindTexture(gl.TEXTURE_2D, null);
     }
+  }
+
+  function copySimFboAttachments(srcFbo, dests)
+  {
+    unbindSimAttachmentSamplers();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, srcFbo);
+    for (let i = 0; i < dests.length; i++) {
+      gl.readBuffer(dests[i][0]);
+      gl.bindTexture(gl.TEXTURE_2D, dests[i][1]);
+      gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, sim_res_x, sim_res_y);
+    }
+    gl.readBuffer(gl.COLOR_ATTACHMENT0);
+  }
+
+  function copyFrameBuff1ToZero()
+  {
+    copySimFboAttachments(frameBuff_1, [
+      [gl.COLOR_ATTACHMENT0, baseTexture_0],
+      [gl.COLOR_ATTACHMENT1, waterTexture_0],
+      [gl.COLOR_ATTACHMENT2, wallTexture_0],
+      [gl.COLOR_ATTACHMENT3, smokeTexture_0]
+    ]);
   }
 
   function syncHeightToSunColumn()
@@ -25522,31 +25557,13 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   {
     // Read frameBuff_1 (*_1 attachments) into *_0 first. Copying an attachment
     // into itself (the old *_1 ← *_1 copies) TDRs some drivers.
-    gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_1);
-    const toZero = [
-      [gl.COLOR_ATTACHMENT0, baseTexture_0],
-      [gl.COLOR_ATTACHMENT1, waterTexture_0],
-      [gl.COLOR_ATTACHMENT2, wallTexture_0],
-      [gl.COLOR_ATTACHMENT3, smokeTexture_0]
-    ];
-    for (let i = 0; i < toZero.length; i++) {
-      gl.readBuffer(toZero[i][0]);
-      gl.bindTexture(gl.TEXTURE_2D, toZero[i][1]);
-      gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, sim_res_x, sim_res_y);
-    }
-    gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_0);
-    const toOne = [
+    copyFrameBuff1ToZero();
+    copySimFboAttachments(frameBuff_0, [
       [gl.COLOR_ATTACHMENT0, baseTexture_1],
       [gl.COLOR_ATTACHMENT1, waterTexture_1],
       [gl.COLOR_ATTACHMENT2, wallTexture_1],
       [gl.COLOR_ATTACHMENT3, smokeTexture_1]
-    ];
-    for (let i = 0; i < toOne.length; i++) {
-      gl.readBuffer(toOne[i][0]);
-      gl.bindTexture(gl.TEXTURE_2D, toOne[i][1]);
-      gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, sim_res_x, sim_res_y);
-    }
-    gl.readBuffer(gl.COLOR_ATTACHMENT0);
+    ]);
   }
 
   function uploadTerrainHeightFromArray(arr)
@@ -25618,6 +25635,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     const cavesOn = opts && Object.prototype.hasOwnProperty.call(opts, 'allowCaves')
       ? !!opts.allowCaves
       : !!guiControls.allowCaves;
+    unbindSimAttachmentSamplers();
     gl.useProgram(rasterizeTerrainProgram);
     gl.uniform1i(gl.getUniformLocation(rasterizeTerrainProgram, 'paintSurfaceType'), paintType);
     gl.uniform1i(gl.getUniformLocation(rasterizeTerrainProgram, 'paintSurfaceKind'), surfaceKind);
@@ -25655,6 +25673,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     const srcH = latestTerrainHeightTexture;
     const dstH = srcH === terrainHeightTexture_0 ? terrainHeightTexture_1 : terrainHeightTexture_0;
     const dstFbo = dstH === terrainHeightTexture_1 ? heightFrameBuff_1 : heightFrameBuff_0;
+    unbindSimAttachmentSamplers();
+    gl.bindVertexArray(fluidVao);
     gl.useProgram(sculptTerrainProgram);
     gl.uniform4f(gl.getUniformLocation(sculptTerrainProgram, 'userInputValues'), x, y, intensity, brushRadius);
     gl.uniform1i(gl.getUniformLocation(sculptTerrainProgram, 'wrapHorizontally'), wrap ? 1 : 0);
@@ -25681,6 +25701,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     const dstH = srcH === terrainHeightTexture_0 ? terrainHeightTexture_1 : terrainHeightTexture_0;
     const dstFbo = dstH === terrainHeightTexture_1 ? heightFrameBuff_1 : heightFrameBuff_0;
     const otherH = dstH === terrainHeightTexture_0 ? terrainHeightTexture_1 : terrainHeightTexture_0;
+    unbindSimAttachmentSamplers();
+    gl.bindVertexArray(fluidVao);
     gl.useProgram(rebuildHeightFromWallsProgram);
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     gl.viewport(0, 0, sim_res_x, 1);
@@ -29500,6 +29522,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   function applyBrushPassesBrushOnly(passes)
   {
     if (!passes || !passes.length) return;
+    gl.bindVertexArray(fluidVao);
     gl.viewport(0, 0, sim_res_x, sim_res_y);
     for (let p = 0; p < passes.length; p++) {
       const pass = passes[p];
@@ -29509,6 +29532,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
           pass.wrap, pass.inputType, pass.customSlot);
         continue;
       }
+      unbindSimAttachmentSamplers();
       gl.useProgram(advectionProgram);
       gl.uniform1i(uloc_adv_userInputType, pass.inputType);
       gl.uniform4f(uloc_adv_userInputValues, pass.x, pass.y, pass.intensity, pass.brushSize * 0.5);
@@ -29534,22 +29558,10 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_1);
       gl.drawBuffers([ gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1, gl.COLOR_ATTACHMENT2, gl.COLOR_ATTACHMENT3 ]);
       gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
-
-      gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_1);
-      gl.readBuffer(gl.COLOR_ATTACHMENT0);
-      gl.bindTexture(gl.TEXTURE_2D, baseTexture_0);
-      gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, sim_res_x, sim_res_y);
-      gl.readBuffer(gl.COLOR_ATTACHMENT1);
-      gl.bindTexture(gl.TEXTURE_2D, waterTexture_0);
-      gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, sim_res_x, sim_res_y);
-      gl.readBuffer(gl.COLOR_ATTACHMENT2);
-      gl.bindTexture(gl.TEXTURE_2D, wallTexture_0);
-      gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, sim_res_x, sim_res_y);
-      gl.readBuffer(gl.COLOR_ATTACHMENT3);
-      gl.bindTexture(gl.TEXTURE_2D, smokeTexture_0);
-      gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, sim_res_x, sim_res_y);
+      copyFrameBuff1ToZero();
 
       if (pass.inputType === 23) {
+        unbindSimAttachmentSamplers();
         gl.useProgram(chargeProgram);
         gl.uniform4f(uloc_charge_userInputValues, pass.x, pass.y, pass.intensity, pass.brushSize * 0.5);
         gl.uniform1i(uloc_charge_userInputType, pass.inputType);
@@ -29591,6 +29603,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   function applyBrushPassesAfterAdvection(passes)
   {
     if (!passes || !passes.length) return;
+    gl.bindVertexArray(fluidVao);
     gl.viewport(0, 0, sim_res_x, sim_res_y);
     for (let p = 0; p < passes.length; p++) {
       const pass = passes[p];
@@ -29600,6 +29613,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
           pass.wrap, pass.inputType, pass.customSlot);
         continue;
       }
+      unbindSimAttachmentSamplers();
       gl.useProgram(advectionProgram);
       gl.uniform1i(uloc_adv_userInputType, pass.inputType);
       gl.uniform4f(uloc_adv_userInputValues, pass.x, pass.y, pass.intensity, pass.brushSize * 0.5);
@@ -29627,19 +29641,12 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
 
       // Copy brushed result back to *_1 (advection output pair)
-      gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_0);
-      gl.readBuffer(gl.COLOR_ATTACHMENT0);
-      gl.bindTexture(gl.TEXTURE_2D, baseTexture_1);
-      gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, sim_res_x, sim_res_y);
-      gl.readBuffer(gl.COLOR_ATTACHMENT1);
-      gl.bindTexture(gl.TEXTURE_2D, waterTexture_1);
-      gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, sim_res_x, sim_res_y);
-      gl.readBuffer(gl.COLOR_ATTACHMENT2);
-      gl.bindTexture(gl.TEXTURE_2D, wallTexture_1);
-      gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, sim_res_x, sim_res_y);
-      gl.readBuffer(gl.COLOR_ATTACHMENT3);
-      gl.bindTexture(gl.TEXTURE_2D, smokeTexture_1);
-      gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, sim_res_x, sim_res_y);
+      copySimFboAttachments(frameBuff_0, [
+        [gl.COLOR_ATTACHMENT0, baseTexture_1],
+        [gl.COLOR_ATTACHMENT1, waterTexture_1],
+        [gl.COLOR_ATTACHMENT2, wallTexture_1],
+        [gl.COLOR_ATTACHMENT3, smokeTexture_1]
+      ]);
     }
     if (uloc_adv_brushOnlyMode) {
       gl.useProgram(advectionProgram);
@@ -30495,11 +30502,15 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   // Pause-edit: apply brush without advancing weather, then resync ping-pong buffers.
   function applyPausedBrushEdit(optionalBrush)
   {
+    gl.bindVertexArray(fluidVao);
+    // Display samples *_1. Pressure only writes base/wall to *_0, so water/smoke
+    // on *_0 can lag a step. Sync from the displayed pair before painting.
+    copyFrameBuff1ToZero();
     if (optionalBrush && Array.isArray(optionalBrush.passes) && optionalBrush.passes.length) {
       applyBrushPassesBrushOnly(optionalBrush.passes);
       return;
     }
-    // Builtin single-type brush while paused: reuse existing uniforms already set on advectionProgram
+    unbindSimAttachmentSamplers();
     gl.viewport(0, 0, sim_res_x, sim_res_y);
     gl.useProgram(advectionProgram);
     if (uloc_adv_brushOnlyMode)
@@ -30516,20 +30527,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_1);
     gl.drawBuffers([ gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1, gl.COLOR_ATTACHMENT2, gl.COLOR_ATTACHMENT3 ]);
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
-
-    gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_1);
-    gl.readBuffer(gl.COLOR_ATTACHMENT0);
-    gl.bindTexture(gl.TEXTURE_2D, baseTexture_0);
-    gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, sim_res_x, sim_res_y);
-    gl.readBuffer(gl.COLOR_ATTACHMENT1);
-    gl.bindTexture(gl.TEXTURE_2D, waterTexture_0);
-    gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, sim_res_x, sim_res_y);
-    gl.readBuffer(gl.COLOR_ATTACHMENT2);
-    gl.bindTexture(gl.TEXTURE_2D, wallTexture_0);
-    gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, sim_res_x, sim_res_y);
-    gl.readBuffer(gl.COLOR_ATTACHMENT3);
-    gl.bindTexture(gl.TEXTURE_2D, smokeTexture_0);
-    gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, sim_res_x, sim_res_y);
+    copyFrameBuff1ToZero();
 
     if (uloc_adv_brushOnlyMode) {
       gl.useProgram(advectionProgram);
