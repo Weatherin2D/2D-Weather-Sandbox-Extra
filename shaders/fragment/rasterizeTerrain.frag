@@ -167,7 +167,7 @@ void main()
     dxTex *= texelSize.y / texelSize.x;
     inPaintBrush = dxTex <= radiusTex;
   }
-  bool columnSculpted = abs(newH - oldH) > 0.05 || inPaintBrush;
+  bool columnSculpted = abs(newH - oldH) > 0.0001 || inPaintBrush;
   if (paintSurfaceType >= 0 && !columnSculpted) {
     base = prevBase;
     water = prevWater;

@@ -1459,24 +1459,44 @@ void main()
   wall = texture(wallTex, bndFragCoord * texelSize);                           // texCoord
   lightIntensity = normalizedSunlightAt(bndFragCoord * texelSize);
 
-  float hSolid = sampleDisplayTerrainHeight(wallTex, fragCoord.x);
-  gTerrainSlope = displayTerrainSlope(wallTex, fragCoord.x);
+  float hSolid = sampleTerrainHeight(fragCoord.x);
+  gTerrainSlope = terrainSlope(fragCoord.x);
   gTerrainH = hSolid;
-  int colIx = wrapTerrainColumn(int(floor(fragCoord.x)), int(resolution.x));
-  bool waterColumn = displayColumnIsLiquidWater(wallTex, colIx);
+  vec2 surfUV = terrainSurfaceUV(fragCoord.x);
+  ivec4 surfWall = texture(wallTex, surfUV);
+  bool waterColumn = surfWall[DISTANCE] == 0 && (surfWall[TYPE] == WALLTYPE_WATER || surfWall[TYPE] == WALLTYPE_FRESH_WATER);
   if (waterColumn) {
-    float windU = texture(baseTex, vec2(texCoord.x, clamp((hSolid + 0.5) / max(resolution.y, 1.0), 0.0, 1.0)))[VX] * 10.0;
-    float waveL = 0.045 * sin(fragCoord.x * 2.3 + iterNum * 0.006) + 0.028 * sin(fragCoord.x * 3.7 + iterNum * 0.011);
-    float waveR = 0.045 * sin(fragCoord.x * 2.3 - iterNum * 0.006) + 0.028 * sin(fragCoord.x * 3.7 - iterNum * 0.011);
-    float wave = waveL * max(-windU, 0.0) + waveR * max(windU, 0.0);
-    gTerrainH = hSolid - 0.18 + clamp(wave, -0.10, 0.16);
+    // Wind lives in the air cell above the cap, not in the wall (VX is 0 there).
+    float airY = clamp((floor(hSolid) + 1.5) / max(resolution.y, 1.0), 0.0, 1.0);
+    float windSpeed = texture(baseTex, vec2(texCoord.x, airY))[VX] * 10.0;
+    float waveSignalL = sin(fragCoord.x * 2.3 + iterNum * 0.006 + 1.2) * 0.05
+                      + sin(fragCoord.x * 3.7 + iterNum * 0.011 + 3.9) * 0.03
+                      + sin(fragCoord.x * 5.1 + iterNum * 0.018 + 0.7) * 0.02;
+    float waveSignalR = sin(fragCoord.x * 2.3 - iterNum * 0.006 + 1.2) * 0.05
+                      + sin(fragCoord.x * 3.7 - iterNum * 0.011 + 3.9) * 0.03
+                      + sin(fragCoord.x * 5.1 - iterNum * 0.018 + 0.7) * 0.02;
+    if (visualQuality >= 0.65) {
+      waveSignalL += sin(fragCoord.x * 7.6 + iterNum * 0.025 + 5.1) * 0.015
+                   + sin(fragCoord.x * 21.7 + iterNum * 0.05 + 3.1) * 0.004;
+      waveSignalR += sin(fragCoord.x * 7.6 - iterNum * 0.025 + 5.1) * 0.015
+                   + sin(fragCoord.x * 21.7 - iterNum * 0.05 + 3.1) * 0.004;
+    }
+    // Always-on ripples so lakes still move on calm days; wind adds the old directional swell.
+    float ambient = 0.022 * sin(fragCoord.x * 2.15 + iterNum * 0.008)
+                  + 0.012 * sin(fragCoord.x * 6.4 + iterNum * 0.021);
+    float waterLevel = 0.80 + ambient
+                     + waveSignalL * max(-windSpeed, 0.0)
+                     + waveSignalR * max(windSpeed, 0.0);
+    if (surfWall[TYPE] == WALLTYPE_WATER)
+      waterLevel += clamp((abs(windSpeed) - 0.5) * 0.06, 0.0, 0.22);
+    waterLevel = clamp(waterLevel, 0.15, 0.98);
+    gTerrainH = hSolid - (1.0 - waterLevel);
     gTerrainSlope = 0.0;
   }
   belowTerrain = fragCoord.y < gTerrainH && !fragmentIsCaveAir(wallTex);
 
   ivec4 wallX0Ym = texture(wallTex, texCoordX0Ym);
   if (belowTerrain) {
-    vec2 surfUV = occupancySurfaceUV(fragCoord.x);
     wall = texture(wallTex, surfUV);
     water = texture(waterTex, surfUV);
     wallX0Ym = wall;
@@ -1553,7 +1573,8 @@ void main()
       color = mix(color, vec3(1.0), clamp(min(water[SNOW], fullWhiteSnowHeight) / fullWhiteSnowHeight, 0.0, 1.0));
       applyFloodWaterSheet(0.0);
     } else if (isAnyWaterType(wall[TYPE]) && depth < 1.15) {
-      float windSpeed = texture(baseTex, vec2(texCoord.x, clamp((gTerrainH + 0.5) / resolution.y, 0.0, 1.0)))[VX] * 10.;
+      float airY = clamp((floor(gTerrainH) + 1.5) / max(resolution.y, 1.0), 0.0, 1.0);
+      float windSpeed = texture(baseTex, vec2(texCoord.x, airY))[VX] * 10.;
       float wave = 0.04 * sin(fragCoord.x * 2.3 + iterNum * 0.006) * max(-windSpeed, 0.)
                  + 0.03 * sin(fragCoord.x * 3.7 + iterNum * 0.011) * max(windSpeed, 0.);
       color *= 0.88 + 0.14 * (0.5 + 0.5 * sin(fragCoord.x * 5.1 + iterNum * 0.02)) + wave;
@@ -1847,7 +1868,7 @@ void main()
     if (heightAboveGround >= 0.0 && heightAboveGround < 10.0) { // near interpolated surface
       float localX = fract(fragCoord.x);
       float localY = fract(fragCoord.y);
-      wallX0Ym = texture(wallTex, occupancySurfaceUV(fragCoord.x));
+      wallX0Ym = texture(wallTex, terrainSurfaceUV(fragCoord.x));
 
 #define texAspect 512. / 4096. // height / width of one facade strip
 #define maxTreeHeight 40.       // height in meters when vegetation max = 127
@@ -2020,7 +2041,7 @@ void main()
         vec4 texCol = vec4(0.0);
         if (wallX0Ym[VEGETATION] > GRASS_VEG_MAX &&
             (wallX0Ym[TYPE] == WALLTYPE_LAND || wallX0Ym[TYPE] == WALLTYPE_FOREST2 || isSettlementWall(wallX0Ym[TYPE]) || isCustomBase(wallX0Ym[TYPE]))) { // forest canopy only
-          vec4 surfaceWater = texture(waterTex, occupancySurfaceUV(fragCoord.x));                     // snow on land below
+          vec4 surfaceWater = texture(waterTex, terrainSurfaceUV(fragCoord.x));                     // snow on land below
           float snow = surfaceWater[SNOW];
           if (snow * 0.01 / cellHeight > treeHeightNorm)
             texCol = vec4(vec3(1.), 1.);                                                                                                                          // show white snow layer above ground

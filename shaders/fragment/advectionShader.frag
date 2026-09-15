@@ -285,19 +285,21 @@ void main()
       || userInputType == 22 || userInputType == 27 || userInputType == 28
       || userInputType == 30 || userInputType == 31 || userInputType == 32
       || userInputType == 33;
-  // Clicking the visible slope/cliff still paints the occupancy surface of this column.
+  // Clicking the visible interpolated slope still paints this column's occupancy cap
+  // (vegetation / urban live there). Allow a tall vertical window so small hills
+  // above the integer cell still receive grass and trees.
   if (!inBrush && overlaySurfaceTool && wall[DISTANCE] == 0 && !isAnyWaterType(wall[TYPE])
       && texture(wallTex, texCoordX0Yp)[DISTANCE] != 0) {
     float r = userInputValues[BRUSH_SIZE] * texelSize.y;
     float dy = userInputValues.y - texCoord.y;
     if (userInputValues.x < -0.5) {
-      if (dy <= r && dy >= -r * 8.0)
+      if (dy <= r * 8.0 && dy >= -r * 8.0)
         inBrush = true;
     } else {
       float dx = wrapHorizontally ? absHorizontalDist(userInputValues.x, texCoord.x)
                                   : abs(userInputValues.x - texCoord.x);
       dx *= texelSize.y / texelSize.x;
-      if (dx < r && dy <= r && dy >= -r * 8.0)
+      if (dx < r && dy <= r * 8.0 && dy >= -r * 8.0)
         inBrush = true;
     }
   }
