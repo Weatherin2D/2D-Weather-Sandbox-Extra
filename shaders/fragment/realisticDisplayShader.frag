@@ -1572,6 +1572,10 @@ void main()
       color *= texture(noiseTex, vec2(texCoord.x * resolution.x, texCoord.y * resolution.y) * 0.2).rgb;
       color = mix(color, vec3(1.0), clamp(min(water[SNOW], fullWhiteSnowHeight) / fullWhiteSnowHeight, 0.0, 1.0));
       applyFloodWaterSheet(0.0);
+    } else if (depth < 1.05 && isAnyFireType(wall[TYPE])) {
+      color = mix(color, vec3(0.28, 0.10, 0.04), 0.55);
+      onLight += vec3(1.0, 0.38, 0.06) * (8.0 + 6.0 * abs(sin(iterNum * 0.11 + fragCoord.x * 0.7)));
+      applyFloodWaterSheet(0.0);
     } else if (isAnyWaterType(wall[TYPE]) && depth < 1.15) {
       float airY = clamp((floor(gTerrainH) + 1.5) / max(resolution.y, 1.0), 0.0, 1.0);
       float windSpeed = texture(baseTex, vec2(texCoord.x, airY))[VX] * 10.;
@@ -1803,9 +1807,13 @@ void main()
 #endif
   } else { // air
 
-    // Rasterized occupancy can poke above the interpolated skyline. Wall moisture
-    // is stored in the CLOUD channel, which otherwise shades as opaque white "cloud" stairs.
-    if (wall[DISTANCE] == 0) {
+    // Occupancy walls can poke above the interpolated skyline. Their moisture
+    // lives in CLOUD and would shade as white stairs — keep those pixels
+    // transparent so the sky behind shows. Facades (trees / urban / fire)
+    // still run below so they sit on the smooth heightfield, not the occupancy
+    // stair treads.
+    bool occupancySolid = wall[DISTANCE] == 0;
+    if (occupancySolid) {
       opacity = 0.0;
       color = vec3(0.0);
     } else {
@@ -1817,12 +1825,16 @@ void main()
       : ((farZoom || visualQuality < 0.45)
         ? texture(smokeTex, bndFragCoord * texelSize).r
         : bilerpWallVis(smokeTex, wallTex, bndFragCoord).r);
-    // Night-only star embers just above fire (cells 1–2); drift with wind, die quickly
+    // Night-only star embers just above fire; sit on interpolated surface, not occupancy cells.
     float nearFireEmberMask = 0.0;
-    if (isAnyFireType(wall[TYPE]) && wall[VERT_DISTANCE] >= 1 && wall[VERT_DISTANCE] <= 2) {
-      float heightFall = wall[VERT_DISTANCE] == 1 ? 1.0 : 0.45;
-      float flameCore = clamp((airSmokeAmt - 0.25) * 0.4, 0.12, 1.0);
-      nearFireEmberMask = flameCore * heightFall * nightFactor;
+    {
+      ivec4 fireSurf = texture(wallTex, terrainSurfaceUV(fragCoord.x));
+      float fireHag = fragCoord.y - gTerrainH;
+      if (isAnyFireType(fireSurf[TYPE]) && fireHag >= 0.0 && fireHag < 2.0) {
+        float heightFall = fireHag < 1.0 ? 1.0 : 0.45;
+        float flameCore = clamp((airSmokeAmt - 0.25) * 0.4, 0.12, 1.0);
+        nearFireEmberMask = flameCore * heightFall * nightFactor;
+      }
     }
     vec2 airWind = base.xy;
     vec4 dropSizes = texture(dropletSizeTex, bndFragCoord * texelSize);
@@ -1863,7 +1875,10 @@ void main()
     opacity = max(opacity - length(rainbowCol), 0.); // remove some white rain to prevent overbrightening and increase color saturation
     }
 
+    } // occupancy-air sky / clouds
 
+    // Facades stand on the interpolated heightfield even where occupancy stairs
+    // poke into the sky, so trees / urban / fire follow the smooth slope.
     float heightAboveGround = fragCoord.y - gTerrainH;
     if (heightAboveGround >= 0.0 && heightAboveGround < 10.0) { // near interpolated surface
       float localX = fract(fragCoord.x);
@@ -2070,6 +2085,7 @@ void main()
         }
       }
     }
+    if (!occupancySolid) {
     float arrow = vectorField(base.xy, displayVectorField);
 
     if (arrow > 0.5) {
