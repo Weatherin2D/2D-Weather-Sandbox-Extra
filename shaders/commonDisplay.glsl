@@ -134,7 +134,13 @@ bool fragmentIsCaveAir(isampler2D walls)
 
 bool displayIsSolidTerrain(isampler2D walls)
 {
-  return displayIsTerrain() && !fragmentIsCaveAir(walls);
+  if (fragmentIsCaveAir(walls))
+    return false;
+  // Occupancy walls that poke above Catmull-Rom still count as ground so the
+  // skyline cannot leak sky/water through 1-cell squares.
+  if (texture(walls, texCoord)[1] == 0)
+    return true;
+  return displayIsTerrain();
 }
 
 ivec4 sampleColumnSurfaceWall(isampler2D wallTex)

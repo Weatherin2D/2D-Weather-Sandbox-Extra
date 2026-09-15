@@ -1493,7 +1493,11 @@ void main()
     gTerrainH = hSolid - (1.0 - waterLevel);
     gTerrainSlope = 0.0;
   }
-  belowTerrain = fragCoord.y < gTerrainH && !fragmentIsCaveAir(wallTex);
+  // Occupancy is a step function; Catmull-Rom can sit a cell below a wall. Those
+  // wall fragments used to shade as transparent air so the sky background showed
+  // through as cyan/pink squares along the ridgeline. Fill them as ground.
+  bool occupancySolid = wall[DISTANCE] == 0;
+  belowTerrain = (fragCoord.y < hSolid || occupancySolid) && !fragmentIsCaveAir(wallTex);
 
   ivec4 wallX0Ym = texture(wallTex, texCoordX0Ym);
   if (belowTerrain) {
@@ -1528,7 +1532,7 @@ void main()
 
   if (texCoord.y < 0. || (belowTerrain && texCoord.y <= 1.0)) { // underground or smooth terrain silhouette
 
-    float depth = gTerrainH - fragCoord.y; // depth below interpolated surface
+    float depth = max(gTerrainH - fragCoord.y, 0.0); // depth below interpolated surface
 
     // Lakes/ocean/ice: solid body colors (no flood fade, no fade-to-black).
     // Flooded land: floodwater sheet fades to 0 opacity with depth.
@@ -1807,17 +1811,6 @@ void main()
 #endif
   } else { // air
 
-    // Occupancy walls can poke above the interpolated skyline. Their moisture
-    // lives in CLOUD and would shade as white stairs — keep those pixels
-    // transparent so the sky behind shows. Facades (trees / urban / fire)
-    // still run below so they sit on the smooth heightfield, not the occupancy
-    // stair treads.
-    bool occupancySolid = wall[DISTANCE] == 0;
-    if (occupancySolid) {
-      opacity = 0.0;
-      color = vec3(0.0);
-    } else {
-
     float rainSnowFactorAir = map_rangeC(KtoC(realTemp), 0.0, 5.0, 0.0, 1.0);
     // Smooth smoke the same way as dust/cloud in waterTex (smoke lives in a separate texture)
     float airSmokeAmt = smoothClouds > 0.5
@@ -1874,8 +1867,6 @@ void main()
     emittedLight += rainbowCol;
     opacity = max(opacity - length(rainbowCol), 0.); // remove some white rain to prevent overbrightening and increase color saturation
     }
-
-    } // occupancy-air sky / clouds
 
     // Facades stand on the interpolated heightfield even where occupancy stairs
     // poke into the sky, so trees / urban / fire follow the smooth slope.
@@ -2085,7 +2076,6 @@ void main()
         }
       }
     }
-    if (!occupancySolid) {
     float arrow = vectorField(base.xy, displayVectorField);
 
     if (arrow > 0.5) {
@@ -2097,7 +2087,6 @@ void main()
     // color.b -= arrow;
     // opacity += arrow;
     // lightIntensity += arrow;
-    }
   }
 
 
