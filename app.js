@@ -25489,20 +25489,64 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     gl.bindTexture(gl.TEXTURE_2D, latestTerrainHeightTexture);
   }
 
+  function unbindSunColumnFromSamplers()
+  {
+    // Lighting / sky / realistic display leave sunColumnTexture bound on sampler
+    // units. Rendering to that same texture while it is still sampled is a
+    // framebuffer feedback path that resets the GPU as soon as the land tool
+    // sculpts (setup never hits this because display has not run yet).
+    const units = [1, 7, 11, 14];
+    for (let i = 0; i < units.length; i++) {
+      gl.activeTexture(gl.TEXTURE0 + units[i]);
+      gl.bindTexture(gl.TEXTURE_2D, null);
+    }
+  }
+
   function syncHeightToSunColumn()
   {
     if (!copyHeightToSunColumnProgram || !sunColumnFrameBuff)
       return;
+    unbindSunColumnFromSamplers();
     gl.useProgram(copyHeightToSunColumnProgram);
     gl.viewport(0, 1, sim_res_x, 1);
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, latestTerrainHeightTexture);
-    // Do not bind sunColumnTexture as a sampler here — it is the color attachment
-    // and that feedback path can reset the GPU on some drivers.
     gl.bindFramebuffer(gl.FRAMEBUFFER, sunColumnFrameBuff);
     gl.drawBuffers([ gl.COLOR_ATTACHMENT0 ]);
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     gl.viewport(0, 0, sim_res_x, sim_res_y);
+  }
+
+  function copyFrameBuff1ToBothSimTextures()
+  {
+    // Read frameBuff_1 (*_1 attachments) into *_0 first. Copying an attachment
+    // into itself (the old *_1 ← *_1 copies) TDRs some drivers.
+    gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_1);
+    const toZero = [
+      [gl.COLOR_ATTACHMENT0, baseTexture_0],
+      [gl.COLOR_ATTACHMENT1, waterTexture_0],
+      [gl.COLOR_ATTACHMENT2, wallTexture_0],
+      [gl.COLOR_ATTACHMENT3, smokeTexture_0]
+    ];
+    for (let i = 0; i < toZero.length; i++) {
+      gl.readBuffer(toZero[i][0]);
+      gl.bindTexture(gl.TEXTURE_2D, toZero[i][1]);
+      gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, sim_res_x, sim_res_y);
+    }
+    gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_0);
+    const toOne = [
+      [gl.COLOR_ATTACHMENT0, baseTexture_1],
+      [gl.COLOR_ATTACHMENT1, waterTexture_1],
+      [gl.COLOR_ATTACHMENT2, wallTexture_1],
+      [gl.COLOR_ATTACHMENT3, smokeTexture_1]
+    ];
+    for (let i = 0; i < toOne.length; i++) {
+      gl.readBuffer(toOne[i][0]);
+      gl.bindTexture(gl.TEXTURE_2D, toOne[i][1]);
+      gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, sim_res_x, sim_res_y);
+    }
+    gl.readBuffer(gl.COLOR_ATTACHMENT0);
   }
 
   function uploadTerrainHeightFromArray(arr)
@@ -25603,31 +25647,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_1);
     gl.drawBuffers([ gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1, gl.COLOR_ATTACHMENT2, gl.COLOR_ATTACHMENT3 ]);
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
-    gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_1);
-    gl.readBuffer(gl.COLOR_ATTACHMENT0);
-    gl.bindTexture(gl.TEXTURE_2D, baseTexture_0);
-    gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, sim_res_x, sim_res_y);
-    gl.readBuffer(gl.COLOR_ATTACHMENT1);
-    gl.bindTexture(gl.TEXTURE_2D, waterTexture_0);
-    gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, sim_res_x, sim_res_y);
-    gl.readBuffer(gl.COLOR_ATTACHMENT2);
-    gl.bindTexture(gl.TEXTURE_2D, wallTexture_0);
-    gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, sim_res_x, sim_res_y);
-    gl.readBuffer(gl.COLOR_ATTACHMENT3);
-    gl.bindTexture(gl.TEXTURE_2D, smokeTexture_0);
-    gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, sim_res_x, sim_res_y);
-    gl.readBuffer(gl.COLOR_ATTACHMENT0);
-    gl.bindTexture(gl.TEXTURE_2D, baseTexture_1);
-    gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, sim_res_x, sim_res_y);
-    gl.readBuffer(gl.COLOR_ATTACHMENT1);
-    gl.bindTexture(gl.TEXTURE_2D, waterTexture_1);
-    gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, sim_res_x, sim_res_y);
-    gl.readBuffer(gl.COLOR_ATTACHMENT2);
-    gl.bindTexture(gl.TEXTURE_2D, wallTexture_1);
-    gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, sim_res_x, sim_res_y);
-    gl.readBuffer(gl.COLOR_ATTACHMENT3);
-    gl.bindTexture(gl.TEXTURE_2D, smokeTexture_1);
-    gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, sim_res_x, sim_res_y);
+    copyFrameBuff1ToBothSimTextures();
   }
 
   function applyTerrainSculpt(x, y, intensity, brushRadius, wrap, inputType, customSlot)
