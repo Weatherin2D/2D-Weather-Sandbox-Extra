@@ -30500,7 +30500,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   }
 
   // Pause-edit: apply brush without advancing weather, then resync ping-pong buffers.
-  function applyPausedBrushEdit(optionalBrush)
+  function applyPausedBrushEdit(optionalBrush, brushInputType)
   {
     gl.bindVertexArray(fluidVao);
     // Display samples *_1. Pressure only writes base/wall to *_0, so water/smoke
@@ -30508,6 +30508,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     copyFrameBuff1ToZero();
     if (optionalBrush && Array.isArray(optionalBrush.passes) && optionalBrush.passes.length) {
       applyBrushPassesBrushOnly(optionalBrush.passes);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
       return;
     }
     unbindSimAttachmentSamplers();
@@ -30533,7 +30534,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       gl.useProgram(advectionProgram);
       gl.uniform1i(uloc_adv_brushOnlyMode, 0);
     }
-    if (guiControls.allowCaves && isTerrainSculptInputType(inputType))
+    if (guiControls.allowCaves && isTerrainSculptInputType(brushInputType))
       rebuildTerrainHeightFromWalls(wallTexture_1);
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
   }
@@ -31331,11 +31332,11 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         // Edit while paused: apply brush without advancing weather
         if (isTerrainSculptInputType(inputType)) {
           if (guiControls.allowCaves)
-            applyPausedBrushEdit();
+            applyPausedBrushEdit(null, inputType);
         } else if (isPaintingCustomBrushTool())
-          applyPausedBrushEdit(getLocalCustomBrushPayload());
+          applyPausedBrushEdit(getLocalCustomBrushPayload(), inputType);
         else
-          applyPausedBrushEdit();
+          applyPausedBrushEdit(null, inputType);
       }
 
       if (isMultiplayerPeer() && !isMultiplayerHost()) {
