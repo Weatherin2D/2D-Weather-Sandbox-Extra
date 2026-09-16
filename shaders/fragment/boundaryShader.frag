@@ -292,13 +292,17 @@ void main()
         if (wall[TYPE] == WALLTYPE_INERT) {
           albedoTotal = ALBEDO_INERT;
         } else if (isLandFireOrForest2(wall[TYPE]) || isCustomBase(wall[TYPE])) {
+          // Snow albedo saturates around fullWhiteSnowHeight (~10 cm). Unclamped
+          // map_range made veg albedo >> 1 with deep snow, so (1-albedo) went
+          // negative: land cooled without bound by day and IR-heated at night.
+          float snowFrac = clamp(snowCover / fullWhiteSnowHeight, 0.0, 1.0);
           float albedoSoil = map_rangeC(soilMoisture, 0., 20., ALBEDO_DRYSOIL, ALBEDO_WETSOIL);
-          albedoSoil = map_rangeC(snowCover, 0.0, fullWhiteSnowHeight, albedoSoil, ALBEDO_SNOW);                         // add snow albedo
+          albedoSoil = mix(albedoSoil, ALBEDO_SNOW, snowFrac);
           float vegSample = float(wallX0Ym[VEGETATION]);
           float grassFrac = clamp(grassBiomass(int(vegSample)) / float(GRASS_VEG_MAX), 0.0, 1.0);
           float forestFrac = clamp(forestBiomass(int(vegSample)) / float(FOREST_VEG_MAX - GRASS_VEG_MAX), 0.0, 1.0);
-          float grassAlbedo = map_range(snowCover, 0., fullWhiteSnowHeight, ALBEDO_GRASS, ALBEDO_SNOW);
-          float forestAlbedo = map_range(snowCover, 0., fullWhiteSnowHeight, ALBEDO_FOREST, ALBEDO_SNOW_FOREST);
+          float grassAlbedo = mix(ALBEDO_GRASS, ALBEDO_SNOW, snowFrac);
+          float forestAlbedo = mix(ALBEDO_FOREST, ALBEDO_SNOW_FOREST, snowFrac);
           float vegAlbedo = mix(grassAlbedo, forestAlbedo, forestFrac);
           float vegCover = max(grassFrac * 0.55, forestFrac);
           albedoTotal = mix(albedoSoil, vegAlbedo, clamp(vegCover, 0.0, 1.0));
@@ -321,7 +325,9 @@ void main()
           albedoTotal = mix(albedoTotal, ALBEDO_FRESH_WATER, floodFrac);
         }
 
+        albedoTotal = clamp(albedoTotal, 0.0, 0.95);
         lightPower *= (1. - albedoTotal);
+        lightPower = max(lightPower, 0.0);
         lightPower *= lightHeatingConst;
         // Land inertia (and standing flood capacity) slow solar response vs bare air
         lightPower /= mix(landHeatCapacity, waterHeatCapacity * 0.35, floodFrac);
@@ -482,6 +488,8 @@ void main()
         if (wall[VERT_DISTANCE] <= wallVerticalInfluence) {
 
           float evaporation = calcEvaporation(realTemp, water[TOTAL], vegetationInfluence(wall[VEGETATION]), waterInSurface[SOIL_MOISTURE]) / influenceDevider;
+          // Snowpack shuts down transpiration; residual is weak vapor exchange (sublimation is handled elsewhere).
+          evaporation *= mix(1.0, 0.12, clamp(waterInSurface[SNOW] / fullWhiteSnowHeight, 0.0, 1.0));
 
           // Flooded land: sun-boosted evaporation into the air (like open freshwater)
           float floodFracAir = clamp(getFloodHeightMm(waterInSurface[TOTAL]) / 12.0, 0.0, 1.0);
@@ -722,6 +730,7 @@ void main()
         float realTempAboveSurface = potentialToRealT(baseAboveSurface[TEMPERATURE], texCoordX0Yp.y);
 
         float evaporation = calcEvaporation(realTempAboveSurface, waterAboveSurface[TOTAL], vegetationInfluence(wall[VEGETATION]), water[SOIL_MOISTURE]) * 0.10 * max(soilMoistureLossMult, 0.0);
+        evaporation *= mix(1.0, 0.12, clamp(water[SNOW] / fullWhiteSnowHeight, 0.0, 1.0));
 
         // Evaporate standing flood first; soil only dries when flood is gone.
         // A share of evaporating flood soaks into soil (soil rises only from flood loss).
