@@ -329,8 +329,10 @@ void main()
         lightPower *= (1. - albedoTotal);
         lightPower = max(lightPower, 0.0);
         lightPower *= lightHeatingConst;
-        // Land inertia (and standing flood capacity) slow solar response vs bare air
-        lightPower /= mix(landHeatCapacity, waterHeatCapacity * 0.35, floodFrac);
+        // Dry land uses the Earth-scale solar flux directly. Flooded tiles keep water-like
+        // thermal mass so standing water does not spike like bare soil. Night IR cooling
+        // still uses landHeatCapacity so nights do not crash.
+        lightPower /= mix(1.0, waterHeatCapacity * 0.35, floodFrac);
         base[TEMPERATURE] += lightPower * lightEffectScale; // sun heating land
 
         // Mild climate tendency toward latitude-based sea-level temperature

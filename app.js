@@ -1700,6 +1700,20 @@ function dT_saturated(dTdry, dTl)
 
 const IR_constant = 5.670374419; // ×10−8
 
+// Earth solar constant at 1 AU (TSIS-1 / IAU). Sun intensity 1.0 = this TOA beam (W/m²).
+const EARTH_SOLAR_CONSTANT_WM2 = 1361.0;
+
+function incomingSunWm2(sunIntensitySlider, elevDeg)
+{
+  // Beam on a sun-facing plane at the top of the domain. Airmass / extinction is
+  // applied in the lighting pass; do not pre-scale TOA flux by elevation.
+  // sin(elev) > 0 covers both elevation (0–90) and the 0–180 manual slider
+  // (90 = overhead, 0 and 180 = opposite horizons).
+  if (!(Math.sin(elevDeg * degToRad) > 0.0))
+    return 0.0;
+  return sunIntensitySlider * EARTH_SOLAR_CONSTANT_WM2;
+}
+
 function IR_emitted(T)
 {
   return Math.pow(T * 0.01, 4) * IR_constant; // Stefan–Boltzmann law
@@ -24510,7 +24524,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     addGuiSlider(secTime, 'Longitude right (°)', 'Local time shift right', 'longitudeRight', -180, 180, 0.1, () => {
       if (typeof updateSunlight === 'function') updateSunlight();
     });
-    addGuiSlider(secTime, 'Sun intensity', 'Radiation strength', 'sunIntensity', 0, 3, 0.01, () => {
+    addGuiSlider(secTime, 'Sun intensity', '1.0 = Earth solar constant (1361 W/m² TOA)', 'sunIntensity', 0, 3, 0.01, () => {
       if (typeof updateSunlight === 'function') updateSunlight();
     });
     addSlider(secTime, 'Sun horizontal amplitude', 'East–west travel range', () => skySettings.sunHorizAmplitude,
@@ -26376,7 +26390,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     } else {
       sunIsUp = false;
     }
-    let sunIntensity = guiControls.sunIntensity * Math.pow(Math.max(Math.sin(guiControls.sunAngle * degToRad), 0.0), 0.1) * 1300.0; // max 1300 w/m2 at 12 km
+    let sunIntensity = incomingSunWm2(guiControls.sunIntensity, guiControls.sunAngle); // intensity 1 = 1361 W/m² Earth TOA
 
     if (guiControls.autoMinShadowLight) {
       const targetShadow = map_range_C(Math.abs(solarZenithAngleDeg), 100.0, 85.0, 0.005, 0.040);
@@ -26404,7 +26418,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
           let localTime = guiControls.timeOfDay + lon / 15.0;
           elevDeg = solarElevationDegAt(lat, localTime, guiControls.month, declination);
           aziRad = (localTime - 12.0) * 15.0 * degToRad;
-          intensity = guiControls.sunIntensity * Math.pow(Math.max(Math.sin(elevDeg * degToRad), 0.0), 0.1) * 1300.0;
+          intensity = incomingSunWm2(guiControls.sunIntensity, elevDeg);
         }
         let zenithRad = (90.0 - elevDeg) * degToRad;
         let climateC = climateOn ? climateTempCFromLatitude(lat) : 15.0;

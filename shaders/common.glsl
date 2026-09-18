@@ -8,7 +8,9 @@ precision highp isampler2D;
 
 #define lightHeatingConst 0.000002   // how much a unit of IR or sunlight (W/m2) changes the temperature per iteration
 
-#define standardSunBrightness 1250.; // W/m2
+// Earth solar constant at 1 AU (TSIS-1 / IAU), W/m². Intensity slider 1.0 = this TOA beam.
+#define earthSolarConstantWm2 1361.0
+#define standardSunBrightness earthSolarConstantWm2
 
 #define maxWaterTemp 40.0
 

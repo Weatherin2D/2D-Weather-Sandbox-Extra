@@ -731,7 +731,7 @@
       const f = timeChangeFns();
       if (typeof f.updateSunlight === 'function') f.updateSunlight();
     });
-    addGuiSlider(secTime, 'Sun intensity', 'Radiation strength', 'sunIntensity', 0, 3, 0.01, function() {
+    addGuiSlider(secTime, 'Sun intensity', '1.0 = Earth solar constant (1361 W/m² TOA)', 'sunIntensity', 0, 3, 0.01, function() {
       const f = timeChangeFns();
       if (typeof f.updateSunlight === 'function') f.updateSunlight();
     });

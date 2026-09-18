@@ -182,7 +182,6 @@ void main()
       vec3 fireCol = hsv2rgb(vec3(fireIntensity * 0.008, 0.98, 5.0)) * 1.0;
       vec3 FinalFireCol = mix(vec3(0), fireCol, fireIntensity);
       // Volume firelight for extreme density (orange sky/glow at night)
-      // (Do not use standardSunBrightness inside expressions — the #define ends with ';')
       float nightBoost = 1.0 - clamp(sunlight * 0.0008, 0.0, 1.0);
       FinalFireCol += vec3(1.1, 0.4, 0.05) * megaCol * (0.35 + 0.9 * nightBoost);
       FinalFireCol += vec3(1.3, 0.7, 0.15) * megaCol * megaCol * 0.4;
