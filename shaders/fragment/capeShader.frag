@@ -22,7 +22,11 @@ layout(location = 0) out float cape;
 
 float satVaporHpa(float Tc)
 {
-  return 6.112 * exp((17.67 * Tc) / (Tc + 243.5));
+  Tc = clamp(simFiniteOr(Tc, 0.0), -90.0, 60.0);
+  float den = Tc + 243.5;
+  if (abs(den) < 0.15)
+    den = 0.15;
+  return 6.112 * exp(clamp((17.67 * Tc) / den, -40.0, 40.0));
 }
 
 float mixingRatioKg(float Tc, float hpa)
@@ -43,6 +47,8 @@ float moistLapseKperM(float tK, float pHpa)
   float cp = 1005.7;
   float L = 2.501e6;
   float eps = 0.622;
+  tK = max(simFiniteOr(tK, 273.15), 150.0);
+  pHpa = clamp(simFiniteOr(pHpa, 1013.25), 20.0, 1080.0);
   float es = satVaporHpa(tK - 273.15);
   float rs = eps * es / max(pHpa - es, 0.1);
   float num = g * (1.0 + (L * rs) / (Rd * tK));
@@ -133,5 +139,5 @@ void main()
     prevEnvTk = envTk;
   }
 
-  cape = totalCape;
+  cape = simFiniteOr(totalCape, 0.0);
 }

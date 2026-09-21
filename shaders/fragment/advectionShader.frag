@@ -66,12 +66,31 @@ uniform vec4 realWorldSounding_Tv[126];
 uniform vec4 realWorldSounding_Wv[126];
 uniform vec4 realWorldSounding_Velv[126];
 
-float getInitialT(int y) { return initial_Tv[y / 4][y % 4]; }
-float getRealWorldSounding_T(int y) { return (realWorldSounding_Tv[y / 4][y % 4] + realWorldSounding_Tv[(y - 1) / 4][(y - 1) % 4]) / 2.; }
-float getRealWorldSounding_W(int y) { return (realWorldSounding_Wv[y / 4][y % 4] + realWorldSounding_Wv[(y - 1) / 4][(y - 1) % 4]) / 2.; }
-float getRealWorldSounding_Vel(int y) { return (realWorldSounding_Velv[y / 4][y % 4] + realWorldSounding_Velv[(y - 1) / 4][(y - 1) % 4]) / 2.; }
-
 #include "common.glsl"
+
+float getInitialT(int y)
+{
+  int i = simProfileIndex(y, resolution.y);
+  return initial_Tv[i / 4][i % 4];
+}
+float getRealWorldSounding_T(int y)
+{
+  int i0 = simProfileIndex(max(y - 1, 0), resolution.y);
+  int i1 = simProfileIndex(y, resolution.y);
+  return (realWorldSounding_Tv[i1 / 4][i1 % 4] + realWorldSounding_Tv[i0 / 4][i0 % 4]) / 2.;
+}
+float getRealWorldSounding_W(int y)
+{
+  int i0 = simProfileIndex(max(y - 1, 0), resolution.y);
+  int i1 = simProfileIndex(y, resolution.y);
+  return (realWorldSounding_Wv[i1 / 4][i1 % 4] + realWorldSounding_Wv[i0 / 4][i0 % 4]) / 2.;
+}
+float getRealWorldSounding_Vel(int y)
+{
+  int i0 = simProfileIndex(max(y - 1, 0), resolution.y);
+  int i1 = simProfileIndex(y, resolution.y);
+  return (realWorldSounding_Velv[i1 / 4][i1 % 4] + realWorldSounding_Velv[i0 / 4][i0 % 4]) / 2.;
+}
 
 void main()
 {
@@ -100,11 +119,11 @@ void main()
     vec4 cellXpYm = texture(baseTex, texCoordXpYm);
 
     // calculate velocities for different positions within cell
-    vec2 velAtP = vec2((cellXmY0.x + cellX0Y0.x) / 2.,
-                       (cellX0Ym.y + cellX0Y0.y) / 2.);                                        // center of cell
-    vec2 velAtVx = vec2(cellX0Y0.x, (cellX0Ym.y + cellXpY0.y + cellX0Y0.y + cellXpYm.y) / 4.); // midle of right edge of cell
-    vec2 velAtVy = vec2((cellXmY0.x + cellX0Yp.x + cellXmYp.x + cellX0Y0.x) / 4.,
-                        cellX0Y0.y);                                                           // midle of top edge of cell
+    vec2 velAtP = simClampVel(vec2((cellXmY0.x + cellX0Y0.x) / 2.,
+                       (cellX0Ym.y + cellX0Y0.y) / 2.));                                        // center of cell
+    vec2 velAtVx = simClampVel(vec2(cellX0Y0.x, (cellX0Ym.y + cellXpY0.y + cellX0Y0.y + cellXpYm.y) / 4.)); // midle of right edge of cell
+    vec2 velAtVy = simClampVel(vec2((cellXmY0.x + cellX0Yp.x + cellXmYp.x + cellX0Y0.x) / 4.,
+                        cellX0Y0.y));                                                           // midle of top edge of cell
 
     // ADVECT AIR:
 
@@ -703,4 +722,8 @@ void main()
       }
     }
   }
+
+  base = sanitizeSimBase(base, wall[DISTANCE]);
+  water = sanitizeSimWater(water, wall[DISTANCE], wall[TYPE]);
+  smoke = sanitizeSimSmoke(smoke);
 }

@@ -32,7 +32,11 @@ layout(location = 1) out vec4 water;
 layout(location = 2) out ivec4 wall;
 layout(location = 3) out float smoke;
 
-float getInitialT(int y) { return initial_Tv[y / 4][y % 4]; }
+float getInitialT(int y)
+{
+  int i = simProfileIndex(y, resolution.y);
+  return initial_Tv[i / 4][i % 4];
+}
 
 int interiorTypeFor(int surfaceType)
 {

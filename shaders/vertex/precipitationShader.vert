@@ -120,6 +120,7 @@ void main()
                                                                 //  float spawnChance = (water[CLOUD] - threshold) / inactiveDroplets * resolution.x * resolution.y * spawnChanceMult;
 
       float spawnChance = ((water[CLOUD] - threshold) / (inactiveDroplets + 10.0)) * resolution.x * resolution.y * spawnChanceMult; // 20.0  50.0
+      spawnChance = clamp(simFiniteOr(spawnChance, 0.0), 0.0, 1.0e6);
 
       // Must be real random — cloud-derived fract(pow(...)) gated most warm-cloud cells out of spawning.
       float nrmRand = random2d(vec2(mass[WATER] * 0.2324, iterNum * 0.1783 + random(mass[ICE])));
@@ -291,7 +292,7 @@ void main()
     } else { // update droplet
 
       // float surfaceArea = sqrt(totalMass); // As if droplet is a circle (2D)
-      float surfaceArea = pow(totalMass, 1. / 3.); // As if droplet is a sphere (3D)
+      float surfaceArea = pow(max(simFiniteOr(totalMass, 0.0), 0.0), 1. / 3.); // As if droplet is a sphere (3D)
 
       // float growthRate = clamp(map_range(realTemp, CtoK(0.0), CtoK(-30.0), growthRate0C, growthRate_30C), growthRate0C, growthRate_30C); // the colder it gets the faster ice forms
       float growthRate = max(map_range(realTemp, CtoK(0.0), CtoK(-30.0), growthRate0C, growthRate_30C), growthRate0C); // the colder it gets the faster ice forms
@@ -356,7 +357,7 @@ void main()
 
       // Update position
       // move with air    * 2. because droplet position goes from -1. to 1
-      newPos += base.xy / resolution * 2.;
+      newPos += simClampVel(base.xy) / max(resolution, vec2(1.0)) * 2.;
       newPos.y -= fallSpeed * newDensity * sqrt(totalMass / surfaceArea) * cellHComp; // fall speed relative to air
       /*
        // falling at fixed speed:
@@ -370,16 +371,16 @@ void main()
 
       newPos.x = mod(newPos.x + 1., 2.) - 1.; // wrap horizontal position around map edges
 
-      feedback[MASS] = totalMass;
+      feedback[MASS] = simFiniteOr(totalMass, 0.0);
 
     }               // update
 
 #define pntSize 12. // 16.
     const float pntSurface = pntSize * pntSize;
     // devide by suface area to keep total amount constant
-    feedback[MASS] /= pntSurface;
-    feedback[HEAT] /= pntSurface;
-    feedback[VAPOR] /= pntSurface;
+    feedback[MASS] = simFiniteOr(feedback[MASS], 0.0) / pntSurface;
+    feedback[HEAT] = simFiniteOr(feedback[HEAT], 0.0) / pntSurface;
+    feedback[VAPOR] = simFiniteOr(feedback[VAPOR], 0.0) / pntSurface;
 
     deposition[RAIN_DEPOSITION] /= pntSize; // only width matters because it's only applied at surface layer
     deposition[SNOW_DEPOSITION] /= pntSize; // only width matters because it's only applied at surface layer
@@ -389,7 +390,7 @@ void main()
     gl_Position = vec4(newPos, 0.0, 1.0);
   } // active
 
-  position_out = newPos;
-  mass_out = newMass;
-  density_out = max(newDensity, 0.);
+  position_out = vec2(simFiniteOr(newPos.x, 0.0), simFiniteOr(newPos.y, 0.0));
+  mass_out = vec2(simFiniteOr(newMass.x, -2.0), simFiniteOr(newMass.y, 0.0));
+  density_out = clamp(simFiniteOr(newDensity, 1.0), 0.0, 8.0);
 }

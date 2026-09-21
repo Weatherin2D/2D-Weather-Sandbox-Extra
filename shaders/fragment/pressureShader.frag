@@ -39,5 +39,22 @@ void main()
 
   // pressure changes proportional to the net in or outflow, to or from the cell.
   // 0.05 - 0.49   was 0.40, lower multiplier dampenes pressure waves.
-  base[2] += (baseXmY0[0] - base[0] + baseX0Ym[1] - base[1]) * 0.45;
+  float vxL = baseXmY0[0];
+  float vx0 = base[0];
+  float vyD = baseX0Ym[1];
+  float vy0 = base[1];
+  if (vxL != vxL) vxL = 0.0;
+  if (vx0 != vx0) vx0 = 0.0;
+  if (vyD != vyD) vyD = 0.0;
+  if (vy0 != vy0) vy0 = 0.0;
+  vxL = clamp(vxL, -2.5, 2.5);
+  vx0 = clamp(vx0, -2.5, 2.5);
+  vyD = clamp(vyD, -2.5, 2.5);
+  vy0 = clamp(vy0, -2.5, 2.5);
+  base[2] += (vxL - vx0 + vyD - vy0) * 0.45;
+  if (base[2] != base[2])
+    base[2] = 0.0;
+  base[2] = clamp(base[2], -8.0, 8.0);
+  if (base[3] != base[3])
+    base[3] = 1000.0;
 }

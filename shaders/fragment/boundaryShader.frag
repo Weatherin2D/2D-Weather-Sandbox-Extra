@@ -33,8 +33,6 @@ uniform float waterWeight;
 uniform vec4 initial_Tv[126];
 uniform bool allowCaves;
 
-float getInitialT(int y) { return initial_Tv[y / 4][y % 4]; }
-
 uniform float sunAngle;
 uniform float sunAzimuth;
 uniform int latitudeBasedTemperature;
@@ -73,6 +71,12 @@ layout(location = 2) out ivec4 wall;
 layout(location = 3) out float smoke;
 
 #include "common.glsl"
+
+float getInitialT(int y)
+{
+  int i = simProfileIndex(y, resolution.y);
+  return initial_Tv[i / 4][i % 4];
+}
 
 #define minimalFireVegetation 20
 
@@ -217,6 +221,7 @@ void main()
 
     gravityForce -= precipFeedback[MASS] * gravMult * waterWeight; // precipitation weigth added to gravity force
 
+    gravityForce = clamp(simFiniteOr(gravityForce, 0.0), -0.05, 0.05);
     base[VY] += gravityForce;
 
     // base.x += sin(texCoord.x * PI * 2.0 + iterNum * 0.000005) * (1. - texCoord.y) * 0.00015; // phantom force to simulate high and low pressure areas
@@ -275,7 +280,10 @@ void main()
     float velocityFactor = length(base.xy) * 0.1; // 0.2
 
     // apply vorticity force
-    base.xy += vec2(vortForceX0Y0.x + vortForceX0Ym.x, vortForceX0Y0.y + vortForceXmY0.y) * (vorticity + velocityFactor);
+    vec2 vortApply = vec2(vortForceX0Y0.x + vortForceX0Ym.x, vortForceX0Y0.y + vortForceXmY0.y) * (vorticity + velocityFactor);
+    vortApply.x = simFiniteOr(vortApply.x, 0.0);
+    vortApply.y = simFiniteOr(vortApply.y, 0.0);
+    base.xy += vortApply;
     //}
 
     if (nextToWall) {
@@ -1105,4 +1113,8 @@ void main()
 
   if (wall[DISTANCE] == 0)
     smoke = 0.0;
+
+  base = sanitizeSimBase(base, wall[DISTANCE]);
+  water = sanitizeSimWater(water, wall[DISTANCE], wall[TYPE]);
+  smoke = sanitizeSimSmoke(smoke);
 } // main

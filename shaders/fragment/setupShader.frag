@@ -19,12 +19,16 @@ uniform float latitude;
 uniform float latitudeLeft;
 uniform float latitudeRight;
 
-float getInitialT(int y) { return initial_Tv[y / 4][y % 4]; }
-
 in vec2 texCoord;
 in vec2 fragCoord;
 
 #include "common.glsl"
+
+float getInitialT(int y)
+{
+  int i = simProfileIndex(y, resolution.y);
+  return initial_Tv[i / 4][i % 4];
+}
 
 layout(location = 0) out vec4 base;
 layout(location = 1) out vec4 water;

@@ -78,7 +78,7 @@ void main()
       float net_heating = 0.0;
 
       if (fragCoord.y < resolution.y - 2.) {                                                                                   // prevent shadow bug above simulation area
-        float reflection = min(pow(water[CLOUD] * 0.0010 + water[PRECIPITATION] * 0.00020, 0.5) * cellHeightCompensation, 1.); // 0.035 cloud + 0.35 precipitation
+        float reflection = min(pow(max(water[CLOUD] * 0.0010 + water[PRECIPITATION] * 0.00020, 0.0), 0.5) * cellHeightCompensation, 1.); // 0.035 cloud + 0.35 precipitation
         reflection += 0.0002;                                                                                                  // clear air scattering
         float absorbtion = min((water[DUST] * 0.020 + smokeAmt * 0.012) * cellHeightCompensation, 1.); // dense fire smoke blocks more sun
 

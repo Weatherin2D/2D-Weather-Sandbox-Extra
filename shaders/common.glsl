@@ -569,6 +569,74 @@ float dT_saturated(float dTdry,
     return dTdry;
   return dTdry * (dTdry / denom);
 }
+
+// Hard bounds so a single Inf/NaN cell cannot infect the whole grid.
+// Velocities are cells/iteration; 2.5 stays above violent tornadoes even at Y=1000.
+#define SIM_PROFILE_SAMPLES 504
+#define SIM_MAX_CELL_VEL 2.5
+#define SIM_MAX_PRESSURE 8.0
+#define SIM_T_AIR_MIN 180.0
+#define SIM_T_AIR_MAX 460.0
+
+bool simIsFinite(float x) { return (x == x) && (abs(x) < 1.0e15); }
+
+float simFiniteOr(float x, float fallback) { return simIsFinite(x) ? x : fallback; }
+
+int simProfileIndex(int y, float resY)
+{
+  float t = clamp(float(y) / max(resY - 1.0, 1.0), 0.0, 1.0);
+  return int(clamp(t * float(SIM_PROFILE_SAMPLES - 1) + 0.5, 0.0, float(SIM_PROFILE_SAMPLES - 1)));
+}
+
+vec2 simClampVel(vec2 vel)
+{
+  vel.x = clamp(simFiniteOr(vel.x, 0.0), -SIM_MAX_CELL_VEL, SIM_MAX_CELL_VEL);
+  vel.y = clamp(simFiniteOr(vel.y, 0.0), -SIM_MAX_CELL_VEL, SIM_MAX_CELL_VEL);
+  return vel;
+}
+
+vec4 sanitizeSimBase(vec4 b, int wallDist)
+{
+  b[VX] = clamp(simFiniteOr(b[VX], 0.0), -SIM_MAX_CELL_VEL, SIM_MAX_CELL_VEL);
+  b[VY] = clamp(simFiniteOr(b[VY], 0.0), -SIM_MAX_CELL_VEL, SIM_MAX_CELL_VEL);
+  b[PRESSURE] = clamp(simFiniteOr(b[PRESSURE], 0.0), -SIM_MAX_PRESSURE, SIM_MAX_PRESSURE);
+  float t = simFiniteOr(b[TEMPERATURE], 288.15);
+  if (wallDist == 0) {
+    // Wall cells use ~1000 as the snow-melt feedback marker.
+    if (t > 600.0)
+      b[TEMPERATURE] = clamp(t, 600.0, 2000.0);
+    else
+      b[TEMPERATURE] = clamp(t, SIM_T_AIR_MIN, SIM_T_AIR_MAX);
+  } else {
+    b[TEMPERATURE] = clamp(t, SIM_T_AIR_MIN, SIM_T_AIR_MAX);
+  }
+  return b;
+}
+
+vec4 sanitizeSimWater(vec4 w, int wallDist, int wallType)
+{
+  if (wallDist == 0) {
+    w[0] = simFiniteOr(w[0], WATER_MARKER_LAND);
+    w[1] = simFiniteOr(w[1], 0.0);
+    w[2] = simFiniteOr(w[2], 0.0);
+    w[3] = simFiniteOr(w[3], 0.0);
+    if (!isAnyWaterType(wallType)) {
+      w[SOIL_MOISTURE] = clamp(w[SOIL_MOISTURE], 0.0, soilMoistureMax);
+      w[SNOW] = clamp(w[SNOW], 0.0, 50000.0);
+    } else {
+      w[SNOW] = clamp(w[SNOW], 0.0, maxIceThickness);
+    }
+  } else {
+    w[TOTAL] = clamp(simFiniteOr(w[TOTAL], 0.0), 0.0, 100.0);
+    w[CLOUD] = clamp(simFiniteOr(w[CLOUD], 0.0), 0.0, 100.0);
+    w[PRECIPITATION] = clamp(simFiniteOr(w[PRECIPITATION], 0.0), 0.0, 50.0);
+    w[DUST] = clamp(simFiniteOr(w[DUST], 0.0), 0.0, 5.0);
+  }
+  return w;
+}
+
+float sanitizeSimSmoke(float s) { return clamp(simFiniteOr(s, 0.0), 0.0, 48.0); }
+
 ////////////// Water Functions ///////////////
 #define wf_devider 250.0 // 250.0 Real water 	230 less steep curve
 #define wf_pow 17.0      // 17.0						10
@@ -576,18 +644,20 @@ float dT_saturated(float dTdry,
 
 float maxWater(float T)
 {
+  T = clamp(simFiniteOr(T, 273.15), 180.0, 370.0);
   return pow((T / wf_devider), wf_pow); // T in Kelvin, w in grams per m^3
 }
 
 float dewpoint(float W)
 {
+  W = simFiniteOr(W, 0.0);
   if (W < 0.00001)
     return 0.0;
   else
     return wf_devider * pow(W, 1.0 / wf_pow);
 }
 
-float relativeHumd(float T, float W) { return (W / maxWater(T)); }
+float relativeHumd(float T, float W) { return simFiniteOr(W, 0.0) / max(maxWater(T), 1.0e-12); }
 
 // interpolation
 
@@ -657,11 +727,13 @@ vec4 bilerpWall(sampler2D tex, isampler2D wallTex,
 
 float IR_emitted(float T)
 {
+  T = max(simFiniteOr(T, 273.15), 0.0);
   return pow(T * 0.01, 4.) * IR_constant; // Stefan–Boltzmann law
 }
 
 float IR_temp(float IR) // inversed Stefan–Boltzmann law
 {
+  IR = max(simFiniteOr(IR, 0.0), 0.0);
   return pow(IR / IR_constant, 1. / 4.) * 100.0;
 }
 

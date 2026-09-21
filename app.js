@@ -1173,6 +1173,8 @@ var dryLapse;
 const timePerIteration = 0.00008; // in hours (0.00008 = 0.288 sec, at 40m cell size that means the speed of light & sound = 138.88 m/s = 500 km/h)
 const REALTIME_ITERS_PER_MS = 1.0 / (timePerIteration * 3600 * 1000); // iterations per real ms at 1:1 sim speed
 const REALTIME_MAX_CATCHUP_MS = 500; // cap lag catch-up so a long stall does not burst the sim forward
+// Must match shaders: uniform vec4 initial_Tv[126] and sounding profiles (126*4).
+const SIM_PROFILE_SAMPLES = 504;
 const TARGET_FRAME_MS = 28;
 
 var NUM_DROPLETS;
@@ -1217,6 +1219,24 @@ function getSimCellCount(resX, resY)
   const x = resX != null ? resX : sim_res_x;
   const y = resY != null ? resY : sim_res_y;
   return Math.max(1, (x | 0) * (y | 0));
+}
+
+// Map a 504-slot shader profile sample onto a (possibly taller) column.
+function simProfileCellY(sampleIndex)
+{
+  var denom = Math.max(SIM_PROFILE_SAMPLES - 1, 1);
+  return (sampleIndex / denom) * Math.max(sim_res_y, 1);
+}
+
+function fillSimColumnProfile(arr, valueAtCellY)
+{
+  if (!arr)
+    return;
+  var n = Math.min(arr.length, SIM_PROFILE_SAMPLES);
+  for (var i = 0; i < n; i++) {
+    var v = valueAtCellY(simProfileCellY(i));
+    arr[i] = Number.isFinite(v) ? v : 0;
+  }
 }
 
 // True 16000×200-class grids (~3.2M+ cells). 12000×200 is not ultra — that size
@@ -1716,12 +1736,16 @@ function incomingSunWm2(sunIntensitySlider, elevDeg)
 
 function IR_emitted(T)
 {
+  if (!Number.isFinite(T) || T <= 0)
+    return 0;
   return Math.pow(T * 0.01, 4) * IR_constant; // Stefan–Boltzmann law
 }
 
 function IR_temp(IR)
 {
   // inversed Stefan–Boltzmann law
+  if (!Number.isFinite(IR) || IR <= 0)
+    return 0;
   return Math.pow(IR / IR_constant, 1.0 / 4.0) * 100.0;
 }
 
@@ -1731,19 +1755,26 @@ const wf_pow = 17.0;
 
 function maxWater(Td)
 {
+  if (!Number.isFinite(Td) || Td <= 0)
+    return 0;
   return Math.pow(Td / wf_devider,
                   wf_pow); // w = ((Td)/(250))^(18) // Td in Kelvin, w in grams per m^3
 }
 
 function dewpoint(W)
 {
-  //  if (W < 0.00001) // can't remember why this was here...
-  //    return 0.0;
-  //  else
+  if (!Number.isFinite(W) || W < 0.00001)
+    return 0.0;
   return wf_devider * Math.pow(W, 1.0 / wf_pow);
 }
 
-function relativeHumd(T, W) { return (W / maxWater(T)) * 100.0; }
+function relativeHumd(T, W)
+{
+  const mw = maxWater(T);
+  if (!(mw > 0) || !Number.isFinite(W))
+    return 0;
+  return (W / mw) * 100.0;
+}
 
 // Print funtions:
 
@@ -9911,13 +9942,18 @@ function updateSoundingUniforms()
   if (!realWorldSounding_T || !realWorldSounding_W || !realWorldSounding_Vel) return;
   
   var soundingForSim = rawSoundingToSimSounding(soundingData, guiControls.simHeight, sim_res_y + 1);
-  
-  for (var y = 0; y < sim_res_y + 1; y++) {
-    let soundingSample = soundingForSim[y];
-    realWorldSounding_T[y] = realToPotentialT(CtoK(soundingSample.t), y);
-    realWorldSounding_W[y] = maxWater(CtoK(soundingSample.td), y);
-    realWorldSounding_Vel[y] = soundingSample.vel;
-  }
+  fillSimColumnProfile(realWorldSounding_T, function(y) {
+    var s = soundingForSim[Math.max(0, Math.min(soundingForSim.length - 1, Math.round(y)))];
+    return s ? realToPotentialT(CtoK(s.t), y) : 288.15;
+  });
+  fillSimColumnProfile(realWorldSounding_W, function(y) {
+    var s = soundingForSim[Math.max(0, Math.min(soundingForSim.length - 1, Math.round(y)))];
+    return s ? maxWater(CtoK(s.td)) : 0;
+  });
+  fillSimColumnProfile(realWorldSounding_Vel, function(y) {
+    var s = soundingForSim[Math.max(0, Math.min(soundingForSim.length - 1, Math.round(y)))];
+    return s && Number.isFinite(s.vel) ? s.vel : 0.01;
+  });
   
   gl.useProgram(advectionProgram);
   gl.uniform4fv(gl.getUniformLocation(advectionProgram, 'realWorldSounding_Tv'), realWorldSounding_T);
@@ -24762,49 +24798,52 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
 
 
   // generate sounding data for forcing in sim
+  // 504 slots always span the full column so Y>503 (shader uniform cap) cannot OOB.
 
-  realWorldSounding_T = new Float32Array(504);   // sim_res_y + 1
-  realWorldSounding_W = new Float32Array(504);   // sim_res_y + 1
-  realWorldSounding_Vel = new Float32Array(504); // sim_res_y + 1
+  realWorldSounding_T = new Float32Array(SIM_PROFILE_SAMPLES);
+  realWorldSounding_W = new Float32Array(SIM_PROFILE_SAMPLES);
+  realWorldSounding_Vel = new Float32Array(SIM_PROFILE_SAMPLES);
   if (soundingData && soundingData.length > 10) {
     debugLog('mainScript: Initializing with sounding data. customSoundingLoaded =', customSoundingLoaded);
     debugLog('mainScript: soundingData sample:', soundingData[0], soundingData[Math.floor(soundingData.length/2)], soundingData[soundingData.length-1]);
     var soundingForSim = rawSoundingToSimSounding(soundingData, guiControls.simHeight, sim_res_y + 1);
-
-    for (var y = 0; y < sim_res_y + 1; y++) {
-
-      let soundingSample = soundingForSim[y];
-
-      realWorldSounding_T[y] = realToPotentialT(CtoK(soundingSample.t), y); // initial temperature profile
-      realWorldSounding_W[y] = maxWater(CtoK(soundingSample.td), y);        // initial temperature profile
-      realWorldSounding_Vel[y] = soundingSample.vel;
-    }
+    fillSimColumnProfile(realWorldSounding_T, function(y) {
+      var s = soundingForSim[Math.max(0, Math.min(soundingForSim.length - 1, Math.round(y)))];
+      return s ? realToPotentialT(CtoK(s.t), y) : 288.15;
+    });
+    fillSimColumnProfile(realWorldSounding_W, function(y) {
+      var s = soundingForSim[Math.max(0, Math.min(soundingForSim.length - 1, Math.round(y)))];
+      return s ? maxWater(CtoK(s.td)) : 0;
+    });
+    fillSimColumnProfile(realWorldSounding_Vel, function(y) {
+      var s = soundingForSim[Math.max(0, Math.min(soundingForSim.length - 1, Math.round(y)))];
+      return s && Number.isFinite(s.vel) ? s.vel : 0.01;
+    });
     debugLog('mainScript: Initialized sounding arrays. realWorldSounding_T[0]:', realWorldSounding_T[0], 'realWorldSounding_T[100]:', realWorldSounding_T[100]);
   } else {
     debugLog('No valid sounding loaded! Using default profile.');
-    // Initialize with default atmospheric profile to prevent infinite cooling
-    // Use warmer temperatures to match typical simulation conditions
-    for (var y = 0; y < sim_res_y + 1; y++) {
+    fillSimColumnProfile(realWorldSounding_T, function(y) {
       let altitude = y / (sim_res_y + 1) * guiControls.simHeight;
       var realTemp = Math.max(map_range(altitude, 0, 12000, 25.0, -50.0), -50);
-      var td = realTemp - 5; // Dew point 5°C colder
-      
-      realWorldSounding_T[y] = realToPotentialT(CtoK(realTemp), y);
-      realWorldSounding_W[y] = maxWater(CtoK(td), y);
-      realWorldSounding_Vel[y] = 0.01; // Minimal wind
-    }
+      return realToPotentialT(CtoK(realTemp), y);
+    });
+    fillSimColumnProfile(realWorldSounding_W, function(y) {
+      let altitude = y / (sim_res_y + 1) * guiControls.simHeight;
+      var realTemp = Math.max(map_range(altitude, 0, 12000, 25.0, -50.0), -50);
+      return maxWater(CtoK(realTemp - 5));
+    });
+    fillSimColumnProfile(realWorldSounding_Vel, function() { return 0.01; });
   }
 
   // generate Initial temperature profile
 
-  var initial_T = new Float32Array(504); // sim_res_y + 1
+  var initial_T = new Float32Array(SIM_PROFILE_SAMPLES);
 
-  for (var y = 0; y < sim_res_y + 1; y++) {
+  fillSimColumnProfile(initial_T, function(y) {
     let altitude = y / (sim_res_y + 1) * guiControls.simHeight;
     var realTemp = Math.max(map_range(altitude, 0, 12000, 15.0, -70.0), -60);
-
-    initial_T[y] = realToPotentialT(CtoK(realTemp), y); // initial temperature profile
-  }
+    return realToPotentialT(CtoK(realTemp), y);
+  });
 
   cellHeight = guiControls.simHeight / sim_res_y; // in meters
 

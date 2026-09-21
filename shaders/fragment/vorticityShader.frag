@@ -27,14 +27,15 @@ void main()
 
     vec2 force = vec2(abs(curlX0Ym) - abs(curlX0Yp), abs(curlXpY0) - abs(curlXmY0));
     float magnitude = length(force) + 0.0001;
-
-  //  if(magnitude != 0.0){ // prevent divide by 0
-      force /= magnitude; // normalize vector
-     //force *= 0.1;
+    if (!(magnitude == magnitude) || magnitude > 1.0e10 || !(curl == curl)) {
+      vortForce = vec2(0.0);
+    } else {
+      force /= magnitude;
       force *= curl;
-  //  }
-
-    vortForce = force;
+      if (!(force.x == force.x) || !(force.y == force.y))
+        force = vec2(0.0);
+      vortForce = force;
+    }
 }
 
 
