@@ -22328,7 +22328,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   // ========================= Sky Editor System =========================
   const SKY_STORAGE_KEY = 'weatherSandboxSky_v1';
   const SKY_SETTINGS_DEFAULTS = {
-    horizonLine : 0.028,
+    horizonLine : 0.0,
     dayHue : 0.6,
     daySatLow : 0.7,
     daySatHigh : 1.0,
@@ -22359,22 +22359,32 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     return JSON.parse(JSON.stringify(src));
   }
 
+  function forceHorizonLineZero()
+  {
+    skySettings.horizonLine = 0.0;
+  }
+
   function loadSkySettings()
   {
     try {
       const raw = localStorage.getItem(SKY_STORAGE_KEY);
-      if (!raw)
+      if (!raw) {
+        forceHorizonLineZero();
         return;
+      }
       const parsed = JSON.parse(raw);
       skySettings = Object.assign(cloneSkySettings(SKY_SETTINGS_DEFAULTS), parsed);
     } catch (e) {
       skySettings = cloneSkySettings(SKY_SETTINGS_DEFAULTS);
     }
+    // Horizon is locked to ground level — ignore any saved offset.
+    forceHorizonLineZero();
   }
 
   function saveSkySettings()
   {
     try {
+      forceHorizonLineZero();
       localStorage.setItem(SKY_STORAGE_KEY, JSON.stringify(skySettings));
     } catch (e) { /* ignore quota errors */ }
   }
@@ -22413,7 +22423,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     if (!skyBackgroundDisplayProgram || !ulocsReady)
       return;
     gl.useProgram(skyBackgroundDisplayProgram);
-    if (uloc_sky_horizonLine) gl.uniform1f(uloc_sky_horizonLine, skySettings.horizonLine);
+    forceHorizonLineZero();
+    if (uloc_sky_horizonLine) gl.uniform1f(uloc_sky_horizonLine, 0.0);
     if (uloc_sky_dayHue) gl.uniform1f(uloc_sky_dayHue, skySettings.dayHue);
     if (uloc_sky_daySatLow) gl.uniform1f(uloc_sky_daySatLow, skySettings.daySatLow);
     if (uloc_sky_daySatHigh) gl.uniform1f(uloc_sky_daySatHigh, skySettings.daySatHigh);
@@ -24651,8 +24662,9 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     addColorPicker(secTwilight, 'Zenith', 'twilightTop');
 
     const secHorizon = panel.querySelector('#ske-sec-horizon');
-    addSlider(secHorizon, 'Horizon line Y', 'Normalized screen height', () => skySettings.horizonLine,
-      (v) => { skySettings.horizonLine = v; }, 0, 0.15, 0.001);
+    // Horizon line Y is locked at 0 (ground level) — slider kept read-only for clarity.
+    addSlider(secHorizon, 'Horizon line Y (locked)', 'Always 0 — ground level', () => 0.0,
+      () => { skySettings.horizonLine = 0.0; }, 0, 0, 0.001);
     addColorPicker(secHorizon, 'Deep red', 'horizonDeepRed');
     addColorPicker(secHorizon, 'Burnt orange', 'horizonBurntOrange');
     addColorPicker(secHorizon, 'Gold', 'horizonGold');
@@ -25429,6 +25441,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       setSkySettings : (obj) => {
         // Keep existing sky fields when applying a partial update.
         skySettings = Object.assign(cloneSkySettings(SKY_SETTINGS_DEFAULTS), skySettings, obj || {});
+        forceHorizonLineZero();
       },
       getSkyDefaults : () => cloneSkySettings(SKY_SETTINGS_DEFAULTS),
       saveSkySettings : saveSkySettings,

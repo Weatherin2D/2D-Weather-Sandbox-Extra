@@ -1027,13 +1027,18 @@ vec4 computeCloudSmokeColor(float cloudwater, float precip, float dustAmt, float
   shaftCol = min(shaftCol * 1.45 + vec3(0.06), vec3(1.0));
   cloudCol = mix(cloudCol, shaftCol, shaftAmt);
 
-  // Faint teal glow in shaded precip sheets only (daytime).
+  // Faint teal glow in shaded precip sheets (daytime) — full column above the horizon.
   // Cheap early reject; 4-tap precip blur only on candidate pixels (not every air frag).
   {
     float dayGate = smoothstep(0.05, 0.40, clamp(dayMask, 0.0, 1.0));
-    float sheetProbe = smoothstep(0.22, 0.78, shaftAmt);
+    // Include in-cloud precip cores as well as below-cloud shafts so the cast
+    // is visible throughout the storm, not only near the surface/horizon.
+    float shaftProbe = smoothstep(0.18, 0.72, shaftAmt);
+    float coreProbe = smoothstep(0.06, 0.40, clamp(precip * 0.55, 0.0, 1.0))
+      * smoothstep(0.04, 0.35, shaftAmt + 0.20);
+    float sheetProbe = max(shaftProbe, coreProbe);
     if (greenHueStrength > 0.001 && dayGate > 0.001 && precip > 0.008 && sheetProbe > 0.015
-        && lit < 0.22) {
+        && lit < 0.42) {
       // 4-tap precip blur (water only) — fills holes without the old 16-sample cost
       vec2 px = texelSize * 2.0;
       float precipSm = precip * 0.40;
@@ -1057,8 +1062,8 @@ vec4 computeCloudSmokeColor(float cloudwater, float precip, float dustAmt, float
       float hueStart = max(greenHueStartThreshold, 0.01);
       float hueEnd = max(greenHueEndThreshold, hueStart + 0.05);
       float intense = smoothstep(hueStart * 0.70, hueEnd, precipSm);
-      // Deep shade — slightly softer edge so the curtain feathers
-      float inShadow = 1.0 - smoothstep(0.03, 0.22, lit);
+      // Soft shadow gate — still dies in direct sun, but remains visible in elevated cores.
+      float inShadow = 1.0 - smoothstep(0.03, 0.40, lit);
       float coldFrac = 1.0 - clamp(rainSnowFactor, 0.0, 1.0);
 
       float iceGate = smoothstep(1.5, 18.0, max(hailMm, 0.0));
@@ -2177,7 +2182,7 @@ void main()
   // Keep precip-sheet teal through navy cast / fill — soft tint, sun still kills it.
   // Skip during shaft flash so teal cannot recolor the white curtain.
   if (precipCoreHueAmt > 0.001 && lightningShaftFlash < 0.08) {
-    float dimGate = 1.0 - smoothstep(0.03, 0.22, lightIntensity);
+    float dimGate = 1.0 - smoothstep(0.03, 0.40, lightIntensity);
     float amt = precipCoreHueAmt * dimGate;
     if (amt > 0.0001) {
       float lum = max(dot(finalColor, vec3(0.2126, 0.7152, 0.0722)), 1e-4);

@@ -677,7 +677,8 @@
 
     function setSkyField(key, val) {
       const cur = skyS();
-      cur[key] = val;
+      // Horizon line Y is locked at ground level.
+      cur[key] = (key === 'horizonLine') ? 0.0 : val;
       if (deps && typeof deps.setSkySettings === 'function') deps.setSkySettings(cur);
       commitSky();
     }
@@ -796,7 +797,10 @@
 
     // --- Horizon ---
     const secHorizon = sectionEl.querySelector('#shm-sky-sec-horizon');
-    addSkySlider(secHorizon, 'Horizon line Y', 'Normalized screen height', 'horizonLine', 0, 0.15, 0.001);
+    // Horizon line Y is locked at ground level (0).
+    addSkySlider(secHorizon, 'Horizon line Y (locked)', 'Always 0 — ground level', 'horizonLine', 0, 0, 0.001);
+    // Ensure edits cannot move it off zero.
+    skyS().horizonLine = 0.0;
     addSkyColor(secHorizon, 'Deep red', 'horizonDeepRed');
     addSkyColor(secHorizon, 'Burnt orange', 'horizonBurntOrange');
     addSkyColor(secHorizon, 'Gold', 'horizonGold');

@@ -551,13 +551,14 @@ void main()
     vec3 glowTintMorning = mix(vec3(0.95, 0.30, 0.10), vec3(0.92, 0.72, 0.38), smoothstep(0.02, 0.14, sunRiseAmount));
     vec3 glowTintEvening = mix(vec3(0.92, 0.72, 0.38), vec3(0.95, 0.42, 0.12), smoothstep(0.1, 0.85, setBlend));
     vec3 glowTint = mix(glowTintEvening, glowTintMorning, morningW);
-    float aboveHorizon = smoothstep(horizonLine + 0.008, horizonLine + 0.04, texCoord.y);
-    float skyGlow = smoothSunGlow(texCoord, sunCenter, 0.06, 0.65) * sunVisibility * (0.18 + scatter * 0.42);
+    // Soft gate at the horizon so glow fills the sky column above ground (not only a thin band).
+    float aboveHorizon = smoothstep(horizonLine - 0.01, horizonLine + 0.02, texCoord.y);
+    float skyGlow = smoothSunGlow(texCoord, sunCenter, 0.08, 0.55) * sunVisibility * (0.20 + scatter * 0.42);
     skyGlow *= aboveHorizon;
-    float wideGlow = exp(-pow(max(texCoord.y - horizonLine, 0.0) / 0.28, 2.0) * 0.35);
-    wideGlow *= aboveHorizon * exp(-pow(abs(texCoord.x - sunHoriz) * 1.8, 2.0) * 0.25);
-    wideGlow *= sunVisibility * 0.14;
-    sunSkyGlow = glowTint * (skyGlow + wideGlow) * 0.58;
+    float wideGlow = exp(-pow(max(texCoord.y - horizonLine, 0.0) / 0.55, 2.0) * 0.28);
+    wideGlow *= aboveHorizon * exp(-pow(abs(texCoord.x - sunHoriz) * 1.6, 2.0) * 0.22);
+    wideGlow *= sunVisibility * 0.18;
+    sunSkyGlow = glowTint * (skyGlow + wideGlow) * 0.62;
     // Do not let sun glow recolor the top of the skybox.
     sunSkyGlow *= 1.0 - zenithBlack;
   }

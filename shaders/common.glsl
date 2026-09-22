@@ -334,7 +334,8 @@ float climateTempCFromLatitude(float lat)
   return 30.0 - 55.0 * pow(abs(lat) / 90.0, 1.15);
 }
 
-const float SUN_HORIZON_LINE = 0.028;
+// Keep lighting sun tied to ground level (sky horizonLine is forced to 0).
+const float SUN_HORIZON_LINE = 0.0;
 
 vec2 sunScreenPosition(float sunZenithAngle, float sunAzimuth)
 {
