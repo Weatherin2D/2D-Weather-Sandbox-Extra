@@ -87,9 +87,9 @@
       const h = y1 - y0 + 1;
       if (w <= 0 || h <= 0) continue;
 
-      const baseData = new Float32Array(w * h * 4);
-      const waterData = new Float32Array(w * h * 4);
-      const wallData = new Int8Array(w * h * 4);
+      const baseData = cpuPatchScratchView('base', Float32Array, w * h * 4);
+      const waterData = cpuPatchScratchView('water', Float32Array, w * h * 4);
+      const wallData = cpuPatchScratchView('wall', Int8Array, w * h * 4);
       gl.readBuffer(gl.COLOR_ATTACHMENT0);
       gl.readPixels(x0, y0, w, h, gl.RGBA, gl.FLOAT, baseData);
       gl.readBuffer(gl.COLOR_ATTACHMENT1);

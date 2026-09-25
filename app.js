@@ -862,6 +862,113 @@ var lightningCacheH = 0;
 const LIGHTNING_CACHE_SCALE = 6;
 const LIGHTNING_FLASH_DURATION = 11;
 var particleLightningReadBuffer = new Float32Array(4);
+
+// Non-blocking GPU->CPU readback: readPixels into a PIXEL_PACK_BUFFER guarded by a
+// fence, then collect on a later frame. Avoids draining the GPU pipeline every frame.
+function createAsyncPixelReader()
+{
+  return { pbo: null, byteSize: 0, sync: null, meta: null };
+}
+
+function asyncPixelReaderBusy(reader)
+{
+  return !!(reader && reader.sync);
+}
+
+function beginAsyncReadPixels(reader, x, y, w, h, format, type, byteSize, meta)
+{
+  if (reader.sync)
+    return false;
+  if (!reader.pbo)
+    reader.pbo = gl.createBuffer();
+  gl.bindBuffer(gl.PIXEL_PACK_BUFFER, reader.pbo);
+  if (reader.byteSize !== byteSize) {
+    gl.bufferData(gl.PIXEL_PACK_BUFFER, byteSize, gl.STREAM_READ);
+    reader.byteSize = byteSize;
+  }
+  gl.readPixels(x, y, w, h, format, type, 0);
+  gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
+  reader.sync = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0);
+  reader.meta = meta;
+  return true;
+}
+
+function cancelAsyncReadPixels(reader)
+{
+  if (reader && reader.sync) {
+    gl.deleteSync(reader.sync);
+    reader.sync = null;
+    reader.meta = null;
+  }
+}
+
+// Returns true once the pending read has landed in dst (dst must match byteSize).
+function pollAsyncReadPixels(reader, dst)
+{
+  if (!reader.sync)
+    return false;
+  const status = gl.getSyncParameter(reader.sync, gl.SYNC_STATUS);
+  if (status !== gl.SIGNALED)
+    return false;
+  gl.deleteSync(reader.sync);
+  reader.sync = null;
+  if (dst.byteLength !== reader.byteSize)
+    return false;
+  gl.bindBuffer(gl.PIXEL_PACK_BUFFER, reader.pbo);
+  gl.getBufferSubData(gl.PIXEL_PACK_BUFFER, 0, dst);
+  gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
+  return true;
+}
+
+var particleLightningReader = createAsyncPixelReader();
+var inactiveDropletReader = createAsyncPixelReader();
+var lightningSummaryReader = createAsyncPixelReader();
+var inactiveDropletScratch = new Float32Array(4);
+var inactiveDropletSampleIter = -1000;
+
+// Grow-only scratch for per-iteration CPU patch readbacks (avoids GC churn).
+var cpuPatchScratch = {};
+function cpuPatchScratchView(key, Type, len)
+{
+  let buf = cpuPatchScratch[key];
+  if (!buf || buf.length < len) {
+    buf = new Type(len);
+    cpuPatchScratch[key] = buf;
+  }
+  return buf.subarray(0, len);
+}
+
+var uniformLocationCache = new WeakMap();
+function cachedUniformLocation(program, name)
+{
+  let byName = uniformLocationCache.get(program);
+  if (!byName) {
+    byName = new Map();
+    uniformLocationCache.set(program, byName);
+  }
+  let loc = byName.get(name);
+  if (loc === undefined) {
+    loc = gl.getUniformLocation(program, name);
+    byName.set(name, loc);
+  }
+  return loc;
+}
+
+var lastUserInputMs = 0;
+['pointermove', 'pointerdown', 'pointerup', 'wheel', 'keydown', 'keyup', 'touchstart', 'touchmove']
+  .forEach(function(type) {
+    window.addEventListener(type, function() { lastUserInputMs = performance.now(); }, { capture : true, passive : true });
+  });
+
+var idleRenderState = { skipped : 0, x : NaN, y : NaN, zoom : NaN, w : 0, h : 0, mode : '' };
+
+var tempChangeHistorySeeded = false;
+
+var pressureLabels = []; // {x, sfcY, type: 'H' | 'L'} for the pressure view
+var pressureLabelsIter = -1e9;
+const PRESSURE_LABEL_ROW_CHUNK = 32;
+var pressureLabelWallScratch = null;
+var pressureLabelRowScratch = null;
 var procLightningPosArr = new Float32Array(64);
 var procLightningDestArr = new Float32Array(64);
 var procLightningMetaArr = new Float32Array(64);
@@ -6852,9 +6959,9 @@ function applyAirmassGeneratorsCpu()
     if (w <= 0 || h <= 0)
       continue;
 
-    const baseData = new Float32Array(w * h * 4);
-    const waterData = new Float32Array(w * h * 4);
-    const wallData = new Int8Array(w * h * 4);
+    const baseData = cpuPatchScratchView('base', Float32Array, w * h * 4);
+    const waterData = cpuPatchScratchView('water', Float32Array, w * h * 4);
+    const wallData = cpuPatchScratchView('wall', Int8Array, w * h * 4);
 
     gl.readBuffer(gl.COLOR_ATTACHMENT0);
     gl.readPixels(x0, y0, w, h, gl.RGBA, gl.FLOAT, baseData);
@@ -7527,9 +7634,9 @@ function applyCustomToolEntitiesCpu()
     const h = y1 - y0 + 1;
     if (w <= 0 || h <= 0) continue;
 
-    const baseData = new Float32Array(w * h * 4);
-    const waterData = new Float32Array(w * h * 4);
-    const wallData = new Int8Array(w * h * 4);
+    const baseData = cpuPatchScratchView('base', Float32Array, w * h * 4);
+    const waterData = cpuPatchScratchView('water', Float32Array, w * h * 4);
+    const wallData = cpuPatchScratchView('wall', Int8Array, w * h * 4);
 
     gl.readBuffer(gl.COLOR_ATTACHMENT0);
     gl.readPixels(x0, y0, w, h, gl.RGBA, gl.FLOAT, baseData);
@@ -7994,8 +8101,8 @@ function applySynopticSystemsCpu()
     if (w <= 0 || h <= 0)
       continue;
 
-    const baseData = new Float32Array(w * h * 4);
-    const wallData = new Int8Array(w * h * 4);
+    const baseData = cpuPatchScratchView('base', Float32Array, w * h * 4);
+    const wallData = cpuPatchScratchView('wall', Int8Array, w * h * 4);
     gl.readBuffer(gl.COLOR_ATTACHMENT0);
     gl.readPixels(x0, y0, w, h, gl.RGBA, gl.FLOAT, baseData);
     gl.readBuffer(gl.COLOR_ATTACHMENT2);
@@ -12049,7 +12156,9 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
   var contextAttributes = {
     alpha : false,
     desynchronized : false,
-    antialias : true,
+    // Every pass is a full-screen quad or point sprite, so MSAA only costs a 4x
+    // back buffer plus a resolve each frame.
+    antialias : false,
     depth : false,
     failIfMajorPerformanceCaveat : false,
     powerPreference : 'high-performance',
@@ -21421,6 +21530,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
 
   function setupPrecipitationBuffers()
   {
+    cancelAsyncReadPixels(inactiveDropletReader);
     gl.bindVertexArray(precipitationVao_0);
 
     gl.bindBuffer(gl.ARRAY_BUFFER, precipVertexBuffer_0);
@@ -22094,6 +22204,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
   gl.bindFramebuffer(gl.FRAMEBUFFER, lightningSummaryFrameBuff);
   gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, lightningSummaryTexture, 0);
+  cancelAsyncReadPixels(lightningSummaryReader);
   lightningSummaryBuffer = new Float32Array(lightningCacheW * lightningCacheH * 4);
   lightningFieldCacheFrame = -1;
   lightningFieldCache = null;
@@ -27171,6 +27282,14 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   {
     if (!isLightningCpuReady() || !isProceduralLightningEnabled())
       return;
+    if (lightningSummaryBuffer && pollAsyncReadPixels(lightningSummaryReader, lightningSummaryBuffer)) {
+      lightningFieldCache = {
+        data: lightningSummaryBuffer,
+        cacheW: lightningCacheW,
+        cacheH: lightningCacheH,
+        scale: LIGHTNING_CACHE_SCALE
+      };
+    }
     const flashActive = proceduralLightningState.eventAge >= 0
       && proceduralLightningState.eventAge < getLightningFlashDuration() - 1;
     const cacheThrottle = flashActive
@@ -27178,7 +27297,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       : (useLiteVisualsMode() ? 6 : 4);
     if (lightningFieldCacheFrame >= frameNum - (cacheThrottle - 1) && lightningFieldCache)
       return;
-    if (!lightningSummaryBuffer || lightningCacheW < 1)
+    if (!lightningSummaryBuffer || lightningCacheW < 1 || asyncPixelReaderBusy(lightningSummaryReader))
       return;
 
     lightningFieldCacheFrame = frameNum;
@@ -27198,16 +27317,11 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     gl.bindTexture(gl.TEXTURE_2D, wallTexture_0);
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
 
-    gl.readPixels(0, 0, lightningCacheW, lightningCacheH, gl.RGBA, gl.FLOAT, lightningSummaryBuffer);
+    gl.readBuffer(gl.COLOR_ATTACHMENT0);
+    beginAsyncReadPixels(lightningSummaryReader, 0, 0, lightningCacheW, lightningCacheH, gl.RGBA, gl.FLOAT,
+      lightningSummaryBuffer.byteLength, null);
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     gl.viewport(0, 0, sim_res_x, sim_res_y);
-
-    lightningFieldCache = {
-      data: lightningSummaryBuffer,
-      cacheW: lightningCacheW,
-      cacheH: lightningCacheH,
-      scale: LIGHTNING_CACHE_SCALE
-    };
   }
 
   function readChargeCached(simX, simY)
@@ -28876,15 +28990,26 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     // already owns the displayed bolt (icons were registered at activation).
     if (v2OwnsLightningDataTex())
       return;
-    gl.bindFramebuffer(gl.FRAMEBUFFER, lightningDataFrameBuff);
-    gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.FLOAT, particleLightningReadBuffer);
-    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    let readIterNum = -1;
+    if (asyncPixelReaderBusy(particleLightningReader)) {
+      const issuedAt = particleLightningReader.meta;
+      if (pollAsyncReadPixels(particleLightningReader, particleLightningReadBuffer))
+        readIterNum = issuedAt;
+    }
+    if (!asyncPixelReaderBusy(particleLightningReader)) {
+      gl.bindFramebuffer(gl.FRAMEBUFFER, lightningDataFrameBuff);
+      beginAsyncReadPixels(particleLightningReader, 0, 0, 1, 1, gl.RGBA, gl.FLOAT,
+        particleLightningReadBuffer.byteLength, iterNum);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    }
+    if (readIterNum < 0)
+      return;
     const data = particleLightningReadBuffer;
     const startIter = Math.floor(data[2] + 0.5);
     const intensity = data[3];
     if (!(intensity > 0.5) || !(startIter >= 1))
       return;
-    if (iterNum - startIter > 12)
+    if (readIterNum - startIter > 12)
       return;
     const eventKey = 'particle-' + startIter;
     if (guiControls.radarLightningIcons)
@@ -30769,6 +30894,104 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     }
   }
 
+  // History is only captured while the temperature-change view is open, so fill
+  // every slot with the current state on entry (change starts at zero).
+  function seedTemperatureChangeHistory()
+  {
+    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, frameBuff_1);
+    gl.readBuffer(gl.COLOR_ATTACHMENT0);
+    gl.activeTexture(gl.TEXTURE0);
+    for (let i = 0; i < temperatureChangeHistoryTextures.length; i++) {
+      gl.bindTexture(gl.TEXTURE_2D, temperatureChangeHistoryTextures[i]);
+      gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, sim_res_x, sim_res_y);
+    }
+    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, null);
+  }
+
+  function updatePressureLabels()
+  {
+    const wallNeed = 4 * sim_res_x * PRESSURE_LABEL_ROW_CHUNK;
+    if (!pressureLabelWallScratch || pressureLabelWallScratch.length !== wallNeed)
+      pressureLabelWallScratch = new Int8Array(wallNeed);
+    if (!pressureLabelRowScratch || pressureLabelRowScratch.length !== 4 * sim_res_x)
+      pressureLabelRowScratch = new Float32Array(4 * sim_res_x);
+    const wallRows = pressureLabelWallScratch;
+    const pressRow = pressureLabelRowScratch;
+
+    // Surface row = lowest row with no wall cells at all.
+    gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_1);
+    gl.readBuffer(gl.COLOR_ATTACHMENT2);
+    let sfcRow = 1;
+    scan:
+    for (let y0 = 1; y0 < sim_res_y; y0 += PRESSURE_LABEL_ROW_CHUNK) {
+      const rows = Math.min(PRESSURE_LABEL_ROW_CHUNK, sim_res_y - y0);
+      gl.readPixels(0, y0, sim_res_x, rows, gl.RGBA_INTEGER, gl.BYTE, wallRows.subarray(0, 4 * sim_res_x * rows));
+      for (let r = 0; r < rows; r++) {
+        const rowOff = r * sim_res_x * 4;
+        let allAir = true;
+        for (let x = 0; x < sim_res_x; x++) {
+          if (wallRows[rowOff + x * 4 + 1] === 0) { allAir = false; break; }
+        }
+        if (allAir) { sfcRow = y0 + r; break scan; }
+      }
+    }
+    gl.readBuffer(gl.COLOR_ATTACHMENT0);
+    gl.readPixels(0, Math.min(sfcRow + 2, sim_res_y - 1), sim_res_x, 1, gl.RGBA, gl.FLOAT, pressRow);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+
+    const minSep = Math.max(8, Math.floor(sim_res_x / 20));
+    pressureLabels = [];
+    for (let x = 0; x < sim_res_x; x++) {
+      const p = pressRow[x * 4 + 2];
+      if (Math.abs(p) < 0.002) continue;
+      let isMax = true, isMin = true;
+      for (let dx = -minSep; dx <= minSep; dx++) {
+        if (dx === 0) continue;
+        const np = pressRow[((x + dx + sim_res_x) % sim_res_x) * 4 + 2];
+        if (np >= p) isMax = false;
+        if (np <= p) isMin = false;
+        if (!isMax && !isMin) break;
+      }
+      if (isMax) pressureLabels.push({x, sfcY: sfcRow + 2, type: 'H'});
+      if (isMin) pressureLabels.push({x, sfcY: sfcRow + 2, type: 'L'});
+    }
+  }
+
+  // While paused with no input the image is static, so only refresh every 4th frame
+  // (the canvas keeps showing the last presented frame in between).
+  function shouldSkipIdlePausedFrame(now)
+  {
+    const st = idleRenderState;
+    const replay = window.WeatherSandbox && window.WeatherSandbox.replay;
+    const camSettled = Math.abs(cam.tarXpos - cam.curXposLin) < 1e-6
+      && Math.abs(cam.tarYpos - cam.curYpos) < 1e-6
+      && Math.abs(cam.tarZoom - cam.curZoom) < 1e-6;
+    const canSkip = guiControls.paused && !SETUP_MODE && !airplaneMode && frameNum > 10
+      && !multiplayerHostMode && !multiplayerPeerMode
+      && dropletFollowID < 0 && !isCinematicCameraActive()
+      && !(replay && (replay.isPhysicsBlocked() || replay.isRecording() || replay.isForecastRunning()))
+      && !leftMousePressed && !upPressed && !downPressed && !leftPressed && !rightPressed
+      && !plusPressed && !minusPressed
+      && now - lastUserInputMs > 500
+      && camSettled
+      && cam.curXpos === st.x && cam.curYpos === st.y && cam.curZoom === st.zoom
+      && canvas.width === st.w && canvas.height === st.h
+      && guiControls.displayMode === st.mode
+      && st.skipped < 3;
+    if (canSkip) {
+      st.skipped++;
+      return true;
+    }
+    st.skipped = 0;
+    st.x = cam.curXpos;
+    st.y = cam.curYpos;
+    st.zoom = cam.curZoom;
+    st.w = canvas.width;
+    st.h = canvas.height;
+    st.mode = guiControls.displayMode;
+    return false;
+  }
+
   function draw()
   { // Runs for every frame
     const frameDrawStart = performance.now();
@@ -30827,6 +31050,11 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
 
     mouseXinSim = screenToSimX(mouseX);
     mouseYinSim = screenToSimY(mouseY);
+
+    if (shouldSkipIdlePausedFrame(frameDrawStart)) {
+      requestAnimationFrame(draw);
+      return;
+    }
 
     if (SETUP_MODE) {
       const setupHeavy = getSimCellCount() >= 700000;
@@ -31204,7 +31432,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
 
             // capture current temperature state for the temperature-change display
             const tempHistoryStride = Math.max(1, Math.round(guiControls.temperatureChangeIterations));
-            if (!guiControls.disableTempChangeHistory && iterNum % tempHistoryStride === 0) {
+            if (!guiControls.disableTempChangeHistory && guiControls.displayMode == 'DISP_TEMPERATURE_CHANGE'
+                && iterNum % tempHistoryStride === 0) {
               gl.bindFramebuffer(gl.READ_FRAMEBUFFER, frameBuff_1);
               gl.readBuffer(gl.COLOR_ATTACHMENT0);
               gl.activeTexture(gl.TEXTURE0);
@@ -31255,6 +31484,11 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
 
               gl.useProgram(precipitationProgram);
               gl.uniform1f(uloc_precip_iterNum, iterNum);
+              if (pollAsyncReadPixels(inactiveDropletReader, inactiveDropletScratch)) {
+                const inactiveCount = Math.max(inactiveDropletScratch[0], 0);
+                guiControls.inactiveDroplets = inactiveCount;
+                gl.uniform1f(uloc_precip_inactiveDroplets, inactiveCount > 0 ? inactiveCount : NUM_DROPLETS);
+              }
               // Uniform removed in June 8 precip path; keep upload harmless if present.
               if (uloc_precip_enableLegacyParticleLightning)
                 gl.uniform1f(uloc_precip_enableLegacyParticleLightning, 1.0);
@@ -31287,14 +31521,11 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
               gl.endTransformFeedback();
 
               // sample to count number of inactive droplets (keep spawn rate stable)
-              if (iterNum % 60 == 0) {
+              if (Math.abs(iterNum - inactiveDropletSampleIter) >= 60 && !asyncPixelReaderBusy(inactiveDropletReader)) {
+                inactiveDropletSampleIter = iterNum;
                 gl.readBuffer(gl.COLOR_ATTACHMENT0);
-                if (!window._inactiveDropletScratch) window._inactiveDropletScratch = new Float32Array(4);
-                gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.FLOAT, window._inactiveDropletScratch);
-                const inactiveCount = Math.max(window._inactiveDropletScratch[0], 0);
-                guiControls.inactiveDroplets = inactiveCount;
-                // gl.useProgram(precipitationProgram); // already set
-                gl.uniform1f(uloc_precip_inactiveDroplets, inactiveCount > 0 ? inactiveCount : NUM_DROPLETS);
+                beginAsyncReadPixels(inactiveDropletReader, 0, 0, 1, 1, gl.RGBA, gl.FLOAT,
+                  inactiveDropletScratch.byteLength, null);
               }
 
               gl.bindTransformFeedback(gl.TRANSFORM_FEEDBACK, null);
@@ -31482,6 +31713,11 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         || isDropletSizeDisplayMode(guiControls.displayMode)))
       updateDropletSizeTexture();
 
+    const viewingTempChange = guiControls.displayMode == 'DISP_TEMPERATURE_CHANGE';
+    if (viewingTempChange && !tempChangeHistorySeeded && !guiControls.disableTempChangeHistory)
+      seedTemperatureChangeHistory();
+    tempChangeHistorySeeded = viewingTempChange;
+
     // render to canvas
     gl.useProgram(realisticDisplayProgram);
     gl.bindFramebuffer(gl.FRAMEBUFFER, null); // null is canvas
@@ -31638,9 +31874,9 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         const texApi = window.ShaderMenu && window.ShaderMenu.textures;
         const useSky = texApi && texApi.hasSky() ? 1.0 : 0.0;
         const useSun = texApi && texApi.hasSun() ? 1.0 : 0.0;
-        gl.uniform1f(gl.getUniformLocation(skyBackgroundDisplayProgram, 'useCustomSkyTex'), useSky);
-        gl.uniform1f(gl.getUniformLocation(skyBackgroundDisplayProgram, 'useCustomSunTex'), useSun);
-        gl.uniform1f(gl.getUniformLocation(skyBackgroundDisplayProgram, 'useSkyPhaseTextures'),
+        gl.uniform1f(cachedUniformLocation(skyBackgroundDisplayProgram, 'useCustomSkyTex'), useSky);
+        gl.uniform1f(cachedUniformLocation(skyBackgroundDisplayProgram, 'useCustomSunTex'), useSun);
+        gl.uniform1f(cachedUniformLocation(skyBackgroundDisplayProgram, 'useSkyPhaseTextures'),
           skyPhaseTexturesReady ? 1.0 : 0.0);
       }
 
@@ -32054,7 +32290,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         gl.uniform1f(uloc_univ_Xmult, horizontalDisplayMult);
         gl.activeTexture(gl.TEXTURE9);
         gl.bindTexture(gl.TEXTURE_2D, colorScalesTexture);
-        gl.uniform1i(gl.getUniformLocation(universalDisplayProgram, 'colorScalesTex'), 9);
+        gl.uniform1i(cachedUniformLocation(universalDisplayProgram, 'colorScalesTex'), 9);
         setUnivColorScaleColumn(4);
         gl.uniform1i(uloc_univ_useUnipolarScale, 0);
         gl.uniform1f(uloc_univ_floodThreshold, 0.0);
@@ -32251,11 +32487,11 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
           // so we break out early after drawing
           {
             gl.useProgram(chargeDisplayProgram);
-            gl.uniform3f(gl.getUniformLocation(chargeDisplayProgram, 'view'), cam.curXpos, cam.curYpos, cam.curZoom);
-            gl.uniform4f(gl.getUniformLocation(chargeDisplayProgram, 'cursor'), mouseXinSim, mouseYinSim, guiControls.brushSize * 0.5, cursorType);
-            gl.uniform1f(gl.getUniformLocation(chargeDisplayProgram, 'Xmult'), horizontalDisplayMult);
-            gl.uniform2f(gl.getUniformLocation(chargeDisplayProgram, 'aspectRatios'), sim_aspect, canvas_aspect);
-            gl.uniform1i(gl.getUniformLocation(chargeDisplayProgram, 'colorScaleInterpolate'), colorScaleSmoothFlag('charge'));
+            gl.uniform3f(cachedUniformLocation(chargeDisplayProgram, 'view'), cam.curXpos, cam.curYpos, cam.curZoom);
+            gl.uniform4f(cachedUniformLocation(chargeDisplayProgram, 'cursor'), mouseXinSim, mouseYinSim, guiControls.brushSize * 0.5, cursorType);
+            gl.uniform1f(cachedUniformLocation(chargeDisplayProgram, 'Xmult'), horizontalDisplayMult);
+            gl.uniform2f(cachedUniformLocation(chargeDisplayProgram, 'aspectRatios'), sim_aspect, canvas_aspect);
+            gl.uniform1i(cachedUniformLocation(chargeDisplayProgram, 'colorScaleInterpolate'), colorScaleSmoothFlag('charge'));
             gl.activeTexture(gl.TEXTURE0);
             gl.bindTexture(gl.TEXTURE_2D, even ? chargeTexture_1 : chargeTexture_0);
             gl.activeTexture(gl.TEXTURE2);
@@ -32274,8 +32510,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
             gl.useProgram(dropletSizeDisplayProgram);
             gl.uniform3f(uloc_dropletDisp_view, cam.curXpos, cam.curYpos, cam.curZoom);
             gl.uniform4f(uloc_dropletDisp_cursor, mouseXinSim, mouseYinSim, guiControls.brushSize * 0.5, cursorType);
-            gl.uniform1f(gl.getUniformLocation(dropletSizeDisplayProgram, 'Xmult'), horizontalDisplayMult);
-            gl.uniform2f(gl.getUniformLocation(dropletSizeDisplayProgram, 'aspectRatios'), sim_aspect, canvas_aspect);
+            gl.uniform1f(cachedUniformLocation(dropletSizeDisplayProgram, 'Xmult'), horizontalDisplayMult);
+            gl.uniform2f(cachedUniformLocation(dropletSizeDisplayProgram, 'aspectRatios'), sim_aspect, canvas_aspect);
             gl.uniform1i(uloc_dropletDisp_sizeChannel, dv.channel);
             gl.uniform1i(uloc_dropletDisp_colorScaleColumn, scaleCfg.col);
             gl.uniform1i(uloc_dropletDisp_colorScaleStops, scaleCfg.stops);
@@ -32716,38 +32952,9 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     }
     riskCanvas.style.display = 'block';
 
-    if (iterNum % 30 === 0) {
-      gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_1);
-      gl.readBuffer(gl.COLOR_ATTACHMENT2);
-      const wallRow = new Int8Array(4 * sim_res_x);
-      let sfcRow = 1;
-      for (let y = 1; y < sim_res_y; y++) {
-        gl.readPixels(0, y, sim_res_x, 1, gl.RGBA_INTEGER, gl.BYTE, wallRow);
-        let allAir = true;
-        for (let x = 0; x < sim_res_x; x++) {
-          if (wallRow[x * 4 + 1] === 0) { allAir = false; break; }
-        }
-        if (allAir) { sfcRow = y; break; }
-      }
-      gl.readBuffer(gl.COLOR_ATTACHMENT0);
-      const pressRow = new Float32Array(4 * sim_res_x);
-      gl.readPixels(0, Math.min(sfcRow + 2, sim_res_y - 1), sim_res_x, 1, gl.RGBA, gl.FLOAT, pressRow);
-
-      const minSep = Math.max(8, Math.floor(sim_res_x / 20));
-      riskData = [];
-      for (let x = 0; x < sim_res_x; x++) {
-        const p = pressRow[x * 4 + 2];
-        if (Math.abs(p) < 0.002) continue;
-        let isMax = true, isMin = true;
-        for (let dx = -minSep; dx <= minSep; dx++) {
-          if (dx === 0) continue;
-          const np = pressRow[((x + dx + sim_res_x) % sim_res_x) * 4 + 2];
-          if (np >= p) isMax = false;
-          if (np <= p) isMin = false;
-        }
-        if (isMax) riskData.push({x, sfcY: sfcRow + 2, type: 'H'});
-        if (isMin) riskData.push({x, sfcY: sfcRow + 2, type: 'L'});
-      }
+    if (Math.abs(iterNum - pressureLabelsIter) >= 30) {
+      pressureLabelsIter = iterNum;
+      updatePressureLabels();
     }
 
     const rc = riskCanvas.getContext('2d');
@@ -32755,7 +32962,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     rc.font = 'bold 22px monospace';
     rc.textAlign = 'center';
     rc.textBaseline = 'middle';
-    for (const lbl of riskData) {
+    for (const lbl of pressureLabels) {
       const sx = simToScreenX(lbl.x);
       const sy = simToScreenY(lbl.sfcY + 3);
       rc.fillStyle = lbl.type === 'H' ? '#FF4444' : '#4488FF';
@@ -32764,73 +32971,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       rc.strokeText(lbl.type, sx, sy);
       rc.fillText(lbl.type, sx, sy);
     }
-  }
-
-  // Draw H/L pressure labels when in pressure display mode
-  if (guiControls.displayMode === 'DISP_PRESSURE') {
-    if (!riskCanvas) {
-      riskCanvas = document.createElement('canvas');
-      riskCanvas.style.cssText = 'position:fixed;top:0;left:0;pointer-events:none;z-index:1;';
-      document.body.appendChild(riskCanvas);
-    }
-    if (riskCanvas.width !== canvas.width || riskCanvas.height !== canvas.height) {
-      riskCanvas.width = canvas.width;
-      riskCanvas.height = canvas.height;
-    }
-    riskCanvas.style.display = 'block';
-
-    if (iterNum % 30 === 0) { // update every 30 iterations
-      gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_1);
-      gl.readBuffer(gl.COLOR_ATTACHMENT0);
-      gl.readBuffer(gl.COLOR_ATTACHMENT2);
-      const wallRow = new Int8Array(4 * sim_res_x);
-      // find surface row (first non-wall row from bottom)
-      let sfcRow = 1;
-      for (let y = 1; y < sim_res_y; y++) {
-        gl.readPixels(0, y, sim_res_x, 1, gl.RGBA_INTEGER, gl.BYTE, wallRow);
-        let allAir = true;
-        for (let x = 0; x < sim_res_x; x++) {
-          if (wallRow[x * 4 + 1] === 0) { allAir = false; break; }
-        }
-        if (allAir) { sfcRow = y; break; }
-      }
-      // read pressure at surface+1
-      gl.readBuffer(gl.COLOR_ATTACHMENT0);
-      const pressRow = new Float32Array(4 * sim_res_x);
-      gl.readPixels(0, sfcRow + 1, sim_res_x, 1, gl.RGBA, gl.FLOAT, pressRow);
-
-      // find local maxima (H) and minima (L) with minimum separation
-      const minSep = Math.max(10, Math.floor(sim_res_x / 20));
-      const hlLabels = [];
-      for (let x = minSep; x < sim_res_x - minSep; x++) {
-        const p = pressRow[x * 4 + 2];
-        let isMax = true, isMin = true;
-        for (let dx = -minSep; dx <= minSep; dx++) {
-          if (dx === 0) continue;
-          const nx = (x + dx + sim_res_x) % sim_res_x;
-          const np = pressRow[nx * 4 + 2];
-          if (np >= p) isMax = false;
-          if (np <= p) isMin = false;
-        }
-        if (isMax && Math.abs(p) > 0.002) hlLabels.push({x, type: 'H', p});
-        if (isMin && Math.abs(p) > 0.002) hlLabels.push({x, type: 'L', p});
-      }
-
-      const rc = riskCanvas.getContext('2d');
-      rc.clearRect(0, 0, riskCanvas.width, riskCanvas.height);
-      rc.font = 'bold 22px monospace';
-      rc.textAlign = 'center';
-      rc.textBaseline = 'middle';
-      for (const lbl of hlLabels) {
-        const sx = simToScreenX(lbl.x);
-        const sy = simToScreenY(sfcRow + 4);
-        rc.fillStyle = lbl.type === 'H' ? '#FF4444' : '#4488FF';
-        rc.strokeStyle = '#000';
-        rc.lineWidth = 3;
-        rc.strokeText(lbl.type, sx, sy);
-        rc.fillText(lbl.type, sx, sy);
-      }
-    }
+  } else {
+    pressureLabelsIter = -1e9;
   }
 
   if (!isRadarDisplayMode(guiControls.displayMode) && radarOverlayCanvas) {
