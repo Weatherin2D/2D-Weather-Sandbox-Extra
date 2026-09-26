@@ -23,14 +23,19 @@ precision highp isampler2D;
 
 #define fullGreenSoilMoisture 50.0 // level of soil moisture where vegetation reaches the greenest color
 
-#define soilFieldCapacity 85.0       // mm; soil pore space before runoff
+#define soilFieldCapacity 85.0       // mm; soil pore space reference (slows infiltration when exceeded; not a hard soil cap)
 #define maxInfiltrationRate 1.2      // mm per iteration; caps burst infiltration from downpours
-#define soilMoistureMax 100000.0     // mm; flood height can exceed visual full-opacity depth (~100 m pack limit)
+#define floodHeightPackMax 100000.0  // mm; TOTAL flood packing must stay below WATER_MARKER_SALT
+#define soilMoistureSafetyMax 1.0e8  // mm; float safety only — not a gameplay/physics cap
 #define floodFullOpacityDepthM 25.0  // metres where floodwater opacity reaches 100% (50% at 5 m)
 #define floodHalfOpacityDepthM 5.0   // metres where floodwater opacity reaches 50%
 #define sustainedMoistureGain 0.12   // fraction of infiltrated rain that builds long-term climate moisture
 #define sustainedMoistureDecay 0.00002 // mm per iteration; climate moisture memory (was 0.00015 — drained greenness too fast)
 #define minVegetationMoisture 12.0   // mm sustained moisture required for vegetation growth
+// Rain-occurrence frequency (0–1 EWMA) packed into land SUSTAINED_MOISTURE above this base so legacy 0–100 values stay valid.
+#define RAIN_FREQ_PACK_BASE 200.0
+#define rainFreqEwmaAlpha 0.004      // EWMA blend toward current "is raining" each surface step
+#define rainOccurMinRate 0.02        // air precip intensity treated as a rain occurrence
 
 #define iterPerSimDay 300000.0              // in-game iterations per day (timePerIteration = 0.00008 h)
 #define vegDiebackDaysPerPointMild 50.0      // days between biomass loss when stress is barely above zero (10x slower)
@@ -86,7 +91,7 @@ precision highp isampler2D;
 #define DUST 3          // dust/smog in air                >= 0 (desert loft, urban, brush)
 #define SMOKE 3         // legacy alias → DUST channel; combustion smoke is separate smokeTex
 #define SNOW 3          // snow at surface in cm           0 to 40000
-#define SUSTAINED_MOISTURE 1 // long-term climate moisture at land surface only (reuses CLOUD channel)
+#define SUSTAINED_MOISTURE 1 // long-term climate moisture at land surface only (reuses CLOUD channel; may pack rain-occurrence frequency above RAIN_FREQ_PACK_BASE)
 #define SALINITY 1           // salinity ppt on water & ice surface only (reuses CLOUD channel)
 
 #define WATER_MARKER_LAND 1001.0
@@ -95,7 +100,7 @@ precision highp isampler2D;
 #define WATER_MARKER_ICE 1004.0
 
 // Standing flood depth on land walls is packed into TOTAL above WATER_MARKER_LAND.
-// Keeps the land marker band below SALT (1002): floodMm * scale < 1.0 → up to 100000 mm.
+// Keeps the land marker band below SALT (1002): floodMm * scale < 1.0 → up to floodHeightPackMax mm.
 #define FLOOD_HEIGHT_SCALE 1.0e-5
 // Float32 around 1001 has ~0.00012 ULP (~12 mm at this scale). Ignore smaller "phantom" floods.
 #define FLOOD_HEIGHT_NOISE_MM 40.0
@@ -113,14 +118,51 @@ float getFloodHeightMm(float total)
   // Kill float-precision ghosts (often ~12–20 mm on the bottom land layer)
   if (mm < FLOOD_HEIGHT_NOISE_MM)
     return 0.0;
-  return clamp(mm, 0.0, soilMoistureMax);
+  return clamp(mm, 0.0, floodHeightPackMax);
 }
 
 float encodeLandWithFlood(float floodMm)
 {
   if (floodMm < FLOOD_HEIGHT_NOISE_MM)
     return WATER_MARKER_LAND;
-  return WATER_MARKER_LAND + clamp(floodMm, 0.0, soilMoistureMax) * FLOOD_HEIGHT_SCALE;
+  return WATER_MARKER_LAND + clamp(floodMm, 0.0, floodHeightPackMax) * FLOOD_HEIGHT_SCALE;
+}
+
+// Pack rain-occurrence frequency (0–1) into land SUSTAINED_MOISTURE.
+// Legacy saves store climate moisture in 0–100; packed values live at RAIN_FREQ_PACK_BASE+.
+float packSustainedWithRainFreq(float sustainedMm, float rainFreq)
+{
+  float s = clamp(sustainedMm, 0.0, 100.0);
+  float q = floor(s * 10.0 + 1e-4) * 0.1; // 0.1 mm quantum
+  return RAIN_FREQ_PACK_BASE + q + clamp(rainFreq, 0.0, 1.0) * 0.099;
+}
+
+float unpackSustainedMoisture(float packed)
+{
+  if (packed < RAIN_FREQ_PACK_BASE)
+    return clamp(packed, 0.0, 100.0);
+  float body = packed - RAIN_FREQ_PACK_BASE;
+  return clamp(floor(body * 10.0 + 1e-4) * 0.1, 0.0, 100.0);
+}
+
+float unpackRainFreq(float packed)
+{
+  if (packed < RAIN_FREQ_PACK_BASE)
+    return 0.0;
+  float body = packed - RAIN_FREQ_PACK_BASE;
+  float s = floor(body * 10.0 + 1e-4) * 0.1;
+  return clamp((body - s) / 0.099, 0.0, 1.0);
+}
+
+float applySoilMoistureCap(float moistureMm, float soilMoistureCap)
+{
+  float m = moistureMm;
+  if (m != m) // NaN
+    m = 0.0;
+  m = max(m, 0.0);
+  if (soilMoistureCap > 0.0)
+    m = min(m, soilMoistureCap);
+  return min(m, soilMoistureSafetyMax);
 }
 
 // wall texture: RGBA8I
@@ -622,7 +664,7 @@ vec4 sanitizeSimWater(vec4 w, int wallDist, int wallType)
     w[2] = simFiniteOr(w[2], 0.0);
     w[3] = simFiniteOr(w[3], 0.0);
     if (!isAnyWaterType(wallType)) {
-      w[SOIL_MOISTURE] = clamp(w[SOIL_MOISTURE], 0.0, soilMoistureMax);
+      w[SOIL_MOISTURE] = clamp(w[SOIL_MOISTURE], 0.0, soilMoistureSafetyMax);
       w[SNOW] = clamp(w[SNOW], 0.0, 50000.0);
     } else {
       w[SNOW] = clamp(w[SNOW], 0.0, maxIceThickness);

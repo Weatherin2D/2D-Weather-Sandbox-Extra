@@ -20,7 +20,8 @@ This project aims to produce a semirealistic two-dimensional, realtime, interact
 - **Meteogram** — time-height panel from weather stations (double-click a station)
 - **Replay & forecast** — record keyframes, scrub playback, free-run forecast then restore IC
 - **Shader Menu** — look packs, cloud/rain controls, custom sky textures
-- **Flood / storm-surge viz** — standing water depth and `DISP_FLOOD`
+- **Flood / storm-surge viz** — standing water depth and `DISP_FLOOD`; natural flooding is driven by rain *frequency* (persistent rain), not one-off totals
+- **Optional soil moisture cap** — soil moisture is unlimited by default; an optional GUI limit can be enabled
 - **Diagnostic MSLP** — thermal + dynamic + synoptic surface pressure (hPa); optional hydrostatic CAPE `P(z)`
 - **Multiplayer** — local co-op via `npm start` (still WIP)
 

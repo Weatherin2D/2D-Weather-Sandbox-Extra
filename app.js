@@ -736,10 +736,12 @@ const guiControls_default = {
   stormSurgeWindThreshold : 0.55, // windScale units; higher = needs stronger onshore wind
   stormSurgeMaxCells : 5.0, // max surge runup height in cells
   stormSurgeInlandReach : 10.0, // land cells inland surge can reach
-  enableFlooding : true, // natural rain → standing flood
+  enableFlooding : true, // natural frequent rain → standing flood
   enableStormSurge : true, // coastal storm-surge inundation
-  floodRainThreshold : 0.42, // air precip intensity needed for flash floods (higher = heavier rain)
-  floodPondRate : 12.0, // ponding build rate once rain exceeds threshold
+  floodRainThreshold : 0.42, // rain-occurrence frequency (0–1) needed to pond
+  floodPondRate : 12.0, // ponding build rate once rain frequency exceeds threshold
+  limitSoilMoisture : false, // when false, soil moisture has no gameplay cap
+  maxSoilMoistureMm : 500.0, // used only when limitSoilMoisture is on
   // Natural grass→forest canopy species: Random (50/50), Forest (conifer), Forest 2 (deciduous)
   forestGrowthSpecies : 'Random (50/50)',
   rainfallAmountMult : 1.0,
@@ -1994,10 +1996,12 @@ function printSnowHeight(snowHeight_cm)
 
 function printSoilMoisture(soilMoisture_mm)
 {
+  const mm = Number.isFinite(soilMoisture_mm) ? Math.max(0, soilMoisture_mm) : 0;
   if (guiControls.lengthUnit == 'LENGTH_UNIT_IMPERIAL') {
-    return mmToIn(soilMoisture_mm).toFixed(1) + '"'; // inches
+    const inches = mmToIn(mm);
+    return (inches >= 100 ? inches.toFixed(0) : inches.toFixed(1)) + '"'; // inches
   } else
-    return soilMoisture_mm.toFixed(1) + ' mm';
+    return (mm >= 1000 ? mm.toFixed(0) : mm.toFixed(1)) + ' mm';
 }
 
 const WATER_MARKER_LAND_JS = 1001.0;
@@ -2005,7 +2009,27 @@ const WATER_MARKER_SALT_JS = 1002.0;
 const FLOOD_HEIGHT_SCALE_JS = 1.0e-5;
 const FLOOD_HEIGHT_NOISE_MM_JS = 40.0;
 const SOIL_FIELD_CAPACITY_JS = 85.0;
-const SOIL_MOISTURE_MAX_JS = 100000.0;
+const FLOOD_HEIGHT_PACK_MAX_JS = 100000.0; // TOTAL flood packing limit (below SALT marker)
+const SOIL_MOISTURE_SAFETY_MAX_JS = 1.0e8; // float safety only — not a gameplay cap
+
+/** Effective soil moisture cap in mm; 0 means unlimited (shader uniform). */
+function effectiveSoilMoistureCapJs()
+{
+  if (!guiControls || !guiControls.limitSoilMoisture)
+    return 0.0;
+  const mm = Number(guiControls.maxSoilMoistureMm);
+  return Number.isFinite(mm) && mm > 0 ? mm : 0.0;
+}
+
+function applySoilMoistureCapJs(mm)
+{
+  let m = Number.isFinite(mm) ? mm : 0;
+  m = Math.max(0, m);
+  const cap = effectiveSoilMoistureCapJs();
+  if (cap > 0)
+    m = Math.min(m, cap);
+  return Math.min(m, SOIL_MOISTURE_SAFETY_MAX_JS);
+}
 
 /** Decode standing flood height (mm) packed into land water-marker TOTAL. */
 function getFloodHeightMmFromTotal(total)
@@ -2016,14 +2040,14 @@ function getFloodHeightMmFromTotal(total)
   // Match shader FLOOD_HEIGHT_NOISE_MM — ignore float32 ghosts around the land marker
   if (mm < FLOOD_HEIGHT_NOISE_MM_JS)
     return 0;
-  return mm;
+  return Math.min(mm, FLOOD_HEIGHT_PACK_MAX_JS);
 }
 
 function encodeLandWithFloodJs(floodMm)
 {
   if (!Number.isFinite(floodMm) || floodMm < FLOOD_HEIGHT_NOISE_MM_JS)
     return WATER_MARKER_LAND_JS;
-  const mm = Math.min(Math.max(floodMm, 0), SOIL_MOISTURE_MAX_JS);
+  const mm = Math.min(Math.max(floodMm, 0), FLOOD_HEIGHT_PACK_MAX_JS);
   return WATER_MARKER_LAND_JS + mm * FLOOD_HEIGHT_SCALE_JS;
 }
 
@@ -2040,9 +2064,9 @@ function isFloodLandWallTypeJs(wallType)
 }
 
 /**
- * Repair flood/soil packing for save/load.
- * Legacy saves stored ponding as soil above field capacity; newer saves pack flood in TOTAL.
- * If both are present, keep TOTAL flood and drop stale soil excess (avoids ~2× depth on reload).
+ * Repair flood packing for save/load / texture sync.
+ * Soil moisture is no longer clamped to field capacity (optional GUI cap is applied in sim).
+ * Underground land never stores standing flood.
  */
 function sanitizeFloodWaterTexture(waterTexF32, wallTexI8, resX, resY)
 {
@@ -2061,23 +2085,17 @@ function sanitizeFloodWaterTexture(waterTexF32, wallTexI8, resX, resY)
     let soil = waterTexF32[o + 2];
     if (!Number.isFinite(soil) || soil < 0)
       soil = 0;
+    soil = Math.min(soil, SOIL_MOISTURE_SAFETY_MAX_JS);
 
     // Underground land never stores standing flood
     if (vertDist !== 0) {
       if (isLandWaterMarkerTotal(waterTexF32[o]))
         waterTexF32[o] = WATER_MARKER_LAND_JS;
-      waterTexF32[o + 2] = Math.min(soil, SOIL_FIELD_CAPACITY_JS);
+      waterTexF32[o + 2] = soil;
       continue;
     }
 
     let floodMm = getFloodHeightMmFromTotal(waterTexF32[o]);
-    if (soil > SOIL_FIELD_CAPACITY_JS) {
-      const excess = soil - SOIL_FIELD_CAPACITY_JS;
-      // Only migrate legacy soil-ponding when TOTAL has no packed flood yet
-      if (floodMm < FLOOD_HEIGHT_NOISE_MM_JS)
-        floodMm += excess;
-      soil = SOIL_FIELD_CAPACITY_JS;
-    }
     waterTexF32[o + 2] = soil;
     waterTexF32[o] = encodeLandWithFloodJs(floodMm);
   }
@@ -3624,7 +3642,7 @@ const SOUNDING_VIEW_CONFIGS = [
   { mode: 'DISP_HAZ_GENERAL_TS', key: 'hazardGeneralThunderstorm', scaleId: 'hazardProb', min: 0, max: 100, label: 'General Thunderstorm', unit: '%' },
   { mode: 'DISP_FIRE_RISK', key: 'fireIndex', scaleId: 'fireRisk', min: 0, max: 80, label: 'Fire Risk', unit: '' },
   { mode: 'DISP_SND_RAIN_ACCUM', key: 'rainAccum_mm', scaleId: 'radarAccum', min: 0, max: 75, label: 'Rain Accumulation', unit: 'mm' },
-  { mode: 'DISP_SND_SOIL_MOISTURE', key: 'soilMoisture_mm', scaleId: 'soundingSoil', min: 0, max: 150, label: 'Soil Moisture', unit: 'mm' },
+  { mode: 'DISP_SND_SOIL_MOISTURE', key: 'soilMoisture_mm', scaleId: 'soundingSoil', min: 0, max: 500, label: 'Soil Moisture', unit: 'mm' },
   { mode: 'DISP_SND_SNOW_DEPTH', key: 'snowDepth_cm', scaleId: 'soundingSnow', min: 0, max: 100, label: 'Snow Depth', unit: 'cm' },
   { mode: 'DISP_COLD_POOL', key: 'coldPool_K', scaleId: 'coldPool', min: 0, max: 12, label: 'Cold Pool', unit: 'K' },
   { mode: 'DISP_INITIATION', key: 'initiation', scaleId: 'initiation', min: 0, max: 100, label: 'Initiation Favorability', unit: '' },
@@ -4584,7 +4602,7 @@ class Weatherstation
   #windU = 0;        // m/s horizontal
   #windV = 0;        // m/s vertical
   #mslpHpa = 1013.25; // diagnostic mean sea-level pressure
-  #soilMoisture = 0; // mm (0–field capacity; separate from flood)
+  #soilMoisture = 0; // mm (optional GUI cap; separate from flood)
   #floodHeightMm = 0; // mm standing flood height
   #snowHeight = 0;   // cm
   #airQuality = 0;   // AQI
@@ -7809,7 +7827,7 @@ function applyCustomToolEntitiesCpu()
 
         const moist = +effects.soilMoisture;
         if (Number.isFinite(moist) && moist !== 0) {
-          waterData[idx + 2] = Math.max(0, waterData[idx + 2] + moist * 10);
+          waterData[idx + 2] = applySoilMoistureCapJs(waterData[idx + 2] + moist * 10);
           changed = true;
         }
       }
@@ -12372,6 +12390,12 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     guiControls.floodRainThreshold = guiControls_default.floodRainThreshold;
   if (guiControls.floodPondRate === undefined)
     guiControls.floodPondRate = guiControls_default.floodPondRate;
+  if (guiControls.limitSoilMoisture === undefined)
+    guiControls.limitSoilMoisture = guiControls_default.limitSoilMoisture;
+  else
+    guiControls.limitSoilMoisture = !!guiControls.limitSoilMoisture;
+  if (guiControls.maxSoilMoistureMm === undefined || !Number.isFinite(guiControls.maxSoilMoistureMm))
+    guiControls.maxSoilMoistureMm = guiControls_default.maxSoilMoistureMm;
   if (guiControls.floodWaterOpacity === undefined) {
     const legacy = guiControls.floodVizStrength;
     if (Number.isFinite(legacy))
@@ -12527,6 +12551,19 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'fireBurnMult'), landRateUniform('fireBurnMult'));
   }
 
+  function uploadSoilMoistureCapUniforms()
+  {
+    if (typeof boundaryProgram === 'undefined' || !boundaryProgram)
+      return;
+    const cap = effectiveSoilMoistureCapJs();
+    gl.useProgram(boundaryProgram);
+    gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'soilMoistureCap'), cap);
+    if (typeof advectionProgram !== 'undefined' && advectionProgram) {
+      gl.useProgram(advectionProgram);
+      gl.uniform1f(gl.getUniformLocation(advectionProgram, 'soilMoistureCap'), cap);
+    }
+  }
+
   function setGuiUniforms()
   { // set all uniforms to new values
     gl.useProgram(boundaryProgram);
@@ -12538,6 +12575,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'waterWeight'), guiControls.waterWeight);
     gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'forestGrowthSpecies'), forestGrowthSpeciesUniform());
     uploadLandRateUniforms();
+    uploadSoilMoistureCapUniforms();
     gl.useProgram(velocityProgram);
     gl.uniform1f(gl.getUniformLocation(velocityProgram, 'dragMultiplier'),
       guiControls.soundingMode ? 999.0 : guiControls.dragMultiplier);
@@ -13226,6 +13264,16 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     water_folder.add(guiControls, 'soilMoistureLossMult', 0.0, 5.0, 0.05)
       .onChange(uploadLandRateUniforms)
       .name('Soil Moisture Loss');
+    water_folder.add(guiControls, 'limitSoilMoisture')
+      .onChange(function() {
+        uploadSoilMoistureCapUniforms();
+      })
+      .name('Limit Soil Moisture');
+    water_folder.add(guiControls, 'maxSoilMoistureMm', 10, 5000, 10)
+      .onChange(function() {
+        uploadSoilMoistureCapUniforms();
+      })
+      .name('Max Soil Moisture (mm)');
     water_folder.add(guiControls, 'climateMoistureDecayMult', 0.0, 5.0, 0.05)
       .onChange(uploadLandRateUniforms)
       .name('Climate Moisture Decay');
@@ -13886,8 +13934,8 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       .onChange(uploadFloodSurgeUniforms).name('Surge Max Height (cells)');
     floodingSurgeFolder.add(guiControls, 'stormSurgeInlandReach', 1, 24, 1)
       .onChange(uploadFloodSurgeUniforms).name('Surge Inland Reach');
-    floodingSurgeFolder.add(guiControls, 'floodRainThreshold', 0.05, 1.5, 0.01)
-      .onChange(uploadFloodSurgeUniforms).name('Flood Rain Threshold');
+    floodingSurgeFolder.add(guiControls, 'floodRainThreshold', 0.05, 1.0, 0.01)
+      .onChange(uploadFloodSurgeUniforms).name('Flood Rain Frequency Threshold');
     floodingSurgeFolder.add(guiControls, 'floodPondRate', 1, 30, 0.5)
       .onChange(uploadFloodSurgeUniforms).name('Flood Pond Rate');
     advancedSimulation.add(guiControls, 'surfacePressure', 950, 1050, 0.25)
@@ -25158,6 +25206,12 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
                guiControls.enableFlooding === false ? 0.0 : 1.0);
   gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'enableStormSurge'),
                guiControls.enableStormSurge === false ? 0.0 : 1.0);
+  gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'soilMoistureCap'),
+               effectiveSoilMoistureCapJs());
+  gl.useProgram(advectionProgram);
+  gl.uniform1f(gl.getUniformLocation(advectionProgram, 'soilMoistureCap'),
+               effectiveSoilMoistureCapJs());
+  gl.useProgram(boundaryProgram);
   gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'forestGrowthSpecies'),
                typeof forestGrowthSpeciesUniform === 'function' ? forestGrowthSpeciesUniform() : 0.0);
   landRateUniformsReady = true;
@@ -30102,6 +30156,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     guiControlsForSave.stormSurgeInlandReach = guiControls.stormSurgeInlandReach;
     guiControlsForSave.floodRainThreshold = guiControls.floodRainThreshold;
     guiControlsForSave.floodPondRate = guiControls.floodPondRate;
+    guiControlsForSave.limitSoilMoisture = !!guiControls.limitSoilMoisture;
+    guiControlsForSave.maxSoilMoistureMm = guiControls.maxSoilMoistureMm;
     attachAppearanceSaveFields(guiControlsForSave);
     const embeddedRadars = buildSavedRadarTowersForGuiControls();
     if (embeddedRadars)
@@ -33361,6 +33417,8 @@ drawNukeOverlay();
         guiControlsForSave.stormSurgeInlandReach = guiControls.stormSurgeInlandReach;
         guiControlsForSave.floodRainThreshold = guiControls.floodRainThreshold;
         guiControlsForSave.floodPondRate = guiControls.floodPondRate;
+        guiControlsForSave.limitSoilMoisture = !!guiControls.limitSoilMoisture;
+        guiControlsForSave.maxSoilMoistureMm = guiControls.maxSoilMoistureMm;
         attachAppearanceSaveFields(guiControlsForSave);
         const embeddedRadars = buildSavedRadarTowersForGuiControls();
         if (embeddedRadars)
