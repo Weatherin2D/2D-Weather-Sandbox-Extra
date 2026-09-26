@@ -962,6 +962,44 @@ var lastUserInputMs = 0;
 
 var idleRenderState = { skipped : 0, x : NaN, y : NaN, zoom : NaN, w : 0, h : 0, mode : '' };
 
+// Nothing in the frame loop blocks on the GPU any more, so without this the CPU can
+// queue many frames of simulation work; any later synchronous read then has to wait
+// for the whole queue, which shows up as a large lag spike.
+const GPU_FENCE_RING_MAX = 8;
+const GPU_BACKLOG_SKIP_FRAMES = 4;
+const GPU_BACKLOG_STALE_MS = 1000;
+var gpuFrameFences = [];
+var gpuFramesPending = 0;
+var gpuBacklogSkips = 0;
+
+function pollGpuFrameFences()
+{
+  while (gpuFrameFences.length > 0) {
+    const f = gpuFrameFences[0];
+    if (gl.getSyncParameter(f.sync, gl.SYNC_STATUS) !== gl.SIGNALED)
+      break;
+    gl.deleteSync(f.sync);
+    gpuFrameFences.shift();
+  }
+  if (gpuFrameFences.length > 0 && performance.now() - gpuFrameFences[0].t > GPU_BACKLOG_STALE_MS) {
+    for (let i = 0; i < gpuFrameFences.length; i++)
+      gl.deleteSync(gpuFrameFences[i].sync);
+    gpuFrameFences.length = 0;
+  }
+  gpuFramesPending = gpuFrameFences.length;
+  return gpuFramesPending;
+}
+
+function pushGpuFrameFence()
+{
+  const sync = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0);
+  if (!sync)
+    return;
+  gpuFrameFences.push({ sync, t : performance.now() });
+  if (gpuFrameFences.length > GPU_FENCE_RING_MAX)
+    gl.deleteSync(gpuFrameFences.shift().sync);
+}
+
 var tempChangeHistorySeeded = false;
 
 var pressureLabels = []; // {x, sfcY, type: 'H' | 'L'} for the pressure view
@@ -31056,6 +31094,12 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       return;
     }
 
+    if (pollGpuFrameFences() >= GPU_BACKLOG_SKIP_FRAMES) {
+      gpuBacklogSkips++;
+      requestAnimationFrame(draw);
+      return;
+    }
+
     if (SETUP_MODE) {
       const setupHeavy = getSimCellCount() >= 700000;
       const mouseMoved = (mouseXinSim !== prevMouseXinSim) || (mouseYinSim !== prevMouseYinSim);
@@ -33103,9 +33147,12 @@ drawNukeOverlay();
         guiControls.IterPerFrame = maxAutoIters;
       const msOverBudget = smoothedFrameMs - TARGET_FRAME_MS;
       const warmingUp = getStartupIterationCap() != null;
-      if (msOverBudget > 2) {
+      const gpuBehind = gpuFramesPending >= 2;
+      if (gpuBacklogSkips > 0) {
+        adjIterPerFrame(gpuBacklogSkips > 2 ? -2 : -1);
+      } else if (msOverBudget > 2) {
         adjIterPerFrame(msOverBudget > 8 ? -2 : -1);
-      } else if (!warmingUp && guiControls.IterPerFrame < maxAutoIters) {
+      } else if (!warmingUp && !gpuBehind && guiControls.IterPerFrame < maxAutoIters) {
         if (msOverBudget < -16) {
           adjIterPerFrame(3);
         } else if (msOverBudget < -12) {
@@ -33128,6 +33175,8 @@ drawNukeOverlay();
       rp.tickPlayback(smoothedFrameMs || 16);
     }
 
+    gpuBacklogSkips = 0;
+    pushGpuFrameFence();
     frameNum++;
   requestAnimationFrame(draw);
 } // end of draw() outer
