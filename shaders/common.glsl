@@ -32,8 +32,6 @@ precision highp isampler2D;
 #define sustainedMoistureGain 0.12   // fraction of infiltrated rain that builds long-term climate moisture
 #define sustainedMoistureDecay 0.00002 // mm per iteration; climate moisture memory (was 0.00015 — drained greenness too fast)
 #define minVegetationMoisture 12.0   // mm sustained moisture required for vegetation growth
-// Rain-occurrence frequency (0–1 EWMA) packed into land SUSTAINED_MOISTURE above this base so legacy 0–100 values stay valid.
-#define RAIN_FREQ_PACK_BASE 200.0
 #define rainFreqEwmaAlpha 0.004      // EWMA blend toward current "is raining" each surface step
 #define rainOccurMinRate 0.02        // air precip intensity treated as a rain occurrence
 
@@ -91,7 +89,8 @@ precision highp isampler2D;
 #define DUST 3          // dust/smog in air                >= 0 (desert loft, urban, brush)
 #define SMOKE 3         // legacy alias → DUST channel; combustion smoke is separate smokeTex
 #define SNOW 3          // snow at surface in cm           0 to 40000
-#define SUSTAINED_MOISTURE 1 // long-term climate moisture at land surface only (reuses CLOUD channel; may pack rain-occurrence frequency above RAIN_FREQ_PACK_BASE)
+#define SUSTAINED_MOISTURE 1 // long-term climate moisture at land surface only (reuses CLOUD channel)
+#define RAIN_FREQ 3          // rain-occurrence frequency (0–1) stored negated in the land cell directly below the surface (reuses SNOW channel)
 #define SALINITY 1           // salinity ppt on water & ice surface only (reuses CLOUD channel)
 
 #define WATER_MARKER_LAND 1001.0
@@ -128,31 +127,9 @@ float encodeLandWithFlood(float floodMm)
   return WATER_MARKER_LAND + clamp(floodMm, 0.0, floodHeightPackMax) * FLOOD_HEIGHT_SCALE;
 }
 
-// Pack rain-occurrence frequency (0–1) into land SUSTAINED_MOISTURE.
-// Legacy saves store climate moisture in 0–100; packed values live at RAIN_FREQ_PACK_BASE+.
-float packSustainedWithRainFreq(float sustainedMm, float rainFreq)
-{
-  float s = clamp(sustainedMm, 0.0, 100.0);
-  float q = floor(s * 10.0 + 1e-4) * 0.1; // 0.1 mm quantum
-  return RAIN_FREQ_PACK_BASE + q + clamp(rainFreq, 0.0, 1.0) * 0.099;
-}
-
-float unpackSustainedMoisture(float packed)
-{
-  if (packed < RAIN_FREQ_PACK_BASE)
-    return clamp(packed, 0.0, 100.0);
-  float body = packed - RAIN_FREQ_PACK_BASE;
-  return clamp(floor(body * 10.0 + 1e-4) * 0.1, 0.0, 100.0);
-}
-
-float unpackRainFreq(float packed)
-{
-  if (packed < RAIN_FREQ_PACK_BASE)
-    return 0.0;
-  float body = packed - RAIN_FREQ_PACK_BASE;
-  float s = floor(body * 10.0 + 1e-4) * 0.1;
-  return clamp((body - s) / 0.099, 0.0, 1.0);
-}
+// Rain frequency is stored negated so snow copied down from the surface (always >= 0) reads as 0.
+float decodeRainFreq(float stored) { return clamp(-stored, 0.0, 1.0); }
+float encodeRainFreq(float rainFreq) { return -clamp(rainFreq, 0.0, 1.0); }
 
 float applySoilMoistureCap(float moistureMm, float soilMoistureCap)
 {
@@ -665,7 +642,7 @@ vec4 sanitizeSimWater(vec4 w, int wallDist, int wallType)
     w[3] = simFiniteOr(w[3], 0.0);
     if (!isAnyWaterType(wallType)) {
       w[SOIL_MOISTURE] = clamp(w[SOIL_MOISTURE], 0.0, soilMoistureSafetyMax);
-      w[SNOW] = clamp(w[SNOW], 0.0, 50000.0);
+      w[SNOW] = clamp(w[SNOW], -1.0, 50000.0); // negative = RAIN_FREQ below the surface
     } else {
       w[SNOW] = clamp(w[SNOW], 0.0, maxIceThickness);
     }

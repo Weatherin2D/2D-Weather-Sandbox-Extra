@@ -126,6 +126,14 @@ bool isSurgeFloodLandType(int wallType)
       || isCustomBase(wallType);
 }
 
+// Rain-occurrence frequency (0–1) for a land surface cell, kept by the land cell directly below it.
+float surfaceRainFreq(ivec4 wallBelow)
+{
+  if (wallBelow[DISTANCE] != 0 || wallBelow[VERT_DISTANCE] != -1 || isAnyWaterType(wallBelow[TYPE]))
+    return 0.0;
+  return decodeRainFreq(texture(waterTex, texCoordX0Ym)[RAIN_FREQ]);
+}
+
 void main()
 {
   base = texture(baseTex, texCoord);
@@ -537,6 +545,7 @@ void main()
     wall[VERT_DISTANCE] = wallX0Yp[VERT_DISTANCE] - 1;                     // height below ground is counted
 
     if (wall[VERT_DISTANCE] < 0) {                                         // below surface
+      float prevRainFreq = decodeRainFreq(water[RAIN_FREQ]);
       water.ba = texture(waterTex, texCoordX0Yp).ba;                       // soil moisture and snow is copied from above
       water[SUSTAINED_MOISTURE] = texture(waterTex, texCoordX0Yp)[SUSTAINED_MOISTURE];
       wall[VEGETATION] = wallX0Yp[VEGETATION];                             // vegetation is copied from above
@@ -551,6 +560,13 @@ void main()
                                                                            //   wall[TYPE] = wallX0Yp[TYPE];                                     // land can't be over water. copy walltype from above
           base[TEMPERATURE] = texture(baseTex, texCoordX0Yp)[TEMPERATURE]; // copy water temperature from above
         }
+      }
+
+      // Directly below a land surface: keep the rain-occurrence frequency (EWMA of "is raining") for the surface cell
+      if (wall[VERT_DISTANCE] == -1 && !isAnyWaterType(wall[TYPE]) && wallX0Yp[DISTANCE] == 0 && !isAnyWaterType(wallX0Yp[TYPE])) {
+        float rainAboveSurface = max(texture(waterTex, texCoord + vec2(0.0, 2.0 * texelSize.y))[PRECIPITATION], 0.0) * 0.55;
+        float isRaining = step(rainOccurMinRate, rainAboveSurface);
+        water[RAIN_FREQ] = encodeRainFreq(mix(prevRainFreq, isRaining, rainFreqEwmaAlpha));
       }
 
     } else if (wall[VERT_DISTANCE] == 0) { // at/in surface layer
@@ -628,12 +644,7 @@ void main()
 
           water[SOIL_MOISTURE] = applySoilMoistureCap(water[SOIL_MOISTURE] + infiltration, soilMoistureCap);
 
-          // Rain-occurrence frequency (EWMA of "is raining"), packed into SUSTAINED_MOISTURE above RAIN_FREQ_PACK_BASE.
-          float rainFreq = unpackRainFreq(water[SUSTAINED_MOISTURE]);
-          float sustainedMm = unpackSustainedMoisture(water[SUSTAINED_MOISTURE]);
-          float isRaining = step(rainOccurMinRate, rainFromAir);
-          rainFreq = mix(rainFreq, isRaining, rainFreqEwmaAlpha);
-
+          float rainFreq = surfaceRainFreq(wallX0Ym);
           float freqThresh = clamp(floodRainThreshold, 0.0, 1.0);
 
           // Natural flooding: persistent/frequent rain ponds; one-off totals alone do not.
@@ -722,11 +733,10 @@ void main()
             wall[TYPE] = extinguishFireType(wall[TYPE]);
 
           // Legacy saves: seed climate moisture from established vegetation, not one-off rain spikes
-          if (sustainedMm < 0.01 && wall[VEGETATION] > 15)
-            sustainedMm = min(float(wall[VEGETATION]) * 0.25, 40.0);
+          if (water[SUSTAINED_MOISTURE] < 0.01 && wall[VEGETATION] > 15)
+            water[SUSTAINED_MOISTURE] = min(float(wall[VEGETATION]) * 0.25, 40.0);
 
-          sustainedMm = clamp(sustainedMm + infiltration * sustainedMoistureGain - sustainedMoistureDecay * max(climateMoistureDecayMult, 0.0), 0.0, 100.0);
-          water[SUSTAINED_MOISTURE] = packSustainedWithRainFreq(sustainedMm, rainFreq);
+          water[SUSTAINED_MOISTURE] = clamp(water[SUSTAINED_MOISTURE] + infiltration * sustainedMoistureGain - sustainedMoistureDecay * max(climateMoistureDecayMult, 0.0), 0.0, 100.0);
 
           // Stash flood for evaporation step below (encoded after soil evap)
           water[TOTAL] = encodeLandWithFlood(floodMm);
@@ -747,7 +757,7 @@ void main()
         {
           float floodNow = getFloodHeightMm(water[TOTAL]);
           float sunEvap = max(lightAboveSurface[SUNLIGHT] * cos(colSunAngle), 0.0) / standardSunBrightness;
-          float rainingEvap = unpackRainFreq(water[SUSTAINED_MOISTURE]);
+          float rainingEvap = surfaceRainFreq(wallX0Ym);
           if (floodNow > 0.0) {
             float floodEvap = evaporation * (1.0 + sunEvap * 3.0) * (1.0 - rainingEvap * 0.9);
             floodEvap = min(floodEvap, floodNow);
@@ -774,22 +784,17 @@ void main()
           float totalNeighborSnow = 0.0;
           float totalNeighborSoilMoisture = 0.0;
           float totalNeighborSustainedMoisture = 0.0;
-          float totalNeighborRainFreq = 0.0;
 
           if (wallXmY0[VERT_DISTANCE] == 0 && (isLandOrForest2(wallXmY0[TYPE]) || isSettlementWall(wallXmY0[TYPE]))) {
-            vec4 nL = texture(waterTex, texCoordXmY0);
-            totalNeighborSnow += nL[SNOW];
-            totalNeighborSoilMoisture += nL[SOIL_MOISTURE];
-            totalNeighborSustainedMoisture += unpackSustainedMoisture(nL[SUSTAINED_MOISTURE]);
-            totalNeighborRainFreq += unpackRainFreq(nL[SUSTAINED_MOISTURE]);
+            totalNeighborSnow += texture(waterTex, texCoordXmY0)[SNOW];
+            totalNeighborSoilMoisture += texture(waterTex, texCoordXmY0)[SOIL_MOISTURE];
+            totalNeighborSustainedMoisture += texture(waterTex, texCoordXmY0)[SUSTAINED_MOISTURE];
             numNeighbors += 1.;
           }
           if (wallXpY0[VERT_DISTANCE] == 0 && (isLandOrForest2(wallXpY0[TYPE]) || isSettlementWall(wallXpY0[TYPE]))) {
-            vec4 nR = texture(waterTex, texCoordXpY0);
-            totalNeighborSnow += nR[SNOW];
-            totalNeighborSoilMoisture += nR[SOIL_MOISTURE];
-            totalNeighborSustainedMoisture += unpackSustainedMoisture(nR[SUSTAINED_MOISTURE]);
-            totalNeighborRainFreq += unpackRainFreq(nR[SUSTAINED_MOISTURE]);
+            totalNeighborSnow += texture(waterTex, texCoordXpY0)[SNOW];
+            totalNeighborSoilMoisture += texture(waterTex, texCoordXpY0)[SOIL_MOISTURE];
+            totalNeighborSustainedMoisture += texture(waterTex, texCoordXpY0)[SUSTAINED_MOISTURE];
             numNeighbors += 1.;
           }
           if (numNeighbors > 0.) { // prevent devide by 0
@@ -802,16 +807,11 @@ void main()
               soilMoistureCap);
 
             float avgNeighborSustainedMoisture = totalNeighborSustainedMoisture / numNeighbors;
-            float avgNeighborRainFreq = totalNeighborRainFreq / numNeighbors;
-            float localSustained = unpackSustainedMoisture(water[SUSTAINED_MOISTURE]);
-            float localRainFreq = unpackRainFreq(water[SUSTAINED_MOISTURE]);
-            localSustained += (avgNeighborSustainedMoisture - localSustained) * sustainedSmoothingRate;
-            localRainFreq += (avgNeighborRainFreq - localRainFreq) * sustainedSmoothingRate;
-            water[SUSTAINED_MOISTURE] = packSustainedWithRainFreq(localSustained, localRainFreq);
+            water[SUSTAINED_MOISTURE] += (avgNeighborSustainedMoisture - water[SUSTAINED_MOISTURE]) * sustainedSmoothingRate;
           }
 
           // dynamic vegetation — growth driven by sustained climate moisture, not one-off rain spikes
-          float climateMoisture = unpackSustainedMoisture(water[SUSTAINED_MOISTURE]);
+          float climateMoisture = water[SUSTAINED_MOISTURE];
 
           // Burning cells do not grow; fire already consumes biomass
           int vegetationGrowthRate = 0;
@@ -1095,7 +1095,7 @@ void main()
             wall[TYPE] = WALLTYPE_LAND;
             water[SNOW] = iceCapFormSnowCm;
             water[SOIL_MOISTURE] = 25.0;
-            water[SUSTAINED_MOISTURE] = packSustainedWithRainFreq(25.0, 0.0);
+            water[SUSTAINED_MOISTURE] = 25.0;
             water[TOTAL] = WATER_MARKER_LAND;
             wall[VEGETATION] = 0;
             base[TEMPERATURE] = 1000.0; // land wall snow-melt feedback marker

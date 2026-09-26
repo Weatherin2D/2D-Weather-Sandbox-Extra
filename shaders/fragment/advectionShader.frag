@@ -227,9 +227,9 @@ void main()
     bool landSurface = !isAnyWaterType(wall[TYPE]);
     if (landSurface) {
       water[SOIL_MOISTURE] = applySoilMoistureCap(water[SOIL_MOISTURE], soilMoistureCap);
-      float rf = unpackRainFreq(water[SUSTAINED_MOISTURE]);
-      float sm = unpackSustainedMoisture(water[SUSTAINED_MOISTURE]);
-      water[SUSTAINED_MOISTURE] = packSustainedWithRainFreq(clamp(sm, 0.0, 100.0), rf);
+      water[SUSTAINED_MOISTURE] = clamp(water[SUSTAINED_MOISTURE], 0.0, 100.0);
+      if (wallX0Yp[DISTANCE] != 0)
+        water[SNOW] = max(water[SNOW], 0.0); // newly exposed surface may still hold RAIN_FREQ
     }
 
     if (wallX0Yp[DISTANCE] != 0) { // cell above is not wall, surface layer
@@ -245,10 +245,7 @@ void main()
         water[SNOW] -= melting;
         base[TEMPERATURE] += melting / snowMassToHeight * meltingHeat; // signal snow melting mass, cooling will be applied in pressure shader
         water[SOIL_MOISTURE] = applySoilMoistureCap(water[SOIL_MOISTURE] + melting, soilMoistureCap); // melting snow adds water to soil
-        float rfMelt = unpackRainFreq(water[SUSTAINED_MOISTURE]);
-        float smMelt = unpackSustainedMoisture(water[SUSTAINED_MOISTURE]);
-        smMelt = clamp(smMelt + melting * sustainedMoistureGain, 0.0, 100.0);
-        water[SUSTAINED_MOISTURE] = packSustainedWithRainFreq(smMelt, rfMelt);
+        water[SUSTAINED_MOISTURE] = clamp(water[SUSTAINED_MOISTURE] + melting * sustainedMoistureGain, 0.0, 100.0);
       }
 
       if (landSurface && water[SNOW] > 0.0 && tempC <= 0.0) { // snow sublimation below freezing
@@ -477,10 +474,7 @@ void main()
           if (wall[DISTANCE] == 0 && !isAnyWaterType(wall[TYPE]) && texture(wallTex, texCoordX0Yp)[DISTANCE] != 0) { // if land wall and no wall above
             float moistureBrush = userInputValues[BRUSH_INTENSITY] * 10.0;
             water[SOIL_MOISTURE] = applySoilMoistureCap(water[SOIL_MOISTURE] + moistureBrush, soilMoistureCap);
-            float rfBrush = unpackRainFreq(water[SUSTAINED_MOISTURE]);
-            float smBrush = unpackSustainedMoisture(water[SUSTAINED_MOISTURE]);
-            smBrush = clamp(smBrush + moistureBrush * sustainedMoistureGain, 0.0, 100.0);
-            water[SUSTAINED_MOISTURE] = packSustainedWithRainFreq(smBrush, rfBrush);
+            water[SUSTAINED_MOISTURE] = clamp(water[SUSTAINED_MOISTURE] + moistureBrush * sustainedMoistureGain, 0.0, 100.0);
           }
           break;
         case 31: // floodwater — add standing flood height (does not change soil moisture)
@@ -556,7 +550,7 @@ void main()
             if (!alreadySolid || isAnyWaterType(prevWallType)) {
               water[TOTAL] = WATER_MARKER_LAND;
               water[SOIL_MOISTURE] = 25.0;
-              water[SUSTAINED_MOISTURE] = packSustainedWithRainFreq(25.0, 0.0);
+              water[SUSTAINED_MOISTURE] = 25.0;
               if (isAnyWaterType(prevWallType))
                 wall[VEGETATION] = 0;
             }
@@ -593,7 +587,7 @@ void main()
               water[SNOW] = max(water[SNOW], 50.0 + userInputValues[BRUSH_INTENSITY] * 200.0);
             } else if (!alreadySolid) {
               water[SOIL_MOISTURE] = 25.0;
-              water[SUSTAINED_MOISTURE] = packSustainedWithRainFreq(25.0, 0.0);
+              water[SUSTAINED_MOISTURE] = 25.0;
             }
           }
         }
@@ -624,10 +618,7 @@ void main()
           } else if (userInputType == 20) {        // remove moisture
             float moistureBrush = userInputValues[BRUSH_INTENSITY] * 10.0;
             water[SOIL_MOISTURE] = applySoilMoistureCap(water[SOIL_MOISTURE] + moistureBrush, soilMoistureCap);
-            float rfBrushRm = unpackRainFreq(water[SUSTAINED_MOISTURE]);
-            float smBrushRm = unpackSustainedMoisture(water[SUSTAINED_MOISTURE]);
-            smBrushRm = clamp(smBrushRm + moistureBrush * sustainedMoistureGain, 0.0, 100.0);
-            water[SUSTAINED_MOISTURE] = packSustainedWithRainFreq(smBrushRm, rfBrushRm);
+            water[SUSTAINED_MOISTURE] = clamp(water[SUSTAINED_MOISTURE] + moistureBrush * sustainedMoistureGain, 0.0, 100.0);
           } else if (userInputType == 31) { // remove floodwater only (invert) — never dries soil
             float floodBrush = userInputValues[BRUSH_INTENSITY] * 200.0; // negative when inverted
             float floodMm = max(getFloodHeightMm(water[TOTAL]) + floodBrush, 0.0);

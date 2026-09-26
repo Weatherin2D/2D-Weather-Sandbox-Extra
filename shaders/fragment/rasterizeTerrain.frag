@@ -121,7 +121,7 @@ void applyPaintedSurfaceDefaults(int t)
     if (water[SOIL_MOISTURE] < 0.01)
       water[SOIL_MOISTURE] = 25.0;
     if (water[SUSTAINED_MOISTURE] < 0.01)
-      water[SUSTAINED_MOISTURE] = packSustainedWithRainFreq(25.0, 0.0);
+      water[SUSTAINED_MOISTURE] = 25.0;
   }
 }
 

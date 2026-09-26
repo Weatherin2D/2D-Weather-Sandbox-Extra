@@ -230,7 +230,7 @@ vec3 floodWaterColor()
 
 vec3 getLandColor(float depth)
 {
-  float vegMoisture = max(unpackSustainedMoisture(water[SUSTAINED_MOISTURE]), water[SOIL_MOISTURE] * 0.65);
+  float vegMoisture = max(water[SUSTAINED_MOISTURE], water[SOIL_MOISTURE] * 0.65);
   vec3 vegetationCol = mix(greenGrassCol, dryGrassCol, max(1.0 - vegMoisture * (1. / fullGreenSoilMoisture), 0.)); // green to brown
 
   vec3 bareSoilCol = mix(bareDrySoilCol, bareWetSoilCol, map_rangeC(water[SOIL_MOISTURE], 0.0, 20.0, 0.0, 1.0));
@@ -2060,7 +2060,7 @@ void main()
             float treeScale = wallX0Ym[TYPE] == WALLTYPE_SUBURBAN ? 0.55 : 1.0;
             int treeStrip = wallX0Ym[TYPE] == WALLTYPE_FOREST2 ? FOREST2 : FOREST;
             vec4 treeColor = surfaceTexture(treeStrip, vec2(treeTexCoordX, treeTexCoordY * treeScale + (1.0 - treeScale) * 0.5));
-            float treeVegMoist = max(unpackSustainedMoisture(surfaceWater[SUSTAINED_MOISTURE]), surfaceWater[SOIL_MOISTURE] * 0.65);
+            float treeVegMoist = max(surfaceWater[SUSTAINED_MOISTURE], surfaceWater[SOIL_MOISTURE] * 0.65);
             vec4 vegetationCol = mix(treeColor, vec4(dryGrassCol, 1.), max(0.5 - treeVegMoist * (0.5 / fullGreenSoilMoisture), 0.) * treeColor.a); // green to brown
             if (wallX0Ym[TYPE] == WALLTYPE_SUBURBAN)
               vegetationCol.a *= step(0.82, suburbanHash(floor(suburbanWorldX(fragCoord.x) / suburbanLotWidth) + 53.1));
