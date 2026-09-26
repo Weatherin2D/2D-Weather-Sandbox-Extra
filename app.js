@@ -2008,7 +2008,6 @@ const WATER_MARKER_LAND_JS = 1001.0;
 const WATER_MARKER_SALT_JS = 1002.0;
 const FLOOD_HEIGHT_SCALE_JS = 1.0e-5;
 const FLOOD_HEIGHT_NOISE_MM_JS = 40.0;
-const SOIL_FIELD_CAPACITY_JS = 85.0;
 const FLOOD_HEIGHT_PACK_MAX_JS = 100000.0; // TOTAL flood packing limit (below SALT marker)
 const SOIL_MOISTURE_SAFETY_MAX_JS = 1.0e8; // float safety only — not a gameplay cap
 
