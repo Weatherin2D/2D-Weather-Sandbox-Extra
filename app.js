@@ -965,8 +965,13 @@ var idleRenderState = { skipped : 0, x : NaN, y : NaN, zoom : NaN, w : 0, h : 0,
 // Nothing in the frame loop blocks on the GPU any more, so without this the CPU can
 // queue many frames of simulation work; any later synchronous read then has to wait
 // for the whole queue, which shows up as a large lag spike.
+// Chrome caches WebGLSync status until the next event-loop turn, so a healthy GPU
+// that is keeping up still often reports 1 (sometimes 2) pending fences at the start
+// of draw(). Skip only when clearly backlogged; block auto-iter growth a notch above
+// that healthy floor so IterPerFrame does not freeze while the GPU is fine.
 const GPU_FENCE_RING_MAX = 8;
 const GPU_BACKLOG_SKIP_FRAMES = 4;
+const GPU_BACKLOG_GROWTH_BLOCK = 3;
 const GPU_BACKLOG_STALE_MS = 1000;
 var gpuFrameFences = [];
 var gpuFramesPending = 0;
@@ -1007,6 +1012,9 @@ var pressureLabelsIter = -1e9;
 const PRESSURE_LABEL_ROW_CHUNK = 32;
 var pressureLabelWallScratch = null;
 var pressureLabelRowScratch = null;
+var pressureLabelReader = createAsyncPixelReader();
+// Multi-frame async surface/pressure scan so DISP_PRESSURE does not sync-stall a deep queue.
+var pressureLabelAsync = { phase : 'idle', y0 : 1, sfcRow : 1 };
 var procLightningPosArr = new Float32Array(64);
 var procLightningDestArr = new Float32Array(64);
 var procLightningMetaArr = new Float32Array(64);
@@ -30946,37 +30954,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     gl.bindFramebuffer(gl.READ_FRAMEBUFFER, null);
   }
 
-  function updatePressureLabels()
+  function finishPressureLabelsFromRow(sfcRow, pressRow)
   {
-    const wallNeed = 4 * sim_res_x * PRESSURE_LABEL_ROW_CHUNK;
-    if (!pressureLabelWallScratch || pressureLabelWallScratch.length !== wallNeed)
-      pressureLabelWallScratch = new Int8Array(wallNeed);
-    if (!pressureLabelRowScratch || pressureLabelRowScratch.length !== 4 * sim_res_x)
-      pressureLabelRowScratch = new Float32Array(4 * sim_res_x);
-    const wallRows = pressureLabelWallScratch;
-    const pressRow = pressureLabelRowScratch;
-
-    // Surface row = lowest row with no wall cells at all.
-    gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_1);
-    gl.readBuffer(gl.COLOR_ATTACHMENT2);
-    let sfcRow = 1;
-    scan:
-    for (let y0 = 1; y0 < sim_res_y; y0 += PRESSURE_LABEL_ROW_CHUNK) {
-      const rows = Math.min(PRESSURE_LABEL_ROW_CHUNK, sim_res_y - y0);
-      gl.readPixels(0, y0, sim_res_x, rows, gl.RGBA_INTEGER, gl.BYTE, wallRows.subarray(0, 4 * sim_res_x * rows));
-      for (let r = 0; r < rows; r++) {
-        const rowOff = r * sim_res_x * 4;
-        let allAir = true;
-        for (let x = 0; x < sim_res_x; x++) {
-          if (wallRows[rowOff + x * 4 + 1] === 0) { allAir = false; break; }
-        }
-        if (allAir) { sfcRow = y0 + r; break scan; }
-      }
-    }
-    gl.readBuffer(gl.COLOR_ATTACHMENT0);
-    gl.readPixels(0, Math.min(sfcRow + 2, sim_res_y - 1), sim_res_x, 1, gl.RGBA, gl.FLOAT, pressRow);
-    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-
     const minSep = Math.max(8, Math.floor(sim_res_x / 20));
     pressureLabels = [];
     for (let x = 0; x < sim_res_x; x++) {
@@ -30992,6 +30971,75 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       }
       if (isMax) pressureLabels.push({x, sfcY: sfcRow + 2, type: 'H'});
       if (isMin) pressureLabels.push({x, sfcY: sfcRow + 2, type: 'L'});
+    }
+  }
+
+  function beginPressureLabelScan()
+  {
+    cancelAsyncReadPixels(pressureLabelReader);
+    pressureLabelAsync.phase = 'wall';
+    pressureLabelAsync.y0 = 1;
+    pressureLabelAsync.sfcRow = 1;
+  }
+
+  function tickPressureLabelScan()
+  {
+    const wallNeed = 4 * sim_res_x * PRESSURE_LABEL_ROW_CHUNK;
+    if (!pressureLabelWallScratch || pressureLabelWallScratch.length !== wallNeed)
+      pressureLabelWallScratch = new Int8Array(wallNeed);
+    if (!pressureLabelRowScratch || pressureLabelRowScratch.length !== 4 * sim_res_x)
+      pressureLabelRowScratch = new Float32Array(4 * sim_res_x);
+    const wallRows = pressureLabelWallScratch;
+    const pressRow = pressureLabelRowScratch;
+    const st = pressureLabelAsync;
+
+    if (st.phase === 'wall') {
+      if (asyncPixelReaderBusy(pressureLabelReader)
+          && pollAsyncReadPixels(pressureLabelReader, wallRows.subarray(0, pressureLabelReader.byteSize))) {
+        const rows = Math.min(PRESSURE_LABEL_ROW_CHUNK, sim_res_y - st.y0);
+        let found = false;
+        for (let r = 0; r < rows; r++) {
+          const rowOff = r * sim_res_x * 4;
+          let allAir = true;
+          for (let x = 0; x < sim_res_x; x++) {
+            if (wallRows[rowOff + x * 4 + 1] === 0) { allAir = false; break; }
+          }
+          if (allAir) { st.sfcRow = st.y0 + r; found = true; break; }
+        }
+        if (found) {
+          st.phase = 'press';
+        } else {
+          st.y0 += PRESSURE_LABEL_ROW_CHUNK;
+          if (st.y0 >= sim_res_y) {
+            pressureLabels = [];
+            st.phase = 'idle';
+            return;
+          }
+        }
+      }
+      if (st.phase === 'wall' && !asyncPixelReaderBusy(pressureLabelReader)) {
+        const rows = Math.min(PRESSURE_LABEL_ROW_CHUNK, sim_res_y - st.y0);
+        const bytes = 4 * sim_res_x * rows;
+        gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_1);
+        gl.readBuffer(gl.COLOR_ATTACHMENT2);
+        beginAsyncReadPixels(pressureLabelReader, 0, st.y0, sim_res_x, rows, gl.RGBA_INTEGER, gl.BYTE, bytes, null);
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      }
+    }
+
+    if (st.phase === 'press') {
+      if (pollAsyncReadPixels(pressureLabelReader, pressRow)) {
+        finishPressureLabelsFromRow(st.sfcRow, pressRow);
+        st.phase = 'idle';
+        return;
+      }
+      if (!asyncPixelReaderBusy(pressureLabelReader)) {
+        const py = Math.min(st.sfcRow + 2, sim_res_y - 1);
+        gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_1);
+        gl.readBuffer(gl.COLOR_ATTACHMENT0);
+        beginAsyncReadPixels(pressureLabelReader, 0, py, sim_res_x, 1, gl.RGBA, gl.FLOAT, 4 * sim_res_x * 4, null);
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      }
     }
   }
 
@@ -32996,9 +33044,12 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     }
     riskCanvas.style.display = 'block';
 
-    if (Math.abs(iterNum - pressureLabelsIter) >= 30) {
+    if (pressureLabelAsync.phase !== 'idle') {
+      tickPressureLabelScan();
+    } else if (Math.abs(iterNum - pressureLabelsIter) >= 30) {
       pressureLabelsIter = iterNum;
-      updatePressureLabels();
+      beginPressureLabelScan();
+      tickPressureLabelScan();
     }
 
     const rc = riskCanvas.getContext('2d');
@@ -33017,6 +33068,10 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     }
   } else {
     pressureLabelsIter = -1e9;
+    if (pressureLabelAsync.phase !== 'idle') {
+      cancelAsyncReadPixels(pressureLabelReader);
+      pressureLabelAsync.phase = 'idle';
+    }
   }
 
   if (!isRadarDisplayMode(guiControls.displayMode) && radarOverlayCanvas) {
@@ -33147,7 +33202,7 @@ drawNukeOverlay();
         guiControls.IterPerFrame = maxAutoIters;
       const msOverBudget = smoothedFrameMs - TARGET_FRAME_MS;
       const warmingUp = getStartupIterationCap() != null;
-      const gpuBehind = gpuFramesPending >= 2;
+      const gpuBehind = gpuFramesPending >= GPU_BACKLOG_GROWTH_BLOCK;
       if (gpuBacklogSkips > 0) {
         adjIterPerFrame(gpuBacklogSkips > 2 ? -2 : -1);
       } else if (msOverBudget > 2) {
