@@ -1037,8 +1037,10 @@ vec4 computeCloudSmokeColor(float cloudwater, float precip, float dustAmt, float
     float coreProbe = smoothstep(0.06, 0.40, clamp(precip * 0.55, 0.0, 1.0))
       * smoothstep(0.04, 0.35, shaftAmt + 0.20);
     float sheetProbe = max(shaftProbe, coreProbe);
-    if (greenHueStrength > 0.001 && dayGate > 0.001 && precip > 0.008 && sheetProbe > 0.015
-        && lit < 0.42) {
+    // Light rain or thick cloud body also carries the cast when the column beneath is intense.
+    sheetProbe = max(sheetProbe, max(smoothstep(0.01, 0.20, precip), thickCloudMask * 0.85));
+    if (greenHueStrength > 0.001 && dayGate > 0.001 && sheetProbe > 0.015
+        && lit < 0.85) {
       // 4-tap precip blur (water only) — fills holes without the old 16-sample cost
       vec2 px = texelSize * 2.0;
       float precipSm = precip * 0.40;
@@ -1059,11 +1061,23 @@ vec4 computeCloudSmokeColor(float cloudwater, float precip, float dustAmt, float
         precipSm += wN[PRECIPITATION] * 0.15;
       }
 
+      // Falling precip piles up in the lowest air cells (it cannot enter the ground), so
+      // free-air shaft values sit far below the thresholds. Drive intensity from the
+      // surface rain under this column so the whole shaft and storm above it is tinted.
+      float surfacePrecip = 0.0;
+      {
+        vec2 surfUV = terrainSurfaceUV(sampleUV.x * resolution.x);
+        for (int k = 1; k <= 3; k++) {
+          float sy = min(surfUV.y + float(k) * texelSize.y, 1.0 - texelSize.y * 0.5);
+          surfacePrecip = max(surfacePrecip, texture(waterTex, vec2(surfUV.x, sy))[PRECIPITATION]);
+        }
+      }
+
       float hueStart = max(greenHueStartThreshold, 0.01);
       float hueEnd = max(greenHueEndThreshold, hueStart + 0.05);
-      float intense = smoothstep(hueStart * 0.70, hueEnd, precipSm);
+      float intense = smoothstep(hueStart * 0.70, hueEnd, max(precipSm, surfacePrecip));
       // Soft shadow gate — still dies in direct sun, but remains visible in elevated cores.
-      float inShadow = 1.0 - smoothstep(0.03, 0.40, lit);
+      float inShadow = 1.0 - smoothstep(0.10, 0.85, lit);
       float coldFrac = 1.0 - clamp(rainSnowFactor, 0.0, 1.0);
 
       float iceGate = smoothstep(1.5, 18.0, max(hailMm, 0.0));
@@ -2182,7 +2196,7 @@ void main()
   // Keep precip-sheet teal through navy cast / fill — soft tint, sun still kills it.
   // Skip during shaft flash so teal cannot recolor the white curtain.
   if (precipCoreHueAmt > 0.001 && lightningShaftFlash < 0.08) {
-    float dimGate = 1.0 - smoothstep(0.03, 0.40, lightIntensity);
+    float dimGate = 1.0 - smoothstep(0.10, 0.85, lightIntensity);
     float amt = precipCoreHueAmt * dimGate;
     if (amt > 0.0001) {
       float lum = max(dot(finalColor, vec3(0.2126, 0.7152, 0.0722)), 1e-4);
