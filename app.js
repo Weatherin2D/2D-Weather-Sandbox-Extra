@@ -779,6 +779,7 @@ const guiControls_default = {
   tornadoDetectionOverlay : false, // near-surface vortex markers with wind delta / EF
   tornadoDetectionUpdateFreq : 8, // sim iterations between tornado detection rescans
   warningsOverlay : true, // NWS-style watches / MDs / warnings boxes
+  pressureOverlay : false, // H/L pressure centers with central pressure, trend and motion
   easAlertsEnabled : true, // EAS tone + crawl when a town is inside a warning
   easVoiceEnabled : true,
   easVolume : 0.85,
@@ -1026,6 +1027,11 @@ var pressureLabelRowScratch = null;
 var pressureLabelReader = createAsyncPixelReader();
 // Multi-frame async surface/pressure scan so DISP_PRESSURE does not sync-stall a deep queue.
 var pressureLabelAsync = { phase : 'idle', y0 : 1, sfcRow : 1 };
+// Air pressure overlay: H/L centers tracked between scans for trend and motion.
+var pressureOverlayCanvas = null;
+var pressureCenterTracks = []; // {id, type, history: [{t, x, hpa}]}
+var pressureCenterNextId = 1;
+const PRESSURE_TRACK_WINDOW_HOURS = 1.0;
 var procLightningPosArr = new Float32Array(64);
 var procLightningDestArr = new Float32Array(64);
 var procLightningMetaArr = new Float32Array(64);
@@ -12832,6 +12838,8 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     guiControls.tornadoDetectionOverlay = guiControls_default.tornadoDetectionOverlay;
   if (guiControls.warningsOverlay === undefined)
     guiControls.warningsOverlay = guiControls_default.warningsOverlay;
+  if (guiControls.pressureOverlay === undefined)
+    guiControls.pressureOverlay = guiControls_default.pressureOverlay;
   if (guiControls.easAlertsEnabled === undefined)
     guiControls.easAlertsEnabled = guiControls_default.easAlertsEnabled;
   if (guiControls.easSoundEnabled === undefined)
@@ -14116,6 +14124,12 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         }
       })
       .name('Watches / Warnings Overlay');
+    displayOverlays.add(guiControls, 'pressureOverlay')
+      .onChange(function() {
+        if (!guiControls.pressureOverlay && pressureOverlayCanvas)
+          pressureOverlayCanvas.style.display = 'none';
+      })
+      .name('Air Pressure (H/L) Overlay');
     displayOverlays.add(guiControls, 'easAlertsEnabled')
       .onChange(function() {
         if (!guiControls.easAlertsEnabled && window.WeatherSandbox && window.WeatherSandbox.eas)
@@ -20001,6 +20015,9 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       onDown() { setSyncedGuiControl('enableVectorField', !guiControls.enableVectorField); } },
     { id: 'toggleWarningsOverlay', name: 'Toggle watches / warnings overlay', category: 'Display', defaultCode: 'F4',
       onDown() { setSyncedGuiControl('warningsOverlay', !guiControls.warningsOverlay); } },
+    { id: 'togglePressureOverlay', name: 'Toggle air pressure (H/L) overlay', category: 'Display', defaultCode: 'F2',
+      preventDefault: true,
+      onDown() { setSyncedGuiControl('pressureOverlay', !guiControls.pressureOverlay); } },
     { id: 'toggleRadarOverlay', name: 'Toggle radar on realistic view', category: 'Radar', defaultCode: 'KeyS',
       onDown() { setSyncedGuiControl('radarOverlay', !guiControls.radarOverlay); } },
     { id: 'displayRisk', name: 'Risk display mode', category: 'Display', defaultCode: 'KeyZ',
@@ -31506,17 +31523,22 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   {
     const minSep = Math.max(8, Math.floor(sim_res_x / 20));
     pressureLabels = [];
-    const hpaMode = guiControls.displayMode === 'DISP_PRESSURE_HPA';
+    const hpaMode = pressureLabelsMode === 'DISP_PRESSURE_HPA';
     const py = Math.min(sfcRow + 2, sim_res_y - 1);
     // hPa mode: MSLP-equivalent anomaly per column (fluid PRESSURE minus row mean, plus synoptic background)
     let values = null;
+    let toSeaLevel = 1;
+    let meanTheta = 0;
     if (hpaMode) {
       values = new Float32Array(sim_res_x);
-      const toSeaLevel = guiControls.surfacePressure / Math.max(refPressureHpaAt(py), 1);
+      toSeaLevel = guiControls.surfacePressure / Math.max(refPressureHpaAt(py), 1);
       let mean = 0;
-      for (let x = 0; x < sim_res_x; x++)
+      for (let x = 0; x < sim_res_x; x++) {
         mean += pressRow[x * 4 + 2];
+        meanTheta += pressRow[x * 4 + 3];
+      }
       mean /= Math.max(sim_res_x, 1);
+      meanTheta /= Math.max(sim_res_x, 1);
       for (let x = 0; x < sim_res_x; x++)
         values[x] = (fluidPressureToHpa(pressRow[x * 4 + 2] - mean, py) + synopticBackgroundHpa(x, py)) * toSeaLevel;
     }
@@ -31534,8 +31556,245 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         if (!isMax && !isMin) break;
       }
       const hpa = hpaMode ? guiControls.surfacePressure + p : null;
-      if (isMax && (!hpaMode || p > 0)) pressureLabels.push({x, sfcY: sfcRow + 2, type: 'H', hpa});
-      if (isMin && (!hpaMode || p < 0)) pressureLabels.push({x, sfcY: sfcRow + 2, type: 'L', hpa});
+      if (isMax && (!hpaMode || p > 0)) pressureLabels.push({x, sfcY: sfcRow + 2, type: 'H', hpa, anomaly: p});
+      if (isMin && (!hpaMode || p < 0)) pressureLabels.push({x, sfcY: sfcRow + 2, type: 'L', hpa, anomaly: p});
+    }
+    if (!hpaMode)
+      return;
+
+    const wrapX = !!guiControls.wrapHorizontally;
+    const colAt = (x) => {
+      if (wrapX) return (x % sim_res_x + sim_res_x) % sim_res_x;
+      return x >= 0 && x < sim_res_x ? x : -1;
+    };
+    for (const lbl of pressureLabels) {
+      let thetaSum = 0, thetaN = 0, maxWind = 0;
+      for (let dx = -minSep; dx <= minSep; dx++) {
+        const cx = colAt(lbl.x + dx);
+        if (cx < 0) continue;
+        const vx = pressRow[cx * 4 + 0];
+        if (Number.isFinite(vx)) maxWind = Math.max(maxWind, Math.abs(vx));
+        if (Math.abs(dx) <= 3) {
+          thetaSum += pressRow[cx * 4 + 3];
+          thetaN++;
+        }
+      }
+      lbl.thetaAnomaly = thetaN > 0 ? thetaSum / thetaN - meanTheta : 0;
+      lbl.maxWindMs = rawVelocityTo_ms(maxWind);
+      const synoptic = synopticBackgroundHpa(lbl.x, py) * toSeaLevel;
+      const isSynoptic = synoptic * lbl.anomaly > 0 && Math.abs(synoptic) >= 0.5 * Math.abs(lbl.anomaly);
+      if (lbl.type === 'L')
+        lbl.kind = isSynoptic ? 'Synoptic Low' : (lbl.thetaAnomaly > 0.5 ? 'Thermal Low' : 'Low');
+      else
+        lbl.kind = isSynoptic ? 'Synoptic High' : (lbl.thetaAnomaly < -0.5 ? 'Cold-Pool Mesohigh' : 'High');
+    }
+    updatePressureCenterTracks(pressureLabels, minSep);
+  }
+
+  function wrappedDxCells(a, b)
+  {
+    let d = a - b;
+    if (guiControls.wrapHorizontally && sim_res_x > 0) {
+      d = ((d % sim_res_x) + sim_res_x) % sim_res_x;
+      if (d > sim_res_x / 2) d -= sim_res_x;
+    }
+    return d;
+  }
+
+  /** Least-squares slope of history[key] per sim hour; NaN until there is enough history. */
+  function pressureTrackSlope(history, key)
+  {
+    if (history.length < 3 || history[history.length - 1].t - history[0].t < 0.05)
+      return NaN;
+    let st = 0, sv = 0;
+    for (const h of history) { st += h.t; sv += h[key]; }
+    st /= history.length;
+    sv /= history.length;
+    let num = 0, den = 0;
+    for (const h of history) {
+      num += (h.t - st) * (h[key] - sv);
+      den += (h.t - st) * (h.t - st);
+    }
+    return den > 0 ? num / den : NaN;
+  }
+
+  /** Matches new H/L centers to the previous scan's (same type, nearest within matchDist) for trend and motion. */
+  function updatePressureCenterTracks(labels, matchDist)
+  {
+    const t = iterNum * timePerIteration;
+    // Sim time went backwards (reload / replay): old history no longer applies.
+    if (pressureCenterTracks.some(tr => tr.history[tr.history.length - 1].t > t + 1e-9))
+      pressureCenterTracks = [];
+    const unused = pressureCenterTracks.slice();
+    const next = [];
+    for (const lbl of labels) {
+      let best = -1, bestD = matchDist;
+      for (let i = 0; i < unused.length; i++) {
+        if (unused[i].type !== lbl.type) continue;
+        const last = unused[i].history[unused[i].history.length - 1];
+        const d = Math.abs(wrappedDxCells(lbl.x, last.x));
+        if (d <= bestD) { bestD = d; best = i; }
+      }
+      const tr = best >= 0 ? unused.splice(best, 1)[0] : { id: pressureCenterNextId++, type: lbl.type, history: [] };
+      const last = tr.history.length ? tr.history[tr.history.length - 1] : null;
+      const entry = { t, x: last ? last.x + wrappedDxCells(lbl.x, last.x) : lbl.x, hpa: lbl.hpa };
+      if (last && t <= last.t)
+        tr.history[tr.history.length - 1] = entry;
+      else
+        tr.history.push(entry);
+      while (tr.history.length > 2 && t - tr.history[0].t > PRESSURE_TRACK_WINDOW_HOURS)
+        tr.history.shift();
+      if (tr.history.length > 240)
+        tr.history.shift();
+      lbl.trackId = tr.id;
+      lbl.trendHpaPerHour = pressureTrackSlope(tr.history, 'hpa');
+      const cellsPerHour = pressureTrackSlope(tr.history, 'x');
+      lbl.motionMs = Number.isFinite(cellsPerHour) ? cellsPerHour * cellHeight / 3600 : NaN;
+      next.push(tr);
+    }
+    pressureCenterTracks = next;
+  }
+
+  function pressureCenterDetailLines(lbl)
+  {
+    const lines = [];
+    const sign = (v) => (v >= 0 ? '+' : '−') + Math.abs(v).toFixed(1);
+    lines.push(lbl.hpa.toFixed(1) + ' hPa (' + sign(lbl.anomaly) + ')');
+    const trend = lbl.trendHpaPerHour;
+    if (!Number.isFinite(trend)) {
+      lines.push('Trend: tracking…');
+    } else {
+      let word = 'Steady';
+      if (lbl.type === 'L' && trend < -0.1) word = 'Deepening';
+      else if (lbl.type === 'L' && trend > 0.1) word = 'Filling';
+      else if (lbl.type === 'H' && trend > 0.1) word = 'Building';
+      else if (lbl.type === 'H' && trend < -0.1) word = 'Weakening';
+      lines.push(word + ' ' + sign(trend) + ' hPa/h');
+    }
+    const motion = lbl.motionMs;
+    if (!Number.isFinite(motion))
+      lines.push('Motion: tracking…');
+    else if (Math.abs(motion) < 0.5)
+      lines.push('Stationary');
+    else
+      lines.push('Moving ' + (motion > 0 ? '→ ' : '← ') + printVelocity(Math.abs(motion)));
+    if (Number.isFinite(lbl.maxWindMs))
+      lines.push('Max sfc wind ' + printVelocity(lbl.maxWindMs));
+    return lines;
+  }
+
+  function pressureOverlayRoundRect(ctx, x, y, w, h, r)
+  {
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.arcTo(x + w, y, x + w, y + h, r);
+    ctx.arcTo(x + w, y + h, x, y + h, r);
+    ctx.arcTo(x, y + h, x, y, r);
+    ctx.arcTo(x, y, x + w, y, r);
+    ctx.closePath();
+  }
+
+  /** Air pressure overlay: H/L icons at the surface with a detail card each (strongest centers placed first). */
+  function drawPressureCentersOverlay(ctx)
+  {
+    const w = ctx.canvas.width;
+    const h = ctx.canvas.height;
+    ctx.clearRect(0, 0, w, h);
+    if (pressureLabelsMode !== 'DISP_PRESSURE_HPA')
+      return;
+
+    const placed = [];
+    const fits = (r) => r.x >= 2 && r.y >= 2 && r.x + r.w <= w - 2 && r.y + r.h <= h - 2
+      && !placed.some(o => r.x < o.x + o.w && r.x + r.w > o.x && r.y < o.y + o.h && r.y + r.h > o.y);
+    const sorted = pressureLabels.filter(l => Number.isFinite(l.hpa))
+      .sort((a, b) => Math.abs(b.anomaly) - Math.abs(a.anomaly));
+
+    const icons = [];
+    for (const lbl of sorted) {
+      const sx = simToScreenX(lbl.x + 0.5);
+      if (sx < -40 || sx > w + 40) continue;
+      const sy = Math.min(simToScreenY(lbl.sfcY) - 30, h - 34);
+      if (sy < -40) continue;
+      icons.push({ lbl, sx, sy });
+      placed.push({ x: sx - 20, y: sy - 20, w: 40, h: 50 });
+    }
+
+    for (const { lbl, sx, sy } of icons) {
+      const isLow = lbl.type === 'L';
+      const color = isLow ? 'rgba(220, 60, 60, 0.92)' : 'rgba(60, 100, 230, 0.92)';
+      ctx.beginPath();
+      ctx.arc(sx, sy, 17, 0, Math.PI * 2);
+      ctx.fillStyle = color;
+      ctx.fill();
+      ctx.strokeStyle = '#FFFFFF';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+      ctx.fillStyle = '#FFFFFF';
+      ctx.font = 'bold 18px Arial';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(lbl.type, sx, sy + 1);
+
+      if (Number.isFinite(lbl.motionMs) && Math.abs(lbl.motionMs) >= 0.5) {
+        const dir = lbl.motionMs > 0 ? 1 : -1;
+        const ay = sy + 25;
+        ctx.strokeStyle = '#FFFFFF';
+        ctx.fillStyle = '#FFFFFF';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(sx - 9 * dir, ay);
+        ctx.lineTo(sx + 5 * dir, ay);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(sx + 11 * dir, ay);
+        ctx.lineTo(sx + 4 * dir, ay - 5);
+        ctx.lineTo(sx + 4 * dir, ay + 5);
+        ctx.closePath();
+        ctx.fill();
+      }
+
+      const lines = pressureCenterDetailLines(lbl);
+      const title = lbl.kind || (isLow ? 'Low' : 'High');
+      const lineH = 15;
+      ctx.font = 'bold 13px Arial';
+      let textW = ctx.measureText(title).width;
+      ctx.font = '12px Arial';
+      for (const line of lines)
+        textW = Math.max(textW, ctx.measureText(line).width);
+      const cardW = Math.ceil(textW) + 16;
+      const cardH = (lines.length + 1) * lineH + 10;
+      const candidates = [
+        { x: sx + 24, y: sy - cardH / 2, w: cardW, h: cardH },
+        { x: sx - 24 - cardW, y: sy - cardH / 2, w: cardW, h: cardH },
+        { x: sx - cardW / 2, y: sy - 24 - cardH, w: cardW, h: cardH },
+      ];
+      const card = candidates.find(fits);
+      if (!card) {
+        ctx.font = 'bold 12px Arial';
+        ctx.lineWidth = 3;
+        ctx.strokeStyle = '#000000';
+        ctx.fillStyle = '#FFFFFF';
+        const txt = lbl.hpa.toFixed(0);
+        ctx.strokeText(txt, sx, sy - 27);
+        ctx.fillText(txt, sx, sy - 27);
+        continue;
+      }
+      placed.push(card);
+      pressureOverlayRoundRect(ctx, card.x, card.y, card.w, card.h, 6);
+      ctx.fillStyle = 'rgba(15, 15, 25, 0.82)';
+      ctx.fill();
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'top';
+      ctx.font = 'bold 13px Arial';
+      ctx.fillStyle = isLow ? '#FF8A8A' : '#8AB0FF';
+      ctx.fillText(title, card.x + 8, card.y + 5);
+      ctx.font = '12px Arial';
+      ctx.fillStyle = '#FFFFFF';
+      for (let i = 0; i < lines.length; i++)
+        ctx.fillText(lines[i], card.x + 8, card.y + 5 + (i + 1) * lineH);
     }
   }
 
@@ -33673,13 +33932,49 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     });
   }
 
-  // Draw H/L pressure labels when in pressure display mode
-  if (guiControls.displayMode === 'DISP_PRESSURE' || guiControls.displayMode === 'DISP_PRESSURE_HPA') {
-    if (pressureLabelsMode !== guiControls.displayMode) {
-      pressureLabelsMode = guiControls.displayMode;
+  // H/L pressure labels: in the pressure display modes, and everywhere when the air pressure overlay is on
+  const pressureViewMode = guiControls.displayMode === 'DISP_PRESSURE' || guiControls.displayMode === 'DISP_PRESSURE_HPA';
+  const pressureOverlayOn = !!guiControls.pressureOverlay;
+  if (pressureViewMode || pressureOverlayOn) {
+    const labelMode = pressureOverlayOn ? 'DISP_PRESSURE_HPA' : guiControls.displayMode;
+    if (pressureLabelsMode !== labelMode) {
+      pressureLabelsMode = labelMode;
       pressureLabels = [];
       pressureLabelsIter = -1e9;
     }
+
+    if (pressureLabelAsync.phase !== 'idle') {
+      tickPressureLabelScan();
+    } else if (Math.abs(iterNum - pressureLabelsIter) >= 30) {
+      pressureLabelsIter = iterNum;
+      beginPressureLabelScan();
+      tickPressureLabelScan();
+    }
+
+    if (pressureOverlayOn) {
+      if (!pressureOverlayCanvas) {
+        pressureOverlayCanvas = document.createElement('canvas');
+        pressureOverlayCanvas.style.cssText = 'position:fixed;top:0;left:0;pointer-events:none;z-index:2;';
+        document.body.appendChild(pressureOverlayCanvas);
+      }
+      if (pressureOverlayCanvas.width !== canvas.width || pressureOverlayCanvas.height !== canvas.height) {
+        pressureOverlayCanvas.width = canvas.width;
+        pressureOverlayCanvas.height = canvas.height;
+      }
+      pressureOverlayCanvas.style.display = 'block';
+      drawPressureCentersOverlay(pressureOverlayCanvas.getContext('2d'));
+    }
+  } else {
+    pressureLabelsIter = -1e9;
+    if (pressureLabelAsync.phase !== 'idle') {
+      cancelAsyncReadPixels(pressureLabelReader);
+      pressureLabelAsync.phase = 'idle';
+    }
+  }
+  if (!pressureOverlayOn && pressureOverlayCanvas)
+    pressureOverlayCanvas.style.display = 'none';
+
+  if (pressureViewMode) {
     if (!riskCanvas) {
       riskCanvas = document.createElement('canvas');
       riskCanvas.style.cssText = 'position:fixed;top:0;left:0;pointer-events:none;z-index:1;';
@@ -33691,20 +33986,12 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     }
     riskCanvas.style.display = 'block';
 
-    if (pressureLabelAsync.phase !== 'idle') {
-      tickPressureLabelScan();
-    } else if (Math.abs(iterNum - pressureLabelsIter) >= 30) {
-      pressureLabelsIter = iterNum;
-      beginPressureLabelScan();
-      tickPressureLabelScan();
-    }
-
     const rc = riskCanvas.getContext('2d');
     rc.clearRect(0, 0, riskCanvas.width, riskCanvas.height);
     rc.font = 'bold 22px monospace';
     rc.textAlign = 'center';
     rc.textBaseline = 'middle';
-    for (const lbl of pressureLabels) {
+    for (const lbl of (pressureOverlayOn ? [] : pressureLabels)) {
       const sx = simToScreenX(lbl.x);
       const sy = simToScreenY(lbl.sfcY + 3);
       if (guiControls.displayMode === 'DISP_PRESSURE_HPA')
@@ -33746,12 +34033,6 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         rc.strokeText(txt, 6, sy - 6);
         rc.fillText(txt, 6, sy - 6);
       }
-    }
-  } else {
-    pressureLabelsIter = -1e9;
-    if (pressureLabelAsync.phase !== 'idle') {
-      cancelAsyncReadPixels(pressureLabelReader);
-      pressureLabelAsync.phase = 'idle';
     }
   }
 
