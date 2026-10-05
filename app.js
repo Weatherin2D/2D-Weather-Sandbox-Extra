@@ -740,8 +740,7 @@ const guiControls_default = {
   enableStormSurge : true, // coastal storm-surge inundation
   floodRainThreshold : 0.42, // rain-occurrence frequency (0–1) needed to pond
   floodPondRate : 12.0, // ponding build rate once rain frequency exceeds threshold
-  limitSoilMoisture : false, // when false, soil moisture has no gameplay cap
-  maxSoilMoistureMm : 500.0, // used only when limitSoilMoisture is on
+  maxSoilMoistureMm : 0.0, // soil moisture cap in mm; 0 = unlimited
   // Natural grass→forest canopy species: Random (50/50), Forest (conifer), Forest 2 (deciduous)
   forestGrowthSpecies : 'Random (50/50)',
   rainfallAmountMult : 1.0,
@@ -2014,7 +2013,7 @@ const SOIL_MOISTURE_SAFETY_MAX_JS = 1.0e8; // float safety only — not a gamepl
 /** Effective soil moisture cap in mm; 0 means unlimited (shader uniform). */
 function effectiveSoilMoistureCapJs()
 {
-  if (!guiControls || !guiControls.limitSoilMoisture)
+  if (!guiControls)
     return 0.0;
   const mm = Number(guiControls.maxSoilMoistureMm);
   return Number.isFinite(mm) && mm > 0 ? mm : 0.0;
@@ -12389,11 +12388,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     guiControls.floodRainThreshold = guiControls_default.floodRainThreshold;
   if (guiControls.floodPondRate === undefined)
     guiControls.floodPondRate = guiControls_default.floodPondRate;
-  if (guiControls.limitSoilMoisture === undefined)
-    guiControls.limitSoilMoisture = guiControls_default.limitSoilMoisture;
-  else
-    guiControls.limitSoilMoisture = !!guiControls.limitSoilMoisture;
-  if (guiControls.maxSoilMoistureMm === undefined || !Number.isFinite(guiControls.maxSoilMoistureMm))
+  if (!Number.isFinite(guiControls.maxSoilMoistureMm))
     guiControls.maxSoilMoistureMm = guiControls_default.maxSoilMoistureMm;
   if (guiControls.floodWaterOpacity === undefined) {
     const legacy = guiControls.floodVizStrength;
@@ -12710,6 +12705,9 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       guiControls.weatherBalloonSampleIntervalM = guiControls_default.weatherBalloonSampleIntervalM;
     else
       guiControls.weatherBalloonSampleIntervalM = clamp(guiControls.weatherBalloonSampleIntervalM, 2, 100);
+    if (guiControls.limitSoilMoisture === false) // older saves: an unchecked "Limit Soil Moisture" meant unlimited
+      guiControls.maxSoilMoistureMm = 0;
+    delete guiControls.limitSoilMoisture;
     // Fill any keys missing from older save files (JSON omits undefined; functions are reattached below).
     for (const key of Object.keys(guiControls_default)) {
       if (guiControls[key] === undefined)
@@ -13263,16 +13261,9 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     water_folder.add(guiControls, 'soilMoistureLossMult', 0.0, 5.0, 0.05)
       .onChange(uploadLandRateUniforms)
       .name('Soil Moisture Loss');
-    water_folder.add(guiControls, 'limitSoilMoisture')
-      .onChange(function() {
-        uploadSoilMoistureCapUniforms();
-      })
-      .name('Limit Soil Moisture');
-    water_folder.add(guiControls, 'maxSoilMoistureMm', 10, 5000, 10)
-      .onChange(function() {
-        uploadSoilMoistureCapUniforms();
-      })
-      .name('Max Soil Moisture (mm)');
+    water_folder.add(guiControls, 'maxSoilMoistureMm', 0, 5000, 10)
+      .onChange(uploadSoilMoistureCapUniforms)
+      .name('Max Soil Moisture (mm, 0 = Unlimited)');
     water_folder.add(guiControls, 'climateMoistureDecayMult', 0.0, 5.0, 0.05)
       .onChange(uploadLandRateUniforms)
       .name('Climate Moisture Decay');
@@ -30155,7 +30146,6 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     guiControlsForSave.stormSurgeInlandReach = guiControls.stormSurgeInlandReach;
     guiControlsForSave.floodRainThreshold = guiControls.floodRainThreshold;
     guiControlsForSave.floodPondRate = guiControls.floodPondRate;
-    guiControlsForSave.limitSoilMoisture = !!guiControls.limitSoilMoisture;
     guiControlsForSave.maxSoilMoistureMm = guiControls.maxSoilMoistureMm;
     attachAppearanceSaveFields(guiControlsForSave);
     const embeddedRadars = buildSavedRadarTowersForGuiControls();
@@ -33416,7 +33406,6 @@ drawNukeOverlay();
         guiControlsForSave.stormSurgeInlandReach = guiControls.stormSurgeInlandReach;
         guiControlsForSave.floodRainThreshold = guiControls.floodRainThreshold;
         guiControlsForSave.floodPondRate = guiControls.floodPondRate;
-        guiControlsForSave.limitSoilMoisture = !!guiControls.limitSoilMoisture;
         guiControlsForSave.maxSoilMoistureMm = guiControls.maxSoilMoistureMm;
         attachAppearanceSaveFields(guiControlsForSave);
         const embeddedRadars = buildSavedRadarTowersForGuiControls();

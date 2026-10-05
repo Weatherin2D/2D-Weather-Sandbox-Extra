@@ -39,19 +39,27 @@ float rawTerrainHeightColumn(int ix)
 #endif
 }
 
-// Catmull-Rom interpolated column height in cell units (surface y).
+// Top of the solid cells in this column (cells with y < H are walls, row 0 always is).
+float blockTerrainHeightColumn(int ix)
+{
+  return max(ceil(rawTerrainHeightColumn(ix)), 1.0);
+}
+
+// Blocky column height in cell units (surface y). The cell above a step gets
+// a 45° corner fill toward a taller neighbor, like the original renderer.
 float sampleTerrainHeight(float fragX)
 {
-  float x = fragX - 0.5;
-  int i = int(floor(x));
-  float f = clamp(x - float(i), 0.0, 1.0);
-  float h0 = rawTerrainHeightColumn(i - 1);
-  float h1 = rawTerrainHeightColumn(i);
-  float h2 = rawTerrainHeightColumn(i + 1);
-  float h3 = rawTerrainHeightColumn(i + 2);
-  float f2 = f * f;
-  float f3 = f2 * f;
-  return 0.5 * ((2.0 * h1) + (-h0 + h2) * f + (2.0 * h0 - 5.0 * h1 + 4.0 * h2 - h3) * f2 + (-h0 + 3.0 * h1 - 3.0 * h2 + h3) * f3);
+  int i = int(floor(fragX));
+  float f = fragX - float(i);
+  float h = blockTerrainHeightColumn(i);
+  float hL = blockTerrainHeightColumn(i - 1);
+  float hR = blockTerrainHeightColumn(i + 1);
+  float surf = h;
+  if (hL >= h + 1.0)
+    surf = max(surf, h + 1.0 - f);
+  if (hR >= h + 1.0)
+    surf = max(surf, h + f);
+  return surf;
 }
 
 float occupancyHeightColumn(int ix)
@@ -94,7 +102,8 @@ float sampleDisplayTerrainHeight(isampler2D walls, float fragX)
 
 float terrainSlope(float fragX)
 {
-  return sampleTerrainHeight(fragX + 0.6) - sampleTerrainHeight(fragX - 0.6);
+  int i = int(floor(fragX));
+  return 0.6 * (blockTerrainHeightColumn(i + 1) - blockTerrainHeightColumn(i - 1));
 }
 
 float displayTerrainSlope(isampler2D walls, float fragX)
@@ -114,7 +123,7 @@ bool samplePosIsTerrain(vec2 pos)
 }
 
 // Air pocket under a solid crust (caves / overhangs). Open-to-sky cells
-// just below the interpolated skyline stay filled so slopes stay smooth.
+// just below the skyline stay filled so the 45° step corners are drawn.
 bool fragmentIsCaveAir(isampler2D walls)
 {
   if (texCoord.y <= 0.0 || texCoord.y > 1.0)
@@ -136,8 +145,8 @@ bool displayIsSolidTerrain(isampler2D walls)
 {
   if (fragmentIsCaveAir(walls))
     return false;
-  // Occupancy walls that poke above Catmull-Rom still count as ground so the
-  // skyline cannot leak sky/water through 1-cell squares.
+  // Occupancy walls that poke above the height texture still count as ground so
+  // the skyline cannot leak sky/water through 1-cell squares.
   if (texture(walls, texCoord)[1] == 0)
     return true;
   return displayIsTerrain();

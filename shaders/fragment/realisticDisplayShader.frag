@@ -1498,7 +1498,7 @@ void main()
     gTerrainH = hSolid - (1.0 - waterLevel);
     gTerrainSlope = 0.0;
   }
-  // Occupancy is a step function; Catmull-Rom can sit a cell below a wall. Those
+  // Occupancy can sit above the height texture (e.g. painted walls). Those
   // wall fragments used to shade as transparent air so the sky background showed
   // through as cyan/pink squares along the ridgeline. Fill them as ground.
   bool occupancySolid = wall[DISTANCE] == 0;
@@ -1535,7 +1535,7 @@ void main()
   icccSurf = vec3(0.0);
   precipBoltShafts = vec3(0.0);
 
-  if (texCoord.y < 0. || (belowTerrain && texCoord.y <= 1.0)) { // underground or smooth terrain silhouette
+  if (texCoord.y < 0. || (belowTerrain && texCoord.y <= 1.0)) { // underground or blocky terrain silhouette
 
     float depth = max(gTerrainH - fragCoord.y, 0.0); // depth below interpolated surface
 
