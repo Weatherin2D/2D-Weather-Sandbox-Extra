@@ -83,6 +83,8 @@
 - [x] Improve terrain generation
 - [x] Make precipitation work on all mobile devices
 - [x] Simulate realistic atmospheric pressure (diagnostic MSLP + optional hydrostatic CAPE P(z))
+- [x] Physical air pressure: hPa field + isobar/H-L display, pressure brush, opt-in anelastic mode
+- [x] Optional weak synoptic write-back into fluid PRESSURE (horizontal background pressure gradient in `velocityShader`; `synopticPressureCoupling`, 0 for older saves)
 - [x] Add sounds
 - [x] Add weather balloons
 - [x] Flash-flood / runoff visualization (standing water tint + DISP_FLOOD)
@@ -96,7 +98,6 @@
 
 # Future:
 - [ ] Harden multiplayer (desync, lag, reconnect)
-- [ ] Optional weak synoptic write-back into fluid PRESSURE (display-only MSLP stays default)
 - [ ] Extract more logic out of app.js into focused modules
 - [ ] Evaluate custom UI to replace cluttered dat.GUI
 - [ ] More scenario packs / community share format

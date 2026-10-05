@@ -30,6 +30,7 @@
     { id: 'TOOL_SMOKE', name: 'Smoke', category: 'Atmosphere', kind: 'brush', builtin: true, tags: ['aerosol', 'smoke', 'fire'] },
     { id: 'TOOL_DUST', name: 'Dust', category: 'Atmosphere', kind: 'brush', builtin: true, tags: ['aerosol', 'dust'] },
     { id: 'TOOL_WIND', name: 'Wind', category: 'Atmosphere', kind: 'brush', builtin: true, tags: ['air', 'shear'] },
+    { id: 'TOOL_PRESSURE', name: 'Air Pressure', category: 'Atmosphere', kind: 'brush', builtin: true, tags: ['pressure', 'high', 'low', 'hpa'] },
     { id: 'TOOL_CHARGE', name: 'Charge', category: 'Atmosphere', kind: 'brush', builtin: true, tags: ['lightning', 'electric'] },
     { id: 'TOOL_WALL_LAND', name: 'Land', category: 'Terrain', kind: 'brush', builtin: true, tags: ['ground', 'surface'] },
     { id: 'TOOL_WALL_FRESH', name: 'Fresh Water / Lake', category: 'Terrain', kind: 'brush', builtin: true, tags: ['lake', 'river', 'water'] },

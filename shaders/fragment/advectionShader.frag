@@ -356,6 +356,8 @@ void main()
       } else {
         base.xy += userInputMove * 5.0 * weight * userInputValues[BRUSH_INTENSITY];
       }
+    } else if (userInputType == 6 && wall[DISTANCE] != 0) { // air pressure (Ctrl = low)
+      base[PRESSURE] += userInputValues[BRUSH_INTENSITY] * weight * 0.01;
     } else if (userInputType == 5 && wall[DISTANCE] != 0) { // precipitation in air (invert removes)
       water[PRECIPITATION] += userInputValues[BRUSH_INTENSITY] * 8.0;
       water[PRECIPITATION] = max(water[PRECIPITATION], 0.0);

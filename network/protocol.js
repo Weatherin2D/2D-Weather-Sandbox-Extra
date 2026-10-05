@@ -158,6 +158,7 @@
       case 'TOOL_SMOKE': return 34;
       case 'TOOL_DUST': return 3;
       case 'TOOL_WIND': return 4;
+      case 'TOOL_PRESSURE': return 6;
       case 'TOOL_PRECIP': return 5;
       case 'TOOL_WALL': return 10;
       case 'TOOL_WALL_LAND': return 11;

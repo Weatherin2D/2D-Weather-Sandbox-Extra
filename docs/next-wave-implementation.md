@@ -164,8 +164,27 @@ PR3  Meteogram panel              ✓
 PR4  Procedural terrain           ✓
 PR5  Scenario packs               ✓
 PR6  Roadmap polish (precip×Y, lake depth, albedo, mobile precip) ✓
-PR7  MSLP Phase B (hydrostatic CAPE P(z)) — implemented via `useHydrostaticCapePressure` / `beginHydrostaticPressureColumn` (fluid solver PRESSURE unchanged)
+PR7  MSLP Phase B (hydrostatic CAPE P(z)) — implemented via `useHydrostaticCapePressure`; now uses `beginPhysicalPressureColumn` (PR8)
+PR8  Physical air pressure (see below) ✓
 ```
+
+## Physical air pressure — IMPLEMENTED
+
+Supersedes the thermal + dynamic MSLP formula from Feature 1. `base[PRESSURE]` is already a physical pressure perturbation, so it is converted rather than modelled separately.
+
+| Piece | Implementation |
+|-------|----------------|
+| Unit conversion | `p'_Pa = rho_ref(y) * (cellHeight / dt)^2 * base[PRESSURE] * fluidPressureHpaScale` with dt = `timePerIteration * 3600` s. Anelastic mode uses surface density because its gradient is divided by normalized density. |
+| Reference column | `buildReferencePressureProfile()` integrates the live domain-mean virtual temperature (from the row-mean pass; `initial_T` until the first readback) hydrostatically from `surfacePressure` → `refProfileTex` (504×1 RGBA32F: P hPa, rho, reference vapor). Rebuilt on every row-mean readback. Helpers in [`common.glsl`](../shaders/common.glsl) (`sampleRefProfile`, `fluidToPa`, `paToFluid`, `synopticBackgroundHpa`). |
+| Row mean | [`pressureRowMeanShader.frag`](../shaders/fragment/pressureRowMeanShader.frag) per row: R = mean fluid pressure trimmed to ±1σ (storm cells do not bias the baseline), G = air cell count, B = mean θ, A = mean vapor. R is subtracted so domain-wide offsets do not show up as anomalies; B/A drive the reference column. Read back async every 10th frame. |
+| Display | `DISP_PRESSURE_HPA` / [`pressureDisplayShader.frag`](../shaders/fragment/pressureDisplayShader.frag): monochrome. About `isobarCount` full-pressure isobars over the domain height, spacing rounded to whole hPa (every 5th brighter and labeled at the left edge), anomaly isobars every `isobarIntervalHpa` (dashed when below the row mean); H/L overlay with hPa values (MSLP-equivalent). Backquote toggles hPa ↔ fluid view. |
+| Sounding / CAPE / stations | `beginPhysicalPressureColumn()` builds the skew-T / CAPE `P(z)` from `totalPressureHpaAt()` (same numbers as the view); `skewAltMFromHpa()` inverts it so grid lines match. [`capeShader.frag`](../shaders/fragment/capeShader.frag) samples the same field per level (no synoptic term). Sounding export writes the physical pressure. Stations show local pressure (`stn`) in the hPa view, MSLP otherwise. `useHydrostaticCapePressure = false` falls back to ISA. |
+| MSLP | `computeMslpHpa()` = surface fluid anomaly (lowest 200 m, row mean removed) + synoptic background, reduced to sea level. The old thermal term double-counted the hydrostatic anomaly already in the fluid field; `pressureThermalScale` / `pressureDynamicScale` are kept only so old saves load. |
+| Synoptic coupling | `velocityShader` adds `synopticPressureCoupling * ∂x(ps)` (horizontal only, assumed hydrostatically balanced). Vertical profile 1 at the surface → −0.4 aloft. CPU radial nudge in `applySynopticSystemsCpu` only runs when coupling = 0. Saves without the key load with coupling 0. |
+| Brush | `TOOL_PRESSURE`, inputType 6 → `advectionShader` adds `intensity * weight * 0.01` to air cells (Ctrl = Low). |
+| Anelastic | `pressurePhysicsMode = 'Anelastic'`: `pressureShader` uses mass-flux divergence `rhoC*(vxL-vx0) + rhoD*vyD - rhoU*vy0`; `velocityShader` divides the gradient by normalized rho at the face, giving the same wave speed (p_tt = kΔp); `boundaryShader` adds virtual-temperature buoyancy `0.608 T (q - q_ref)`. |
+
+Validate shaders with `node scripts/validate_shader.js` (inlines includes and rewrites to GLSL ES 3.10 for glslang's SPIR-V front end).
 
 ## Roadmap polish (plan “Already on the roadmap”) — IMPLEMENTED
 

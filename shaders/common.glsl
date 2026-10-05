@@ -657,6 +657,75 @@ vec4 sanitizeSimWater(vec4 w, int wallDist, int wallType)
 
 float sanitizeSimSmoke(float s) { return clamp(simFiniteOr(s, 0.0), 0.0, 48.0); }
 
+////////////// Physical pressure ///////////////
+// refProfileTex (SIM_PROFILE_SAMPLES x 1, RGBA32F), built on the CPU from initial_T:
+#define REF_P_HPA 0   // hydrostatic reference pressure (hPa)
+#define REF_RHO 1     // reference air density (kg/m^3)
+#define REF_VAPOR 2   // reference water vapor (g/m^3, same units as water[TOTAL])
+#define MAX_SYNOPTIC_SYSTEMS 16
+
+vec4 sampleRefProfile(sampler2D refTex, float cellY, float resY)
+{
+  float t = clamp(cellY / max(resY, 1.0), 0.0, 1.0) * float(SIM_PROFILE_SAMPLES - 1);
+  int i0 = int(floor(t));
+  int i1 = min(i0 + 1, SIM_PROFILE_SAMPLES - 1);
+  return mix(texelFetch(refTex, ivec2(i0, 0), 0), texelFetch(refTex, ivec2(i1, 0), 0), fract(t));
+}
+
+float refPressureHpa(sampler2D refTex, float cellY, float resY) { return sampleRefProfile(refTex, cellY, resY)[REF_P_HPA]; }
+
+float refDensity(sampler2D refTex, float cellY, float resY) { return max(sampleRefProfile(refTex, cellY, resY)[REF_RHO], 0.01); }
+
+// Density normalized to the bottom of the domain (1 at y = 0).
+float refDensityNorm(sampler2D refTex, float cellY, float resY)
+{
+  return refDensity(refTex, cellY, resY) / max(texelFetch(refTex, ivec2(0, 0), 0)[REF_RHO], 0.01);
+}
+
+// Momentum equation in cell units: dv = -dp/rho * dt^2/dx^2, so 1 unit of fluid PRESSURE
+// equals rho * (dx/dt)^2 Pa. paPerUnitPerRho = (cellHeight / dtSec)^2 * user scale.
+// Anelastic mode divides the gradient by normalized density, which leaves surface density here.
+float fluidToPa(sampler2D refTex, float p, float cellY, float resY, float paPerUnitPerRho, int anelastic)
+{
+  float rho = anelastic != 0 ? max(texelFetch(refTex, ivec2(0, 0), 0)[REF_RHO], 0.01) : refDensity(refTex, cellY, resY);
+  return p * rho * paPerUnitPerRho;
+}
+
+float paToFluid(sampler2D refTex, float pa, float cellY, float resY, float paPerUnitPerRho, int anelastic)
+{
+  float rho = anelastic != 0 ? max(texelFetch(refTex, ivec2(0, 0), 0)[REF_RHO], 0.01) : refDensity(refTex, cellY, resY);
+  return pa / max(rho * paPerUnitPerRho, 1e-6);
+}
+
+// Synoptic Low/High are column features: full strength at the surface, reversing aloft
+// so a Low converges low down and diverges high up. Must match synopticVerticalProfile() in app.js.
+float synopticVerticalProfile(float heightFrac) { return mix(1.0, -0.4, smoothstep(0.1, 0.75, heightFrac)); }
+
+// sys: x (cells), y (cells, unused), radius (cells, scaled by aspect like the CPU nudge), signed amplitude (hPa)
+float synopticBackgroundHpa(vec4 sys[MAX_SYNOPTIC_SYSTEMS], int count, float cellX, float cellY, vec2 res, bool wrap)
+{
+  float aspect = res.y / max(res.x, 1.0);
+  float sum = 0.0;
+  for (int i = 0; i < MAX_SYNOPTIC_SYSTEMS; i++) {
+    if (i >= count)
+      break;
+    vec4 s = sys[i];
+    if (s.z < 1.0)
+      continue;
+    float dx = cellX - s.x;
+    if (wrap) {
+      float adx = abs(dx);
+      if (adx > res.x - adx)
+        dx = dx > 0.0 ? dx - res.x : dx + res.x;
+    }
+    float d = abs(dx) * aspect / s.z;
+    if (d >= 1.0)
+      continue;
+    sum += s.w * (1.0 - smoothstep(0.0, 1.0, d));
+  }
+  return sum * synopticVerticalProfile(clamp(cellY / max(res.y, 1.0), 0.0, 1.0));
+}
+
 ////////////// Water Functions ///////////////
 #define wf_devider 250.0 // 250.0 Real water 	230 less steep curve
 #define wf_pow 17.0      // 17.0						10

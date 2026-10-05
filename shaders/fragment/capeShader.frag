@@ -8,13 +8,17 @@ in vec2 texCoord;
 uniform sampler2D baseTex;
 uniform sampler2D waterTex;
 uniform isampler2D wallTex;
+uniform sampler2D refProfileTex; // R = P_ref hPa, G = rho_ref
+uniform sampler2D rowMeanTex;    // (sim_res_y x 1): R = row mean of fluid PRESSURE, G = air cell count
 
 uniform vec2 resolution;
 uniform vec2 texelSize;
 uniform float dryLapse;
 uniform float simHeight;
 uniform float evapHeat;
-uniform float surfacePressure; // MSL baseline hPa (Phase B hydrostatic CAPE)
+uniform float paPerUnitPerRho;
+uniform int anelastic;
+uniform int useSimPressure;      // 0 = ISA pressure from altitude
 
 layout(location = 0) out float cape;
 
@@ -38,6 +42,19 @@ float mixingRatioKg(float Tc, float hpa)
 float pressureFromAlt(float altM)
 {
   return 1013.25 * pow(max(1e-6, 1.0 - 2.25577e-5 * altM), 5.25588);
+}
+
+// Same pressure as the Air Pressure (hPa) view, minus the synoptic background.
+float levelPressureHpa(int y, float fluidP, float dzR)
+{
+  float cellY = float(y);
+  if (useSimPressure == 0)
+    return pressureFromAlt(cellY * dzR);
+  vec4 rowMean = texelFetch(rowMeanTex, ivec2(y, 0), 0);
+  float anomaly = rowMean.g > 0.5 ? fluidP - rowMean.r : 0.0;
+  float p = refPressureHpa(refProfileTex, cellY, resolution.y)
+          + fluidToPa(refProfileTex, anomaly, cellY, resolution.y, paPerUnitPerRho, anelastic) * 0.01;
+  return clamp(simFiniteOr(p, pressureFromAlt(cellY * dzR)), 20.0, 1080.0);
 }
 
 float moistLapseKperM(float tK, float pHpa)
@@ -73,9 +90,6 @@ void main()
 {
   float dzR = simHeight / resolution.y;
   float dryLapseM = 9.76 / 1000.0;
-  float g = 9.80665;
-  float Rd = 287.05;
-
   // Find surface
   int surfaceY = 0;
   for (int y = 0; y < 512; y++) {
@@ -89,15 +103,10 @@ void main()
   vec4 sfcWater   = texture(waterTex, sfcCoord);
   float sfcTempC  = KtoC(sfcBase[TEMPERATURE] - sfcCoord.y * dryLapse);
   float sfcTdC    = KtoC(dewpoint(clamp(sfcWater[TOTAL], 0.0, maxWater(CtoK(sfcTempC)) * 1.05)));
-  float sfcAlt    = float(surfaceY) * dzR;
-  // Hydrostatic column: start near ISA station pressure, then integrate with virtual T.
-  float p0Isa     = pressureFromAlt(sfcAlt);
-  float pSfc      = (surfacePressure > 100.0 ? surfacePressure : 1013.25) * (p0Isa / 1013.25);
-  float p         = pSfc;
+  float p         = levelPressureHpa(surfaceY, sfcBase[PRESSURE], dzR);
   float mixW      = mixingRatioKg(min(sfcTdC, sfcTempC), p);
 
   float prevT  = sfcTempC;
-  float prevEnvTk = CtoK(sfcTempC);
   bool saturated = sfcTempC <= sfcTdC + 0.05;
   float totalCape = 0.0;
   bool pastLfc = false;
@@ -108,13 +117,8 @@ void main()
     vec4 envBase = texture(baseTex, vec2(texCoord.x, texY));
     float envTk  = envBase[TEMPERATURE] - texY * dryLapse;
     float envTdC = KtoC(dewpoint(texture(waterTex, vec2(texCoord.x, texY))[TOTAL]));
+    p = min(levelPressureHpa(y, envBase[PRESSURE], dzR), p);
     float envW = mixingRatioKg(envTdC, max(p, 50.0));
-    float prevW = mixingRatioKg(KtoC(dewpoint(texture(waterTex, vec2(texCoord.x, (float(y - 1) + 0.5) * texelSize.y))[TOTAL])), max(p, 50.0));
-    float tv0 = prevEnvTk * (1.0 + 0.6077 * prevW);
-    float tv1 = envTk * (1.0 + 0.6077 * envW);
-    float tv = 0.5 * (tv0 + tv1);
-    p = p * exp(-g * dzR / (Rd * max(tv, 150.0)));
-    p = clamp(p, 20.0, 1080.0);
 
     if (!saturated) {
       prevT -= dryLapseM * dzR;
@@ -135,8 +139,6 @@ void main()
     if (buoy > 0.02) pastLfc = true;
     if (pastLfc && buoy > 0.0) totalCape += buoy * dzR;
     if (pastLfc && buoy <= 0.02 && totalCape > 50.0) break;
-
-    prevEnvTk = envTk;
   }
 
   cape = simFiniteOr(totalCape, 0.0);

@@ -22,7 +22,10 @@ This project aims to produce a semirealistic two-dimensional, realtime, interact
 - **Shader Menu** — look packs, cloud/rain controls, custom sky textures
 - **Flood / storm-surge viz** — standing water depth and `DISP_FLOOD`; natural flooding is driven by rain *frequency* (persistent rain), not one-off totals
 - **Optional soil moisture cap** — soil moisture is unlimited by default; set Max Soil Moisture above 0 to cap it
-- **Diagnostic MSLP** — thermal + dynamic + synoptic surface pressure (hPa); optional hydrostatic CAPE `P(z)`
+- **Physical air pressure** — the solver's pressure field converted to real hPa on a hydrostatic reference column; monochrome Air Pressure (hPa) view with labeled isobars, anomaly isobars and H/L centers; the same pressure drives the skew-T pressure axis, CAPE, sounding exports and weather stations (local and MSLP)
+- **Synoptic Lows/Highs that drive the wind** — their pressure gradient pushes surface convergence/divergence (Synoptic Pressure → Wind)
+- **Air Pressure brush** — paint Highs, or Lows with Ctrl
+- **Anelastic physics mode** (opt-in) — density-aware pressure solver plus virtual-temperature buoyancy; Classic stays the default
 - **Multiplayer** — local co-op via `npm start` (still WIP)
 
 ## Clouds and precipitation

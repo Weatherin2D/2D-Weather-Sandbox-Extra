@@ -749,12 +749,17 @@ const guiControls_default = {
   soilMoistureLossMult : 1.0,
   climateMoistureDecayMult : 1.0,
   fireBurnMult : 1.0,
-  // Meteorological MSLP (display/stations). Fluid base[PRESSURE] stays dimensionless.
+  // Physical pressure: hydrostatic reference profile + fluid base[PRESSURE] scaled to Pa.
   surfacePressure : 1013.25,       // sea-level baseline hPa
-  pressureThermalScale : 1.5,      // hPa per °C column warmth (warm → lower MSLP)
-  pressureDynamicScale : 20.0,     // hPa per unit near-surface fluid pressure
+  pressureThermalScale : 1.5,      // legacy (pre-physical MSLP); kept so old saves load
+  pressureDynamicScale : 20.0,     // legacy (pre-physical MSLP); kept so old saves load
+  fluidPressureHpaScale : 1.0,     // 1 = physical rho * (dx/dt)^2 conversion of fluid PRESSURE
+  isobarIntervalHpa : 1.0,         // anomaly (H/L) contour spacing in the Air Pressure (hPa) view
+  isobarCount : 80,                // approx. number of full-pressure isobars across the domain height; every 5th is major
   pressureSynopticScale : 8.0,     // hPa amplitude at synoptic L/H center (strength=1)
-  useHydrostaticCapePressure : true, // Phase B: hydrostatic P(z) for CAPE/skew-T (solver unchanged)
+  synopticPressureCoupling : 0.5,  // 0 = synoptic pressure display-only; >0 drives wind via pressure gradient
+  pressurePhysicsMode : 'Classic', // 'Classic' | 'Anelastic' (density-weighted solver + virtual temperature)
+  useHydrostaticCapePressure : true, // skew-T / CAPE P(z) from the simulated pressure field (false = ISA)
   // Replay / forecast
   recordIntervalSimSec : 60,       // keyframe every N sim-seconds while recording
   replayMaxKeyframes : 120,        // ring-buffer cap during live recording
@@ -1010,6 +1015,7 @@ var tempChangeHistorySeeded = false;
 
 var pressureLabels = []; // {x, sfcY, type: 'H' | 'L'} for the pressure view
 var pressureLabelsIter = -1e9;
+var pressureLabelsMode = '';
 const PRESSURE_LABEL_ROW_CHUNK = 32;
 var pressureLabelWallScratch = null;
 var pressureLabelRowScratch = null;
@@ -2284,9 +2290,27 @@ function skewTempFromMixingRatioGkg(wGkg, hpa)
   return (lo + hi) * 0.5;
 }
 
+/** Inverse of skewHpaFromAltM: inverts the active pressure column, ISA outside it. */
 function skewAltMFromHpa(hpa)
 {
-  return (1.0 - Math.pow(hpa / 1013.25, 1.0 / 5.25588)) / 2.25577e-5;
+  const col = _hydrostaticColumn;
+  if (col && col.pByY && col.dz > 0 && hpa > 0) {
+    const pByY = col.pByY;
+    const n = pByY.length;
+    if (hpa >= pByY[0])
+      return isaAltMFromHpa(hpa) - isaAltMFromHpa(pByY[0]);
+    if (hpa <= pByY[n - 1])
+      return (n - 1) * col.dz + isaAltMFromHpa(hpa) - isaAltMFromHpa(pByY[n - 1]);
+    let lo = 0, hi = n - 1; // pByY decreases with y
+    while (hi - lo > 1) {
+      const mid = (lo + hi) >> 1;
+      if (pByY[mid] > hpa) lo = mid;
+      else hi = mid;
+    }
+    const f = (pByY[lo] - hpa) / Math.max(pByY[lo] - pByY[hi], 1e-6);
+    return (lo + f) * col.dz;
+  }
+  return isaAltMFromHpa(hpa);
 }
 
 /** ISA barometric pressure (hPa) from altitude — fallback CAPE/skew-T vertical coords. */
@@ -2295,60 +2319,42 @@ function isaPressureHpa(altM)
   return 1013.25 * Math.pow(1.0 - 2.25577e-5 * Math.max(0, altM), 5.25588);
 }
 
-/** Active hydrostatic column for CAPE/skew-T (null → ISA). Fluid PRESSURE untouched. */
+/** Active pressure column (pByY hPa per sim row) for CAPE/skew-T; null means ISA. */
 var _hydrostaticColumn = null;
 
 /**
- * Build hydrostatic P(z) from surface pressure + temperature (virtual T if dew given).
- * Call before CAPE/parcel work; clear with endHydrostaticPressureColumn().
+ * Column P(z) from the simulated pressure field (same numbers as the Air Pressure view):
+ * reference column + local fluid PRESSURE anomaly + synoptic background.
+ * fluidPressure may be null (row mean, i.e. no local anomaly). Clear with endHydrostaticPressureColumn().
  */
-function beginHydrostaticPressureColumn(envTempsC, envDewC, isFluid, surfaceLevel, simResY, dz, sfcPressHpa)
+function beginPhysicalPressureColumn(simX, fluidPressure, isFluid, surfaceLevel, simResY, dz)
 {
-  if (!(dz > 0) || !envTempsC || simResY < 2) {
+  if (!(dz > 0) || simResY < 2) {
     _hydrostaticColumn = null;
     return;
   }
-  const pByY = new Float32Array(simResY);
-  for (let i = 0; i < simResY; i++)
-    pByY[i] = NaN;
-
-  let y0 = surfaceLevel | 0;
-  while (y0 < simResY && isFluid && !isFluid[y0])
+  let y0 = Math.max(0, surfaceLevel | 0);
+  while (y0 < simResY - 1 && isFluid && !isFluid[y0])
     y0++;
-  if (y0 >= simResY) {
-    _hydrostaticColumn = null;
-    return;
-  }
 
-  let p = Number.isFinite(sfcPressHpa) ? sfcPressHpa : 1013.25;
-  pByY[y0] = p;
-  const g = 9.80665;
-  const Rd = 287.05;
-  for (let y = y0 + 1; y < simResY; y++) {
-    if (isFluid && !isFluid[y]) {
-      pByY[y] = p;
-      continue;
+  const pByY = new Float32Array(simResY);
+  let offset = 0; // anomaly vs reference, carried through non-fluid rows
+  for (let y = y0; y < simResY; y++) {
+    const ref = refPressureHpaAt(y);
+    if (!isFluid || isFluid[y]) {
+      const fp = fluidPressure ? fluidPressure[y] : NaN;
+      const p = Number.isFinite(fp) ? totalPressureHpaAt(simX, y, fp) : ref + synopticBackgroundHpa(simX, y);
+      if (Number.isFinite(p))
+        offset = p - ref;
     }
-    const t0 = envTempsC[y - 1];
-    const t1 = envTempsC[y];
-    if (!Number.isFinite(t0) || !Number.isFinite(t1)) {
-      pByY[y] = p;
-      continue;
-    }
-    let tv0 = CtoK(t0);
-    let tv1 = CtoK(t1);
-    if (envDewC) {
-      const w0 = mixingRatioKgFromDewpoint(envDewC[y - 1], p);
-      const w1 = mixingRatioKgFromDewpoint(envDewC[y], Math.max(p * 0.98, 50));
-      tv0 = virtualTemperatureK(tv0, w0);
-      tv1 = virtualTemperatureK(tv1, w1);
-    }
-    const tv = 0.5 * (tv0 + tv1);
-    p = p * Math.exp(-g * dz / (Rd * Math.max(tv, 150)));
-    pByY[y] = clamp(p, 20, 1080);
+    let p = ref + offset;
+    if (y > y0)
+      p = Math.min(p, pByY[y - 1] - 1e-3);
+    pByY[y] = clamp(p, 1, 1100);
   }
+  const sfcOffset = pByY[y0] - refPressureHpaAt(y0);
   for (let y = 0; y < y0; y++)
-    pByY[y] = pByY[y0];
+    pByY[y] = refPressureHpaAt(y) + sfcOffset;
   _hydrostaticColumn = { dz: dz, pByY: pByY, y0: y0 };
 }
 
@@ -2357,15 +2363,28 @@ function endHydrostaticPressureColumn()
   _hydrostaticColumn = null;
 }
 
+function isaAltMFromHpa(hpa)
+{
+  return (1.0 - Math.pow(hpa / 1013.25, 1.0 / 5.25588)) / 2.25577e-5;
+}
+
 function skewHpaFromAltM(altM)
 {
-  if (_hydrostaticColumn && _hydrostaticColumn.pByY && _hydrostaticColumn.dz > 0) {
-    const y = Math.round(Math.max(0, altM) / _hydrostaticColumn.dz);
-    if (y >= 0 && y < _hydrostaticColumn.pByY.length) {
-      const p = _hydrostaticColumn.pByY[y];
-      if (Number.isFinite(p))
-        return p;
-    }
+  const col = _hydrostaticColumn;
+  if (col && col.pByY && col.dz > 0) {
+    const n = col.pByY.length;
+    const yf = altM / col.dz;
+    // Outside the column: ISA shape shifted to meet the column edge (inverted by skewAltMFromHpa).
+    const isaUnclamped = (a) => 1013.25 * Math.pow(Math.max(1e-6, 1.0 - 2.25577e-5 * a), 5.25588);
+    if (yf <= 0)
+      return isaUnclamped(isaAltMFromHpa(col.pByY[0]) + altM);
+    if (yf >= n - 1)
+      return isaUnclamped(isaAltMFromHpa(col.pByY[n - 1]) + altM - (n - 1) * col.dz);
+    const y = Math.floor(yf);
+    const f = yf - y;
+    const p = col.pByY[y] * (1 - f) + col.pByY[y + 1] * f;
+    if (Number.isFinite(p))
+      return p;
   }
   return isaPressureHpa(altM);
 }
@@ -2376,110 +2395,426 @@ function isaTempC(altM)
   return 15.0 - 6.5 * (Math.max(0, altM) / 1000.0);
 }
 
+// ---------------------------------------------------------------------------
+// Physical pressure: hydrostatic reference profile + fluid PRESSURE scaled to Pa.
+// ---------------------------------------------------------------------------
+const PRESSURE_DT_SEC = timePerIteration * 3600.0;
+const PRESSURE_GRAVITY = 9.80665;
+const PRESSURE_RD = 287.05;
+const MAX_SYNOPTIC_SYSTEMS = 16; // must match common.glsl
+var synopticGpuPack = new Float32Array(MAX_SYNOPTIC_SYSTEMS * 4);
+
+// { pHpa, rho, vapor } Float32Arrays of SIM_PROFILE_SAMPLES, sampled like initial_T.
+var refPressureProfile = null;
+var refPressureInitialT = null;
+// Per sim row (air cells only), refreshed asynchronously by the row-mean pass:
+// robust mean fluid PRESSURE, air cell count, mean potential temperature (K), mean vapor (g/m^3).
+var pressureRowMeanCpu = null;
+var rowMeanCountCpu = null;
+var rowMeanThetaCpu = null;
+var rowMeanVaporCpu = null;
+
+function isAnelasticPressureMode()
+{
+  return !!(guiControls && guiControls.pressurePhysicsMode === 'Anelastic');
+}
+
 /**
- * Synoptic Low/High contribution to displayed MSLP (hPa).
- * Display-only — does not write fluid PRESSURE.
+ * Domain-mean real temperature (K) and vapor (g/m^3) per sim row from the row-mean pass.
+ * Rows without air (below terrain) copy the nearest row with air. Null until the first readback.
  */
-function synopticMslpAnomalyHpa(simX, simY, amplitudeHpa)
+function domainMeanColumnFromRows()
+{
+  if (!rowMeanCountCpu || !rowMeanThetaCpu || rowMeanCountCpu.length !== sim_res_y)
+    return null;
+  const tK = new Float32Array(sim_res_y);
+  const vap = new Float32Array(sim_res_y);
+  let firstValid = -1;
+  for (let y = 0; y < sim_res_y; y++) {
+    if (rowMeanCountCpu[y] > 0.5 && Number.isFinite(rowMeanThetaCpu[y])) {
+      tK[y] = potentialToRealT(rowMeanThetaCpu[y], y);
+      vap[y] = Math.max(rowMeanVaporCpu[y] || 0, 0);
+      if (firstValid < 0) firstValid = y;
+    } else {
+      tK[y] = NaN;
+    }
+  }
+  if (firstValid < 0)
+    return null;
+  for (let y = 0; y < firstValid; y++) {
+    tK[y] = tK[firstValid];
+    vap[y] = vap[firstValid];
+  }
+  for (let y = firstValid + 1; y < sim_res_y; y++) {
+    if (!Number.isFinite(tK[y])) {
+      tK[y] = tK[y - 1];
+      vap[y] = vap[y - 1];
+    }
+  }
+  return { tK, vap };
+}
+
+/**
+ * Hydrostatic reference column anchored at surfacePressure at y = 0 (sea level).
+ * Integrates the live domain-mean virtual temperature once the row-mean pass has data,
+ * so hPa levels follow the actual atmosphere; until then the initial profile is used.
+ * The vapor channel stays the initial-humidity reference (anelastic buoyancy baseline).
+ */
+function buildReferencePressureProfile(initialT)
+{
+  if (!initialT || !(sim_res_y > 0))
+    return null;
+  refPressureInitialT = initialT;
+  const n = SIM_PROFILE_SAMPLES;
+  const pHpa = new Float32Array(n);
+  const rho = new Float32Array(n);
+  const vapor = new Float32Array(n);
+  const p0 = (guiControls && Number.isFinite(guiControls.surfacePressure)) ? guiControls.surfacePressure : 1013.25;
+  const dzCell = guiControls.simHeight / sim_res_y;
+  const live = domainMeanColumnFromRows();
+
+  const virtualTempAt = (i, cellY, pGuess) => {
+    const tInit = Math.max(potentialToRealT(initialT[i], cellY), 150);
+    if (!live)
+      return { t: tInit, tv: tInit };
+    const yf = clamp(cellY, 0, sim_res_y - 1);
+    const y0 = Math.floor(yf);
+    const y1 = Math.min(y0 + 1, sim_res_y - 1);
+    const f = yf - y0;
+    const t = Math.max(live.tK[y0] * (1 - f) + live.tK[y1] * f, 150);
+    const w = live.vap[y0] * (1 - f) + live.vap[y1] * f;
+    const rhoDry = (pGuess * 100.0) / (PRESSURE_RD * t);
+    const q = w / Math.max(rhoDry * 1000.0, 1e-3);
+    return { t, tv: t * (1 + 0.608 * q) };
+  };
+
+  let p = p0;
+  let prevY = 0;
+  let prev = virtualTempAt(0, 0, p0);
+  for (let i = 0; i < n; i++) {
+    const cellY = simProfileCellY(i);
+    const cur = virtualTempAt(i, cellY, p);
+    if (i > 0) {
+      const dzM = (cellY - prevY) * dzCell;
+      p *= Math.exp(-PRESSURE_GRAVITY * dzM / (PRESSURE_RD * 0.5 * (cur.tv + prev.tv)));
+    }
+    pHpa[i] = p;
+    rho[i] = (p * 100.0) / (PRESSURE_RD * cur.tv);
+    const tInit = Math.max(potentialToRealT(initialT[i], cellY), 150);
+    vapor[i] = maxWater(cellY / sim_res_y < 0.2 ? tInit - 2.0 : tInit - 20.0);
+    prevY = cellY;
+    prev = cur;
+  }
+  refPressureProfile = { pHpa, rho, vapor };
+  return refPressureProfile;
+}
+
+var refProfileTexture = null;
+var pressureRowMeanTexture = null;
+var pressureRowMeanFrameBuff = null;
+var pressureRowMeanReader = null;
+var pressureRowMeanScratch = null;
+var pressureRowMeanFrame = 0;
+
+/** Uploads refPressureProfile as SIM_PROFILE_SAMPLES x 1 RGBA32F (R=P hPa, G=rho, B=vapor). */
+function uploadRefProfileTexture()
+{
+  if (!refPressureProfile || typeof gl === 'undefined' || !gl)
+    return;
+  const n = SIM_PROFILE_SAMPLES;
+  const data = new Float32Array(n * 4);
+  for (let i = 0; i < n; i++) {
+    data[i * 4 + 0] = refPressureProfile.pHpa[i];
+    data[i * 4 + 1] = refPressureProfile.rho[i];
+    data[i * 4 + 2] = refPressureProfile.vapor[i];
+  }
+  const prevBinding = gl.getParameter(gl.TEXTURE_BINDING_2D);
+  if (!refProfileTexture) {
+    refProfileTexture = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, refProfileTexture);
+    gl.texStorage2D(gl.TEXTURE_2D, 1, gl.RGBA32F, n, 1);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  }
+  gl.bindTexture(gl.TEXTURE_2D, refProfileTexture);
+  gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, n, 1, gl.RGBA, gl.FLOAT, data);
+  gl.bindTexture(gl.TEXTURE_2D, prevBinding);
+}
+
+/** Whole-hPa isobar spacing giving about guiControls.isobarCount lines from the surface to the model top. */
+function isobarSpacingHpa()
+{
+  const count = clamp(Math.round(Number(guiControls.isobarCount) || 80), 1, 200);
+  const range = refPressureHpaAt(0) - refPressureHpaAt(Math.max(sim_res_y - 1, 1));
+  if (!(range > 0))
+    return 10.0;
+  return clamp(Math.round(range / count), 1, 500);
+}
+
+/** Rebuild after surfacePressure changes (the profile is anchored to it). */
+function rebuildReferencePressureProfile()
+{
+  if (!refPressureInitialT)
+    return;
+  buildReferencePressureProfile(refPressureInitialT);
+  uploadRefProfileTexture();
+}
+
+/** sim_res_y x 1 RGBA32F target for the per-row mean of fluid PRESSURE. */
+function setupPressureRowMeanTarget()
+{
+  if (typeof gl === 'undefined' || !gl || !(sim_res_y > 0))
+    return;
+  if (!pressureRowMeanTexture)
+    pressureRowMeanTexture = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, pressureRowMeanTexture);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, sim_res_y, 1, 0, gl.RGBA, gl.FLOAT, new Float32Array(sim_res_y * 4));
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  if (!pressureRowMeanFrameBuff)
+    pressureRowMeanFrameBuff = gl.createFramebuffer();
+  gl.bindFramebuffer(gl.FRAMEBUFFER, pressureRowMeanFrameBuff);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, pressureRowMeanTexture, 0);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  pressureRowMeanCpu = new Float32Array(sim_res_y);
+  rowMeanCountCpu = null; // stays null until the first readback lands
+  rowMeanThetaCpu = new Float32Array(sim_res_y);
+  rowMeanVaporCpu = new Float32Array(sim_res_y);
+  pressureRowMeanScratch = new Float32Array(sim_res_y * 4);
+  if (!pressureRowMeanReader && typeof createAsyncPixelReader === 'function')
+    pressureRowMeanReader = createAsyncPixelReader();
+}
+
+/**
+ * GPU row-mean pass + throttled async readback into the row-mean CPU arrays.
+ * Each landed readback also re-integrates the reference column from the live domain mean.
+ */
+function runPressureRowMeanPass(program, baseTex, waterTex, wallTex)
+{
+  if (!program || !pressureRowMeanFrameBuff)
+    return;
+  gl.useProgram(program);
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, baseTex);
+  gl.activeTexture(gl.TEXTURE1);
+  gl.bindTexture(gl.TEXTURE_2D, wallTex);
+  gl.activeTexture(gl.TEXTURE2);
+  gl.bindTexture(gl.TEXTURE_2D, waterTex);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, pressureRowMeanFrameBuff);
+  gl.drawBuffers([ gl.COLOR_ATTACHMENT0 ]);
+  gl.viewport(0, 0, sim_res_y, 1);
+  gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+  gl.viewport(0, 0, sim_res_x, sim_res_y);
+
+  if (pressureRowMeanReader && pressureRowMeanScratch) {
+    if (pollAsyncReadPixels(pressureRowMeanReader, pressureRowMeanScratch)) {
+      if (!rowMeanCountCpu || rowMeanCountCpu.length !== sim_res_y)
+        rowMeanCountCpu = new Float32Array(sim_res_y);
+      for (let y = 0; y < sim_res_y; y++) {
+        pressureRowMeanCpu[y] = pressureRowMeanScratch[y * 4];
+        rowMeanCountCpu[y] = pressureRowMeanScratch[y * 4 + 1];
+        rowMeanThetaCpu[y] = pressureRowMeanScratch[y * 4 + 2];
+        rowMeanVaporCpu[y] = pressureRowMeanScratch[y * 4 + 3];
+      }
+      rebuildReferencePressureProfile();
+    }
+    if (!asyncPixelReaderBusy(pressureRowMeanReader) && (pressureRowMeanFrame++ % 10) === 0) {
+      gl.readBuffer(gl.COLOR_ATTACHMENT0);
+      beginAsyncReadPixels(pressureRowMeanReader, 0, 0, sim_res_y, 1, gl.RGBA, gl.FLOAT, sim_res_y * 16, null);
+    }
+  }
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+}
+
+function refProfileValueAt(arr, cellY)
+{
+  if (!arr)
+    return NaN;
+  const t = clamp(cellY / Math.max(sim_res_y, 1), 0, 1) * (SIM_PROFILE_SAMPLES - 1);
+  const i0 = Math.floor(t);
+  const i1 = Math.min(i0 + 1, SIM_PROFILE_SAMPLES - 1);
+  const f = t - i0;
+  return arr[i0] * (1 - f) + arr[i1] * f;
+}
+
+function refPressureHpaAt(cellY)
+{
+  if (refPressureProfile)
+    return refProfileValueAt(refPressureProfile.pHpa, cellY);
+  return isaPressureHpa(cellY * (guiControls.simHeight / Math.max(sim_res_y, 1)));
+}
+
+/** Fractional sim row where the reference column crosses hpa (NaN outside the domain). */
+function refProfileCellYAtHpa(hpa)
+{
+  let prev = refPressureHpaAt(0);
+  if (hpa > prev)
+    return NaN;
+  for (let y = 1; y < sim_res_y; y++) {
+    const cur = refPressureHpaAt(y);
+    if (cur <= hpa)
+      return y - 1 + (prev - hpa) / Math.max(prev - cur, 1e-6);
+    prev = cur;
+  }
+  return NaN;
+}
+
+/** (cellHeight / dt)^2 times the user scale: Pa per unit fluid PRESSURE per kg/m^3. */
+function fluidPressurePaPerUnitPerRho()
+{
+  const dzCell = guiControls.simHeight / Math.max(sim_res_y, 1);
+  const scale = Number.isFinite(guiControls.fluidPressureHpaScale) ? guiControls.fluidPressureHpaScale : 1.0;
+  return Math.pow(dzCell / PRESSURE_DT_SEC, 2) * scale;
+}
+
+function fluidPressureConversionDensity(cellY)
+{
+  if (!refPressureProfile)
+    return 1.225;
+  if (isAnelasticPressureMode())
+    return refPressureProfile.rho[0];
+  return refProfileValueAt(refPressureProfile.rho, cellY);
+}
+
+function fluidPressureToHpa(p, cellY)
+{
+  return p * fluidPressureConversionDensity(cellY) * fluidPressurePaPerUnitPerRho() * 0.01;
+}
+
+/** Must match synopticVerticalProfile() in common.glsl. */
+function synopticVerticalProfile(heightFrac)
+{
+  const t = clamp((heightFrac - 0.1) / (0.75 - 0.1), 0, 1);
+  const s = t * t * (3 - 2 * t);
+  return 1.0 + (-0.4 - 1.0) * s;
+}
+
+function synopticAmplitudeHpa()
+{
+  return (guiControls && Number.isFinite(guiControls.pressureSynopticScale)) ? guiControls.pressureSynopticScale : 8.0;
+}
+
+/** Packs up to MAX_SYNOPTIC_SYSTEMS as vec4(x, y, radius, signed amplitude hPa) for the shaders. */
+function packSynopticSystemsForGpu(out)
+{
+  out.fill(0);
+  if (typeof synopticSystems === 'undefined' || !synopticSystems || !guiControls.enableSynopticSystems)
+    return 0;
+  const amp = synopticAmplitudeHpa();
+  let count = 0;
+  for (let g = 0; g < synopticSystems.length && count < MAX_SYNOPTIC_SYSTEMS; g++) {
+    const sys = synopticSystems[g];
+    const strength = sys.getStrength();
+    const radius = sys.getRadius();
+    if (strength <= 0.0001 || radius < 1)
+      continue;
+    const sign = sys.getType() === 0 ? -1.0 : 1.0; // SYNOPTIC_TYPE_LOW === 0
+    out[count * 4 + 0] = sys.getXpos();
+    out[count * 4 + 1] = sys.getYpos();
+    out[count * 4 + 2] = radius;
+    out[count * 4 + 3] = sign * amp * strength;
+    count++;
+  }
+  return count;
+}
+
+/** Background synoptic pressure anomaly (hPa) at a sim cell. Must match synopticBackgroundHpa() in common.glsl. */
+function synopticBackgroundHpa(simX, simY)
 {
   if (typeof synopticSystems === 'undefined' || !synopticSystems || !synopticSystems.length)
     return 0;
   if (guiControls && guiControls.enableSynopticSystems === false)
     return 0;
-
-  const amp = Number.isFinite(amplitudeHpa) ? amplitudeHpa
-    : ((guiControls && Number.isFinite(guiControls.pressureSynopticScale))
-      ? guiControls.pressureSynopticScale : 8.0);
+  const amp = synopticAmplitudeHpa();
   if (!(amp > 0))
     return 0;
 
   const aspect = sim_res_y / sim_res_x;
   const wrapX = !!(guiControls && guiControls.wrapHorizontally);
   let sum = 0;
-
-  for (let g = 0; g < synopticSystems.length; g++) {
+  let count = 0;
+  for (let g = 0; g < synopticSystems.length && count < MAX_SYNOPTIC_SYSTEMS; g++) {
     const sys = synopticSystems[g];
-    const cx = sys.getXpos();
-    const cy = sys.getYpos();
     const radius = sys.getRadius();
     const strength = sys.getStrength();
     if (strength <= 0.0001 || radius < 1)
       continue;
-
-    let dx = simX - cx;
+    count++;
+    let dx = simX - sys.getXpos();
     if (wrapX) {
       const adx = Math.abs(dx);
       dx = adx <= sim_res_x - adx ? dx : (dx > 0 ? dx - sim_res_x : dx + sim_res_x);
     }
-    const dy = simY - cy;
-    const dist = Math.sqrt((dx * aspect) * (dx * aspect) + dy * dy);
-    if (dist >= radius)
+    const d = Math.abs(dx) * aspect / radius;
+    if (d >= 1)
       continue;
-
-    const weight = 1.0 - dist / radius;
-    // Low → negative MSLP anomaly; High → positive (SYNOPTIC_TYPE_LOW === 0)
     const sign = sys.getType() === 0 ? -1.0 : 1.0;
-    sum += sign * amp * strength * weight;
+    sum += sign * amp * strength * (1 - d * d * (3 - 2 * d));
   }
-  return sum;
+  return sum * synopticVerticalProfile(clamp(simY / Math.max(sim_res_y, 1), 0, 1));
+}
+
+/** Surface synoptic anomaly (hPa) for MSLP. Kept for callers of the old display-only helper. */
+function synopticMslpAnomalyHpa(simX, simY)
+{
+  return synopticBackgroundHpa(simX, simY);
 }
 
 /**
- * Diagnostic mean sea-level pressure (hPa).
- * Keeps fluid base[PRESSURE] unchanged; combines thermal, dynamic, and synoptic anomalies.
+ * Mean sea-level pressure (hPa) from the physical pressure field:
+ * hydrostatic reference + fluid PRESSURE (minus its row mean) in Pa + synoptic background,
+ * reduced to sea level by the reference density ratio so a quiet atmosphere reads surfacePressure.
  */
 function computeMslpHpa(opts)
 {
   const surfacePressure = (guiControls && Number.isFinite(guiControls.surfacePressure))
     ? guiControls.surfacePressure : 1013.25;
-  const kT = (guiControls && Number.isFinite(guiControls.pressureThermalScale))
-    ? guiControls.pressureThermalScale : 1.5;
-  const kP = (guiControls && Number.isFinite(guiControls.pressureDynamicScale))
-    ? guiControls.pressureDynamicScale : 20.0;
-  const kS = (guiControls && Number.isFinite(guiControls.pressureSynopticScale))
-    ? guiControls.pressureSynopticScale : 8.0;
 
-  const surfaceLevel = opts.surfaceLevel | 0;
   const simResY = opts.simResY | 0;
   const dz = opts.dz > 0 ? opts.dz : 1;
-  const envTempsC = opts.envTempsC;
   const isFluid = opts.isFluid;
   const fluidPressure = opts.fluidPressure;
 
-  const thermalDepthM = 1500;
-  const dynamicDepthM = 200;
-  const maxThermalY = Math.min(simResY - 1, surfaceLevel + Math.max(1, Math.round(thermalDepthM / dz)));
-  const maxDynamicY = Math.min(simResY - 1, surfaceLevel + Math.max(1, Math.round(dynamicDepthM / dz)));
+  let surfaceLevel = Math.max(0, opts.surfaceLevel | 0);
+  while (surfaceLevel < simResY - 1 && isFluid && !isFluid[surfaceLevel])
+    surfaceLevel++;
 
-  let sumDT = 0, nT = 0;
-  for (let y = surfaceLevel; y <= maxThermalY; y++) {
-    if (!isFluid[y]) continue;
-    const t = envTempsC[y];
-    if (!Number.isFinite(t)) continue;
-    sumDT += t - isaTempC(y * dz);
-    nT++;
-  }
+  const dynamicDepthM = 200;
+  const maxDynamicY = Math.min(simResY - 1, surfaceLevel + Math.max(1, Math.round(dynamicDepthM / dz)));
 
   let sumP = 0, nP = 0;
   if (fluidPressure) {
     for (let y = surfaceLevel; y <= maxDynamicY; y++) {
-      if (!isFluid[y]) continue;
-      const p = fluidPressure[y];
+      if (isFluid && !isFluid[y]) continue;
+      let p = fluidPressure[y];
       if (!Number.isFinite(p)) continue;
-      sumP += p;
+      if (pressureRowMeanCpu && Number.isFinite(pressureRowMeanCpu[y]))
+        p -= pressureRowMeanCpu[y];
+      sumP += fluidPressureToHpa(p, y);
       nP++;
     }
   }
 
-  const thermalAnomaly = nT > 0 ? -kT * (sumDT / nT) : 0;
-  const dynamicAnomaly = nP > 0 ? kP * (sumP / nP) : 0;
-  let synopticAnomaly = 0;
-  if (Number.isFinite(opts.simX)) {
-    const sy = Number.isFinite(opts.simY) ? opts.simY : surfaceLevel;
-    synopticAnomaly = synopticMslpAnomalyHpa(opts.simX, sy, kS);
-  }
+  let anomalyHpa = nP > 0 ? sumP / nP : 0;
+  if (Number.isFinite(opts.simX))
+    anomalyHpa += synopticBackgroundHpa(opts.simX, surfaceLevel);
 
-  return clamp(surfacePressure + thermalAnomaly + dynamicAnomaly + synopticAnomaly, 870, 1080);
+  const pRefSfc = refPressureHpaAt(surfaceLevel);
+  const toSeaLevel = pRefSfc > 1 ? surfacePressure / pRefSfc : 1;
+  return clamp(surfacePressure + anomalyHpa * toSeaLevel, 870, 1080);
+}
+
+/** Full pressure (hPa) at a sim cell given its raw fluid PRESSURE value. */
+function totalPressureHpaAt(simX, simY, fluidP)
+{
+  let p = Number.isFinite(fluidP) ? fluidP : 0;
+  if (pressureRowMeanCpu && Number.isFinite(pressureRowMeanCpu[simY | 0]))
+    p -= pressureRowMeanCpu[simY | 0];
+  return refPressureHpaAt(simY) + fluidPressureToHpa(p, simY) + synopticBackgroundHpa(simX, simY);
 }
 
 // Meteorological parcel thermo (for skew-T CAPE / CIN / DCAPE — not the sim's game evapHeat).
@@ -2860,20 +3195,11 @@ function computeColumnSoundingMetrics(envTempsC, envDewC, isFluid, vxRaw, vyRaw,
 
   const sfcAltM = surfaceLevel * dz;
 
-  // Phase B: hydrostatic P(z) for CAPE/skew-T; fluid solver PRESSURE unchanged.
-  const useHydro = !(guiControls && guiControls.useHydrostaticCapePressure === false);
-  if (useHydro) {
-    const prelimSfcP = computeMslpHpa({
-      envTempsC,
-      isFluid,
-      fluidPressure: options && options.fluidPressure,
-      surfaceLevel,
-      simResY,
-      dz,
-      simX: options && options.columnX,
-      simY: options && Number.isFinite(options.columnY) ? options.columnY : surfaceLevel,
-    });
-    beginHydrostaticPressureColumn(envTempsC, envDewC, isFluid, surfaceLevel, simResY, dz, prelimSfcP);
+  // CAPE/parcel P(z) from the simulated pressure field (ISA if toggled off).
+  if (!(guiControls && guiControls.useHydrostaticCapePressure === false)) {
+    const columnX = options && Number.isFinite(options.columnX) ? options.columnX : 0;
+    beginPhysicalPressureColumn(
+      columnX, options && options.fluidPressure, isFluid, surfaceLevel, simResY, dz);
   }
 
   let metricsResult = null;
@@ -4600,6 +4926,7 @@ class Weatherstation
   #windU = 0;        // m/s horizontal
   #windV = 0;        // m/s vertical
   #mslpHpa = 1013.25; // diagnostic mean sea-level pressure
+  #stationHpa = NaN;  // local pressure at the station cell (what the Air Pressure isobars show)
   #soilMoisture = 0; // mm (optional GUI cap; separate from flood)
   #floodHeightMm = 0; // mm standing flood height
   #snowHeight = 0;   // cm
@@ -4918,6 +5245,7 @@ class Weatherstation
       const vxRaw = new Float32Array(sim_res_y);
       const vyRaw = new Float32Array(sim_res_y);
       const waterArr = new Float32Array(sim_res_y);
+      const fluidPressure = new Float32Array(sim_res_y);
       for (let y = 0; y < sim_res_y; y++)
         isFluid[y] = false;
       for (let yi = 0; yi < h; yi++) {
@@ -4925,6 +5253,7 @@ class Weatherstation
         const idx = yi * 4;
         if (colWall[idx + 1] === 0) continue;
         isFluid[yAbs] = true;
+        fluidPressure[yAbs] = colBase[idx + 2];
         envTempsC[yAbs] = KtoC(potentialToRealT(colBase[idx + 3], yAbs));
         envDewC[yAbs] = KtoC(dewpoint(Math.max(colWater[idx], 0)));
         if (guiControls.realDewPoint)
@@ -4936,6 +5265,7 @@ class Weatherstation
       const metrics = computeColumnSoundingMetrics(
         envTempsC, envDewC, isFluid, vxRaw, vyRaw, waterArr, sim_res_y, dz, {
           lite: true,
+          fluidPressure,
           columnX: this.#x,
         });
       if (metrics) {
@@ -5013,6 +5343,7 @@ class Weatherstation
         simX: this.#x,
         simY: this.#y,
       });
+      this.#stationHpa = totalPressureHpaAt(this.#x, this.#y, baseTextureValues[1 * 4 + 2]);
     }
 
     // gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_0);
@@ -5372,7 +5703,10 @@ class Weatherstation
       c.fillText(printVelocity(this.#velocity), 20, 40);
       c.fillStyle = '#FFCC66';
       c.font = '11px Arial';
-      c.fillText(this.#mslpHpa.toFixed(0) + ' hPa', 72, 40);
+      if (guiControls.displayMode === 'DISP_PRESSURE_HPA' && Number.isFinite(this.#stationHpa))
+        c.fillText(this.#stationHpa.toFixed(1) + ' stn', 68, 40);
+      else
+        c.fillText(this.#mslpHpa.toFixed(0) + ' hPa', 72, 40);
       c.font = '12px Arial';
 
       if (this.#floodHeightMm > 0.5 || this.#soilMoisture > 0.) {
@@ -8137,6 +8471,9 @@ const SYNOPTIC_TYPE_HIGH = 1;
 function applySynopticSystemsCpu()
 {
   if (!guiControls.enableSynopticSystems || !synopticSystems.length || typeof gl === 'undefined')
+    return;
+  // Pressure coupling drives the wind on the GPU (velocityShader) instead of this radial nudge.
+  if (Number(guiControls.synopticPressureCoupling) > 0)
     return;
 
   const aspect = sim_res_y / sim_res_x;
@@ -12317,6 +12654,17 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     guiControls.pressureDynamicScale = guiControls_default.pressureDynamicScale;
   if (guiControls.pressureSynopticScale === undefined)
     guiControls.pressureSynopticScale = guiControls_default.pressureSynopticScale;
+  if (!Number.isFinite(guiControls.fluidPressureHpaScale))
+    guiControls.fluidPressureHpaScale = guiControls_default.fluidPressureHpaScale;
+  if (!Number.isFinite(guiControls.isobarIntervalHpa) || guiControls.isobarIntervalHpa <= 0)
+    guiControls.isobarIntervalHpa = guiControls_default.isobarIntervalHpa;
+  if (!Number.isFinite(guiControls.isobarCount) || guiControls.isobarCount < 1)
+    guiControls.isobarCount = guiControls_default.isobarCount;
+  if (!Number.isFinite(guiControls.synopticPressureCoupling))
+    guiControls.synopticPressureCoupling = guiControlsFromSaveFile ? 0.0 : guiControls_default.synopticPressureCoupling;
+  guiControls.synopticPressureCoupling = clamp(guiControls.synopticPressureCoupling, 0, 1);
+  if (guiControls.pressurePhysicsMode !== 'Classic' && guiControls.pressurePhysicsMode !== 'Anelastic')
+    guiControls.pressurePhysicsMode = guiControls_default.pressurePhysicsMode;
   if (guiControls.useHydrostaticCapePressure === undefined)
     guiControls.useHydrostaticCapePressure = guiControls_default.useHydrostaticCapePressure;
   if (guiControls.recordIntervalSimSec === undefined)
@@ -12576,6 +12924,8 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     gl.uniform1f(gl.getUniformLocation(velocityProgram, 'wind'), guiControls.wind);
     gl.uniform1f(gl.getUniformLocation(velocityProgram, 'coriolisStrength'),
                  Number(guiControls.coriolisStrength) || 0.0);
+    rebuildReferencePressureProfile();
+    uploadPressurePhysicsUniforms();
     gl.useProgram(lightingProgram);
     gl.uniform1f(gl.getUniformLocation(lightingProgram, 'waterTemperature'), CtoK(guiControls.waterTemperature));
     gl.uniform1f(gl.getUniformLocation(lightingProgram, 'greenhouseGases'), guiControls.greenhouseGases);
@@ -12708,6 +13058,9 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     if (guiControls.limitSoilMoisture === false) // older saves: an unchecked "Limit Soil Moisture" meant unlimited
       guiControls.maxSoilMoistureMm = 0;
     delete guiControls.limitSoilMoisture;
+    // Saves from before pressure coupling keep synoptic pressure display-only.
+    if (guiControlsFromSaveFile != null && guiControls.synopticPressureCoupling === undefined)
+      guiControls.synopticPressureCoupling = 0.0;
     // Fill any keys missing from older save files (JSON omits undefined; functions are reattached below).
     for (const key of Object.keys(guiControls_default)) {
       if (guiControls[key] === undefined)
@@ -12961,6 +13314,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         'Forest 2' : 'TOOL_VEG_FOREST2',
         'Snow' : 'TOOL_WALL_SNOW',
         'Wind' : 'TOOL_WIND',
+        'Air Pressure' : 'TOOL_PRESSURE',
         'Charge' : 'TOOL_CHARGE',
         'Weather Station' : 'TOOL_STATION',
         'Weather Station 2' : 'TOOL_STATION_2',
@@ -13433,6 +13787,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         'Composite Radar' : 'DISP_RADAR_COMPOSITE',
         'World Radar' : 'DISP_RADAR_WORLD',
         'Convective Risk' : 'DISP_RISK',
+        'Air Pressure (hPa)' : 'DISP_PRESSURE_HPA',
         'Fluid Pressure' : 'DISP_PRESSURE'
     };
     SOUNDING_VIEW_CONFIGS.forEach(cfg => {
@@ -13929,19 +14284,20 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     floodingSurgeFolder.add(guiControls, 'floodPondRate', 1, 30, 0.5)
       .onChange(uploadFloodSurgeUniforms).name('Flood Pond Rate');
     advancedSimulation.add(guiControls, 'surfacePressure', 950, 1050, 0.25)
-      .onChange(function() {
-        if (typeof capeProgram !== 'undefined' && capeProgram) {
-          gl.useProgram(capeProgram);
-          gl.uniform1f(gl.getUniformLocation(capeProgram, 'surfacePressure'),
-            Number.isFinite(guiControls.surfacePressure) ? guiControls.surfacePressure : 1013.25);
-        }
-      })
+      .onChange(rebuildReferencePressureProfile)
       .name('MSLP Baseline (hPa)');
-    advancedSimulation.add(guiControls, 'pressureThermalScale', 0, 4, 0.05).name('MSLP Thermal Scale');
-    advancedSimulation.add(guiControls, 'pressureDynamicScale', 0, 40, 0.5).name('MSLP Dynamic Scale');
-    advancedSimulation.add(guiControls, 'pressureSynopticScale', 0, 20, 0.25).name('MSLP Synoptic Scale');
+    advancedSimulation.add(guiControls, 'fluidPressureHpaScale', 0.1, 4, 0.05)
+      .onChange(uploadPressurePhysicsUniforms)
+      .name('Fluid → hPa Scale');
+    advancedSimulation.add(guiControls, 'isobarCount', 5, 150, 1).name('Number of Isobars');
+    advancedSimulation.add(guiControls, 'isobarIntervalHpa', 0.25, 10, 0.25).name('Anomaly Isobar Interval (hPa)');
+    advancedSimulation.add(guiControls, 'pressureSynopticScale', 0, 20, 0.25).name('Synoptic Amplitude (hPa)');
+    advancedSimulation.add(guiControls, 'synopticPressureCoupling', 0, 1, 0.05).name('Synoptic Pressure → Wind');
+    advancedSimulation.add(guiControls, 'pressurePhysicsMode', [ 'Classic', 'Anelastic' ])
+      .onChange(uploadPressurePhysicsUniforms)
+      .name('Pressure Physics');
     advancedSimulation.add(guiControls, 'useHydrostaticCapePressure')
-      .name('Hydrostatic CAPE P(z)');
+      .name('Sim Pressure for Sounding/CAPE');
     advancedSimulation.add(guiControls, 'IterPerFrame', 0.1, 50, 0.1)
       .onChange(function() {
         guiControls.auto_IterPerFrame = false;
@@ -17168,9 +17524,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         const vel = rawVelocityTo_ms(velRaw) * 3.6; // Convert to km/h
         const angle = Math.atan2(baseTextureValues[4 * y + 1], baseTextureValues[4 * y]) * 180 / Math.PI;
         
-    // ISA pressure for sounding export vertical coordinate (CAPE uses hydrostatic P(z) when enabled)
         const alt = y * dz;
-        const p = skewHpaFromAltM(alt);
+        const p = totalPressureHpaAt(simXpos, y, baseTextureValues[4 * y + 2]);
 
         // Estimate wet bulb (simplified)
         const tw = temp - (100 - rh) / 5;
@@ -17577,24 +17932,12 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         if (agl < -20) return 'Sfc';
         return printAltitude(Math.round(Math.max(0, agl)));
       };
-      // Phase B: hydrostatic P(z) for skew-T CAPE (ISA fallback if toggled off).
-      const soundingUseHydro = !(guiControls && guiControls.useHydrostaticCapePressure === false);
-      if (soundingUseHydro && !lightSkewT) {
+      // Skew-T pressure axis + CAPE from the simulated pressure field (ISA if toggled off).
+      if (!(guiControls && guiControls.useHydrostaticCapePressure === false)) {
         const fluidPressure = new Float32Array(sim_res_y);
         for (let y = 0; y < sim_res_y; y++)
           fluidPressure[y] = baseTextureValues[4 * y + 2];
-        const prelimSfcP = computeMslpHpa({
-          envTempsC,
-          isFluid: columnIsFluid,
-          fluidPressure,
-          surfaceLevel,
-          simResY: sim_res_y,
-          dz,
-          simX: simXpos,
-          simY: surfaceLevel,
-        });
-        beginHydrostaticPressureColumn(
-          envTempsC, envDewC, columnIsFluid, surfaceLevel, sim_res_y, dz, prelimSfcP);
+        beginPhysicalPressureColumn(simXpos, fluidPressure, columnIsFluid, surfaceLevel, sim_res_y, dz);
       }
       const altToHpa = (alt_m) => skewHpaFromAltM(alt_m);
       const parcelProfile = computeParcelProfile(envTempsC[surfaceLevel], envDewC[surfaceLevel], surfaceLevel);
@@ -19244,6 +19587,9 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         parcelSfcPrimary.push([sfcWaterLabel || 'Water Temp', printTemp(sfcWaterTempC), 'water-temp']);
       }
       const parcelSfcExtra = [];
+      const sfcPressHpa = altToHpa(sfcAltM);
+      if (Number.isFinite(sfcPressHpa))
+        parcelSfcExtra.push(['Sfc P', sfcPressHpa.toFixed(1) + ' hPa', '']);
       if (sfcFloodMm != null) {
         parcelSfcExtra.push(['Flood', printFloodDepth(sfcFloodMm), 'flood']);
       }
@@ -19620,8 +19966,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       onDown() { guiControls.displayMode = 'DISP_PRECIPFEEDBACK_MASS'; } },
     { id: 'displayPrecipHeat', name: 'Precipitation heat feedback display', category: 'Display', defaultCode: 'Digit0',
       onDown() { guiControls.displayMode = 'DISP_PRECIPFEEDBACK_HEAT'; } },
-    { id: 'displayPressure', name: 'Pressure display', category: 'Display', defaultCode: 'Backquote',
-      onDown() { guiControls.displayMode = 'DISP_PRESSURE'; } },
+    { id: 'displayPressure', name: 'Pressure display (hPa / fluid)', category: 'Display', defaultCode: 'Backquote',
+      onDown() { guiControls.displayMode = guiControls.displayMode === 'DISP_PRESSURE_HPA' ? 'DISP_PRESSURE' : 'DISP_PRESSURE_HPA'; } },
     { id: 'displayAirQuality', name: 'Air quality display', category: 'Display', defaultCode: 'KeyK',
       onDown() { guiControls.displayMode = 'DISP_AIRQUALITY'; } },
     { id: 'displayCharge', name: 'Charge display', category: 'Display', defaultCode: 'Backspace',
@@ -19686,6 +20032,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
       onDown() { setGuiTool('TOOL_WALL_SNOW'); } },
     { id: 'toolWind', name: 'Tool: wind', category: 'Tools', defaultCode: 'KeyP',
       onDown() { setGuiTool('TOOL_WIND'); } },
+    { id: 'toolPressure', name: 'Tool: air pressure', category: 'Tools', defaultCode: null,
+      onDown() { setGuiTool('TOOL_PRESSURE'); } },
     { id: 'toolCharge', name: 'Tool: charge', category: 'Tools', defaultCode: 'Semicolon',
       onDown() { setGuiTool('TOOL_CHARGE'); } },
     { id: 'toggleInvertTool', name: 'Toggle invert tool (charge direction)', category: 'Tools', defaultCode: 'Quote',
@@ -21265,6 +21613,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   const postProcessingVertexShader = await loadShader('postProcessingShader.vert');
 
   const pressureShader = await loadShader('pressureShader.frag');
+  const pressureRowMeanShader = await loadShader('pressureRowMeanShader.frag');
   const velocityShader = await loadShader('velocityShader.frag');
   const advectionShader = await loadShader('advectionShader.frag');
   const curlShader = await loadShader('curlShader.frag');
@@ -21302,6 +21651,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   const humidityDisplayShader = await loadShader('humidityDisplayShader.frag');
   const thetaeDisplayShader = await loadShader('thetaeDisplayShader.frag');
   const dewpointDisplayShader = await loadShader('dewpointDisplayShader.frag');
+  const pressureDisplayShader = await loadShader('pressureDisplayShader.frag');
   const wetbulbDisplayShader = await loadShader('wetbulbDisplayShader.frag');
   const precipTypeDisplayShader = await loadShader('precipTypeDisplayShader.frag');
   const precipDisplayShader = await loadShader('precipDisplayShader.frag');
@@ -21336,6 +21686,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   await loadingBar.set(80, 'Linking GPU programs');
 
   const pressureProgram = createProgram(simVertexShader, pressureShader);
+  const pressureRowMeanProgram = createProgram(simVertexShader, pressureRowMeanShader);
   const velocityProgram = createProgram(simVertexShader, velocityShader);
   const advectionProgram = createProgram(simVertexShader, advectionShader);
   const curlProgram = createProgram(simVertexShader, curlShader);
@@ -21368,6 +21719,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   const humidityDisplayProgram = createProgram(dispVertexShader, humidityDisplayShader);
   const thetaeDisplayProgram = createProgram(dispVertexShader, thetaeDisplayShader);
   const dewpointDisplayProgram = createProgram(dispVertexShader, dewpointDisplayShader);
+  const pressureDisplayProgram = createProgram(dispVertexShader, pressureDisplayShader);
   const wetbulbDisplayProgram = createProgram(dispVertexShader, wetbulbDisplayShader);
   const precipTypeDisplayProgram = createProgram(dispVertexShader, precipTypeDisplayShader);
   const precipDisplayProgram = createProgram(precipDisplayVertexShader, precipDisplayShader);
@@ -25054,6 +25406,10 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
 
   cellHeight = guiControls.simHeight / sim_res_y; // in meters
 
+  buildReferencePressureProfile(initial_T);
+  uploadRefProfileTexture();
+  setupPressureRowMeanTarget();
+
   // Set constant uniforms
   gl.useProgram(setupProgram);
   const uloc_setup_seed = gl.getUniformLocation(setupProgram, 'seed');
@@ -25128,6 +25484,12 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   gl.uniform1i(gl.getUniformLocation(pressureProgram, 'baseTex'), 0);
   gl.uniform1i(gl.getUniformLocation(pressureProgram, 'wallTex'), 1);
   gl.uniform2f(gl.getUniformLocation(pressureProgram, 'texelSize'), texelSizeX, texelSizeY);
+
+  gl.useProgram(pressureRowMeanProgram);
+  gl.uniform1i(gl.getUniformLocation(pressureRowMeanProgram, 'baseTex'), 0);
+  gl.uniform1i(gl.getUniformLocation(pressureRowMeanProgram, 'wallTex'), 1);
+  gl.uniform1i(gl.getUniformLocation(pressureRowMeanProgram, 'waterTex'), 2);
+  gl.uniform2f(gl.getUniformLocation(pressureRowMeanProgram, 'resolution'), sim_res_x, sim_res_y);
 
   gl.useProgram(velocityProgram);
   gl.uniform1i(gl.getUniformLocation(velocityProgram, 'baseTex'), 0);
@@ -25223,8 +25585,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   gl.uniform1f(gl.getUniformLocation(capeProgram, 'dryLapse'), dryLapse);
   gl.uniform1f(gl.getUniformLocation(capeProgram, 'simHeight'), guiControls.simHeight);
   gl.uniform1f(gl.getUniformLocation(capeProgram, 'evapHeat'), guiControls.evapHeat);
-  gl.uniform1f(gl.getUniformLocation(capeProgram, 'surfacePressure'),
-    Number.isFinite(guiControls.surfacePressure) ? guiControls.surfacePressure : 1013.25);
+  gl.uniform1i(gl.getUniformLocation(capeProgram, 'refProfileTex'), 3);
+  gl.uniform1i(gl.getUniformLocation(capeProgram, 'rowMeanTex'), 4);
 
   gl.useProgram(chargeProgram);
   gl.uniform2f(gl.getUniformLocation(chargeProgram, 'resolution'), sim_res_x, sim_res_y);
@@ -25361,6 +25723,42 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   gl.uniform1i(gl.getUniformLocation(dewpointDisplayProgram, 'wallTex'), 2);
   gl.uniform1i(gl.getUniformLocation(dewpointDisplayProgram, 'colorScalesTex'), 9);
   gl.uniform1f(gl.getUniformLocation(dewpointDisplayProgram, 'dryLapse'), dryLapse);
+
+  gl.useProgram(pressureDisplayProgram);
+  gl.uniform2f(gl.getUniformLocation(pressureDisplayProgram, 'resolution'), sim_res_x, sim_res_y);
+  gl.uniform2f(gl.getUniformLocation(pressureDisplayProgram, 'texelSize'), texelSizeX, texelSizeY);
+  gl.uniform1i(gl.getUniformLocation(pressureDisplayProgram, 'baseTex'), 0);
+  gl.uniform1i(gl.getUniformLocation(pressureDisplayProgram, 'wallTex'), 2);
+  gl.uniform1i(gl.getUniformLocation(pressureDisplayProgram, 'refProfileTex'), 4);
+  gl.uniform1i(gl.getUniformLocation(pressureDisplayProgram, 'rowMeanTex'), 5);
+
+  // refProfileTex texture units per program (bound before each pass that samples it)
+  const REF_PROFILE_UNIT_PRESSURE = 2;
+  const REF_PROFILE_UNIT_VELOCITY = 2;
+  const REF_PROFILE_UNIT_BOUNDARY = 9;
+  gl.useProgram(pressureProgram);
+  gl.uniform1i(gl.getUniformLocation(pressureProgram, 'refProfileTex'), REF_PROFILE_UNIT_PRESSURE);
+  gl.uniform2f(gl.getUniformLocation(pressureProgram, 'resolution'), sim_res_x, sim_res_y);
+  gl.useProgram(velocityProgram);
+  gl.uniform1i(gl.getUniformLocation(velocityProgram, 'refProfileTex'), REF_PROFILE_UNIT_VELOCITY);
+  gl.uniform2f(gl.getUniformLocation(velocityProgram, 'simResolution'), sim_res_x, sim_res_y);
+  gl.useProgram(boundaryProgram);
+  gl.uniform1i(gl.getUniformLocation(boundaryProgram, 'refProfileTex'), REF_PROFILE_UNIT_BOUNDARY);
+  uploadPressurePhysicsUniforms();
+
+  function uploadPressurePhysicsUniforms()
+  {
+    const anelastic = isAnelasticPressureMode() ? 1 : 0;
+    const paPerUnitPerRho = fluidPressurePaPerUnitPerRho();
+    [ pressureProgram, velocityProgram, boundaryProgram, pressureDisplayProgram, capeProgram ].forEach(prog => {
+      if (!prog) return;
+      gl.useProgram(prog);
+      const aLoc = gl.getUniformLocation(prog, 'anelastic');
+      if (aLoc) gl.uniform1i(aLoc, anelastic);
+      const kLoc = gl.getUniformLocation(prog, 'paPerUnitPerRho');
+      if (kLoc) gl.uniform1f(kLoc, paPerUnitPerRho);
+    });
+  }
 
   gl.useProgram(wetbulbDisplayProgram);
   gl.uniform2f(gl.getUniformLocation(wetbulbDisplayProgram, 'resolution'), sim_res_x, sim_res_y);
@@ -25504,7 +25902,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
 
   const terrainDisplayPrograms = [
     temperatureDisplayProgram, temperatureChangeDisplayProgram, airQualityDisplayProgram,
-    humidityDisplayProgram, thetaeDisplayProgram, dewpointDisplayProgram, wetbulbDisplayProgram,
+    humidityDisplayProgram, thetaeDisplayProgram, dewpointDisplayProgram, pressureDisplayProgram, wetbulbDisplayProgram,
     precipTypeDisplayProgram, precipDisplayProgram, universalDisplayProgram, chargeDisplayProgram,
     dropletSizeDisplayProgram, IRtempDisplayProgram, realisticDisplayProgram,
   ];
@@ -26113,6 +26511,10 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   const uloc_adv_iterNum               = gl.getUniformLocation(advectionProgram, 'iterNum');
   const uloc_adv_brushOnlyMode         = gl.getUniformLocation(advectionProgram, 'brushOnlyMode');
   const uloc_vel_coriolisStrength      = gl.getUniformLocation(velocityProgram, 'coriolisStrength');
+  const uloc_vel_synopticSys           = gl.getUniformLocation(velocityProgram, 'synopticSys');
+  const uloc_vel_synopticCount         = gl.getUniformLocation(velocityProgram, 'synopticCount');
+  const uloc_vel_synopticCoupling      = gl.getUniformLocation(velocityProgram, 'synopticCoupling');
+  const uloc_vel_wrapHorizontally      = gl.getUniformLocation(velocityProgram, 'wrapHorizontally');
 
   // per-frame precipitation
   const uloc_precip_iterNum            = gl.getUniformLocation(precipitationProgram,     'iterNum');
@@ -30747,6 +31149,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     gl.bindTexture(gl.TEXTURE_2D, precipitationDepositionTexture);
     gl.activeTexture(gl.TEXTURE8);
     gl.bindTexture(gl.TEXTURE_2D, smokeTexture_1);
+    gl.activeTexture(gl.TEXTURE0 + REF_PROFILE_UNIT_BOUNDARY);
+    gl.bindTexture(gl.TEXTURE_2D, refProfileTexture);
     gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_0);
     gl.drawBuffers([ gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1, gl.COLOR_ATTACHMENT2, gl.COLOR_ATTACHMENT3 ]);
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
@@ -31003,19 +31407,36 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   {
     const minSep = Math.max(8, Math.floor(sim_res_x / 20));
     pressureLabels = [];
+    const hpaMode = guiControls.displayMode === 'DISP_PRESSURE_HPA';
+    const py = Math.min(sfcRow + 2, sim_res_y - 1);
+    // hPa mode: MSLP-equivalent anomaly per column (fluid PRESSURE minus row mean, plus synoptic background)
+    let values = null;
+    if (hpaMode) {
+      values = new Float32Array(sim_res_x);
+      const toSeaLevel = guiControls.surfacePressure / Math.max(refPressureHpaAt(py), 1);
+      let mean = 0;
+      for (let x = 0; x < sim_res_x; x++)
+        mean += pressRow[x * 4 + 2];
+      mean /= Math.max(sim_res_x, 1);
+      for (let x = 0; x < sim_res_x; x++)
+        values[x] = (fluidPressureToHpa(pressRow[x * 4 + 2] - mean, py) + synopticBackgroundHpa(x, py)) * toSeaLevel;
+    }
+    const valueAt = hpaMode ? (x => values[x]) : (x => pressRow[x * 4 + 2]);
+    const minAmplitude = hpaMode ? 0.25 : 0.002;
     for (let x = 0; x < sim_res_x; x++) {
-      const p = pressRow[x * 4 + 2];
-      if (Math.abs(p) < 0.002) continue;
+      const p = valueAt(x);
+      if (Math.abs(p) < minAmplitude) continue;
       let isMax = true, isMin = true;
       for (let dx = -minSep; dx <= minSep; dx++) {
         if (dx === 0) continue;
-        const np = pressRow[((x + dx + sim_res_x) % sim_res_x) * 4 + 2];
+        const np = valueAt((x + dx + sim_res_x) % sim_res_x);
         if (np >= p) isMax = false;
         if (np <= p) isMin = false;
         if (!isMax && !isMin) break;
       }
-      if (isMax) pressureLabels.push({x, sfcY: sfcRow + 2, type: 'H'});
-      if (isMin) pressureLabels.push({x, sfcY: sfcRow + 2, type: 'L'});
+      const hpa = hpaMode ? guiControls.surfacePressure + p : null;
+      if (isMax && (!hpaMode || p > 0)) pressureLabels.push({x, sfcY: sfcRow + 2, type: 'H', hpa});
+      if (isMin && (!hpaMode || p < 0)) pressureLabels.push({x, sfcY: sfcRow + 2, type: 'L', hpa});
     }
   }
 
@@ -31238,6 +31659,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
           inputType = 34;
         else if (guiControls.tool == 'TOOL_WIND')
           inputType = 4;
+        else if (guiControls.tool == 'TOOL_PRESSURE')
+          inputType = 6;
         else if (guiControls.tool == 'TOOL_PRECIP')
           inputType = 5;
         else if (guiControls.tool == 'TOOL_WALL')
@@ -31391,6 +31814,16 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
           // June 8: particle lightning runs alongside procedural V2.
           particleLightningCheckPending = guiControls.enablePrecipitation;
 
+          if (numIterations > 0) {
+            const synCount = packSynopticSystemsForGpu(synopticGpuPack);
+            const coupling = Math.max(0, Number(guiControls.synopticPressureCoupling) || 0);
+            gl.useProgram(velocityProgram);
+            gl.uniform4fv(uloc_vel_synopticSys, synopticGpuPack);
+            gl.uniform1i(uloc_vel_synopticCount, synCount);
+            gl.uniform1f(uloc_vel_synopticCoupling, coupling);
+            gl.uniform1i(uloc_vel_wrapHorizontally, guiControls.wrapHorizontally ? 1 : 0);
+          }
+
           for (var i = 0; i < numIterations; i++) { // Simulation loop
             // calc and apply velocity
             gl.useProgram(velocityProgram);
@@ -31400,6 +31833,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
             gl.bindTexture(gl.TEXTURE_2D, baseTexture_0);
             gl.activeTexture(gl.TEXTURE1);
             gl.bindTexture(gl.TEXTURE_2D, wallTexture_0);
+            gl.activeTexture(gl.TEXTURE0 + REF_PROFILE_UNIT_VELOCITY);
+            gl.bindTexture(gl.TEXTURE_2D, refProfileTexture);
             gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_1);
             gl.drawBuffers([ gl.COLOR_ATTACHMENT0, gl.NONE, gl.COLOR_ATTACHMENT2 ]);
             gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
@@ -31430,6 +31865,12 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
               gl.bindTexture(gl.TEXTURE_2D, waterTexture_0);
               gl.activeTexture(gl.TEXTURE2);
               gl.bindTexture(gl.TEXTURE_2D, wallTexture_0);
+              gl.activeTexture(gl.TEXTURE3);
+              gl.bindTexture(gl.TEXTURE_2D, refProfileTexture);
+              gl.activeTexture(gl.TEXTURE4);
+              gl.bindTexture(gl.TEXTURE_2D, pressureRowMeanTexture);
+              gl.uniform1i(cachedUniformLocation(capeProgram, 'useSimPressure'),
+                guiControls.useHydrostaticCapePressure === false ? 0 : 1);
               gl.bindFramebuffer(gl.FRAMEBUFFER, capeFrameBuff);
               gl.drawBuffers([ gl.COLOR_ATTACHMENT0 ]);
               gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
@@ -31507,6 +31948,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
             gl.bindTexture(gl.TEXTURE_2D, sunColumnTexture);
             gl.activeTexture(gl.TEXTURE8);
             gl.bindTexture(gl.TEXTURE_2D, smokeTexture_1);
+            gl.activeTexture(gl.TEXTURE0 + REF_PROFILE_UNIT_BOUNDARY);
+            gl.bindTexture(gl.TEXTURE_2D, refProfileTexture);
 
 
             gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_0);
@@ -31562,6 +32005,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
               gl.bindTexture(gl.TEXTURE_2D, baseTexture_1);
               gl.activeTexture(gl.TEXTURE1);
               gl.bindTexture(gl.TEXTURE_2D, wallTexture_1);
+              gl.activeTexture(gl.TEXTURE0 + REF_PROFILE_UNIT_PRESSURE);
+              gl.bindTexture(gl.TEXTURE_2D, refProfileTexture);
               gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_0);
               gl.drawBuffers([ gl.COLOR_ATTACHMENT0, gl.NONE, gl.COLOR_ATTACHMENT2 ]);
               gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
@@ -31757,6 +32202,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         if (guiControls.allowCaves && leftMousePressed && isTerrainSculptInputType(inputType)
             && !isMultiplayerPeer() && !replayBlocked)
           rebuildTerrainHeightFromWalls(wallTexture_1);
+
+        runPressureRowMeanPass(pressureRowMeanProgram, baseTexture_0, waterTexture_0, wallTexture_0);
 
       } // end of simulation part
       else if (guiControls.paused && !isMultiplayerPeer() && leftMousePressed &&
@@ -32419,6 +32866,24 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
 
         gl.activeTexture(gl.TEXTURE0);
         gl.bindTexture(gl.TEXTURE_2D, getCurrentLightTexture());
+      } else if (guiControls.displayMode == 'DISP_PRESSURE_HPA') {
+        gl.useProgram(pressureDisplayProgram);
+        gl.uniform2f(cachedUniformLocation(pressureDisplayProgram, 'aspectRatios'), sim_aspect, canvas_aspect);
+        gl.uniform3f(cachedUniformLocation(pressureDisplayProgram, 'view'), cam.curXpos, cam.curYpos, cam.curZoom);
+        gl.uniform4f(cachedUniformLocation(pressureDisplayProgram, 'cursor'), mouseXinSim, mouseYinSim, guiControls.brushSize * 0.5, cursorType);
+        gl.uniform1f(cachedUniformLocation(pressureDisplayProgram, 'Xmult'), horizontalDisplayMult);
+        gl.uniform1f(cachedUniformLocation(pressureDisplayProgram, 'isobarIntervalHpa'),
+          Math.max(0.05, Number(guiControls.isobarIntervalHpa) || 1.0));
+        gl.uniform1f(cachedUniformLocation(pressureDisplayProgram, 'isobarSpacingHpa'), isobarSpacingHpa());
+        const synCount = packSynopticSystemsForGpu(synopticGpuPack);
+        gl.uniform4fv(cachedUniformLocation(pressureDisplayProgram, 'synopticSys'), synopticGpuPack);
+        gl.uniform1i(cachedUniformLocation(pressureDisplayProgram, 'synopticCount'), synCount);
+        gl.uniform1f(cachedUniformLocation(pressureDisplayProgram, 'displayVectorField'),
+          (cam.curZoom / sim_res_x > 0.003 && guiControls.enableVectorField) ? 1.0 : 0.0);
+        gl.activeTexture(gl.TEXTURE4);
+        gl.bindTexture(gl.TEXTURE_2D, refProfileTexture);
+        gl.activeTexture(gl.TEXTURE5);
+        gl.bindTexture(gl.TEXTURE_2D, pressureRowMeanTexture);
       } else {
         gl.useProgram(universalDisplayProgram);
         gl.uniform2f(uloc_univ_aspectRatios, sim_aspect, canvas_aspect);
@@ -32531,9 +32996,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
           colorScaleStops = 33;
           break;
         case 'DISP_PRESSURE':
-          // Fluid Pressure display: base[PRESSURE] is dimensionless (not meteorological hPa).
-          // For MSLP in hPa use Sounding: MSLP (DISP_SFC_PRES).
-          // CAPE/skew-T use hydrostatic P(z) when useHydrostaticCapePressure is on.
+          // Raw solver field. Air Pressure (hPa) (DISP_PRESSURE_HPA) shows it converted to hPa.
           gl.uniform1i(uloc_univ_quantityIndex, 2);
           gl.uniform1f(uloc_univ_dispMultiplier, 1.0);
           setUnivColorScaleColumn(22);
@@ -32890,7 +33353,8 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   } // end of display mode else block
 
   // Always hide risk canvas when not in DISP_RISK
-  if (guiControls.displayMode !== 'DISP_RISK' && guiControls.displayMode !== 'DISP_PRESSURE' && riskCanvas) {
+  if (guiControls.displayMode !== 'DISP_RISK' && guiControls.displayMode !== 'DISP_PRESSURE'
+      && guiControls.displayMode !== 'DISP_PRESSURE_HPA' && riskCanvas) {
     riskCanvas.style.display = 'none';
   }
 
@@ -33077,7 +33541,12 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   }
 
   // Draw H/L pressure labels when in pressure display mode
-  if (guiControls.displayMode === 'DISP_PRESSURE') {
+  if (guiControls.displayMode === 'DISP_PRESSURE' || guiControls.displayMode === 'DISP_PRESSURE_HPA') {
+    if (pressureLabelsMode !== guiControls.displayMode) {
+      pressureLabelsMode = guiControls.displayMode;
+      pressureLabels = [];
+      pressureLabelsIter = -1e9;
+    }
     if (!riskCanvas) {
       riskCanvas = document.createElement('canvas');
       riskCanvas.style.cssText = 'position:fixed;top:0;left:0;pointer-events:none;z-index:1;';
@@ -33105,11 +33574,45 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
     for (const lbl of pressureLabels) {
       const sx = simToScreenX(lbl.x);
       const sy = simToScreenY(lbl.sfcY + 3);
-      rc.fillStyle = lbl.type === 'H' ? '#FF4444' : '#4488FF';
+      if (guiControls.displayMode === 'DISP_PRESSURE_HPA')
+        rc.fillStyle = '#FFFFFF';
+      else
+        rc.fillStyle = lbl.type === 'H' ? '#FF4444' : '#4488FF';
       rc.strokeStyle = '#000000';
       rc.lineWidth = 3;
       rc.strokeText(lbl.type, sx, sy);
       rc.fillText(lbl.type, sx, sy);
+      if (Number.isFinite(lbl.hpa)) {
+        rc.font = 'bold 14px monospace';
+        const txt = lbl.hpa.toFixed(lbl.hpa >= 1000 ? 0 : 1);
+        rc.strokeText(txt, sx, sy + 20);
+        rc.fillText(txt, sx, sy + 20);
+        rc.font = 'bold 22px monospace';
+      }
+    }
+
+    if (guiControls.displayMode === 'DISP_PRESSURE_HPA' && refPressureProfile) {
+      rc.font = 'bold 12px monospace';
+      rc.textAlign = 'left';
+      rc.lineWidth = 3;
+      const spacing = isobarSpacingHpa();
+      const major = spacing * 5;
+      const pTop = refPressureHpaAt(sim_res_y - 1);
+      const pBot = refPressureHpaAt(0);
+      let lastSy = Infinity;
+      for (let level = Math.floor(pBot / spacing) * spacing; level >= pTop; level -= spacing) {
+        const isMajor = Math.abs(level / major - Math.round(level / major)) < 1e-4;
+        const levelY = refProfileCellYAtHpa(level);
+        if (!Number.isFinite(levelY)) continue;
+        const sy = simToScreenY(levelY);
+        if (sy < 0 || sy > riskCanvas.height) continue;
+        if (Math.abs(lastSy - sy) < (isMajor ? 14 : 22)) continue;
+        lastSy = sy;
+        const txt = Math.round(level) + (isMajor ? ' hPa' : '');
+        rc.fillStyle = isMajor ? '#FFFFFF' : '#A8A8A8';
+        rc.strokeText(txt, 6, sy - 6);
+        rc.fillText(txt, 6, sy - 6);
+      }
     }
   } else {
     pressureLabelsIter = -1e9;

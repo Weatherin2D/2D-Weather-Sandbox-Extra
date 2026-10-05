@@ -65,6 +65,8 @@ uniform float soilMoistureLossMult;        // scales soil evaporative drying
 uniform float climateMoistureDecayMult;    // scales sustained climate moisture decay
 uniform float fireBurnMult;                // scales fuel consumption while on fire
 uniform float soilMoistureCap;             // 0 = unlimited; else max soil moisture mm
+uniform sampler2D refProfileTex;           // hydrostatic reference: P (hPa), rho, vapor
+uniform int anelastic;                     // 1 = virtual-temperature buoyancy
 
 layout(location = 0) out vec4 base;
 layout(location = 1) out vec4 water;
@@ -225,6 +227,19 @@ void main()
     float gravityForce = ((base[TEMPERATURE] + baseX0Yp[TEMPERATURE]) * 0.5 - (getInitialT(int(fragCoord.y)) + getInitialT(int(fragCoord.y) + 1)) * 0.5) * gravMult;
 
     // float gravityForce = (base[3] - initial_T[int(fragCoord.y)]) * gravMult;
+
+    // Anelastic: virtual temperature, so humid air is lighter than the reference column.
+    if (anelastic != 0) {
+      float faceY = fragCoord.y; // top face of this cell (cell centre is fragCoord.y - 0.5)
+      vec4 ref = sampleRefProfile(refProfileTex, faceY, resolution.y);
+      float rhoKg = max(ref[REF_RHO], 0.01) * 1000.0;
+      vec4 waterUp = texture(waterTex, texCoordX0Yp);
+      float vapor = (max(water[TOTAL] - water[CLOUD], 0.0) + max(waterUp[TOTAL] - waterUp[CLOUD], 0.0)) * 0.5;
+      float q = vapor / rhoKg;
+      float qRef = max(ref[REF_VAPOR], 0.0) / rhoKg;
+      float Tface = (base[TEMPERATURE] + baseX0Yp[TEMPERATURE]) * 0.5;
+      gravityForce += 0.608 * Tface * (q - qRef) * gravMult;
+    }
 
     gravityForce -= water[CLOUD] * gravMult * waterWeight;         // cloud water weight added to gravity force
 
