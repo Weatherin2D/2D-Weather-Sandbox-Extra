@@ -754,11 +754,15 @@ const guiControls_default = {
   pressureThermalScale : 1.5,      // legacy (pre-physical MSLP); kept so old saves load
   pressureDynamicScale : 20.0,     // legacy (pre-physical MSLP); kept so old saves load
   fluidPressureHpaScale : 1.0,     // 1 = physical rho * (dx/dt)^2 conversion of fluid PRESSURE
-  isobarIntervalHpa : 1.0,         // anomaly (H/L) contour spacing in the Air Pressure (hPa) view
   isobarCount : 80,                // approx. number of full-pressure isobars across the domain height; every 5th is major
   pressureSynopticScale : 8.0,     // hPa amplitude at synoptic L/H center (strength=1)
   synopticPressureCoupling : 0.5,  // 0 = synoptic pressure display-only; >0 drives wind via pressure gradient
   pressurePhysicsMode : 'Classic', // 'Classic' | 'Anelastic' (density-weighted solver + virtual temperature)
+  pressureSubsteps : 3,            // pressure passes per iteration; 3 ≈ real speed of sound at 50 m cells
+  synopticDriftFactor : 1.0,       // synoptic L/H move with the 700-300 hPa wind times this (0 = fixed)
+  jetStreamSpeed : 0.0,            // m/s upper-level wind the jet stream nudges toward (0 = off, negative = leftward)
+  jetStreamHeightKm : 10.0,        // jet core height
+  jetStreamDepthKm : 4.0,          // jet thickness (Gaussian full width)
   useHydrostaticCapePressure : true, // skew-T / CAPE P(z) from the simulated pressure field (false = ISA)
   // Replay / forecast
   recordIntervalSimSec : 60,       // keyframe every N sim-seconds while recording
@@ -2413,6 +2417,7 @@ var pressureRowMeanCpu = null;
 var rowMeanCountCpu = null;
 var rowMeanThetaCpu = null;
 var rowMeanVaporCpu = null;
+var rowMeanVxCpu = null; // domain-mean VX per row (cells/iteration)
 
 function isAnelasticPressureMode()
 {
@@ -2570,7 +2575,7 @@ function setupPressureRowMeanTarget()
   if (!pressureRowMeanTexture)
     pressureRowMeanTexture = gl.createTexture();
   gl.bindTexture(gl.TEXTURE_2D, pressureRowMeanTexture);
-  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, sim_res_y, 1, 0, gl.RGBA, gl.FLOAT, new Float32Array(sim_res_y * 4));
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, sim_res_y, 2, 0, gl.RGBA, gl.FLOAT, new Float32Array(sim_res_y * 8));
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
@@ -2584,7 +2589,8 @@ function setupPressureRowMeanTarget()
   rowMeanCountCpu = null; // stays null until the first readback lands
   rowMeanThetaCpu = new Float32Array(sim_res_y);
   rowMeanVaporCpu = new Float32Array(sim_res_y);
-  pressureRowMeanScratch = new Float32Array(sim_res_y * 4);
+  rowMeanVxCpu = new Float32Array(sim_res_y);
+  pressureRowMeanScratch = new Float32Array(sim_res_y * 8);
   if (!pressureRowMeanReader && typeof createAsyncPixelReader === 'function')
     pressureRowMeanReader = createAsyncPixelReader();
 }
@@ -2606,7 +2612,7 @@ function runPressureRowMeanPass(program, baseTex, waterTex, wallTex)
   gl.bindTexture(gl.TEXTURE_2D, waterTex);
   gl.bindFramebuffer(gl.FRAMEBUFFER, pressureRowMeanFrameBuff);
   gl.drawBuffers([ gl.COLOR_ATTACHMENT0 ]);
-  gl.viewport(0, 0, sim_res_y, 1);
+  gl.viewport(0, 0, sim_res_y, 2);
   gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
   gl.viewport(0, 0, sim_res_x, sim_res_y);
 
@@ -2619,12 +2625,13 @@ function runPressureRowMeanPass(program, baseTex, waterTex, wallTex)
         rowMeanCountCpu[y] = pressureRowMeanScratch[y * 4 + 1];
         rowMeanThetaCpu[y] = pressureRowMeanScratch[y * 4 + 2];
         rowMeanVaporCpu[y] = pressureRowMeanScratch[y * 4 + 3];
+        rowMeanVxCpu[y] = pressureRowMeanScratch[(sim_res_y + y) * 4];
       }
       rebuildReferencePressureProfile();
     }
     if (!asyncPixelReaderBusy(pressureRowMeanReader) && (pressureRowMeanFrame++ % 10) === 0) {
       gl.readBuffer(gl.COLOR_ATTACHMENT0);
-      beginAsyncReadPixels(pressureRowMeanReader, 0, 0, sim_res_y, 1, gl.RGBA, gl.FLOAT, sim_res_y * 16, null);
+      beginAsyncReadPixels(pressureRowMeanReader, 0, 0, sim_res_y, 2, gl.RGBA, gl.FLOAT, sim_res_y * 32, null);
     }
   }
   gl.bindFramebuffer(gl.FRAMEBUFFER, null);
@@ -2663,12 +2670,65 @@ function refProfileCellYAtHpa(hpa)
   return NaN;
 }
 
-/** (cellHeight / dt)^2 times the user scale: Pa per unit fluid PRESSURE per kg/m^3. */
+/** Pressure + pressure-gradient passes per iteration; each pass moves sound ~0.67 cells. */
+function pressureSubsteps()
+{
+  return clamp(Math.round(Number(guiControls.pressureSubsteps) || 1), 1, 4);
+}
+
+/**
+ * Pa per unit fluid PRESSURE per kg/m^3: (cellHeight / dt)^2 * substeps * user scale.
+ * The gradient force is applied once per substep, so balanced fluid pressure is 1/substeps as large.
+ */
 function fluidPressurePaPerUnitPerRho()
 {
   const dzCell = guiControls.simHeight / Math.max(sim_res_y, 1);
   const scale = Number.isFinite(guiControls.fluidPressureHpaScale) ? guiControls.fluidPressureHpaScale : 1.0;
-  return Math.pow(dzCell / PRESSURE_DT_SEC, 2) * scale;
+  return Math.pow(dzCell / PRESSURE_DT_SEC, 2) * pressureSubsteps() * scale;
+}
+
+/** Approximate speed of pressure (sound) waves in m/s for the current substep count. */
+function pressureWaveSpeedMs()
+{
+  const dzCell = guiControls.simHeight / Math.max(sim_res_y, 1);
+  return Math.sqrt(0.45) * pressureSubsteps() * dzCell / PRESSURE_DT_SEC;
+}
+
+/** Domain-mean wind (cells/iteration) in the 700-300 hPa steering layer; NaN until the first readback. */
+function synopticSteeringWindRaw()
+{
+  if (!rowMeanVxCpu || !rowMeanCountCpu || rowMeanVxCpu.length !== sim_res_y)
+    return NaN;
+  let sum = 0, n = 0;
+  for (let y = 0; y < sim_res_y; y++) {
+    const p = refPressureHpaAt(y);
+    if (p > 700 || p < 300 || !(rowMeanCountCpu[y] > 0.5) || !Number.isFinite(rowMeanVxCpu[y]))
+      continue;
+    sum += rowMeanVxCpu[y];
+    n++;
+  }
+  if (n === 0) { // shallow domain: use the top quarter
+    for (let y = Math.floor(sim_res_y * 0.75); y < sim_res_y; y++) {
+      if (!(rowMeanCountCpu[y] > 0.5) || !Number.isFinite(rowMeanVxCpu[y])) continue;
+      sum += rowMeanVxCpu[y];
+      n++;
+    }
+  }
+  return n > 0 ? sum / n : NaN;
+}
+
+/** Moves synoptic Lows/Highs with the steering wind; the fluid wraps horizontally, so they do too. */
+function advanceSynopticSystemsDrift(iterations)
+{
+  const factor = Number(guiControls.synopticDriftFactor) || 0;
+  if (!(factor > 0) || typeof synopticSystems === 'undefined' || !synopticSystems.length)
+    return;
+  const u = synopticSteeringWindRaw();
+  if (!Number.isFinite(u) || u === 0)
+    return;
+  const dx = u * factor * iterations;
+  for (const sys of synopticSystems)
+    sys.moveXBy(dx);
 }
 
 function fluidPressureConversionDensity(cellY)
@@ -8726,6 +8786,12 @@ class SynopticSystem
   getStrength() { return this.#strength; }
   getType() { return this.#type; }
 
+  moveXBy(dx)
+  {
+    if (!Number.isFinite(dx) || !(sim_res_x > 0)) return;
+    this.#x = ((this.#x + dx) % sim_res_x + sim_res_x) % sim_res_x;
+  }
+
   getSettings()
   {
     return { type: this.#type, radius: this.#radius, strength: this.#strength };
@@ -12656,13 +12722,19 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     guiControls.pressureSynopticScale = guiControls_default.pressureSynopticScale;
   if (!Number.isFinite(guiControls.fluidPressureHpaScale))
     guiControls.fluidPressureHpaScale = guiControls_default.fluidPressureHpaScale;
-  if (!Number.isFinite(guiControls.isobarIntervalHpa) || guiControls.isobarIntervalHpa <= 0)
-    guiControls.isobarIntervalHpa = guiControls_default.isobarIntervalHpa;
   if (!Number.isFinite(guiControls.isobarCount) || guiControls.isobarCount < 1)
     guiControls.isobarCount = guiControls_default.isobarCount;
   if (!Number.isFinite(guiControls.synopticPressureCoupling))
     guiControls.synopticPressureCoupling = guiControlsFromSaveFile ? 0.0 : guiControls_default.synopticPressureCoupling;
   guiControls.synopticPressureCoupling = clamp(guiControls.synopticPressureCoupling, 0, 1);
+  if (!Number.isFinite(guiControls.pressureSubsteps))
+    guiControls.pressureSubsteps = guiControls_default.pressureSubsteps;
+  guiControls.pressureSubsteps = clamp(Math.round(guiControls.pressureSubsteps), 1, 4);
+  if (!Number.isFinite(guiControls.synopticDriftFactor))
+    guiControls.synopticDriftFactor = guiControlsFromSaveFile ? 0.0 : guiControls_default.synopticDriftFactor;
+  for (const key of [ 'jetStreamSpeed', 'jetStreamHeightKm', 'jetStreamDepthKm' ])
+    if (!Number.isFinite(guiControls[key]))
+      guiControls[key] = guiControls_default[key];
   if (guiControls.pressurePhysicsMode !== 'Classic' && guiControls.pressurePhysicsMode !== 'Anelastic')
     guiControls.pressurePhysicsMode = guiControls_default.pressurePhysicsMode;
   if (guiControls.useHydrostaticCapePressure === undefined)
@@ -12926,6 +12998,7 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
                  Number(guiControls.coriolisStrength) || 0.0);
     rebuildReferencePressureProfile();
     uploadPressurePhysicsUniforms();
+    uploadJetStreamUniforms();
     gl.useProgram(lightingProgram);
     gl.uniform1f(gl.getUniformLocation(lightingProgram, 'waterTemperature'), CtoK(guiControls.waterTemperature));
     gl.uniform1f(gl.getUniformLocation(lightingProgram, 'greenhouseGases'), guiControls.greenhouseGases);
@@ -13061,6 +13134,9 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
     // Saves from before pressure coupling keep synoptic pressure display-only.
     if (guiControlsFromSaveFile != null && guiControls.synopticPressureCoupling === undefined)
       guiControls.synopticPressureCoupling = 0.0;
+    // Saves from before drift keep their synoptic systems where they were placed.
+    if (guiControlsFromSaveFile != null && guiControls.synopticDriftFactor === undefined)
+      guiControls.synopticDriftFactor = 0.0;
     // Fill any keys missing from older save files (JSON omits undefined; functions are reattached below).
     for (const key of Object.keys(guiControls_default)) {
       if (guiControls[key] === undefined)
@@ -13238,6 +13314,12 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
         gl.uniform1f(gl.getUniformLocation(velocityProgram, 'wind'), guiControls.wind);
       })
       .name('Wind');
+    fluidParams_folder.add(guiControls, 'jetStreamSpeed', -100, 100, 1)
+      .onChange(uploadJetStreamUniforms).name('Jet Stream Speed (m/s)');
+    fluidParams_folder.add(guiControls, 'jetStreamHeightKm', 2, 20, 0.5)
+      .onChange(uploadJetStreamUniforms).name('Jet Stream Height (km)');
+    fluidParams_folder.add(guiControls, 'jetStreamDepthKm', 1, 10, 0.5)
+      .onChange(uploadJetStreamUniforms).name('Jet Stream Depth (km)');
 
     fluidParams_folder.add(guiControls, 'globalDrying', 0.0, 0.0001, 0.000001)
       .onChange(function() {
@@ -14290,12 +14372,15 @@ async function mainScript(initialBaseTex, initialWaterTex, initialWallTex, initi
       .onChange(uploadPressurePhysicsUniforms)
       .name('Fluid → hPa Scale');
     advancedSimulation.add(guiControls, 'isobarCount', 5, 150, 1).name('Number of Isobars');
-    advancedSimulation.add(guiControls, 'isobarIntervalHpa', 0.25, 10, 0.25).name('Anomaly Isobar Interval (hPa)');
     advancedSimulation.add(guiControls, 'pressureSynopticScale', 0, 20, 0.25).name('Synoptic Amplitude (hPa)');
     advancedSimulation.add(guiControls, 'synopticPressureCoupling', 0, 1, 0.05).name('Synoptic Pressure → Wind');
+    advancedSimulation.add(guiControls, 'synopticDriftFactor', 0, 2, 0.05).name('Synoptic Drift with Wind');
     advancedSimulation.add(guiControls, 'pressurePhysicsMode', [ 'Classic', 'Anelastic' ])
       .onChange(uploadPressurePhysicsUniforms)
       .name('Pressure Physics');
+    advancedSimulation.add(guiControls, 'pressureSubsteps', 1, 4, 1)
+      .onChange(uploadPressurePhysicsUniforms)
+      .name('Pressure Wave Speed (substeps)');
     advancedSimulation.add(guiControls, 'useHydrostaticCapePressure')
       .name('Sim Pressure for Sounding/CAPE');
     advancedSimulation.add(guiControls, 'IterPerFrame', 0.1, 50, 0.1)
@@ -25745,6 +25830,20 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   gl.useProgram(boundaryProgram);
   gl.uniform1i(gl.getUniformLocation(boundaryProgram, 'refProfileTex'), REF_PROFILE_UNIT_BOUNDARY);
   uploadPressurePhysicsUniforms();
+  uploadJetStreamUniforms();
+
+  function uploadJetStreamUniforms()
+  {
+    if (!velocityProgram) return;
+    const dz = guiControls.simHeight / Math.max(sim_res_y, 1);
+    const speedMs = Number(guiControls.jetStreamSpeed) || 0;
+    const heightM = (Number(guiControls.jetStreamHeightKm) || 10) * 1000;
+    const depthM = Math.max(Number(guiControls.jetStreamDepthKm) || 4, 0.5) * 1000;
+    gl.useProgram(velocityProgram);
+    gl.uniform1f(gl.getUniformLocation(velocityProgram, 'jetSpeed'), speedMs * 3600 / dz * timePerIteration);
+    gl.uniform1f(gl.getUniformLocation(velocityProgram, 'jetCenterCell'), heightM / dz);
+    gl.uniform1f(gl.getUniformLocation(velocityProgram, 'jetHalfWidthCells'), depthM * 0.5 / dz);
+  }
 
   function uploadPressurePhysicsUniforms()
   {
@@ -31993,6 +32092,7 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
 
               applyAirmassGeneratorsCpu();
               applyCustomToolEntitiesCpu();
+              advanceSynopticSystemsDrift(1);
               applySynopticSystemsCpu();
               if (typeof applyDrylinesCpu === 'function')
                 applyDrylinesCpu();
@@ -32010,6 +32110,41 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
               gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_0);
               gl.drawBuffers([ gl.COLOR_ATTACHMENT0, gl.NONE, gl.COLOR_ATTACHMENT2 ]);
               gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+
+              // Extra acoustic substeps (gradient force + divergence only) speed up pressure waves.
+              const substeps = pressureSubsteps();
+              if (substeps > 1) {
+                gl.useProgram(velocityProgram);
+                gl.uniform1i(cachedUniformLocation(velocityProgram, 'acousticSubstep'), 1);
+                gl.useProgram(pressureProgram);
+                gl.uniform1i(cachedUniformLocation(pressureProgram, 'acousticSubstep'), 1);
+                for (let s = 1; s < substeps; s++) {
+                  gl.useProgram(velocityProgram);
+                  gl.activeTexture(gl.TEXTURE0);
+                  gl.bindTexture(gl.TEXTURE_2D, baseTexture_0);
+                  gl.activeTexture(gl.TEXTURE1);
+                  gl.bindTexture(gl.TEXTURE_2D, wallTexture_0);
+                  gl.activeTexture(gl.TEXTURE0 + REF_PROFILE_UNIT_VELOCITY);
+                  gl.bindTexture(gl.TEXTURE_2D, refProfileTexture);
+                  gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_1);
+                  gl.drawBuffers([ gl.COLOR_ATTACHMENT0, gl.NONE, gl.COLOR_ATTACHMENT2 ]);
+                  gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+
+                  gl.useProgram(pressureProgram);
+                  gl.activeTexture(gl.TEXTURE0);
+                  gl.bindTexture(gl.TEXTURE_2D, baseTexture_1);
+                  gl.activeTexture(gl.TEXTURE1);
+                  gl.bindTexture(gl.TEXTURE_2D, wallTexture_1);
+                  gl.activeTexture(gl.TEXTURE0 + REF_PROFILE_UNIT_PRESSURE);
+                  gl.bindTexture(gl.TEXTURE_2D, refProfileTexture);
+                  gl.bindFramebuffer(gl.FRAMEBUFFER, frameBuff_0);
+                  gl.drawBuffers([ gl.COLOR_ATTACHMENT0, gl.NONE, gl.COLOR_ATTACHMENT2 ]);
+                  gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+                }
+                gl.uniform1i(cachedUniformLocation(pressureProgram, 'acousticSubstep'), 0);
+                gl.useProgram(velocityProgram);
+                gl.uniform1i(cachedUniformLocation(velocityProgram, 'acousticSubstep'), 0);
+              }
             }
 
             // capture current temperature state for the temperature-change display
@@ -32872,8 +33007,6 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
         gl.uniform3f(cachedUniformLocation(pressureDisplayProgram, 'view'), cam.curXpos, cam.curYpos, cam.curZoom);
         gl.uniform4f(cachedUniformLocation(pressureDisplayProgram, 'cursor'), mouseXinSim, mouseYinSim, guiControls.brushSize * 0.5, cursorType);
         gl.uniform1f(cachedUniformLocation(pressureDisplayProgram, 'Xmult'), horizontalDisplayMult);
-        gl.uniform1f(cachedUniformLocation(pressureDisplayProgram, 'isobarIntervalHpa'),
-          Math.max(0.05, Number(guiControls.isobarIntervalHpa) || 1.0));
         gl.uniform1f(cachedUniformLocation(pressureDisplayProgram, 'isobarSpacingHpa'), isobarSpacingHpa());
         const synCount = packSynopticSystemsForGpu(synopticGpuPack);
         gl.uniform4fv(cachedUniformLocation(pressureDisplayProgram, 'synopticSys'), synopticGpuPack);

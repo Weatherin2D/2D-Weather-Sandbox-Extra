@@ -16,7 +16,6 @@ uniform vec2 texelSize;
 
 uniform float paPerUnitPerRho;     // (cellHeight / dt)^2 * user scale
 uniform int anelastic;
-uniform float isobarIntervalHpa;   // anomaly isobars (H/L structure)
 uniform float isobarSpacingHpa;    // full-pressure isobars; every 5th is a major line
 
 uniform vec4 synopticSys[16];
@@ -68,11 +67,6 @@ void main()
   perturbHpa += synopticBackgroundHpa(synopticSys, synopticCount, fragCoord.x - 0.5, cellY, resolution, wrapHorizontally != 0);
   float totalHpa = refPressureHpa(refProfileTex, cellY, resolution.y) + perturbHpa;
 
-  float anomInterval = max(isobarIntervalHpa, 0.05);
-  float anomLine = contourLine(perturbHpa, anomInterval) * step(anomInterval * 0.5, abs(perturbHpa));
-  // Below-average pressure is dashed (diagonal pattern so vertical lines dash too).
-  float dash = perturbHpa < 0.0 ? step(0.45, fract((gl_FragCoord.x + gl_FragCoord.y) / 9.0)) : 1.0;
-
   float spacing = max(isobarSpacingHpa, 1.0);
   float minorLine = contourLine(totalHpa, spacing);
   float majorLine = contourLine(totalHpa, spacing * 5.0);
@@ -88,7 +82,6 @@ void main()
     vec3 col = vec3(0.14, 0.145, 0.15);
     col = mix(col, vec3(0.55), minorLine * 0.55);
     col = mix(col, vec3(0.95), majorLine * 0.85);
-    col = mix(col, vec3(0.80), anomLine * dash * 0.8);
     fragmentColor = vec4(col, 1.0);
 
     drawVectorField(base.xy, displayVectorField);

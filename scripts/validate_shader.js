@@ -1,11 +1,13 @@
 // Usage: node scripts/validate_shader.js [shader.frag ...]
-// Inlines common.glsl / commonDisplay.glsl like loadShader() in app.js, then compiles with glslang.
+// Inlines the shared .glsl headers like loadShader() in app.js, then compiles with glslang.
 const fs = require('fs');
 const path = require('path');
 
 const root = path.join(__dirname, '..');
 const common = fs.readFileSync(path.join(root, 'shaders/common.glsl'), 'utf8');
 const commonDisplay = fs.readFileSync(path.join(root, 'shaders/commonDisplay.glsl'), 'utf8');
+const dropletSize = fs.readFileSync(path.join(root, 'shaders/dropletSize.glsl'), 'utf8');
+const lightningV2 = fs.readFileSync(path.join(root, 'shaders/fragment/lightningV2.glsl'), 'utf8');
 
 const DEFAULT_SHADERS = [
   'boundaryShader.frag',
@@ -27,6 +29,10 @@ function expandIncludes(src)
   }
   if (src.includes('#include "commonDisplay.glsl"'))
     src = src.replace('#include "commonDisplay.glsl"', commonDisplay);
+  if (src.includes('#include "dropletSize.glsl"'))
+    src = src.replace('#include "dropletSize.glsl"', dropletSize);
+  if (src.includes('#include "lightningV2.glsl"'))
+    src = src.replace('#include "lightningV2.glsl"', lightningV2);
   return src;
 }
 

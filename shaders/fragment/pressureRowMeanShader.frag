@@ -3,11 +3,13 @@ precision highp float;
 precision highp sampler2D;
 precision highp isampler2D;
 
-// Rendered into a (sim_res_y x 1) target: texel x = sim row.
-// R = robust mean fluid PRESSURE of the air cells in that row (storm-cell outliers trimmed)
-// G = air cell count
-// B = mean potential temperature (K)
-// A = mean water vapor (TOTAL - CLOUD, g/m^3)
+// Rendered into a (sim_res_y x 2) target: texel x = sim row.
+// Row 0:
+//   R = robust mean fluid PRESSURE of the air cells in that row (storm-cell outliers trimmed)
+//   G = air cell count
+//   B = mean potential temperature (K)
+//   A = mean water vapor (TOTAL - CLOUD, g/m^3)
+// Row 1: R = mean VX, G = mean VY (cells/iteration), B = air cell count
 
 uniform sampler2D baseTex;
 uniform sampler2D waterTex;
@@ -24,6 +26,25 @@ void main()
   int resX = int(resolution.x);
   int n = min(resX, MAX_ROW_SAMPLES);
   float stride = float(resX) / float(max(n, 1));
+
+  if (int(gl_FragCoord.y) == 1) {
+    float sumVx = 0.0, sumVy = 0.0, countV = 0.0;
+    for (int i = 0; i < MAX_ROW_SAMPLES; i++) {
+      if (i >= n)
+        break;
+      int x = min(int((float(i) + 0.5) * stride), resX - 1);
+      if (texelFetch(wallTex, ivec2(x, y), 0)[1] == 0)
+        continue;
+      vec2 v = texelFetch(baseTex, ivec2(x, y), 0).xy;
+      if (v.x != v.x || v.y != v.y)
+        continue;
+      sumVx += v.x;
+      sumVy += v.y;
+      countV += 1.0;
+    }
+    rowMean = countV > 0.5 ? vec4(sumVx / countV, sumVy / countV, countV, 0.0) : vec4(0.0);
+    return;
+  }
 
   float sumP = 0.0, sumP2 = 0.0, sumT = 0.0, sumW = 0.0, count = 0.0;
   for (int i = 0; i < MAX_ROW_SAMPLES; i++) {

@@ -29,6 +29,12 @@ uniform vec4 synopticSys[16];   // x, y, radius (cells), signed amplitude (hPa)
 uniform int synopticCount;
 uniform float synopticCoupling; // 0 = synoptic pressure is display-only
 uniform int wrapHorizontally;
+uniform int acousticSubstep;    // 1 = extra pressure substep: pressure-gradient force only
+
+// Jet stream: VX nudged toward jetSpeed (cells/iteration) in a Gaussian band around jetCenterCell
+uniform float jetSpeed;
+uniform float jetCenterCell;
+uniform float jetHalfWidthCells;
 
 layout(location = 0) out vec4 base;
 layout(location = 2) out ivec4 wall;
@@ -75,7 +81,8 @@ void main()
                            // thereby reflect any pressure waves back
   } else {
 
-    if (wallXpY0[DISTANCE] == 0) {
+    bool xBlocked = wallXpY0[DISTANCE] == 0;
+    if (xBlocked) {
       base[VX] = 0.0;                                  // Since X velocity is defined at the right of the cell, it has to be done in the cell to the left of the wall
     } else {
       base[VX] += (base[PRESSURE] - baseXpY0[PRESSURE]) * invRhoX; // The velocity through the cell changes proportionally to the pressure gradient across the cell. It's basically just newtons 2nd law.
@@ -83,11 +90,22 @@ void main()
       // Synoptic Low/High as a hydrostatically balanced background pressure: horizontal gradient only.
       if (synopticCoupling > 0.0 && synopticCount > 0)
         base[VX] += synopticCoupling * (synopticFluidPressure(cellX, cellY) - synopticFluidPressure(cellX + 1.0, cellY)) * invRhoX;
-
-      base[VX] *= 1. - dragMultiplier * 0.0002;        // linear drag
     }
 
     base[VY] += (base[PRESSURE] - baseX0Yp[PRESSURE]) * invRhoY;
+
+    if (acousticSubstep != 0) {
+      base = sanitizeSimBase(base, wall[DISTANCE]);
+      return;
+    }
+
+    if (!xBlocked) {
+      base[VX] *= 1. - dragMultiplier * 0.0002;        // linear drag
+      if (jetSpeed != 0.0) {
+        float d = (cellY - jetCenterCell) / max(jetHalfWidthCells, 1.0);
+        base[VX] += (jetSpeed - base[VX]) * 0.0005 * exp(-d * d);
+      }
+    }
     base[VY] *= 1. - dragMultiplier * 0.0002;
     // quadratic drag
     // base[VX] -= base[VX] * base[VX] * base[VX] * base[VX] * base[VX] *

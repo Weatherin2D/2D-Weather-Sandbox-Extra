@@ -14,6 +14,7 @@ uniform sampler2D refProfileTex;
 uniform vec2 resolution;
 uniform vec2 texelSize;
 uniform int anelastic; // 1 = mass-flux (rho-weighted) divergence
+uniform int acousticSubstep; // 1 = extra pressure substep: divergence update only
 
 layout(location = 0) out vec4 base;
 layout(location = 2) out ivec4 wall;
@@ -29,7 +30,7 @@ void main()
   wall = texture(wallTex, texCoord); // pass trough
 
   ivec2 wallX0Ym = texture(wallTex, texCoordX0Ym).xy;
-  if (wallX0Ym[1] == 0 && wallX0Ym[0] == 1) { // cell below is land wall
+  if (acousticSubstep == 0 && wallX0Ym[1] == 0 && wallX0Ym[0] == 1) { // cell below is land wall
     base[3] -= baseX0Ym[3] - 1000.0;          // Snow melting cools air
   }
 
