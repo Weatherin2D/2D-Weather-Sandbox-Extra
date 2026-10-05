@@ -7,6 +7,10 @@ in vec2 fragCoord;
 in vec2 texCoord;     // this
 in vec2 texCoordXpY0; // right
 in vec2 texCoordX0Yp; // up
+in vec2 texCoordXmY0; // left
+in vec2 texCoordX0Ym; // down
+in vec2 texCoordXpYm; // right down
+in vec2 texCoordXmYp; // left up
 
 uniform sampler2D baseTex;
 uniform isampler2D wallTex;
@@ -50,6 +54,27 @@ float synopticFluidPressure(float cellX, float cellY)
   return paToFluid(refProfileTex, hpa * 100.0, cellY, simResolution.y, paPerUnitPerRho, anelastic);
 }
 
+// Must stay below (0.5 - 0.45) / 2, where 0.45 is the pressureShader divergence factor.
+#define DIVERGENCE_DAMPING 0.02
+
+// Same (mass-flux) divergence the pressure shader integrates.
+float cellDivergence(float vxL, float vx0, float vyD, float vy0, float cellY)
+{
+  vxL = clamp(vxL, -2.5, 2.5);
+  vx0 = clamp(vx0, -2.5, 2.5);
+  vyD = clamp(vyD, -2.5, 2.5);
+  vy0 = clamp(vy0, -2.5, 2.5);
+  if (anelastic != 0) {
+    float rhoC = refDensityNorm(refProfileTex, cellY, simResolution.y);
+    float rhoD = refDensityNorm(refProfileTex, cellY - 0.5, simResolution.y);
+    float rhoU = refDensityNorm(refProfileTex, cellY + 0.5, simResolution.y);
+    float divM = rhoC * (vx0 - vxL) + rhoU * vy0 - rhoD * vyD;
+    return divM == divM ? divM : 0.0;
+  }
+  float div = vx0 - vxL + vy0 - vyD;
+  return div == div ? div : 0.0;
+}
+
 void main()
 {
   resolution = simResolution;
@@ -81,18 +106,28 @@ void main()
                            // thereby reflect any pressure waves back
   } else {
 
+    // Divergence damping: the pressure gradient uses p - k*div, which damps sound waves
+    // (otherwise energy from vorticity confinement builds up into growing oscillations).
+    vec4 baseXmY0 = texture(baseTex, texCoordXmY0);
+    vec4 baseX0Ym = texture(baseTex, texCoordX0Ym);
+    vec4 baseXpYm = texture(baseTex, texCoordXpYm);
+    vec4 baseXmYp = texture(baseTex, texCoordXmYp);
+    float pEff = base[PRESSURE] - DIVERGENCE_DAMPING * cellDivergence(baseXmY0[VX], base[VX], baseX0Ym[VY], base[VY], cellY);
+    float pEffXp = baseXpY0[PRESSURE] - DIVERGENCE_DAMPING * cellDivergence(base[VX], baseXpY0[VX], baseXpYm[VY], baseXpY0[VY], cellY);
+    float pEffYp = baseX0Yp[PRESSURE] - DIVERGENCE_DAMPING * cellDivergence(baseXmYp[VX], baseX0Yp[VX], base[VY], baseX0Yp[VY], cellY + 1.0);
+
     bool xBlocked = wallXpY0[DISTANCE] == 0;
     if (xBlocked) {
       base[VX] = 0.0;                                  // Since X velocity is defined at the right of the cell, it has to be done in the cell to the left of the wall
     } else {
-      base[VX] += (base[PRESSURE] - baseXpY0[PRESSURE]) * invRhoX; // The velocity through the cell changes proportionally to the pressure gradient across the cell. It's basically just newtons 2nd law.
+      base[VX] += (pEff - pEffXp) * invRhoX; // The velocity through the cell changes proportionally to the pressure gradient across the cell. It's basically just newtons 2nd law.
 
       // Synoptic Low/High as a hydrostatically balanced background pressure: horizontal gradient only.
       if (synopticCoupling > 0.0 && synopticCount > 0)
         base[VX] += synopticCoupling * (synopticFluidPressure(cellX, cellY) - synopticFluidPressure(cellX + 1.0, cellY)) * invRhoX;
     }
 
-    base[VY] += (base[PRESSURE] - baseX0Yp[PRESSURE]) * invRhoY;
+    base[VY] += (pEff - pEffYp) * invRhoY;
 
     if (acousticSubstep != 0) {
       base = sanitizeSimBase(base, wall[DISTANCE]);
