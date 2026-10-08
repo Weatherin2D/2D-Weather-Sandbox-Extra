@@ -14,9 +14,16 @@ precision highp isampler2D;
 
 #define maxWaterTemp 40.0
 
-#define waterHeatExchangeRate 0.0002
+#define waterHeatCapacity 50.0     // as multiple of airs heat capacity (ice sheets, flooded land)
+#define oceanHeatCapacity 200.0    // sea surface cell stands in for the ocean mixed layer: small diurnal swing
+#define lakeHeatCapacity 100.0     // lakes / rivers are shallower than the ocean mixed layer
 
-#define waterHeatCapacity 50.0     // as multiple of airs heat capacity
+#define simSecondsPerIteration 0.288 // must match timePerIteration in app.js (0.00008 h)
+#define bulkTransferCoef 0.0012      // bulk aerodynamic heat / vapor transfer coefficient over water and ice
+#define iceDensityGPerM3 917000.0
+// Air column depth that lightHeatingConst heats by 1 K per W/m^2 per iteration: dt / (rho * cp * lightHeatingConst).
+// Surface heat and vapor fluxes use it so they stay in balance with radiation at every grid resolution.
+#define heatUnitDepthM 120.0
 // Land near-surface air has no soil reservoir; this slows diurnal swings so nights
 // cool less abruptly and the afternoon peak lags solar noon (water uses 50).
 #define landHeatCapacity 5.5
@@ -747,6 +754,41 @@ float dewpoint(float W)
 }
 
 float relativeHumd(float T, float W) { return simFiniteOr(W, 0.0) / max(maxWater(T), 1.0e-12); }
+
+////////////// Water / ice surface exchange ///////////////
+
+// Fraction of the lowest air cell's heat and vapor anomaly exchanged with a water or ice surface per
+// iteration: C * U * dt / depth. A warmer surface adds free-convective mixing, and a small
+// gustiness floor keeps calm air exchanging slowly instead of not at all.
+float surfaceExchangeRate(float windCellsPerIter, float surfaceT, float airT, float cellHeightM)
+{
+  float windMs = min(abs(simFiniteOr(windCellsPerIter, 0.0)) * max(cellHeightM, 1.0) / simSecondsPerIteration, 40.0);
+  float convectiveMs = clamp((surfaceT - airT) * 0.6, 0.0, 3.0);
+  float effWindMs = sqrt(windMs * windMs + convectiveMs * convectiveMs + 0.25);
+  return clamp(bulkTransferCoef * effWindMs * simSecondsPerIteration / heatUnitDepthM, 0.0, 0.05);
+}
+
+// Saturation vapor right above open water. Dissolved salt lowers it about 2% for sea water.
+float waterSurfaceSaturation(float waterT, float salinityPpt) { return maxWater(waterT) * (1.0 - 0.00057 * max(salinityPpt, 0.0)); }
+
+// Calm water reflects little overhead sun but a lot at grazing angles.
+float waterSurfaceAlbedo(float cosZenith, bool fresh)
+{
+  float albedo = 0.037 / (1.1 * pow(max(cosZenith, 0.0), 1.4) + 0.15);
+  return clamp(albedo + (fresh ? 0.02 : 0.0), 0.03, 0.6);
+}
+
+// Ice thickness (cm) that one kelvin of a surface cell's heat content freezes or melts.
+float iceCmPerKelvin(float heatCapacity, float meltingHeat)
+{
+  return heatCapacity / max(meltingHeat, 0.01) * heatUnitDepthM / iceDensityGPerM3 * 100.0;
+}
+
+// Floating ice thickening from below while its surface is colder than the water (Stefan's law), cm per iteration.
+float iceBasalGrowthCm(float surfaceBelowFreezeK, float thicknessCm)
+{
+  return 2.07e-5 * max(surfaceBelowFreezeK, 0.0) / max(thicknessCm, 2.0);
+}
 
 // interpolation
 
