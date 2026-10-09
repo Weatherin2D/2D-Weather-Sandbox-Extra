@@ -67,7 +67,6 @@ uniform float fireBurnMult;                // scales fuel consumption while on f
 uniform float soilMoistureCap;             // 0 = unlimited; else max soil moisture mm
 uniform sampler2D refProfileTex;           // hydrostatic reference: P (hPa), rho, vapor
 uniform int anelastic;                     // 1 = virtual-temperature buoyancy
-uniform float cellHeightM;                 // grid cell size in meters
 
 layout(location = 0) out vec4 base;
 layout(location = 1) out vec4 water;
@@ -108,17 +107,6 @@ float calcEvaporation(float T, float W, float V, float M)                       
 }
 
 float calcFireIntensity(int veg, float moist, float precip) { return max(vegetationInfluence(veg) * 0.00032 - moist * 0.00020 - precip * 0.02, 0.); }
-
-float simCellHeightM() { return cellHeightM > 1.0 ? cellHeightM : 50.0; }
-
-// Evaporation from (positive) or vapor condensing onto (negative) open water, g/m^3 per iteration in the
-// air cell above. The Water Evaporation slider scales the bulk rate relative to its default of 0.0001.
-float openWaterVaporFlux(float waterT, float salinityPpt, float airTotal, float airCloud, float surfaceExchange)
-{
-  float airVapor = max(airTotal - airCloud, 0.0);
-  float flux = (waterSurfaceSaturation(waterT, salinityPpt) - airVapor) * surfaceExchange * max(waterEvaporation, 0.0) * 10000.0;
-  return max(flux, -airVapor);
-}
 
 // How many cells this sample sits above an ocean surface (0 = same height, negative = below ocean top).
 // Large value means not an ocean column.
@@ -547,19 +535,12 @@ void main()
       case WALLTYPE_WATER:
       case WALLTYPE_ICE:
         if (wall[VERT_DISTANCE] <= wallVerticalInfluence) {
-          // Uses this pass's input textures so the surface below computes the identical exchange.
-          float surfaceT = texture(baseTex, texCoordX0Ym)[TEMPERATURE]; // water / ice temperature
-          if (surfaceT < 500.0) {                                       // skip the converted-from-land marker
-            vec4 airIn = texture(baseTex, texCoord);
-            vec4 airWaterIn = texture(waterTex, texCoord);
-            float airT = potentialToRealT(airIn[TEMPERATURE]);
-            float exchange = surfaceExchangeRate(airIn[VX], surfaceT, airT, simCellHeightM());
-            base[TEMPERATURE] += (surfaceT - airT) * exchange / influenceDevider; // sensible heat
+          float LocalWaterTemperature = texture(baseTex, texCoordX0Ym)[TEMPERATURE]; // water / ice temperature
+          if (LocalWaterTemperature < 500.0) {                                        // skip the converted-from-land marker
+            base[TEMPERATURE] += (LocalWaterTemperature - realTemp) / influenceDevider * waterHeatExchangeRate; // air heated or cooled by the surface below
 
-            if (isLiquidWaterType(wallX0Ym[TYPE])) {
-              float salinity = salinityForWallType(wallX0Ym[TYPE], texture(waterTex, texCoordX0Ym)[SALINITY]);
-              water[TOTAL] += openWaterVaporFlux(surfaceT, salinity, airWaterIn[TOTAL], airWaterIn[CLOUD], exchange) / influenceDevider;
-            }
+            if (isLiquidWaterType(wallX0Ym[TYPE]))
+              water[TOTAL] += max((maxWater(LocalWaterTemperature) - water[TOTAL]) * waterEvaporation / influenceDevider, 0.); // water evaporating
           }
         }
         break;
@@ -965,102 +946,94 @@ void main()
           if (wall[TYPE] == WALLTYPE_WATER && water[SALINITY] < 1.0)
             water[SALINITY] = oceanSalinityPpt;
 
-          const float waterTempUpdateInterval = 20.0;
+          const float waterTempUpdateInterval = 20.0; // Update less often but with bigger value to reduce rounding error
 
           if (base[TEMPERATURE] > 500.0) // land / wall marker: freshly created water body
             base[TEMPERATURE] = CtoK(25.0);
 
           float salinity = salinityForWallType(wall[TYPE], water[SALINITY]);
-          float freezeC = waterFreezeTempC(salinity);
-          float freezeEnabled = 1.0;
+          float freezeEnabled = enableSaltwaterFreezing;
+          float freezeC = saltwaterFreezePointC;
           if (wall[TYPE] == WALLTYPE_FRESH_WATER) {
             freezeEnabled = enableFreshwaterFreezing;
             freezeC = freshwaterFreezePointC;
-          } else if (wall[TYPE] == WALLTYPE_WATER) {
-            freezeEnabled = enableSaltwaterFreezing;
-            freezeC = saltwaterFreezePointC;
           }
 
           bool dynamicWater = dynamicWaterTemperature >= 1.0;
-          float heatCap = (wall[TYPE] == WALLTYPE_FRESH_WATER) ? lakeHeatCapacity : oceanHeatCapacity;
-          float cmPerK = iceCmPerKelvin(heatCap, meltingHeat);
-          vec4 baseAbove = texture(baseTex, texCoordX0Yp);
-          float airTemperature = potentialToRealT(baseAbove[TEMPERATURE], texCoordX0Yp.y);
-
-          if (dynamicWater) {
-            // Snow falling into open water melts, taking its latent heat from the water (fresh snow ~1/10 ice density).
-            base[TEMPERATURE] -= precipDeposition[SNOW_DEPOSITION] * snowMassToHeight * 0.1 / cmPerK;
-          }
+          float airTemperature = potentialToRealT(texture(baseTex, texCoordX0Yp)[TEMPERATURE], texCoordX0Yp.y);
 
           if (dynamicWater && mod(iterNum, waterTempUpdateInterval) < 0.5) {
-            // Surface energy budget, in air-cell heat units per iteration. The air cell above applies the
-            // same sensible heat and vapor flux every iteration, so energy and water are conserved.
-            float waterT = base[TEMPERATURE];
-            float exchange = surfaceExchangeRate(baseAbove[VX], waterT, airTemperature, simCellHeightM());
-            float vaporFlux = openWaterVaporFlux(waterT, salinity, waterX0Yp[TOTAL], waterX0Yp[CLOUD], exchange);
 
-            float netWaterHeating = 0.0;
-            netWaterHeating += (airTemperature - waterT) * exchange; // sensible heat to / from the air
-            netWaterHeating -= vaporFlux * evapHeat;                 // latent heat: evaporation cools, condensation warms
-
-            float cosZenith = max(cos(colSunAngle), 0.0);
-            float lightPower = max(lightAboveSurface[SUNLIGHT], 0.0) * cosZenith;
-            lightPower *= 1. - waterSurfaceAlbedo(cosZenith, wall[TYPE] == WALLTYPE_FRESH_WATER);
-            netWaterHeating += lightPower * lightHeatingConst * lightEffectScale; // absorbed sunlight
-            netWaterHeating += lightAboveSurface[NET_HEATING] * lightEffectScale; // net longwave (IR down - surface emission)
-
-            base[TEMPERATURE] += netWaterHeating / heatCap * waterTempUpdateInterval;
-
-            // Horizontal mixing with neighboring water
+            // average out temperature
             float numNeighbors = 0.;
             float totalNeighborTemp = 0.0;
 
-            if (isLiquidWaterType(wallXmY0[TYPE])) {
+            if (isLiquidWaterType(wallXmY0[TYPE])) { // left is water
               totalNeighborTemp += texture(baseTex, texCoordXmY0)[TEMPERATURE];
               numNeighbors += 1.;
             }
-            if (isLiquidWaterType(wallXpY0[TYPE])) {
+            if (isLiquidWaterType(wallXpY0[TYPE])) { // right is water
               totalNeighborTemp += texture(baseTex, texCoordXpY0)[TEMPERATURE];
               numNeighbors += 1.;
             }
-            if (numNeighbors > 0.) {
+            if (numNeighbors > 0.) { // prevent devide by 0
               float avgNeighborTemp = totalNeighborTemp / numNeighbors;
-              base[TEMPERATURE] += (avgNeighborTemp - waterT) * 0.10;
+              base[TEMPERATURE] += (avgNeighborTemp - base[TEMPERATURE]) * 0.10;
             }
+
+            float netWaterHeating = 0.0;
+            netWaterHeating += (airTemperature - base[TEMPERATURE]) * waterHeatExchangeRate; // water heated or cooled by the air above
+
+            netWaterHeating -=
+              max((maxWater(base[TEMPERATURE]) - waterX0Yp[TOTAL]) * waterEvaporation, 0.) * evapHeat * 0.5; // evaporative cooling (half the real value, to prevent boring non convective conditions)
+
+            float lightPower = max(lightAboveSurface[SUNLIGHT] * cos(colSunAngle), 0.0); // Light power per horizontal surface area;
+            lightPower *= (1. - ALBEDO_WATER);
+            lightPower *= lightHeatingConst;
+            netWaterHeating += lightPower * lightEffectScale; // sun heating water
+
+            netWaterHeating += lightAboveSurface[NET_HEATING] * lightEffectScale; // IR heating/cooling effect
+
+            base[TEMPERATURE] += netWaterHeating / waterHeatCapacity * waterTempUpdateInterval;
           }
 
           float waterTempC = KtoC(base[TEMPERATURE]);
-          float airTempC = KtoC(airTemperature);
 
-          if (dynamicWater) {
-            if (freezeEnabled > 0.5 && waterTempC < freezeC) {
-              // Heat lost below the freezing point forms ice crystals instead of supercooling the water.
-              water[SNOW] += (freezeC - waterTempC) * cmPerK;
-              base[TEMPERATURE] = CtoK(freezeC);
-            } else if (water[SNOW] > 0.0 && waterTempC > freezeC) {
-              // Loose ice melts back, drawing its latent heat from the water.
-              float melt = min(water[SNOW], (waterTempC - freezeC) * cmPerK);
-              water[SNOW] -= melt;
-              base[TEMPERATURE] -= melt / cmPerK;
+          if (freezeEnabled > 0.5) {
+            if (dynamicWater) {
+              // Water only freezes once its own heat budget has brought it down to the freezing point;
+              // heat lost below that point becomes ice instead of colder water.
+              float cmPerK = iceCmPerKelvin(waterHeatCapacity, meltingHeat);
+              if (waterTempC < freezeC) {
+                water[SNOW] += (freezeC - waterTempC) * cmPerK;
+                base[TEMPERATURE] = CtoK(freezeC);
+              } else if (water[SNOW] > 0.0) {
+                float melt = min(water[SNOW], (waterTempC - freezeC) * cmPerK);
+                water[SNOW] -= melt;
+                base[TEMPERATURE] -= melt / cmPerK;
+              }
+              if (water[SNOW] >= minIceFormThickness * 0.2) {
+                wall[TYPE] = WALLTYPE_ICE;
+                water[SALINITY] = salinity;
+              }
+            } else {
+              float airTempC = KtoC(airTemperature);
+              if (waterTempC < freezeC || airTempC < freezeC) {
+                float coldness = max(freezeC - waterTempC, 0.0) + max(freezeC - airTempC, 0.0) * 0.75;
+                float freezeProgress = max(coldness, 0.1) * waterFreezeRate;
+                water[SNOW] = min(water[SNOW] + freezeProgress, minIceFormThickness);
+                if (water[SNOW] >= minIceFormThickness * 0.2 || waterTempC < freezeC - 0.5) {
+                  wall[TYPE] = WALLTYPE_ICE;
+                  water[SALINITY] = salinity;
+                  water[SNOW] = max(water[SNOW], minIceFormThickness);
+                }
+              }
             }
-            if (freezeEnabled < 0.5)
-              water[SNOW] = 0.0;
-            if (water[SNOW] >= minIceFormThickness * 0.2) { // crystals knit into a solid ice cover
-              wall[TYPE] = WALLTYPE_ICE;
-              water[SALINITY] = salinity;
-            }
-          } else if (freezeEnabled > 0.5 && (waterTempC < freezeC || airTempC < freezeC)) {
-            float coldness = max(freezeC - waterTempC, 0.0) + max(freezeC - airTempC, 0.0) * 0.75;
-            float freezeProgress = max(coldness, 0.1) * waterFreezeRate;
-            water[SNOW] = min(water[SNOW] + freezeProgress, minIceFormThickness);
-            if (water[SNOW] >= minIceFormThickness * 0.2 || waterTempC < freezeC - 0.5) {
-              wall[TYPE] = WALLTYPE_ICE;
-              water[SALINITY] = salinity;
-              water[SNOW] = max(water[SNOW], minIceFormThickness);
-            }
+          } else {
+            water[SNOW] = 0.0;
           }
 
-          base[TEMPERATURE] = clamp(base[TEMPERATURE], CtoK(-5.0), CtoK(maxWaterTemperatureC));
+          base[TEMPERATURE] = clamp(base[TEMPERATURE], CtoK(min(0.0, freezeC)), CtoK(maxWaterTemperatureC)); // limit water temperature range
 
           wall[VEGETATION] = 20;
           water[SOIL_MOISTURE] = 100.0;
@@ -1102,8 +1075,7 @@ void main()
             if (mod(iterNum, waterTempUpdateInterval) < 0.5) {
               // Same surface energy budget as open water, minus evaporation (sublimation is handled below).
               float iceT = base[TEMPERATURE];
-              float exchange = surfaceExchangeRate(baseAbove[VX], iceT, airTemperature, simCellHeightM());
-              float netIceHeating = (airTemperature - iceT) * exchange;
+              float netIceHeating = (airTemperature - iceT) * waterHeatExchangeRate;
               float lightPower = max(lightAboveSurface[SUNLIGHT] * cos(colSunAngle), 0.0);
               float iceAlbedo = map_rangeC(iceThickness, 0.0, fullWhiteSnowHeight, ALBEDO_WATER, ALBEDO_ICE);
               lightPower *= (1. - iceAlbedo);

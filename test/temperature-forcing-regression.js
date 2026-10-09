@@ -10,8 +10,13 @@ assert.ok(!boundaryShader.includes('latitudeBasedTemperature != 0'), 'boundary s
 assert.ok(!boundaryShader.includes('climateTempC'), 'boundary shader must not read a climate target temperature');
 assert.ok(!/realTemp\s*-\s*1\.0\)/.test(boundaryShader), 'air over water must not be biased 1 K colder than the water');
 assert.ok(!boundaryShader.includes('!isLiquidWaterType(wall[TYPE]) && wall[TYPE] != WALLTYPE_ICE'), 'air columns over water / ice must still get infrared heating and cooling');
-assert.ok(commonGlsl.includes('float surfaceExchangeRate('), 'air-water heat exchange should use the bulk aerodynamic rate');
-assert.ok(boundaryShader.includes('openWaterVaporFlux('), 'evaporation should be the shared bulk vapor flux on both the air and water side');
-assert.ok(appSource.includes("'cellHeightM'"), 'app.js should upload the cell height used by the surface exchange');
+assert.ok(/#define waterHeatExchangeRate 0\.0002\b/.test(commonGlsl), 'water / air heat exchange should match the original sandbox rate');
+assert.ok(/#define waterHeatCapacity 50\.0\b/.test(commonGlsl), 'water heat capacity should match the original sandbox');
+assert.ok(boundaryShader.includes('(LocalWaterTemperature - realTemp) / influenceDevider * waterHeatExchangeRate'), 'air over water should exchange heat with the water at the same rate the water uses');
+assert.ok(boundaryShader.includes('(airTemperature - base[TEMPERATURE]) * waterHeatExchangeRate'), 'water should exchange heat with the air above');
+assert.ok(/waterEvaporation, 0\.\) \* evapHeat \* 0\.5/.test(boundaryShader), 'water evaporative cooling should match the original sandbox (half latent heat)');
+assert.ok(boundaryShader.includes('netWaterHeating / waterHeatCapacity * waterTempUpdateInterval'), 'fresh and salt water should share the original surface budget');
+assert.ok(!/oceanHeatCapacity|lakeHeatCapacity/.test(boundaryShader), 'fresh and salt water should use the same heat capacity');
+assert.ok(!appSource.includes("'cellHeightM'"), 'boundary shader no longer needs the cell height uniform');
 
 console.log('Temperature forcing regression test passed');

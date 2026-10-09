@@ -25635,7 +25635,6 @@ function drawSkewWindBarb(ctx, stemX, y, uMs, vMs)
   gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'enableSaltwaterFreezing'), guiControls.enableSaltwaterFreezing ? 1.0 : 0.0);
   gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'enableGlacierMelting'), guiControls.enableGlacierMelting ? 1.0 : 0.0);
   gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'dryLapse'), dryLapse);
-  gl.uniform1f(gl.getUniformLocation(boundaryProgram, 'cellHeightM'), cellHeight);
   // gl.uniform1fv(gl.getUniformLocation(boundaryProgram, 'initial_T'), initial_T);
   gl.uniform4fv(gl.getUniformLocation(boundaryProgram, 'initial_Tv'), initial_T);
   gl.uniform1i(gl.getUniformLocation(boundaryProgram, 'allowCaves'), guiControls.allowCaves ? 1 : 0);
